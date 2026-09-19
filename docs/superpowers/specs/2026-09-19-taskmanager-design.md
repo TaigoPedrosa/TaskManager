@@ -190,15 +190,37 @@ Node identifiers compose hierarchically down the tree (`spec -> plan -> task`), 
   * `require_slug`: When enabled for a specific level (`spec`, `plan`, or `task`), the CLI enforces that creation commands provide an explicit semantic slug (e.g. `tm task add "User login flow" --plan AUTH-USER --slug LOGIN`), rejecting fallback auto-increments.
   * `prefix`: Determines the prefix used when auto-incrementing at that level (`S`, `P`, `T`).
   * `separator`: Configurable token separator (defaults to `-`, supports `/` or `_`).
-  * `pad`: Numeric padding for counters (e.g. `1` produces `T1`, `2` produces `T01`).
+### 5.2 Universal Qualified Addressing for Nodes & Sections
+The composable slug hierarchy extends to all levels of the system, including dynamic markdown sections. This provides agents and CLI users with a unified, URI-like addressing syntax across the entire command surface:
 
-### 5.2 Composition and Edge Semantics
+* **Qualified Path Syntax**: `<node_path>[:<section_key>]`
+  * **Specs & Spec Sections**:
+    * Node: `AUTH` (or `S1`)
+    * Section: `AUTH:overview`, `AUTH:architecture`
+  * **Plans & Plan Sections**:
+    * Node: `AUTH-USER` (or `AUTH-P1`)
+    * Section: `AUTH-USER:overview`, `AUTH-USER:waves`
+  * **Tasks & Task Sections**:
+    * Node: `AUTH-USER-LOGIN` (or `AUTH-USER-T1`)
+    * Section: `AUTH-USER-LOGIN:interfaces`, `AUTH-USER-LOGIN:files`, `AUTH-USER-LOGIN:steps`
+
+* **Universal CLI Resolution**:
+  Every command that accepts a node ID or section identifier natively parses qualified syntax:
+  * `tm section get AUTH-USER-LOGIN:steps`
+  * `tm section set AUTH-USER-LOGIN:steps --content "..."`
+  * `tm render AUTH-USER:overview`
+  * `tm run start AUTH-USER-LOGIN --worktree`
+  * `tm verify run AUTH-USER-LOGIN`
+  * `tm task get AUTH-USER-LOGIN`
+  * **Contextual Short-Form Resolution**: When an agent executes inside an isolated task worktree (which has an active lease registered in `runtime.db`), commands default to the active task when omitted (e.g. `tm section get :steps`, `tm run heartbeat`, `tm verify run`).
+
+### 5.3 Composition and Edge Semantics
 * `contains`: Models hierarchical composition (`Spec contains Plan`, `Plan contains Task`).
 * `depends_on`: Models prerequisite DAG dependencies (`Task B depends_on Task A`).
 * `blocks`: Inverted representation of `depends_on` (`Task A blocks Task B`).
 * `supersedes`: Indicates a node replaces a deprecated or refactored node (`Task B supersedes Task A`).
 
-### 5.3 Superseding Block Transfer
+### 5.4 Superseding Block Transfer
 When executing `tm task supersede <old-id> <new-id>`, the user or agent specifies how downstream dependencies are reassigned via `--transfer-blocks`:
 * `all` (default): All nodes that were blocked by `<old-id>` now become blocked by `<new-id>`.
 * `none`: Dependency links are not transferred; `<old-id>` is marked `SUPERSEDED`, resolving blocks without transferring to `<new-id>`.
@@ -379,32 +401,32 @@ tm init [--path <dir>]
 tm config set <key> <value>
 tm config get <key>
 
-# Node Administration
-tm spec add <title> [--prefix <p>] [--priority <n>]
-tm plan add <title> --spec <id> [--require-review] [--priority <n>] [--repo <r>]
-tm task add <title> --plan <id> [--depends-on <ids>] [--models <m1,m2>] [--priority <n>] [--require-review]
+# Node & Section Administration (Supports qualified paths: e.g. AUTH-USER-LOGIN:steps)
+tm spec add <title> [--slug <s>] [--priority <n>]
+tm plan add <title> --spec <id> [--slug <s>] [--require-review] [--priority <n>] [--repo <r>]
+tm task add <title> --plan <id> [--slug <s>] [--depends-on <ids>] [--models <m1,m2>] [--priority <n>] [--require-review]
 tm task supersede <old-id> <new-id> [--transfer-blocks all|none|<ids>]
-tm section set <node-id> <key> [--header <h>] [--content <text> | --file <path>]
-tm section get <node-id> <key>
+tm section set <qualified-path> [--header <h>] [--content <text> | --file <path>]
+tm section get <qualified-path>
 
 # Recommendations & Discovery
 tm next [-n 5] [--plan <id>] [--model <m>] [--strategy <strat>] [--json]
 tm graph [--mermaid] [--plan <id>]
 tm search "<query>" [--kind <k1,k2>] [--status <s1,s2>] [--target <t>] [--limit <n>]
 
-# Runtime & Execution
+# Runtime & Execution (Accepts task ID or defaults to active worktree task)
 tm run start <task-id> [--worktree] [--agent <id>] [--session <id>] [--account <id>]
-tm run heartbeat <task-id>
-tm run stop <task-id> [--status <status>] [--remove-worktree]
+tm run heartbeat [<task-id>]
+tm run stop [<task-id>] [--status <status>] [--remove-worktree]
 tm run list [--json]
 tm run sweep [--ttl-grace <sec>]
 
 # Static Verification
 tm verify add <task-id> --type <type> --target <path> [--pattern <pat>]
-tm verify run <task-id> [--worktree <path>]
+tm verify run [<task-id>] [--worktree <path>]
 
 # Projections & Bulk
-tm render <node-id> [--view summary|subagent|full]
+tm render <qualified-path> [--view summary|subagent|full]
 tm import --format <markdown|yaml|json> [--file <path>]
 tm export [--plan <id>] --format <markdown|yaml|json>
 tm batch update --file <updates.json>
