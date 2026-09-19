@@ -1,0 +1,153 @@
+from datetime import UTC, datetime
+
+from taskmanager.core.enums import NodeKind, NodeStatus, RelationType, VirtualStatus
+from taskmanager.core.models import Lease, Node, NodeRelation
+from taskmanager.db.node_repo import NodeRepository
+from taskmanager.db.runtime_repo import RuntimeRepository
+
+
+class GraphEngine:
+    def __init__(self, node_repo: NodeRepository, runtime_repo: RuntimeRepository) -> None:
+        self.node_repo = node_repo
+        self.runtime_repo = runtime_repo
+
+    def _is_lease_active(self, lease: Lease) -> bool:
+        last_hb = lease.last_heartbeat
+        if last_hb.tzinfo is None:
+            last_hb = last_hb.astimezone(UTC)
+        now = datetime.now(tz=UTC)
+        return (now - last_hb).total_seconds() <= lease.ttl_seconds
+
+    def _is_task_in_flight(self, task_id: str) -> bool:
+        lease = self.runtime_repo.get_lease(task_id)
+        return lease is not None and self._is_lease_active(lease)
+
+    def resolve_task_state(self, task_id: str) -> VirtualStatus | NodeStatus:
+        node = self.node_repo.get_node(task_id)
+        if node is None:
+            raise ValueError(f"Task '{task_id}' not found")
+
+        lease = self.runtime_repo.get_lease(task_id)
+        if lease is not None and self._is_lease_active(lease):
+            return VirtualStatus.IN_FLIGHT
+
+        if node.status != NodeStatus.NOT_STARTED:
+            return node.status
+
+        deps = self.node_repo.get_dependencies(task_id)
+        for dep_id in deps:
+            dep_node = self.node_repo.get_node(dep_id)
+            if dep_node is None or dep_node.status not in (
+                NodeStatus.COMPLETED,
+                NodeStatus.SUPERSEDED,
+            ):
+                return VirtualStatus.BLOCKED
+
+        return VirtualStatus.READY
+
+    def resolve_plan_status(self, plan_id: str) -> NodeStatus | VirtualStatus:
+        plan_node = self.node_repo.get_node(plan_id)
+        if plan_node is None:
+            raise ValueError(f"Plan '{plan_id}' not found")
+
+        children = self.node_repo.get_children(plan_id)
+        if not children:
+            matching_tasks = [
+                n.id
+                for n in self.node_repo.list_nodes(kind=NodeKind.TASK)
+                if n.id.startswith(f"{plan_id}-") and not n.id.endswith("-REV")
+            ]
+            if matching_tasks:
+                children = matching_tasks
+
+        if not children:
+            return plan_node.status
+
+        child_nodes = [self.node_repo.get_node(cid) for cid in children]
+        child_states = [self.resolve_task_state(cid) for cid in children]
+
+        if all(s in (NodeStatus.COMPLETED, NodeStatus.SUPERSEDED) for s in child_states):
+            return NodeStatus.COMPLETED
+
+        uncompleted = [
+            s
+            for s in child_states
+            if s not in (NodeStatus.COMPLETED, NodeStatus.SUPERSEDED)
+        ]
+        if uncompleted and all(s == VirtualStatus.BLOCKED for s in uncompleted):
+            return VirtualStatus.BLOCKED
+
+        if all(
+            cn is not None
+            and cn.status == NodeStatus.NOT_STARTED
+            and not self._is_task_in_flight(cn.id)
+            for cn in child_nodes
+        ):
+            return NodeStatus.NOT_STARTED
+
+        return NodeStatus.IMPLEMENTING
+
+    def would_cause_cycle(self, source_id: str, target_id: str) -> bool:
+        if source_id == target_id:
+            return True
+
+        visited: set[str] = set()
+        queue: list[str] = [target_id]
+
+        while queue:
+            curr = queue.pop(0)
+            if curr == source_id:
+                return True
+            if curr in visited:
+                continue
+            visited.add(curr)
+
+            for dep_id in self.node_repo.get_dependencies(curr):
+                if dep_id == source_id:
+                    return True
+                if dep_id not in visited:
+                    queue.append(dep_id)
+
+        return False
+
+    def inject_plan_review_gate(self, plan_id: str) -> str:
+        gate_id = f"{plan_id}-REV"
+        plan_node = self.node_repo.get_node(plan_id)
+        target_repo = plan_node.target_repo if plan_node else None
+
+        gate_node = Node(
+            id=gate_id,
+            kind=NodeKind.REVIEW_GATE,
+            title=f"Review Gate: {plan_id}",
+            status=NodeStatus.NOT_STARTED,
+            target_repo=target_repo,
+        )
+        self.node_repo.save_node(gate_node)
+
+        child_ids = self.node_repo.get_children(plan_id)
+        task_ids: list[str] = []
+        for cid in child_ids:
+            if cid == gate_id:
+                continue
+            child = self.node_repo.get_node(cid)
+            if child is None or child.kind == NodeKind.TASK:
+                task_ids.append(cid)
+
+        if not task_ids:
+            matching_tasks = [
+                n.id
+                for n in self.node_repo.list_nodes(kind=NodeKind.TASK)
+                if n.id.startswith(f"{plan_id}-") and n.id != gate_id
+            ]
+            task_ids.extend(matching_tasks)
+
+        for tid in task_ids:
+            self.node_repo.add_relation(
+                NodeRelation(
+                    source_id=gate_id,
+                    target_id=tid,
+                    relation_type=RelationType.DEPENDS_ON,
+                )
+            )
+
+        return gate_id
