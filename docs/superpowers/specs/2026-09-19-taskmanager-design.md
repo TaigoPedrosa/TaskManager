@@ -164,14 +164,33 @@ CREATE INDEX idx_ledger_target ON ledger_events(target_id);
 
 ## 5. Semantic Short IDs & Relations
 
-### 5.1 ID Formatting & Auto-Generation
-* **Format**: `[PREFIX]-[KIND_CHAR][INDEX]`:
-  * Specs: `AUTH-S01`, `DATA-S01`
-  * Plans: `AUTH-P01`, `AUTH-P02`
-  * Tasks: `AUTH-T01`, `AUTH-T02`
-  * Plan-Wide Review Gates: `AUTH-REV01`
-* **Hierarchy Auto-Inheritance**: When adding a plan under a spec, the plan inherits the spec's prefix. When adding a task under a plan, the task inherits the plan prefix and auto-increments the numeric index (`T01`, `T02`, etc.).
-* **Custom Slugs**: Explicit IDs (e.g. `auth/jwt-token`) are supported and validated for URL/slug safety.
+### 5.1 Hierarchical Composable Identifiers & Configuration
+Node identifiers compose hierarchically down the tree (`spec -> plan -> task`), allowing fully semantic slugs, hybrid slugs, or pure auto-incremented numbering:
+
+* **Composition Logic**:
+  * **Spec Level**: Defines the root identifier, either an explicit semantic slug (`AUTH`) or auto-incremented (`S1`).
+  * **Plan Level**: Composed as `<spec_id><separator><plan_segment>`:
+    * Semantic slug provided (`USER`): `AUTH-USER` (or `S1-USER`).
+    * No slug provided (auto-incremented): `AUTH-P1` (or `S1-P1`).
+  * **Task Level**: Composed as `<plan_id><separator><task_segment>`:
+    * Semantic slug provided (`LOGIN`): `AUTH-USER-LOGIN` (or `AUTH-P1-LOGIN`).
+    * No slug provided (auto-incremented): `AUTH-USER-T1` (or `S1-P4-T17`).
+
+* **Configurable Enforcement (`.taskmanager/config.json`)**:
+  ```json
+  {
+    "naming": {
+      "separator": "-",
+      "spec": { "prefix": "S", "require_slug": false, "pad": 1 },
+      "plan": { "prefix": "P", "require_slug": false, "pad": 1 },
+      "task": { "prefix": "T", "require_slug": false, "pad": 1 }
+    }
+  }
+  ```
+  * `require_slug`: When enabled for a specific level (`spec`, `plan`, or `task`), the CLI enforces that creation commands provide an explicit semantic slug (e.g. `tm task add "User login flow" --plan AUTH-USER --slug LOGIN`), rejecting fallback auto-increments.
+  * `prefix`: Determines the prefix used when auto-incrementing at that level (`S`, `P`, `T`).
+  * `separator`: Configurable token separator (defaults to `-`, supports `/` or `_`).
+  * `pad`: Numeric padding for counters (e.g. `1` produces `T1`, `2` produces `T01`).
 
 ### 5.2 Composition and Edge Semantics
 * `contains`: Models hierarchical composition (`Spec contains Plan`, `Plan contains Task`).
