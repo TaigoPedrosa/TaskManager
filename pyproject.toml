@@ -1,0 +1,56 @@
+[project]
+name = "taskmanager"
+version = "0.1.0"
+description = "Local agentic task tracker system powered by SQLite and DAG heuristics"
+authors = [{ name = "Taigo Pedrosa" }]
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "typer>=0.15.0",
+    "pydantic>=2.10.0",
+    "dishka>=1.4.0",
+    "sqlite-vec>=0.1.6",
+    "rich>=13.9.0",
+    "httpx>=0.28.0",
+]
+
+[project.scripts]
+taskmanager = "taskmanager.cli.main:app"
+tm = "taskmanager.cli.main:app"
+
+[project.optional-dependencies]
+local-embeddings = [
+    "sentence-transformers>=3.4.0",
+]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-cov>=6.0.0",
+    "mypy>=1.15.0",
+    "ruff>=0.9.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-cov>=6.0.0",
+    "mypy>=1.15.0",
+    "ruff>=0.9.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+mypy_path = "src"
+packages = ["taskmanager"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
