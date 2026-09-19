@@ -103,15 +103,21 @@ CREATE VIRTUAL TABLE nodes_fts USING fts5(
     tokenize='porter unicode61'
 );
 
--- 6. Vector Embeddings
-CREATE TABLE node_embeddings (
-    node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-    target_type TEXT NOT NULL,                -- "title" | "frontmatter" | "section" | "full"
-    section_key TEXT,                         -- NULL for title/frontmatter/full
-    embedding_blob BLOB NOT NULL,             -- Serialized float32 byte array
-    model_name TEXT NOT NULL,                 -- Identifier of model used to produce vector
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (node_id, target_type, section_key)
+-- 6. Native Vector Search via sqlite-vec extension (vec0)
+-- Provides in-engine C-level vector indexing and KNN matching
+CREATE VIRTUAL TABLE vec_nodes USING vec0(
+    node_id TEXT PRIMARY KEY,
+    target_type TEXT,                          -- "title" | "frontmatter" | "section" | "full"
+    section_key TEXT,                          -- NULL for title/frontmatter/full
+    embedding FLOAT[384] DISTANCE_METRIC=cosine
+);
+
+CREATE TABLE embedding_metadata (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL,                    -- "openai" | "local"
+    model_name TEXT NOT NULL,                  -- e.g. "text-embedding-3-small" | "all-MiniLM-L6-v2"
+    dimensions INTEGER NOT NULL,               -- e.g. 384 or 1536
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
@@ -278,10 +284,16 @@ $$\text{Score}(T) = w_{\text{prio}} \cdot S_{\text{prio}}(T, P) + w_{\text{unloc
 
 ---
 
-## 10. Semantic & Hybrid Search
+## 10. Semantic & Hybrid Search (sqlite-vec Extension)
 
-### 10.1 Storage & Dual Providers
-* **Storage**: FTS5 table `nodes_fts` for lexical keyword search + `node_embeddings` for vector storage.
+### 10.1 In-Engine Vector Search (`sqlite-vec`)
+Rather than pulling vectors into Python to compute cosine distance in user-space, `taskmanager` loads the official `sqlite-vec` C extension into SQLite connections (`sqlite_vec.load(conn)`).
+* **Native KNN Virtual Table**: Vectors are stored in a `vec0` virtual table (`vec_nodes`) with indexed nearest-neighbor lookup (`MATCH :query_vector AND k = :limit`).
+* **Scale**: Runs entirely inside SQLite's C core, scaling to hundreds of thousands of vectors with sub-millisecond query latency.
+* **Configurable Dimensions**: The vector dimension matches the active model (e.g. 384 for local MiniLM, 1536 for OpenAI `text-embedding-3-small`), tracked in `embedding_metadata`.
+
+### 10.2 Storage & Dual Providers
+* **Storage**: FTS5 table `nodes_fts` for lexical keyword search + `sqlite-vec` virtual table `vec_nodes` for vector embeddings.
 * **Environment Configuration**: Explicit prefixing avoids credential bleeding:
   * `TASKMANAGER_EMBEDDING_PROVIDER`: `openai` | `local` | `none`
   * `TASKMANAGER_OPENAI_BASE_URL`: API base URL (e.g. `https://api.openai.com/v1` or local Ollama/vLLM)
@@ -289,13 +301,32 @@ $$\text{Score}(T) = w_{\text{prio}} \cdot S_{\text{prio}}(T, P) + w_{\text{unloc
   * `TASKMANAGER_OPENAI_MODEL`: Embedding model name (e.g. `text-embedding-3-small`)
   * `TASKMANAGER_LOCAL_MODEL`: Local HuggingFace / sentence-transformers model (e.g. `all-MiniLM-L6-v2`)
 
-### 10.2 Query Execution
+### 10.3 In-Database Hybrid Query Execution
 `tm search "<query>" [options]`:
 * `--target title|frontmatter|content|all`
 * `--kind spec,plan,task` (supports comma-separated multi-select)
 * `--status READY,IMPLEMENTING,COMPLETED` (supports real and virtual statuses, multi-select)
 * `--limit <N>`
-* Evaluates SQL relational filters first, computes cosine similarity over candidate vector embeddings, blends with FTS5 lexical hits via Reciprocal Rank Fusion (RRF), and outputs ranked results.
+* **Execution**:
+  1. Generates query vector via the configured provider.
+  2. Executes in-database KNN search joined directly with relational filtering:
+     ```sql
+     SELECT
+         n.id,
+         n.title,
+         n.status,
+         v.target_type,
+         v.section_key,
+         v.distance
+     FROM vec_nodes v
+     JOIN nodes n ON n.id = v.node_id
+     WHERE v.embedding MATCH :query_vector
+       AND k = :limit
+       AND (:status_filter IS NULL OR n.status IN (:statuses))
+       AND (:kind_filter IS NULL OR n.kind IN (:kinds))
+     ORDER BY v.distance ASC;
+     ```
+  3. Blends in-database vector rankings with FTS5 lexical scores using Reciprocal Rank Fusion (RRF) when hybrid mode is active.
 
 ---
 
