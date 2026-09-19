@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from taskmanager.core.enums import NodeKind, NodeStatus
-from taskmanager.core.models import Node, NodeSection
+from taskmanager.core.enums import NodeKind, NodeStatus, RelationType, VerificationType
+from taskmanager.core.models import Node, NodeRelation, NodeSection, NodeVerification
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.renderers.importers import BulkImporter
@@ -82,6 +82,57 @@ def test_markdown_renderer_summary_with_overview(tmp_path: Path) -> None:
     assert "This spec details the OAuth2 implementation." in summary
 
 
+def test_markdown_renderer_subagent_with_parent_and_verifications(tmp_path: Path) -> None:
+    db = DatabaseManager(tmp_path)
+    db.init_all()
+    repo = NodeRepository(db)
+
+    plan = Node(
+        id="AUTH-P1",
+        kind=NodeKind.PLAN,
+        title="Token Architecture",
+    )
+    repo.save_node(plan)
+    repo.save_section(
+        NodeSection(
+            node_id="AUTH-P1",
+            section_key="context",
+            ordinal=1,
+            header="## Context",
+            content="Must comply with RFC 7519 standards.",
+        )
+    )
+
+    task = Node(
+        id="AUTH-T1",
+        kind=NodeKind.TASK,
+        title="Issue JWT",
+    )
+    repo.save_node(task)
+    repo.add_relation(
+        NodeRelation(
+            source_id="AUTH-P1",
+            target_id="AUTH-T1",
+            relation_type=RelationType.CONTAINS,
+        )
+    )
+    repo.add_verification(
+        NodeVerification(
+            node_id="AUTH-T1",
+            verification_type=VerificationType.FILE_EXISTS,
+            target_path="src/jwt.py",
+        )
+    )
+
+    renderer = MarkdownRenderer(repo)
+    brief = renderer.render("AUTH-T1", view="subagent")
+    assert "Parent Context (Token Architecture)" in brief
+    assert "Must comply with RFC 7519 standards." in brief
+    assert "# Task Brief: Issue JWT" in brief
+    assert "### Verifications" in brief
+    assert "file_exists: `src/jwt.py`" in brief
+
+
 def test_markdown_renderer_errors(tmp_path: Path) -> None:
     db = DatabaseManager(tmp_path)
     db.init_all()
@@ -134,6 +185,12 @@ def test_bulk_importer_json(tmp_path: Path) -> None:
                                 "content": "- [ ] Implement JWT issuance",
                             }
                         },
+                        "verifications": [
+                            {
+                                "type": "file_exists",
+                                "target_path": "src/token.py",
+                            }
+                        ],
                     },
                     {
                         "id": "AUTH-T2",
@@ -166,6 +223,10 @@ def test_bulk_importer_json(tmp_path: Path) -> None:
     t1_sec = repo.get_section("AUTH-T1", "steps")
     assert t1_sec is not None
     assert "- [ ] Implement JWT issuance" in t1_sec.content
+
+    t1_ver = repo.get_verifications("AUTH-T1")
+    assert len(t1_ver) == 1
+    assert t1_ver[0].target_path == "src/token.py"
 
     t2 = repo.get_node("AUTH-T2")
     assert t2 is not None

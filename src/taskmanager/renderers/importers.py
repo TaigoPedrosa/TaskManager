@@ -1,7 +1,12 @@
 from typing import Any
 
-from taskmanager.core.enums import NodeKind, NodeStatus, RelationType
-from taskmanager.core.models import Node, NodeRelation, NodeSection
+from taskmanager.core.enums import NodeKind, NodeStatus, RelationType, VerificationType
+from taskmanager.core.models import (
+    Node,
+    NodeRelation,
+    NodeSection,
+    NodeVerification,
+)
 from taskmanager.db.node_repo import NodeRepository
 
 
@@ -13,6 +18,7 @@ class BulkImporter:
         nodes: list[Node] = []
         sections: list[NodeSection] = []
         relations: list[NodeRelation] = []
+        verifications: list[NodeVerification] = []
 
         spec_data = data.get("spec")
         if spec_data:
@@ -68,6 +74,20 @@ class BulkImporter:
                             relation_type=RelationType.DEPENDS_ON,
                         )
                     )
+                for ver_data in task_data.get("verifications", []):
+                    v_type_val = ver_data.get("verification_type") or ver_data.get("type")
+                    v_type = (
+                        VerificationType(v_type_val) if isinstance(v_type_val, str) else v_type_val
+                    )
+                    verifications.append(
+                        NodeVerification(
+                            node_id=task_node.id,
+                            verification_type=v_type,
+                            target_path=ver_data["target_path"],
+                            expected_pattern=ver_data.get("expected_pattern"),
+                            codegraph_query_json=ver_data.get("codegraph_query_json"),
+                        )
+                    )
 
         for task_data in data.get("tasks", []):
             task_node = self._parse_node(task_data, NodeKind.TASK)
@@ -89,6 +109,18 @@ class BulkImporter:
                         relation_type=RelationType.DEPENDS_ON,
                     )
                 )
+            for ver_data in task_data.get("verifications", []):
+                v_type_val = ver_data.get("verification_type") or ver_data.get("type")
+                v_type = VerificationType(v_type_val) if isinstance(v_type_val, str) else v_type_val
+                verifications.append(
+                    NodeVerification(
+                        node_id=task_node.id,
+                        verification_type=v_type,
+                        target_path=ver_data["target_path"],
+                        expected_pattern=ver_data.get("expected_pattern"),
+                        codegraph_query_json=ver_data.get("codegraph_query_json"),
+                    )
+                )
 
         for node in nodes:
             self.node_repo.save_node(node)
@@ -96,6 +128,8 @@ class BulkImporter:
             self.node_repo.save_section(section)
         for rel in relations:
             self.node_repo.add_relation(rel)
+        for ver in verifications:
+            self.node_repo.add_verification(ver)
 
     @staticmethod
     def _parse_node(data: dict[str, Any], default_kind: NodeKind) -> Node:
