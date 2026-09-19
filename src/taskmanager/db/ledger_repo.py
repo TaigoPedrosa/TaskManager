@@ -32,9 +32,7 @@ class LedgerRepository:
             if event.id is None and cursor.lastrowid is not None:
                 event.id = cursor.lastrowid
 
-    def list_events(
-        self, target_id: str | None = None, limit: int = 50
-    ) -> list[LedgerEvent]:
+    def list_events(self, target_id: str | None = None, limit: int = 50) -> list[LedgerEvent]:
         with self.db.get_ledger_connection() as conn:
             if target_id is not None:
                 rows = conn.execute(

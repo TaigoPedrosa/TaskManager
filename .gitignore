@@ -9,3 +9,6 @@ build/
 *.egg-info/
 .taskmanager/worktrees/
 .taskmanager/runtime.db*
+.coverage
+coverage.xml
+htmlcov/

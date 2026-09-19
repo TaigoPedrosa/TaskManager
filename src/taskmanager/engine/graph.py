@@ -70,9 +70,7 @@ class GraphEngine:
             return NodeStatus.COMPLETED
 
         uncompleted = [
-            s
-            for s in child_states
-            if s not in (NodeStatus.COMPLETED, NodeStatus.SUPERSEDED)
+            s for s in child_states if s not in (NodeStatus.COMPLETED, NodeStatus.SUPERSEDED)
         ]
         if uncompleted and all(s == VirtualStatus.BLOCKED for s in uncompleted):
             return VirtualStatus.BLOCKED

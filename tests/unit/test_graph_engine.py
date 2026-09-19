@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
 import pytest
 
 from taskmanager.core.enums import NodeKind, NodeStatus, RelationType, VirtualStatus
@@ -172,23 +173,33 @@ def test_plan_status_rollup(
     node_repo.save_node(t2)
 
     node_repo.add_relation(
-        NodeRelation(source_id="AUTH-P01", target_id="AUTH-T01", relation_type=RelationType.CONTAINS)
+        NodeRelation(
+            source_id="AUTH-P01", target_id="AUTH-T01", relation_type=RelationType.CONTAINS
+        )
     )
     node_repo.add_relation(
-        NodeRelation(source_id="AUTH-P01", target_id="AUTH-T02", relation_type=RelationType.CONTAINS)
+        NodeRelation(
+            source_id="AUTH-P01", target_id="AUTH-T02", relation_type=RelationType.CONTAINS
+        )
     )
 
     assert engine.resolve_plan_status("AUTH-P01") == NodeStatus.NOT_STARTED
 
     node_repo.add_relation(
-        NodeRelation(source_id="AUTH-T02", target_id="AUTH-T01", relation_type=RelationType.DEPENDS_ON)
+        NodeRelation(
+            source_id="AUTH-T02", target_id="AUTH-T01", relation_type=RelationType.DEPENDS_ON
+        )
     )
     assert engine.resolve_plan_status("AUTH-P01") == NodeStatus.NOT_STARTED
 
-    ext = Node(id="EXT-T00", kind=NodeKind.TASK, title="External Task", status=NodeStatus.NOT_STARTED)
+    ext = Node(
+        id="EXT-T00", kind=NodeKind.TASK, title="External Task", status=NodeStatus.NOT_STARTED
+    )
     node_repo.save_node(ext)
     node_repo.add_relation(
-        NodeRelation(source_id="AUTH-T01", target_id="EXT-T00", relation_type=RelationType.DEPENDS_ON)
+        NodeRelation(
+            source_id="AUTH-T01", target_id="EXT-T00", relation_type=RelationType.DEPENDS_ON
+        )
     )
     assert engine.resolve_plan_status("AUTH-P01") == VirtualStatus.BLOCKED
 
@@ -205,7 +216,9 @@ def test_plan_status_rollup(
     assert engine.resolve_plan_status("AUTH-P01") == NodeStatus.IMPLEMENTING
 
     node_repo.add_relation(
-        NodeRelation(source_id="AUTH-T02", target_id="EXT-T00", relation_type=RelationType.DEPENDS_ON)
+        NodeRelation(
+            source_id="AUTH-T02", target_id="EXT-T00", relation_type=RelationType.DEPENDS_ON
+        )
     )
     ext.status = NodeStatus.IMPLEMENTING
     node_repo.save_node(ext)
@@ -256,10 +269,14 @@ def test_inject_plan_review_gate(
     node_repo.save_node(t2)
 
     node_repo.add_relation(
-        NodeRelation(source_id="AUTH-P01", target_id="AUTH-T01", relation_type=RelationType.CONTAINS)
+        NodeRelation(
+            source_id="AUTH-P01", target_id="AUTH-T01", relation_type=RelationType.CONTAINS
+        )
     )
     node_repo.add_relation(
-        NodeRelation(source_id="AUTH-P01", target_id="AUTH-T02", relation_type=RelationType.CONTAINS)
+        NodeRelation(
+            source_id="AUTH-P01", target_id="AUTH-T02", relation_type=RelationType.CONTAINS
+        )
     )
 
     gate_id = engine.inject_plan_review_gate("AUTH-P01")

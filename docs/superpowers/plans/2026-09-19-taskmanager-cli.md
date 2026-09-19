@@ -811,7 +811,11 @@ def test_node_repo_crud(tmp_path: Path):
 
     # Add Section
     sec = NodeSection(
-        node_id="AUTH-T01", section_key="steps", ordinal=1, header="## Steps", content="- [ ] Step 1"
+        node_id="AUTH-T01",
+        section_key="steps",
+        ordinal=1,
+        header="## Steps",
+        content="- [ ] Step 1",
     )
     repo.save_section(sec)
     loaded_sec = repo.get_section("AUTH-T01", "steps")
@@ -1007,9 +1011,7 @@ class NodeRepository:
                 (node_id,),
             ).fetchall()
             return [
-                NodeSection(
-                    node_id=r[0], section_key=r[1], ordinal=r[2], header=r[3], content=r[4]
-                )
+                NodeSection(node_id=r[0], section_key=r[1], ordinal=r[2], header=r[3], content=r[4])
                 for r in rows
             ]
 
@@ -1232,7 +1234,9 @@ class RuntimeRepository:
     def sweep_expired_leases(self) -> list[str]:
         expired_tasks: list[str] = []
         with self.db.get_runtime_connection() as conn:
-            rows = conn.execute("SELECT task_id, ttl_seconds, last_heartbeat FROM leases").fetchall()
+            rows = conn.execute(
+                "SELECT task_id, ttl_seconds, last_heartbeat FROM leases"
+            ).fetchall()
             for r in rows:
                 task_id = r[0]
                 ttl = r[1]
@@ -1351,7 +1355,9 @@ def test_virtual_status_blocked_and_ready(tmp_path: Path):
 
     # T2 depends on T1
     node_repo.add_relation(
-        NodeRelation(source_id="AUTH-T02", target_id="AUTH-T01", relation_type=RelationType.DEPENDS_ON)
+        NodeRelation(
+            source_id="AUTH-T02", target_id="AUTH-T01", relation_type=RelationType.DEPENDS_ON
+        )
     )
 
     # Initially: T1 is READY, T2 is BLOCKED
@@ -1371,12 +1377,8 @@ def test_cycle_detection(tmp_path: Path):
     runtime_repo = RuntimeRepository(db)
     engine = GraphEngine(node_repo, runtime_repo)
 
-    node_repo.save_node(
-        Node(id="A", kind=NodeKind.TASK, title="A", status=NodeStatus.NOT_STARTED)
-    )
-    node_repo.save_node(
-        Node(id="B", kind=NodeKind.TASK, title="B", status=NodeStatus.NOT_STARTED)
-    )
+    node_repo.save_node(Node(id="A", kind=NodeKind.TASK, title="A", status=NodeStatus.NOT_STARTED))
+    node_repo.save_node(Node(id="B", kind=NodeKind.TASK, title="B", status=NodeStatus.NOT_STARTED))
     node_repo.add_relation(
         NodeRelation(source_id="A", target_id="B", relation_type=RelationType.DEPENDS_ON)
     )
@@ -1616,7 +1618,9 @@ class GitManager:
             p = (self.root / p).resolve()
         return p
 
-    def create_worktree(self, branch_name: str, worktree_path: Path, base_ref: str = "HEAD") -> None:
+    def create_worktree(
+        self, branch_name: str, worktree_path: Path, base_ref: str = "HEAD"
+    ) -> None:
         worktree_path.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(
             ["git", "worktree", "add", "-b", branch_name, str(worktree_path), base_ref],
@@ -1681,7 +1685,9 @@ class ExecutionCoordinator:
         conflicts = self.runtime_repo.get_conflicting_tasks(declared_files)
         if conflicts:
             conflicting_str = ", ".join(f"{f} ({msg})" for f, msg in conflicts.items())
-            raise ValueError(f"Cannot claim task {task_id} due to file collision: {conflicting_str}")
+            raise ValueError(
+                f"Cannot claim task {task_id} due to file collision: {conflicting_str}"
+            )
 
         branch_name = f"tm/{task_id}"
         worktree_path_str: str | None = None
@@ -1767,9 +1773,7 @@ from taskmanager.engine.verification import VerificationEngine
 
 def test_ast_symbol_verification(tmp_path: Path):
     source_file = tmp_path / "auth.py"
-    source_file.write_text(
-        "def verify_jwt(token: str) -> bool:\n    return True\n"
-    )
+    source_file.write_text("def verify_jwt(token: str) -> bool:\n    return True\n")
 
     ver = NodeVerification(
         node_id="AUTH-T01",
@@ -1831,36 +1835,89 @@ class VerificationEngine:
 
         if ver.verification_type == VerificationType.FILE_EXISTS:
             if full_path.exists():
-                return VerificationResult(ver.id, ver.target_path, ver.verification_type, True, "File exists")
-            return VerificationResult(ver.id, ver.target_path, ver.verification_type, False, f"File {ver.target_path} does not exist")
+                return VerificationResult(
+                    ver.id, ver.target_path, ver.verification_type, True, "File exists"
+                )
+            return VerificationResult(
+                ver.id,
+                ver.target_path,
+                ver.verification_type,
+                False,
+                f"File {ver.target_path} does not exist",
+            )
 
         if ver.verification_type == VerificationType.FILE_ABSENT:
             if not full_path.exists():
-                return VerificationResult(ver.id, ver.target_path, ver.verification_type, True, "File absent")
-            return VerificationResult(ver.id, ver.target_path, ver.verification_type, False, f"File {ver.target_path} still exists")
+                return VerificationResult(
+                    ver.id, ver.target_path, ver.verification_type, True, "File absent"
+                )
+            return VerificationResult(
+                ver.id,
+                ver.target_path,
+                ver.verification_type,
+                False,
+                f"File {ver.target_path} still exists",
+            )
 
         if ver.verification_type == VerificationType.SYMBOL_SIGNATURE:
             if not full_path.exists():
-                return VerificationResult(ver.id, ver.target_path, ver.verification_type, False, f"File {ver.target_path} missing")
+                return VerificationResult(
+                    ver.id,
+                    ver.target_path,
+                    ver.verification_type,
+                    False,
+                    f"File {ver.target_path} missing",
+                )
             content = full_path.read_text(encoding="utf-8")
             try:
                 tree = ast.parse(content)
             except SyntaxError as e:
-                return VerificationResult(ver.id, ver.target_path, ver.verification_type, False, f"Syntax error in {ver.target_path}: {e}")
+                return VerificationResult(
+                    ver.id,
+                    ver.target_path,
+                    ver.verification_type,
+                    False,
+                    f"Syntax error in {ver.target_path}: {e}",
+                )
 
-            expected_func = ver.expected_pattern.split("(")[0].replace("def ", "").strip() if ver.expected_pattern else ""
+            expected_func = (
+                ver.expected_pattern.split("(")[0].replace("def ", "").strip()
+                if ver.expected_pattern
+                else ""
+            )
             found = False
             for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == expected_func:
+                if (
+                    isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node.name == expected_func
+                ):
                     found = True
                     break
             if found:
-                return VerificationResult(ver.id, ver.target_path, ver.verification_type, True, f"Symbol {expected_func} found")
-            return VerificationResult(ver.id, ver.target_path, ver.verification_type, False, f"Symbol {expected_func} not found in {ver.target_path}")
+                return VerificationResult(
+                    ver.id,
+                    ver.target_path,
+                    ver.verification_type,
+                    True,
+                    f"Symbol {expected_func} found",
+                )
+            return VerificationResult(
+                ver.id,
+                ver.target_path,
+                ver.verification_type,
+                False,
+                f"Symbol {expected_func} not found in {ver.target_path}",
+            )
 
         if ver.verification_type == VerificationType.CODEGRAPH_QUERY:
             if not shutil.which("codegraph"):
-                return VerificationResult(ver.id, ver.target_path, ver.verification_type, True, "codegraph CLI not installed; skipped")
+                return VerificationResult(
+                    ver.id,
+                    ver.target_path,
+                    ver.verification_type,
+                    True,
+                    "codegraph CLI not installed; skipped",
+                )
             # Run codegraph CLI
             res = subprocess.run(
                 ["codegraph", "query", ver.codegraph_query_json or "{}"],
@@ -1869,9 +1926,13 @@ class VerificationEngine:
                 text=True,
             )
             passed = res.returncode == 0
-            return VerificationResult(ver.id, ver.target_path, ver.verification_type, passed, res.stdout or res.stderr)
+            return VerificationResult(
+                ver.id, ver.target_path, ver.verification_type, passed, res.stdout or res.stderr
+            )
 
-        return VerificationResult(ver.id, ver.target_path, ver.verification_type, True, "Verification passed")
+        return VerificationResult(
+            ver.id, ver.target_path, ver.verification_type, True, "Verification passed"
+        )
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -1925,21 +1986,31 @@ def test_recommendation_scoring(tmp_path: Path):
     plan = Node(id="AUTH-P01", kind=NodeKind.PLAN, title="Plan", priority=100)
     node_repo.save_node(plan)
 
-    t1 = Node(id="AUTH-T01", kind=NodeKind.TASK, title="T1", priority=90, acceptable_models=["sonnet"])
-    t2 = Node(id="AUTH-T02", kind=NodeKind.TASK, title="T2", priority=50, acceptable_models=["flash"])
+    t1 = Node(
+        id="AUTH-T01", kind=NodeKind.TASK, title="T1", priority=90, acceptable_models=["sonnet"]
+    )
+    t2 = Node(
+        id="AUTH-T02", kind=NodeKind.TASK, title="T2", priority=50, acceptable_models=["flash"]
+    )
     node_repo.save_node(t1)
     node_repo.save_node(t2)
 
     node_repo.add_relation(
-        NodeRelation(source_id="AUTH-P01", target_id="AUTH-T01", relation_type=RelationType.CONTAINS)
+        NodeRelation(
+            source_id="AUTH-P01", target_id="AUTH-T01", relation_type=RelationType.CONTAINS
+        )
     )
     node_repo.add_relation(
-        NodeRelation(source_id="AUTH-P01", target_id="AUTH-T02", relation_type=RelationType.CONTAINS)
+        NodeRelation(
+            source_id="AUTH-P01", target_id="AUTH-T02", relation_type=RelationType.CONTAINS
+        )
     )
 
     # T1 unblocks T2
     node_repo.add_relation(
-        NodeRelation(source_id="AUTH-T02", target_id="AUTH-T01", relation_type=RelationType.DEPENDS_ON)
+        NodeRelation(
+            source_id="AUTH-T02", target_id="AUTH-T01", relation_type=RelationType.DEPENDS_ON
+        )
     )
 
     ranked = engine.get_next_tasks(limit=5)
@@ -2014,7 +2085,11 @@ class RecommendationEngine:
                 continue
 
             # Model filter
-            if model_filter and task.acceptable_models and model_filter not in task.acceptable_models:
+            if (
+                model_filter
+                and task.acceptable_models
+                and model_filter not in task.acceptable_models
+            ):
                 continue
 
             # Declared files & collision check
@@ -2056,9 +2131,7 @@ class RecommendationEngine:
                     if completed_count == len(siblings) - 1:
                         s_adv = 100.0
 
-            total_score = (
-                w_prio * s_prio + w_unlock * s_unlock + w_close * s_close + w_adv * s_adv
-            )
+            total_score = w_prio * s_prio + w_unlock * s_unlock + w_close * s_close + w_adv * s_adv
 
             scored.append(
                 ScoredTask(
@@ -2121,8 +2194,12 @@ def test_sqlite_vec_search(tmp_path: Path):
     repo = NodeRepository(db)
 
     # Save 2 nodes
-    repo.save_node(Node(id="AUTH-T01", kind=NodeKind.TASK, title="JWT Auth", status=NodeStatus.READY))
-    repo.save_node(Node(id="DATA-T01", kind=NodeKind.TASK, title="Postgres Migration", status=NodeStatus.READY))
+    repo.save_node(
+        Node(id="AUTH-T01", kind=NodeKind.TASK, title="JWT Auth", status=NodeStatus.READY)
+    )
+    repo.save_node(
+        Node(id="DATA-T01", kind=NodeKind.TASK, title="Postgres Migration", status=NodeStatus.READY)
+    )
 
     provider = MockEmbeddingProvider(dimensions=4)
     engine = SearchEngine(db, provider)
@@ -2174,9 +2251,7 @@ class OpenAIEmbeddingProvider:
         model: str | None = None,
     ):
         self.base_url = (
-            base_url
-            or os.getenv("TASKMANAGER_OPENAI_BASE_URL")
-            or "https://api.openai.com/v1"
+            base_url or os.getenv("TASKMANAGER_OPENAI_BASE_URL") or "https://api.openai.com/v1"
         )
         self.api_key = api_key or os.getenv("TASKMANAGER_OPENAI_API_KEY") or ""
         self.model = model or os.getenv("TASKMANAGER_OPENAI_MODEL") or "text-embedding-3-small"
@@ -2360,9 +2435,7 @@ def test_bulk_importer_json(tmp_path: Path):
             {
                 "id": "AUTH-P1",
                 "title": "Token Plan",
-                "tasks": [
-                    {"id": "AUTH-T1", "title": "Create Token", "priority": 90}
-                ],
+                "tasks": [{"id": "AUTH-T1", "title": "Create Token", "priority": 90}],
             }
         ],
     }
@@ -2556,14 +2629,25 @@ def test_cli_init_and_task_lifecycle(tmp_path: Path):
 
     # tm plan add
     res = runner.invoke(
-        app, ["plan", "add", "User Plan", "--spec", "AUTH", "--slug", "USER", "--path", str(tmp_path)]
+        app,
+        ["plan", "add", "User Plan", "--spec", "AUTH", "--slug", "USER", "--path", str(tmp_path)],
     )
     assert res.exit_code == 0
 
     # tm task add
     res = runner.invoke(
         app,
-        ["task", "add", "Login Task", "--plan", "AUTH-USER", "--slug", "LOGIN", "--path", str(tmp_path)],
+        [
+            "task",
+            "add",
+            "Login Task",
+            "--plan",
+            "AUTH-USER",
+            "--slug",
+            "LOGIN",
+            "--path",
+            str(tmp_path),
+        ],
     )
     assert res.exit_code == 0
 
@@ -2708,7 +2792,9 @@ def spec_add(
 ):
     root = _get_root(path)
     container = make_container(TaskManagerProvider(root))
-    node_repo = container.get(TaskManagerProvider).get_node_repo(DatabaseManager(root / ".taskmanager"))
+    node_repo = container.get(TaskManagerProvider).get_node_repo(
+        DatabaseManager(root / ".taskmanager")
+    )
     spec_id = slug or "S1"
     node_repo.save_node(Node(id=spec_id, kind=NodeKind.SPEC, title=title, priority=priority))
     print(f"[green]Added spec {spec_id}[/green]")
@@ -2724,10 +2810,14 @@ def plan_add(
 ):
     root = _get_root(path)
     container = make_container(TaskManagerProvider(root))
-    node_repo = container.get(TaskManagerProvider).get_node_repo(DatabaseManager(root / ".taskmanager"))
+    node_repo = container.get(TaskManagerProvider).get_node_repo(
+        DatabaseManager(root / ".taskmanager")
+    )
     plan_id = f"{spec}-{slug}" if slug else f"{spec}-P1"
     node_repo.save_node(Node(id=plan_id, kind=NodeKind.PLAN, title=title, priority=priority))
-    node_repo.add_relation(NodeRelation(source_id=spec, target_id=plan_id, relation_type=RelationType.CONTAINS))
+    node_repo.add_relation(
+        NodeRelation(source_id=spec, target_id=plan_id, relation_type=RelationType.CONTAINS)
+    )
     print(f"[green]Added plan {plan_id}[/green]")
 
 
@@ -2741,10 +2831,14 @@ def task_add(
 ):
     root = _get_root(path)
     container = make_container(TaskManagerProvider(root))
-    node_repo = container.get(TaskManagerProvider).get_node_repo(DatabaseManager(root / ".taskmanager"))
+    node_repo = container.get(TaskManagerProvider).get_node_repo(
+        DatabaseManager(root / ".taskmanager")
+    )
     task_id = f"{plan}-{slug}" if slug else f"{plan}-T1"
     node_repo.save_node(Node(id=task_id, kind=NodeKind.TASK, title=title, priority=priority))
-    node_repo.add_relation(NodeRelation(source_id=plan, target_id=task_id, relation_type=RelationType.CONTAINS))
+    node_repo.add_relation(
+        NodeRelation(source_id=plan, target_id=task_id, relation_type=RelationType.CONTAINS)
+    )
     print(f"[green]Added task {task_id}[/green]")
 
 

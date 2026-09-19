@@ -61,7 +61,10 @@ def test_slug_generator_custom_padding() -> None:
 
     assert gen.generate_spec_id(counter=5) == "SPEC005"
     assert gen.generate_plan_id(parent_spec_id="SPEC005", counter=3) == "SPEC005-PLAN03"
-    assert gen.generate_task_id(parent_plan_id="SPEC005-PLAN03", counter=42) == "SPEC005-PLAN03-TASK0042"
+    assert (
+        gen.generate_task_id(parent_plan_id="SPEC005-PLAN03", counter=42)
+        == "SPEC005-PLAN03-TASK0042"
+    )
 
 
 def test_require_slug_enforcement() -> None:
