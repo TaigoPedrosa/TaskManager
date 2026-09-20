@@ -4,6 +4,8 @@ import os
 import sqlite3
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -21,6 +23,7 @@ from taskmanager.core.enums import (
     RecommendationStrategy,
     RelationType,
     RenderView,
+    SearchMode,
     TransferMode,
     VerificationType,
 )
@@ -37,9 +40,11 @@ from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.di.container import TaskManagerProvider
+from taskmanager.engine.config import ConfigError, ConfigStore
 from taskmanager.engine.graph import GraphEngine
 from taskmanager.engine.heuristics import RecommendationEngine
 from taskmanager.engine.runtime import ExecutionCoordinator
+from taskmanager.engine.search import SearchEngine, SearchError
 from taskmanager.engine.verification import VerificationEngine
 from taskmanager.renderers.importers import BulkImporter
 from taskmanager.renderers.markdown import MarkdownRenderer
@@ -57,6 +62,7 @@ verify_app = typer.Typer(name="verify", help="Static and AST verifications")
 audit_app = typer.Typer(name="audit", help="Audit ledger event logs")
 web_app = typer.Typer(name="web", help="Interactive web visualizer and exporter")
 plugin_app = typer.Typer(name="plugin", help="Install and manage harness plugins")
+config_app = typer.Typer(name="config", help="Project configuration (.taskmanager/config.yaml)")
 
 app.add_typer(spec_app)
 app.add_typer(plan_app)
@@ -67,6 +73,7 @@ app.add_typer(verify_app)
 app.add_typer(audit_app)
 app.add_typer(web_app)
 app.add_typer(plugin_app)
+app.add_typer(config_app)
 
 
 def _emit(data: Any, as_yaml: bool = False) -> None:
@@ -148,6 +155,16 @@ def _get_root(path: Path | None, *, must_exist: bool = True) -> Path:
             f"no .taskmanager at {root}: pass -C, set TM_ROOT, or run `tm init` there"
         )
     return root
+
+
+@contextmanager
+def _user_errors() -> Iterator[None]:
+    """A bad configuration or a failing provider is one line and exit 1, never a traceback."""
+    try:
+        yield
+    except (ConfigError, SearchError) as exc:
+        sys.stdout.write(f"{exc}\n")
+        raise typer.Exit(code=1) from exc
 
 
 def _get_container(path: Path | None) -> Container:
@@ -842,12 +859,16 @@ def run_start(
     worktree_dir: Annotated[
         Path | None,
         typer.Option(
-            "--worktree-dir", help="Where worktrees go (env TM_WORKTREES, else .worktrees)"
+            "--worktree-dir",
+            help="Where worktrees go (env TM_WORKTREES, then config worktree_dir, else .worktrees)",
         ),
     ] = None,
     ttl: Annotated[
         int | None,
-        typer.Option("--ttl", help="Lease seconds before it reads as abandoned (env TM_LEASE_TTL)"),
+        typer.Option(
+            "--ttl",
+            help="Lease seconds before it reads as abandoned (env TM_LEASE_TTL, then config lease_ttl)",
+        ),
     ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
@@ -856,8 +877,14 @@ def run_start(
     coordinator = container.get(ExecutionCoordinator)
 
     worktree_base: Path | None = None
-    if worktree:
-        worktree_base = worktree_dir or Path(os.environ.get("TM_WORKTREES", root / ".worktrees"))
+    with _user_errors():
+        config = ConfigStore(root)
+        lease_ttl = config.resolve("lease_ttl", ttl).value
+        if worktree:
+            chosen = config.resolve("worktree_dir", str(worktree_dir) if worktree_dir else None)
+            worktree_base = (
+                Path(chosen.value) if chosen.source in ("flag", "env") else root / chosen.value
+            )
     try:
         lease = coordinator.start_task(
             task_id=task_id,
@@ -866,7 +893,7 @@ def run_start(
             account_id=account,
             create_worktree=worktree,
             worktree_base=worktree_base,
-            ttl_seconds=ttl or int(os.environ.get("TM_LEASE_TTL", "0")) or None,
+            ttl_seconds=lease_ttl,
         )
     except ValueError as exc:
         print(f"[red]{exc}[/red]")
@@ -1332,6 +1359,10 @@ def export_cmd(
         )
     for spec_id in sorted(specs):
         dump(f"_spec-{spec_id}.json", {"spec": _export_node(node_repo, specs[spec_id])})
+    with _user_errors():
+        settings = ConfigStore(root).document()
+    if settings is not None:
+        dump("_config.json", settings)
     print(f"[green]Exported {len(plans)} plans and {len(specs)} specs to {directory}[/green]")
 
 
@@ -1348,7 +1379,8 @@ def restore_cmd(
     container.get(DatabaseManager).init_all()
     importer = _RefusingImporter(container.get(BulkImporter))
 
-    docs = [json.loads(f.read_text(encoding="utf-8")) for f in sorted(directory.glob("*.json"))]
+    files = [f for f in sorted(directory.glob("*.json")) if f.name != "_config.json"]
+    docs = [json.loads(f.read_text(encoding="utf-8")) for f in files]
     if not docs:
         print(f"[red]No export files in {directory}[/red]")
         raise typer.Exit(code=1)
@@ -1365,7 +1397,133 @@ def restore_cmd(
         importer.import_dict(first)
     for doc in [*plan_docs, *spec_docs]:
         importer.import_dict(doc)
+    settings_file = directory / "_config.json"
+    if settings_file.exists():
+        with _user_errors():
+            ConfigStore(root).replace(json.loads(settings_file.read_text(encoding="utf-8")))
     print(f"[green]Restored {len(plan_docs)} plans and {len(spec_docs)} specs into {root}[/green]")
+
+
+@config_app.command("list")
+def config_list(
+    json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+    yaml_output: Annotated[bool, typer.Option("--yaml", help="Output as YAML")] = False,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Every key with its effective value and where it came from (flag, env, config, default)."""
+    root = _get_root(path)
+    with _user_errors():
+        effective = ConfigStore(root).effective()
+    if json_output or yaml_output:
+        _emit(
+            [{"key": k, "value": r.value, "source": r.source} for k, r in effective.items()],
+            yaml_output,
+        )
+        return
+    for key, resolved in effective.items():
+        sys.stdout.write(
+            f"{key} = {resolved.value if resolved.value is not None else ''}  ({resolved.source})\n"
+        )
+
+
+@config_app.command("get")
+def config_get(
+    key: str,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    with _user_errors():
+        value = ConfigStore(root).resolve(key).value
+    sys.stdout.write(f"{value if value is not None else ''}\n")
+
+
+@config_app.command("set", context_settings={"ignore_unknown_options": True})
+def config_set(
+    key: str,
+    value: str,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    with _user_errors():
+        ConfigStore(root).set(key, value)
+    print(f"[green]Set {escape(key)}[/green]")
+
+
+@config_app.command("unset")
+def config_unset(
+    key: str,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    with _user_errors():
+        ConfigStore(root).unset(key)
+    print(f"[green]Unset {escape(key)}[/green]")
+
+
+@app.command("index")
+def index_cmd(
+    rebuild: Annotated[
+        bool, typer.Option("--rebuild", help="Drop the vector table and embed everything again")
+    ] = False,
+    kind: Annotated[NodeKind | None, typer.Option("--kind", help="task, plan or spec only")] = None,
+    show_status: Annotated[
+        bool, typer.Option("--status", help="Print provider, size and staleness instead")
+    ] = False,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Embed each node's title and sections for `tm search`; unchanged text is skipped."""
+    root = _get_root(path)
+    engine = _get_container(root).get(SearchEngine)
+    with _user_errors():
+        if show_status:
+            for key, value in engine.status().items():
+                sys.stdout.write(f"{key}: {value}\n")
+            return
+
+        def progress(done: int, total: int) -> None:
+            if done % 25 == 0 or done == total:
+                sys.stdout.write(f"embedded {done}/{total}\n")
+
+        report = engine.index([kind] if kind else [], rebuild, progress)
+    print(
+        f"[green]Indexed {report.embedded} items: {report.unchanged} unchanged, "
+        f"{report.removed} removed[/green]"
+    )
+
+
+@app.command("search")
+def search_cmd(
+    query: Annotated[list[str], typer.Argument(help="Words to look for")],
+    mode: Annotated[SearchMode, typer.Option("--mode", help="auto, fts, semantic or hybrid")] = (
+        SearchMode.AUTO
+    ),
+    kind: Annotated[NodeKind | None, typer.Option("--kind", help="task, plan or spec")] = None,
+    status: Annotated[NodeStatus | None, typer.Option("--status", help="Filter by status")] = None,
+    plan: Annotated[str | None, typer.Option("--plan", help="Only this plan and its tasks")] = None,
+    limit: Annotated[int, typer.Option("--limit", min=1, help="Most results to print")] = 10,
+    json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+    yaml_output: Annotated[bool, typer.Option("--yaml", help="Output as YAML")] = False,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Find tasks, plans and specs by words (fts), by meaning (semantic) or both (hybrid)."""
+    root = _get_root(path)
+    engine = _get_container(root).get(SearchEngine)
+    with _user_errors():
+        hits, used = engine.run(" ".join(query), mode, [kind] if kind else [], status, plan, limit)
+        stale = engine.stale_nodes() if used is not SearchMode.FTS else set()
+    if stale:
+        sys.stderr.write(f"warning: {len(stale)} nodes changed since `tm index`: run it\n")
+    if json_output or yaml_output:
+        _emit({"mode": used.value, "results": [h.as_dict() for h in hits]}, yaml_output)
+        return
+    for hit in hits:
+        where = f" plan {hit.plan}" if hit.plan and hit.plan != hit.id else ""
+        section = f" section {hit.section}" if hit.section else ""
+        sys.stdout.write(
+            f"{hit.id}  {hit.kind}  {hit.status}{where}{section}  {hit.score}\n"
+            f"  {hit.title}\n  {hit.snippet}\n"
+        )
+    sys.stdout.write(f"{len(hits)} results, mode: {used.value}\n")
 
 
 @app.command("root")

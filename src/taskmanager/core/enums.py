@@ -98,5 +98,14 @@ class SearchTargetType(StrEnum):
 
 
 class EmbeddingProviderType(StrEnum):
+    NONE = "none"
+    LOCAL = "local"
     MOCK = "mock"
     OPENAI = "openai"
+
+
+class SearchMode(StrEnum):
+    AUTO = "auto"
+    FTS = "fts"
+    SEMANTIC = "semantic"
+    HYBRID = "hybrid"

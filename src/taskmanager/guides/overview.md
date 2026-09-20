@@ -26,6 +26,8 @@ A lease lasts 300 seconds unless `--ttl` or `TM_LEASE_TTL` says otherwise, and `
 - `tm render <task-id> --view subagent` is a task's full brief. `tm section get <task-id>:<key>` reads one section.
 - `tm verify run <task-id>` runs the task's checks and exits 1 if one fails.
 - `tm audit list --target <task-id>` is the event log of everything done to a node.
+- `tm search <words>` finds tasks, plans and specs by text, or by meaning once `tm index` has run; `--kind`, `--status` and `--plan` narrow it.
+- `tm config list` shows every setting with its effective value and where it came from; `tm config set <key> <value>` changes one.
 
 ## Files and worktrees
 

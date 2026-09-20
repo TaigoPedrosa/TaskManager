@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import Any
 
 from dishka import Container, Provider, Scope, make_container, provide
 
@@ -7,21 +6,22 @@ from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
+from taskmanager.engine.config import ConfigStore
 from taskmanager.engine.git import GitManager
 from taskmanager.engine.graph import GraphEngine
 from taskmanager.engine.heuristics import RecommendationEngine
 from taskmanager.engine.runtime import ExecutionCoordinator
-from taskmanager.engine.search import MockEmbeddingProvider, SearchEngine
+from taskmanager.engine.search import EmbeddingProvider, SearchEngine, build_provider
 from taskmanager.engine.verification import VerificationEngine
 from taskmanager.renderers.importers import BulkImporter
 from taskmanager.renderers.markdown import MarkdownRenderer
 
 
 class TaskManagerProvider(Provider):
-    def __init__(self, root: Path, embedding_provider: Any = None) -> None:
+    def __init__(self, root: Path, embedding_provider: EmbeddingProvider | None = None) -> None:
         super().__init__()
         self.root = Path(root).resolve()
-        self.embedding_provider = embedding_provider or MockEmbeddingProvider()
+        self.embedding_provider = embedding_provider
         self.provide(lambda: self, scope=Scope.APP, provides=TaskManagerProvider)
 
     @provide(scope=Scope.APP)
@@ -83,7 +83,8 @@ class TaskManagerProvider(Provider):
 
     @provide(scope=Scope.APP)
     def search_engine(self, db_mgr: DatabaseManager) -> SearchEngine:
-        return SearchEngine(db_mgr, self.embedding_provider)
+        settings = ConfigStore(self.root).embeddings()
+        return SearchEngine(db_mgr, self.embedding_provider or build_provider(settings), settings)
 
     get_db_mgr = db_mgr
     get_node_repo = node_repo

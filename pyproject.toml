@@ -55,7 +55,7 @@ mypy_path = "src"
 packages = ["taskmanager"]
 
 [[tool.mypy.overrides]]
-module = "yaml"
+module = ["yaml", "sentence_transformers"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
