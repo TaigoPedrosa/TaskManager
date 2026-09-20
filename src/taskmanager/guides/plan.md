@@ -88,7 +88,7 @@ Read the brief before dispatching anyone: a section you meant to write and did n
 
 ## 8. Amend a landed document, or re-import it
 
-While you are still authoring, re-importing the same document is safe: it refuses before writing when an id is unknown, adds no verification twice, and a node keeps its current status, priority, models and frontmatter for every key the document does not state (a key it does state is overwritten, so state `status` only where you mean it). Once work has landed, change it with:
+While you are still authoring, re-importing the same document is safe: it refuses before writing when an id is unknown, adds no verification twice, and a node keeps its current status, priority, models and frontmatter for every key the document does not state (a key it does state is overwritten, so state `status` only where you mean it). A task whose `verifications` a document states has exactly those afterwards, so a corrected check replaces the stale one; `tm verify list <id>` shows each check's id and `tm verify remove <id> <verification-id>` deletes one. Once work has landed, change it with:
 
 ```
 tm task update <id> --title ... --priority ... --models a,b --repo <dir>

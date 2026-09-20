@@ -1079,6 +1079,68 @@ def verify_add(
     print(f"[green]Added {type.value} verification to task {task_id}[/green]")
 
 
+@verify_app.command("list")
+def verify_list(
+    task_id: str,
+    json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+    yaml_output: Annotated[
+        bool, typer.Option("--yaml", help="Output as YAML (fewer tokens than JSON)")
+    ] = False,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """List a task's verifications with the ids `tm verify remove` takes."""
+    root = _get_root(path)
+    node_repo = _get_container(root).get(NodeRepository)
+    if node_repo.get_node(task_id) is None:
+        print(f"[red]Task '{task_id}' not found[/red]")
+        raise typer.Exit(code=1)
+    rows = [
+        {
+            "id": v.id,
+            "type": v.verification_type.value,
+            "target_path": v.target_path,
+            "expected_pattern": v.expected_pattern,
+        }
+        for v in node_repo.get_verifications(task_id)
+    ]
+    if json_output or yaml_output:
+        _emit(rows, yaml_output)
+        return
+    table = Table(title=f"Verifications of {escape(task_id)}")
+    for column in ("ID", "Type", "Target", "Pattern"):
+        table.add_column(column)
+    for r in rows:
+        table.add_row(
+            str(r["id"]),
+            str(r["type"]),
+            escape(str(r["target_path"])),
+            escape(str(r["expected_pattern"] or "")),
+        )
+    print(table)
+
+
+@verify_app.command("remove")
+def verify_remove(
+    task_id: str,
+    verification_id: int,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Remove one verification by the id `tm verify list` shows."""
+    root = _get_root(path)
+    container = _get_container(root)
+    node_repo = container.get(NodeRepository)
+    if not node_repo.remove_verification(task_id, verification_id):
+        print(f"[red]Task '{escape(task_id)}' has no verification {verification_id}[/red]")
+        raise typer.Exit(code=1)
+    _record_ledger(
+        container,
+        command="verify remove",
+        target_id=task_id,
+        payload={"verification_id": verification_id},
+    )
+    print(f"[green]Removed verification {verification_id} from {escape(task_id)}[/green]")
+
+
 @verify_app.command("run")
 def verify_run(
     task_id: Annotated[str | None, typer.Argument(help="Task ID to verify")] = None,

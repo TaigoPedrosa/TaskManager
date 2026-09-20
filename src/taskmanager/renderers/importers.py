@@ -19,6 +19,7 @@ class BulkImporter:
         sections: list[NodeSection] = []
         relations: list[NodeRelation] = []
         verifications: list[NodeVerification] = []
+        replace_verifications: set[str] = set()
 
         spec_data = data.get("spec")
         if spec_data:
@@ -84,6 +85,8 @@ class BulkImporter:
                             relation_type=RelationType.DEPENDS_ON,
                         )
                     )
+                if "verifications" in task_data:
+                    replace_verifications.add(task_node.id)
                 for ver_data in task_data.get("verifications", []):
                     v_type_val = ver_data.get("verification_type") or ver_data.get("type")
                     v_type = (
@@ -121,6 +124,8 @@ class BulkImporter:
                         relation_type=RelationType.DEPENDS_ON,
                     )
                 )
+            if "verifications" in task_data:
+                replace_verifications.add(task_node.id)
             for ver_data in task_data.get("verifications", []):
                 v_type_val = ver_data.get("verification_type") or ver_data.get("type")
                 v_type = VerificationType(v_type_val) if isinstance(v_type_val, str) else v_type_val
@@ -152,6 +157,9 @@ class BulkImporter:
             self.node_repo.save_section(section)
         for rel in relations:
             self.node_repo.add_relation(rel)
+        # A document that states a task's checks replaces the set it had.
+        for node_id in replace_verifications:
+            self.node_repo.clear_verifications(node_id)
         for ver in verifications:
             self.node_repo.add_verification(ver)
 

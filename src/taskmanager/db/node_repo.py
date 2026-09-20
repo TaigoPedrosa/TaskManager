@@ -392,6 +392,20 @@ class NodeRepository:
             files.append(declared)
         return list(dict.fromkeys(files))
 
+    def remove_verification(self, node_id: str, verification_id: int) -> bool:
+        with self.db.get_spec_connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM node_verifications WHERE node_id = ? AND id = ?",
+                (node_id, verification_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def clear_verifications(self, node_id: str) -> None:
+        with self.db.get_spec_connection() as conn:
+            conn.execute("DELETE FROM node_verifications WHERE node_id = ?", (node_id,))
+            conn.commit()
+
     def get_verifications(self, node_id: str) -> list[NodeVerification]:
         with self.db.get_spec_connection() as conn:
             rows = conn.execute(

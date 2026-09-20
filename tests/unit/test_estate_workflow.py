@@ -778,3 +778,49 @@ def test_reimporting_a_document_keeps_the_progress_it_does_not_state(db: Databas
     )
     stated = repo.get_node("P-1")
     assert stated is not None and stated.status == NodeStatus.COMPLETED and stated.priority == 20
+
+
+def test_a_document_that_states_checks_replaces_them_and_verify_can_list_and_remove(
+    tmp_path: Path,
+) -> None:
+    root = str(tmp_path)
+    runner.invoke(app, ["init", "-C", root])
+
+    def doc(pattern: str) -> Path:
+        f = tmp_path / "d.json"
+        check = {"type": "test_command", "target_path": "x", "expected_pattern": pattern}
+        f.write_text(
+            json.dumps(
+                {
+                    "plans": [
+                        {
+                            "id": "P",
+                            "title": "P",
+                            "tasks": [{"id": "P-1", "title": "a", "verifications": [check]}],
+                        }
+                    ]
+                }
+            )
+        )
+        return f
+
+    runner.invoke(app, ["import", "-f", str(doc("false")), "-C", root])
+    runner.invoke(app, ["import", "-f", str(doc("true")), "-C", root])
+    rows = json.loads(runner.invoke(app, ["verify", "list", "P-1", "--json", "-C", root]).stdout)
+    assert [r["expected_pattern"] for r in rows] == ["true"]  # the stale check did not survive
+
+    runner.invoke(
+        app, ["verify", "add", "P-1", "--type", "file_exists", "--target", "f", "-C", root]
+    )
+    rows = json.loads(runner.invoke(app, ["verify", "list", "P-1", "--json", "-C", root]).stdout)
+    assert len(rows) == 2
+    assert (
+        runner.invoke(app, ["verify", "remove", "P-1", str(rows[1]["id"]), "-C", root]).exit_code
+        == 0
+    )
+    assert (
+        len(json.loads(runner.invoke(app, ["verify", "list", "P-1", "--json", "-C", root]).stdout))
+        == 1
+    )
+    assert runner.invoke(app, ["verify", "remove", "P-1", "999", "-C", root]).exit_code == 1
+    assert runner.invoke(app, ["verify", "list", "NOPE", "-C", root]).exit_code == 1
