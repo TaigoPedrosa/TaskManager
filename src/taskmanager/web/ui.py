@@ -79,8 +79,11 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
     .st-chip {{ color: var(--st-fg); background: var(--st-bg); border: 1px solid color-mix(in srgb, var(--st-fg) 40%, transparent); }}
     .st-text {{ color: var(--st-fg); }}
     .st-seg {{ background: var(--st-fg); height: 100%; }}
+    .st-dot {{ background: var(--st-fg); }}
     details > summary {{ list-style: none; }}
     details > summary::-webkit-details-marker {{ display: none; }}
+    details > summary .details-caret {{ transition: transform 0.15s ease; }}
+    details[open] > summary .details-caret {{ transform: rotate(90deg); }}
   </style>
   <script>
     window.STATUS_THEMES = {themes_json};
@@ -95,22 +98,19 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
 <body class="bg-zinc-950 text-zinc-100 flex flex-col h-screen overflow-hidden selection:bg-emerald-500 selection:text-black">
   {sprite_svg}
 
-  <!-- Header -->
-  <header class="h-14 border-b border-zinc-800 px-4 flex items-center justify-between bg-zinc-900/60 backdrop-blur z-20 flex-shrink-0">
-    <div class="flex items-center space-x-3">
-      <div class="flex items-center gap-2">
+  <!-- Toolbar: brand, view switcher, search and status counts in one dense bar -->
+  <header id="toolbar" class="border-b border-zinc-800 px-4 py-2 bg-zinc-900/60 backdrop-blur z-20 flex-shrink-0 space-y-2">
+    <div class="flex items-center gap-3 flex-wrap lg:flex-nowrap">
+      <div class="flex items-center gap-2 flex-shrink-0">
         <svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor"><use href="#icon-layers"/></svg>
-        <span class="text-sm font-semibold tracking-wide text-zinc-100">TaskManager</span>
+        <span class="text-sm font-semibold tracking-wide text-zinc-100 hidden sm:inline">TaskManager</span>
+        <span id="connection-pill" title="Synced" class="inline-flex items-center px-1.5 py-1.5 rounded-full bg-zinc-900 border border-zinc-800">
+          <span id="connection-dot" class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+          <span id="connection-status" class="sr-only">Synced</span>
+        </span>
       </div>
-      <span id="connection-pill" class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-zinc-900 text-zinc-400 border border-zinc-800">
-        <span id="connection-dot" class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-        <span id="connection-status">Synced</span>
-      </span>
-    </div>
 
-    <!-- View Switcher & Controls -->
-    <div class="flex items-center space-x-2">
-      <div class="bg-zinc-900 p-0.5 rounded-lg border border-zinc-800 flex text-xs">
+      <div class="bg-zinc-900 p-0.5 rounded-lg border border-zinc-800 flex text-xs flex-shrink-0">
         <button id="view-doc-btn" class="flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium bg-zinc-800 text-white shadow-sm transition">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-file-text"/></svg>
           <span>Document</span>
@@ -120,25 +120,35 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
           <span>Graph</span>
         </button>
       </div>
-      <button id="legend-btn" aria-expanded="false" aria-controls="legend-panel" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 hover:text-white transition">
-        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-info"/></svg>
-        <span>Legend</span>
-      </button>
-      <button id="refresh-btn" title="Refresh state" class="p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor"><use href="#icon-rotate-cw"/></svg>
-      </button>
-    </div>
-  </header>
 
-  <!-- Status digest and filters -->
-  <div id="filter-bar" class="border-b border-zinc-800 bg-zinc-900/40 px-4 py-2 space-y-2 flex-shrink-0">
-    <div id="stats-digest" class="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs"></div>
+      <div class="relative flex-1 min-w-[160px] max-w-sm">
+        <div class="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-zinc-500">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-search"/></svg>
+        </div>
+        <input id="search-box" type="text" placeholder="Filter specs, plans, tasks..." class="w-full bg-zinc-950 border border-zinc-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+      </div>
+
+      <div id="stats-digest" class="flex items-center gap-1 flex-wrap lg:flex-nowrap text-xs lg:ml-auto"></div>
+
+      <div class="flex items-center gap-1.5 flex-shrink-0">
+        <button id="toggle-sections-btn" title="Expand all sections" aria-label="Expand all sections" class="flex items-center gap-1.5 p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-chevrons-up-down"/></svg>
+        </button>
+        <button id="legend-btn" aria-expanded="false" aria-controls="legend-panel" title="Legend" aria-label="Legend" class="flex items-center gap-1.5 p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 hover:text-white transition">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-info"/></svg>
+        </button>
+        <button id="refresh-btn" title="Refresh state" aria-label="Refresh state" class="p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor"><use href="#icon-rotate-cw"/></svg>
+        </button>
+      </div>
+    </div>
+
     <div class="flex flex-wrap items-center gap-2 text-xs">
       <select id="repo-filter" aria-label="Filter by target repo" class="bg-zinc-950 border border-zinc-800 rounded-lg px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-emerald-500"></select>
       <select id="model-filter" aria-label="Filter by model" class="bg-zinc-950 border border-zinc-800 rounded-lg px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-emerald-500"></select>
       <div id="active-filters" class="flex flex-wrap items-center gap-1.5"></div>
     </div>
-  </div>
+  </header>
 
   <!-- Status legend -->
   <div id="legend-panel" role="dialog" aria-label="Status legend" class="hidden fixed top-16 right-4 w-[26rem] max-w-[calc(100vw-2rem)] max-h-[75vh] overflow-y-auto z-40 rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl p-4 space-y-2">
@@ -154,22 +164,18 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
   <!-- Main View Area -->
   <div class="flex-1 flex overflow-hidden">
     
-    <!-- Sidebar / Hierarchical Navigation (Always Visible) -->
-    <aside id="sidebar-pane" class="w-80 border-r border-zinc-800 flex flex-col bg-zinc-900/40 flex-shrink-0">
-      <div class="p-3 border-b border-zinc-800 flex items-center gap-2">
-        <div class="relative flex-1">
-          <div class="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-zinc-500">
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-search"/></svg>
-          </div>
-          <input id="search-box" type="text" placeholder="Filter specs, plans, tasks..." class="w-full bg-zinc-950 border border-zinc-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
-        </div>
-        <button id="expand-all-btn" title="Expand all" class="p-1.5 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-zinc-200 text-xs">
+    <!-- Sidebar / Hierarchical Navigation (Graph view only) -->
+    <aside id="sidebar-pane" class="hidden relative border-r border-zinc-800 flex flex-col bg-zinc-900/40 flex-shrink-0" style="width:320px">
+      <div class="p-3 border-b border-zinc-800 flex items-center justify-between gap-2">
+        <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Nodes</span>
+        <button id="expand-all-btn" title="Expand all" aria-label="Expand all tree nodes" class="p-1.5 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-zinc-200 text-xs">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-chevrons-up-down"/></svg>
         </button>
       </div>
       <div id="tree-list" class="flex-1 overflow-y-auto p-2 space-y-1">
         <!-- Dynamically Populated Tree -->
       </div>
+      <div id="sidebar-resize-handle" title="Drag to resize" class="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-emerald-500/40"></div>
     </aside>
 
     <!-- Document View Pane -->
@@ -222,10 +228,13 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
     let networkInstance = null;
     let isStaticMode = typeof window.STATIC_DATA !== 'undefined';
     const collapsedNodes = new Set();
+    const expandedSections = new Set();
+    let allSectionIds = [];
 
     // DOM Elements
     const documentPane = document.getElementById('document-pane');
     const graphPane = document.getElementById('graph-pane');
+    const sidebarPane = document.getElementById('sidebar-pane');
     const unifiedDocument = document.getElementById('unified-document');
     const treeList = document.getElementById('tree-list');
     const searchBox = document.getElementById('search-box');
@@ -235,8 +244,11 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
     const graphFitBtn = document.getElementById('graph-fit-btn');
     const refreshBtn = document.getElementById('refresh-btn');
     const expandAllBtn = document.getElementById('expand-all-btn');
+    const toggleSectionsBtn = document.getElementById('toggle-sections-btn');
+    const sidebarResizeHandle = document.getElementById('sidebar-resize-handle');
     const graphInspector = document.getElementById('graph-inspector');
     const inspectorCloseBtn = document.getElementById('inspector-close-btn');
+    const connectionPill = document.getElementById('connection-pill');
     const connectionStatus = document.getElementById('connection-status');
     const connectionDot = document.getElementById('connection-dot');
     const repoFilter = document.getElementById('repo-filter');
@@ -247,6 +259,54 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
     const legendBody = document.getElementById('legend-body');
     const legendCloseBtn = document.getElementById('legend-close-btn');
 
+    // Sidebar width: Graph view only, drag-resizable, remembered per browser.
+    const SIDEBAR_MIN_WIDTH = 200;
+    const SIDEBAR_MAX_WIDTH = 560;
+    const SIDEBAR_DEFAULT_WIDTH = 320;
+
+    function loadSidebarWidth() {{
+      try {{
+        const saved = Number(localStorage.getItem('tm-sidebar-width'));
+        if (saved >= SIDEBAR_MIN_WIDTH && saved <= SIDEBAR_MAX_WIDTH) return saved;
+      }} catch (e) {{
+        console.error('Could not read the saved sidebar width:', e);
+      }}
+      return SIDEBAR_DEFAULT_WIDTH;
+    }}
+
+    function setSidebarWidth(px) {{
+      sidebarPane.style.width = `${{px}}px`;
+    }}
+
+    setSidebarWidth(loadSidebarWidth());
+
+    sidebarResizeHandle.addEventListener('mousedown', (e) => {{
+      e.preventDefault();
+      const startX = e.clientX;
+      const startWidth = sidebarPane.getBoundingClientRect().width;
+
+      function onMove(moveEvent) {{
+        const next = Math.min(
+          SIDEBAR_MAX_WIDTH,
+          Math.max(SIDEBAR_MIN_WIDTH, startWidth + (moveEvent.clientX - startX))
+        );
+        setSidebarWidth(next);
+      }}
+
+      function onUp() {{
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        try {{
+          localStorage.setItem('tm-sidebar-width', String(sidebarPane.getBoundingClientRect().width));
+        }} catch (e) {{
+          console.error('Could not persist the sidebar width:', e);
+        }}
+      }}
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    }});
+
     function renderIcon(iconName, classes = 'w-4 h-4') {{
       return `<svg class="${{classes}}" fill="none" stroke="currentColor"><use href="#icon-${{iconName}}"></use></svg>`;
     }}
@@ -255,7 +315,8 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
       return window.STATUS_THEMES[status] || {{ ...window.STATUS_THEMES.NOT_STARTED, label: String(status) }};
     }}
 
-    // Mode Switching
+    // Mode Switching. The sidebar is a graph-view tool for jumping to a node; it takes
+    // no space in Document view so the document pane reads at its own full width.
     function setViewMode(mode) {{
       currentMode = mode;
       if (mode === window.VIEW_MODES.DOCUMENT) {{
@@ -263,11 +324,15 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         viewGraphBtn.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium text-zinc-400 hover:text-white transition';
         documentPane.classList.remove('hidden');
         graphPane.classList.add('hidden');
+        sidebarPane.classList.add('hidden');
+        toggleSectionsBtn.classList.remove('hidden');
       }} else {{
         viewGraphBtn.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium bg-zinc-800 text-white shadow-sm transition';
         viewDocBtn.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium text-zinc-400 hover:text-white transition';
         documentPane.classList.add('hidden');
         graphPane.classList.remove('hidden');
+        sidebarPane.classList.remove('hidden');
+        toggleSectionsBtn.classList.add('hidden');
         if (networkInstance) {{
           setTimeout(() => networkInstance.fit(), 50);
         }}
@@ -279,6 +344,23 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
     graphFitBtn.addEventListener('click', () => networkInstance && networkInstance.fit());
     inspectorCloseBtn.addEventListener('click', () => graphInspector.classList.add('hidden'));
     refreshBtn.addEventListener('click', loadAllData);
+
+    // Document sections: default collapsed, remembered for this session only (never persisted),
+    // so a re-render after a filter change never surprise-collapses one the user just opened.
+    function updateToggleSectionsButton() {{
+      const label = expandedSections.size > 0 ? 'Collapse all sections' : 'Expand all sections';
+      toggleSectionsBtn.title = label;
+      toggleSectionsBtn.setAttribute('aria-label', label);
+    }}
+
+    toggleSectionsBtn.addEventListener('click', () => {{
+      if (expandedSections.size > 0) {{
+        expandedSections.clear();
+      }} else {{
+        allSectionIds.forEach(id => expandedSections.add(id));
+      }}
+      renderUnifiedDocument();
+    }});
 
     // Expand / Collapse All
     expandAllBtn.addEventListener('click', () => {{
@@ -372,6 +454,12 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
       return `<span class="st-text st-${{t.code}} flex-shrink-0">${{renderIcon(t.icon, size)}}</span>`;
     }}
 
+    // A tree row carries exactly one status marker: a coloured dot, name in the tooltip only.
+    function statusDot(code) {{
+      const t = getTheme(code);
+      return `<span class="st-dot st-${{t.code}} inline-block w-2.5 h-2.5 rounded-full flex-shrink-0" title="${{esc(t.label)}}"></span>`;
+    }}
+
     // Progress: per-status counts over a spec's or plan's tasks. Only COMPLETED counts as done.
     function progressParts(node) {{
       const p = node.progress || {{ total: 0, counts: {{}} }};
@@ -400,16 +488,35 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
       return marked.parse(text, {{ breaks: true }});
     }}
 
-    function renderSections(sections) {{
-      return (sections || []).map(s => `
-        <details open class="rounded-lg border border-zinc-800 bg-zinc-950/60">
-          <summary class="cursor-pointer select-none px-3 py-1.5 text-xs font-semibold text-zinc-300 flex items-center gap-2">
-            <span>${{esc((s.header || s.key).replace(/^#+\\s*/, ''))}}</span>
-            <span class="font-mono text-[10px] text-zinc-500 font-normal">${{esc(s.key)}}</span>
-          </summary>
-          <div class="prose prose-invert max-w-none px-3 pb-3 text-xs leading-relaxed text-zinc-400">${{renderSectionBody(s.content)}}</div>
-        </details>
-      `).join('');
+    // Sections default collapsed; expandedSections remembers, for this session only, which
+    // ones the user opened, so re-rendering after a filter change never re-collapses them.
+    function renderSections(sections, ownerId) {{
+      return (sections || []).map(s => {{
+        const id = `${{ownerId}}::${{s.key}}`;
+        allSectionIds.push(id);
+        const isOpen = expandedSections.has(id);
+        return `
+          <details ${{isOpen ? 'open' : ''}} data-section-id="${{id}}" class="rounded-lg border border-zinc-800 bg-zinc-950/60">
+            <summary class="cursor-pointer select-none px-3 py-1.5 text-xs font-semibold text-zinc-300 flex items-center gap-2">
+              ${{renderIcon('chevron-right', 'w-3 h-3 text-zinc-500 details-caret')}}
+              <span>${{esc((s.header || s.key).replace(/^#+\\s*/, ''))}}</span>
+              <span class="font-mono text-[10px] text-zinc-400 font-normal">${{esc(s.key)}}</span>
+            </summary>
+            <div class="prose prose-invert max-w-none px-3 pb-3 text-xs leading-relaxed text-zinc-400">${{renderSectionBody(s.content)}}</div>
+          </details>
+        `;
+      }}).join('');
+    }}
+
+    function attachSectionToggleHandlers(root) {{
+      root.querySelectorAll('details[data-section-id]').forEach(details => {{
+        details.addEventListener('toggle', () => {{
+          const id = details.getAttribute('data-section-id');
+          if (details.open) expandedSections.add(id);
+          else expandedSections.delete(id);
+          updateToggleSectionsButton();
+        }});
+      }});
     }}
 
     function renderDependencies(details, status) {{
@@ -422,7 +529,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         <div class="flex items-center gap-2 px-2 py-1.5 bg-zinc-950/60">
           ${{d.status ? statusChip(d.status) : '<span class="text-[10px] font-mono text-red-400">missing</span>'}}
           <span class="font-mono text-[11px] text-zinc-300">${{esc(d.id)}}</span>
-          <span class="truncate text-[11px] text-zinc-500">${{esc(d.title || '')}}</span>
+          <span class="truncate text-[11px] text-zinc-400">${{esc(d.title || '')}}</span>
         </div>
       `).join('');
       return `
@@ -435,40 +542,46 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
     }}
 
     // Status Digest Bar
+    // Icon-only chips (dot + count) so the view switcher, search box and every status count
+    // fit on one toolbar row; the status name lives in the native title tooltip instead.
     function updateStatsDigest() {{
       statsDigest.innerHTML = '';
       const allActive = filters.statuses.size === 0;
       const totalChip = document.createElement('button');
-      totalChip.className = `flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs transition ${{allActive ? 'bg-zinc-800 text-white border-zinc-700' : 'bg-zinc-900/60 text-zinc-400 border-zinc-800 hover:bg-zinc-800'}}`;
+      totalChip.className = `flex items-center gap-1 px-2 py-1 rounded-md border text-xs transition ${{allActive ? 'bg-zinc-800 text-white border-zinc-700' : 'bg-zinc-900/60 text-zinc-400 border-zinc-800 hover:bg-zinc-800'}}`;
+      totalChip.title = 'All tasks';
+      totalChip.setAttribute('aria-label', `All tasks: ${{statsData.total || 0}}`);
       totalChip.setAttribute('aria-pressed', String(allActive));
-      totalChip.innerHTML = `<span>All tasks</span> <strong class="text-white">${{statsData.total || 0}}</strong>`;
+      totalChip.innerHTML = `${{renderIcon('layers', 'w-3.5 h-3.5')}}<strong>${{statsData.total || 0}}</strong>`;
       totalChip.onclick = () => {{
         filters.statuses.clear();
         renderAll();
       }};
       statsDigest.appendChild(totalChip);
 
-      window.STATUS_GROUPS.forEach(group => {{
-        const wrap = document.createElement('div');
-        wrap.className = 'flex items-center gap-1';
-        wrap.innerHTML = `<span class="text-[10px] uppercase tracking-wider text-zinc-500 mr-0.5">${{esc(group.label)}}</span>`;
+      window.STATUS_GROUPS.forEach((group, groupIndex) => {{
+        if (groupIndex > 0) {{
+          const divider = document.createElement('div');
+          divider.className = 'w-px h-4 bg-zinc-800 mx-0.5 flex-shrink-0';
+          statsDigest.appendChild(divider);
+        }}
         Object.keys(window.STATUS_THEMES).filter(code => window.STATUS_THEMES[code].group === group.code).forEach(code => {{
           const theme = getTheme(code);
           const count = statsData[code] || 0;
           const active = filters.statuses.has(code);
           const chip = document.createElement('button');
-          chip.className = `st-chip st-${{code}} flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition hover:brightness-125 ${{active ? 'ring-2 ring-white/60' : ''}} ${{count === 0 && !active ? 'opacity-50' : ''}}`;
-          chip.title = theme.description;
+          chip.className = `st-chip st-${{code}} flex items-center gap-1 px-1.5 py-1 rounded-md text-xs transition hover:brightness-125 ${{active ? 'ring-2 ring-white/60' : ''}} ${{count === 0 && !active ? 'opacity-50' : ''}}`;
+          chip.title = theme.label;
+          chip.setAttribute('aria-label', `${{theme.label}}: ${{count}}`);
           chip.setAttribute('aria-pressed', String(active));
-          chip.innerHTML = `${{renderIcon(theme.icon, 'w-3.5 h-3.5')}}<span>${{esc(theme.label)}}</span><strong>${{count}}</strong>`;
+          chip.innerHTML = `${{renderIcon(theme.icon, 'w-3.5 h-3.5')}}<strong>${{count}}</strong>`;
           chip.onclick = () => {{
             if (active) filters.statuses.delete(code);
             else filters.statuses.add(code);
             renderAll();
           }};
-          wrap.appendChild(chip);
+          statsDigest.appendChild(chip);
         }});
-        statsDigest.appendChild(wrap);
       }});
     }}
 
@@ -547,7 +660,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
             <p class="text-xs text-zinc-300">${{esc(t.description)}}</p>
           </div>
         `).join('');
-        return `<div><div class="text-[10px] uppercase tracking-wider text-zinc-500 mt-2">${{esc(group.label)}}</div>${{rows}}</div>`;
+        return `<div><div class="text-[10px] uppercase tracking-wider text-zinc-400 mt-2">${{esc(group.label)}}</div>${{rows}}</div>`;
       }}).join('');
     }}
 
@@ -594,7 +707,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         let progressHtml = '';
         if (node.progress && node.progress.total > 0) {{
           const p = progressParts(node);
-          progressHtml = `<span class="text-[10px] font-mono text-zinc-500 mr-1" title="${{esc(progressText(node))}}">${{p.completed}}/${{p.total}}</span>`;
+          progressHtml = `<span class="text-[10px] font-mono text-zinc-400 mr-1" title="${{esc(progressText(node))}}">${{p.completed}}/${{p.total}}</span>`;
         }}
 
         const progressBarRow = progressHtml ? `<div class="pt-1.5">${{progressBar(node, 'h-1')}}</div>` : '';
@@ -603,13 +716,12 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
           <div class="flex items-center justify-between gap-2">
             <div class="flex items-center gap-1.5 min-w-0 truncate">
               ${{chevron}}
-              ${{statusIcon(effectiveStatus)}}
-              <span class="font-mono text-[10px] text-zinc-500 uppercase">${{node.id}}</span>
+              ${{statusDot(effectiveStatus)}}
+              <span class="font-mono text-[10px] text-zinc-400 uppercase">${{node.id}}</span>
               <span class="truncate">${{node.title}}</span>
             </div>
             <div class="flex items-center gap-1 flex-shrink-0">
               ${{progressHtml}}
-              ${{statusChip(effectiveStatus)}}
             </div>
           </div>
           ${{progressBarRow}}
@@ -672,9 +784,10 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
     // Render Unified Document View
     function renderUnifiedDocument() {{
       unifiedDocument.innerHTML = '';
+      allSectionIds = [];
 
       if (treeData.length === 0) {{
-        unifiedDocument.innerHTML = '<div class="text-zinc-500 text-sm italic py-12 text-center">No specifications or tasks registered. Use CLI to add items.</div>';
+        unifiedDocument.innerHTML = '<div class="text-zinc-400 text-sm italic py-12 text-center">No specifications or tasks registered. Use CLI to add items.</div>';
         return;
       }}
 
@@ -695,23 +808,9 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
           specPills += `<span class="px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-cyan-400 font-mono text-xs">${{spec.target_repo}}</span>`;
         }}
 
-        let specSectionsHtml = '';
-        if (spec.sections && spec.sections.length > 0) {{
-          specSectionsHtml = `
-            <div class="space-y-4 pt-2">
-              ${{spec.sections.map(sec => `
-                <section class="bg-zinc-900/30 border border-zinc-800/80 rounded-xl p-5 space-y-2">
-                  <h3 class="text-sm font-semibold text-zinc-200 flex items-center gap-2">
-                    ${{esc((sec.header || sec.key).replace(/^#+\\s*/, ''))}}
-                  </h3>
-                  <div class="prose prose-invert max-w-none text-xs leading-relaxed text-zinc-300 prose-headings:font-semibold prose-a:text-emerald-400 prose-pre:bg-zinc-950 prose-pre:border prose-pre:border-zinc-800">
-                    ${{renderSectionBody(sec.content)}}
-                  </div>
-                </section>
-              `).join('')}}
-            </div>
-          `;
-        }}
+        const specSectionsHtml = spec.sections && spec.sections.length > 0
+          ? `<div class="space-y-2 pt-2">${{renderSections(spec.sections, spec.id)}}</div>`
+          : '';
 
         // Render Plans
         let plansHtml = '';
@@ -755,10 +854,12 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
       }});
 
       if (!unifiedDocument.hasChildNodes()) {{
-        unifiedDocument.innerHTML = '<div class="text-zinc-500 text-sm italic py-12 text-center">No tasks match the active filters.</div>';
+        unifiedDocument.innerHTML = '<div class="text-zinc-400 text-sm italic py-12 text-center">No tasks match the active filters.</div>';
       }}
 
       attachCollapsibleHandlers();
+      attachSectionToggleHandlers(unifiedDocument);
+      updateToggleSectionsButton();
     }}
 
     function renderPlanCard(plan, parentTextOk = false) {{
@@ -770,17 +871,17 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
       const planTextOk = textAccepts(plan, parentTextOk);
       const visibleTasks = tasks.filter(t => nodeVisible(t, planTextOk));
       const planSectionsHtml = plan.sections && plan.sections.length > 0
-        ? `<div class="space-y-2 pt-2">${{renderSections(plan.sections)}}</div>`
+        ? `<div class="space-y-2 pt-2">${{renderSections(plan.sections, plan.id)}}</div>`
         : '';
 
       return `
-        <div id="doc-node-${{plan.id}}" class="border border-zinc-800 rounded-xl bg-zinc-900/30 overflow-hidden transition">
-          <!-- Plan Header -->
-          <div class="p-4 bg-zinc-900/70 border-b border-zinc-800 flex items-center justify-between cursor-pointer plan-header" data-node-id="${{plan.id}}">
-            <div class="flex items-center gap-2.5 truncate">
-              <button class="text-zinc-400 hover:text-white">${{renderIcon(isCollapsed ? 'chevron-right' : 'chevron-down', 'w-4 h-4')}}</button>
-              <span class="font-mono text-xs font-semibold text-emerald-400">${{plan.id}}</span>
-              <span class="text-sm font-semibold text-zinc-200 truncate">${{plan.title}}</span>
+        <div id="doc-node-${{plan.id}}" class="border border-zinc-800 rounded-xl bg-zinc-900/30 transition">
+          <!-- Plan Header: sticky so the current plan stays identified while its tasks scroll by -->
+          <div class="h-12 px-4 rounded-t-xl bg-zinc-900/95 backdrop-blur-sm border-b border-zinc-800 flex items-center justify-between cursor-pointer plan-header sticky top-0 z-20" data-node-id="${{plan.id}}">
+            <div class="flex items-center gap-2.5 min-w-0 truncate">
+              <button class="text-zinc-400 hover:text-white flex-shrink-0">${{renderIcon(isCollapsed ? 'chevron-right' : 'chevron-down', 'w-4 h-4')}}</button>
+              <span class="font-mono text-xs font-semibold text-emerald-400 flex-shrink-0">${{plan.id}}</span>
+              <span class="text-base font-semibold text-zinc-200 truncate">${{plan.title}}</span>
               ${{statusChip(planStatus, 'text-[11px]')}}
             </div>
             <div class="flex items-center gap-3 flex-shrink-0">
@@ -797,7 +898,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
           <div class="plan-body ${{isCollapsed ? 'hidden' : ''}} p-4 space-y-4">
             ${{planSectionsHtml}}
             <div class="space-y-3">
-              <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 flex items-center gap-2">
+              <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center gap-2">
                 ${{renderIcon('check', 'w-3.5 h-3.5')}}
                 <span>Tasks (${{visibleTasks.length}})</span>
               </div>
@@ -858,18 +959,18 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         `;
       }}
 
-      const sectionsHtml = renderSections(task.sections);
+      const sectionsHtml = renderSections(task.sections, task.id);
       const depsHtml = renderDependencies(task.dependency_details, taskStatus);
 
       return `
-        <div id="doc-node-${{task.id}}" class="border border-zinc-800/80 rounded-lg bg-zinc-950/40 overflow-hidden hover:border-zinc-700 transition">
-          <!-- Task Header -->
-          <div class="p-3 flex items-center justify-between cursor-pointer task-header bg-zinc-900/30 hover:bg-zinc-900/60" data-node-id="${{task.id}}">
-            <div class="flex items-center gap-2 truncate">
-              <button class="text-zinc-500 hover:text-white">${{renderIcon(isCollapsed ? 'chevron-right' : 'chevron-down', 'w-3.5 h-3.5')}}</button>
+        <div id="doc-node-${{task.id}}" class="border border-zinc-800/80 rounded-lg bg-zinc-950/40 hover:border-zinc-700 transition">
+          <!-- Task Header: sticky one level below the plan header it belongs to -->
+          <div class="h-10 px-3 rounded-t-lg flex items-center justify-between cursor-pointer task-header bg-zinc-900/90 backdrop-blur-sm hover:bg-zinc-900 sticky top-12 z-10" data-node-id="${{task.id}}">
+            <div class="flex items-center gap-2 min-w-0 truncate">
+              <button class="text-zinc-500 hover:text-white flex-shrink-0">${{renderIcon(isCollapsed ? 'chevron-right' : 'chevron-down', 'w-3.5 h-3.5')}}</button>
               ${{statusIcon(taskStatus)}}
               <span class="font-mono text-xs font-semibold text-emerald-400 flex-shrink-0">${{task.id}}</span>
-              <span class="text-xs font-medium text-zinc-200 truncate">${{task.title}}</span>
+              <span class="text-sm font-medium text-zinc-200 truncate">${{task.title}}</span>
             </div>
             <div class="flex items-center gap-2 flex-shrink-0">
               ${{modelPills}}
@@ -911,6 +1012,15 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
     }}
 
     // Vis Network DAG Graph
+    // Shape per node kind so spec/plan/task/review_gate read as distinct at a glance,
+    // independent of the status colouring the fill and border already carry.
+    const GRAPH_SHAPE_BY_KIND = {{
+      spec: {{ shape: 'hexagon' }},
+      plan: {{ shape: 'box', shapeProperties: {{ borderRadius: 14 }} }},
+      task: {{ shape: 'box', shapeProperties: {{ borderRadius: 3 }} }},
+      review_gate: {{ shape: 'diamond' }}
+    }};
+
     function renderGraph(graph) {{
       const container = document.getElementById('network-canvas');
 
@@ -919,14 +1029,15 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         return {{
           id: n.id,
           label: `${{n.id}}\\n${{n.title}}\\n*${{theme.label}}*`,
-          shape: 'box',
-          margin: 10,
+          ...(GRAPH_SHAPE_BY_KIND[n.kind] || GRAPH_SHAPE_BY_KIND.task),
+          margin: 16,
+          widthConstraint: {{ minimum: 170, maximum: 260 }},
           color: {{
             background: theme.graph_bg,
             border: theme.graph_border,
             highlight: {{ background: theme.graph_bg, border: '#ffffff' }}
           }},
-          font: {{ color: '#f3f4f6', face: 'Inter', size: 12, multi: 'md' }},
+          font: {{ color: '#f3f4f6', face: 'Inter', size: 16, multi: 'md' }},
           borderWidth: 2,
           shadow: {{ enabled: true, color: 'rgba(0,0,0,0.5)', size: 4 }}
         }};
@@ -948,8 +1059,8 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
           hierarchical: {{
             direction: 'UD',
             sortMethod: 'directed',
-            levelSeparation: 90,
-            nodeSpacing: 180
+            levelSeparation: 240,
+            nodeSpacing: 320
           }}
         }},
         physics: false,
@@ -1005,7 +1116,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
               <span>In-Flight Active Lease</span>
             </div>
             <div class="text-zinc-400 font-mono">Agent: ${{detail.lease.agent_id}}</div>
-            <div class="text-zinc-500 font-mono text-[11px]">${{detail.lease.branch_name}}</div>
+            <div class="text-zinc-400 font-mono text-[11px]">${{detail.lease.branch_name}}</div>
           </div>
         `;
       }}
@@ -1035,8 +1146,9 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         ${{leaseBanner}}
         ${{verificationsHtml}}
         ${{renderDependencies(detail.dependency_details, status)}}
-        <div class="space-y-2 pt-2">${{renderSections(detail.sections)}}</div>
+        <div class="space-y-2 pt-2">${{renderSections(detail.sections, n.id)}}</div>
       `;
+      attachSectionToggleHandlers(body);
     }}
 
     // Fetch and Load Data
@@ -1078,6 +1190,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
 
         ws.onopen = () => {{
           connectionStatus.textContent = 'Synced';
+          connectionPill.title = 'Synced';
           connectionDot.className = 'w-1.5 h-1.5 rounded-full bg-emerald-400';
         }};
 
@@ -1094,6 +1207,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
 
         ws.onclose = () => {{
           connectionStatus.textContent = 'Disconnected';
+          connectionPill.title = 'Disconnected';
           connectionDot.className = 'w-1.5 h-1.5 rounded-full bg-red-400';
           setTimeout(connectWS, 3000);
         }};
@@ -1101,6 +1215,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
       connectWS();
     }} else {{
       connectionStatus.textContent = 'Static Export';
+      connectionPill.title = 'Static Export';
       connectionDot.className = 'w-1.5 h-1.5 rounded-full bg-zinc-500';
     }}
 

@@ -315,5 +315,9 @@ def test_static_export_embeds_every_status_and_the_filter_ui(
         "model-filter",
         "active-filters",
         "legend-panel",
+        "sidebar-resize-handle",
+        "toggle-sections-btn",
     ):
         assert f'id="{element_id}"' in html
+    assert html.count('id="search-box"') == 1
+    assert '<aside id="sidebar-pane" class="hidden' in html
