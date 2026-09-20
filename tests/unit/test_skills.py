@@ -25,34 +25,39 @@ def test_bundled_skills_exist() -> None:
     tm_text = tm_skill.read_text(encoding="utf-8")
     tm_fm = _parse_frontmatter(tm_text)
     assert tm_fm.get("name") == "taskmanager"
-    assert (
-        tm_fm.get("description")
-        == "Use when executing, tracking, or updating tasks and plans via the taskmanager CLI"
+    description = tm_fm.get("description", "")
+    words = set(re.findall(r"[a-z]+", description.lower()))
+    assert {"tm", "claim", "review", "merge", "guide"} <= words, (
+        f"the description must name the CLI and the moments it triggers on: {description!r}"
     )
 
     dispatcher_text = dispatcher_skill.read_text(encoding="utf-8")
     dispatcher_fm = _parse_frontmatter(dispatcher_text)
     assert dispatcher_fm.get("name") == "dispatcher"
-    assert (
-        dispatcher_fm.get("description")
-        == "Use when planning waves, routing tasks, balancing concurrency, and dispatching subagents"
-    )
+    dispatcher_description = dispatcher_fm.get("description", "").lower()
+    for word in ("dispatch", "wave", "plan"):
+        assert word in dispatcher_description, (
+            f"the description must name the moments it triggers on: {dispatcher_description!r}"
+        )
 
 
-def test_taskmanager_skill_cli_instructions() -> None:
+def test_taskmanager_skill_sends_the_agent_to_the_guides() -> None:
+    """The procedure lives in `tm guide <topic>`; a copy of it in the skill is a second source."""
     tm_skill = Path("src/taskmanager/skills/taskmanager/SKILL.md")
     assert tm_skill.exists()
     content = tm_skill.read_text(encoding="utf-8")
 
-    assert "tm render" in content
-    assert "--view subagent" in content
-    assert "tm run start" in content
-    assert "--worktree" in content
-    assert "tm run heartbeat" in content
-    assert "tm verify run" in content
-    assert "tm run stop" in content
-    assert "WAITING_REVIEW" in content
-    assert "AUTH-USER-LOGIN:steps" in content
+    assert "tm guide" in content
+    for topic in ("implement", "review", "fix", "merge"):
+        assert f"tm guide {topic}" in content, f"the skill does not route {topic} to its guide"
+    assert len(content.splitlines()) <= 60, "the skill is restating what the guides already print"
+
+
+def test_the_bundled_skill_matches_the_plugin_skill() -> None:
+    """Two copies ship: the plugin reads one and the package the other."""
+    plugin = Path("skills/taskmanager/SKILL.md").read_text(encoding="utf-8")
+    bundled = Path("src/taskmanager/skills/taskmanager/SKILL.md").read_text(encoding="utf-8")
+    assert plugin == bundled
 
 
 def test_dispatcher_skill_cli_instructions() -> None:

@@ -1,11 +1,17 @@
 ---
 description: Open or export the interactive TaskManager visualizer DAG and dashboard.
-argument-hint: "[open | export [output_file]]"
+argument-hint: "[open | export [output-file]]"
 ---
 
-Open or export the TaskManager web visualizer:
+Show the task graph and dashboard. Neither form changes anything in the database.
 
-- If `$ARGUMENTS` starts with `export`:
-  Run `tm web export` (optionally specifying output path).
-- Otherwise:
-  Run `tm web` to start the live dashboard and auto-open it in the browser.
+- `$ARGUMENTS` starts with `export`: write a standalone HTML file and report its path.
+  `tm web export -o <output-file>` — the output path is an option, not a positional argument, and
+  defaults to `spec-dashboard.html` in the current directory. Prefer this form: it needs no server.
+- otherwise: `tm web --port 6701` serves the live dashboard and opens a browser (`--no-open`
+  suppresses that, `-C <project root>` picks the project). It **blocks the shell until stopped** and
+  auto-switches to the next free port when 6701 is taken, printing the URL it settled on. Start it
+  in the background only with its PID recorded, and stop that PID before going idle.
+
+For a state you want to read rather than look at, no server is needed:
+`tm next -n 5 --yaml`, `tm task list --yaml`, `tm run list --yaml`.

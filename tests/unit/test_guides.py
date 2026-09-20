@@ -1,0 +1,131 @@
+"""Every command a built-in guide prints is a command the CLI has.
+
+An agent runs what the guide shows verbatim, so a renamed command or flag has to fail here rather
+than in the agent's terminal.
+"""
+
+import re
+import shlex
+from importlib.resources import files
+from typing import Any
+
+import pytest
+import typer.main
+
+from taskmanager.cli.main import _guide_topics, app
+
+REQUIRED_TOPICS = {"implement", "review", "fix", "merge", "overview"}
+COMMAND_FLOOR = 40
+
+_SPAN = re.compile(r"`([^`\n]+)`")
+_STOP = re.compile(r"[|;#]|&&")
+
+
+def _topics() -> list[str]:
+    return sorted(_guide_topics())
+
+
+def _guide_text(topic: str) -> str:
+    return str(files("taskmanager").joinpath(f"guides/{topic}.md").read_text(encoding="utf-8"))
+
+
+def _snippets(text: str) -> list[str]:
+    """Every fenced line and every inline code span, fences and backticks dropped."""
+    found: list[str] = []
+    fenced = False
+    for line in text.splitlines():
+        if line.startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced:
+            found.append(line.strip())
+        else:
+            found.extend(m.group(1) for m in _SPAN.finditer(line))
+    return [s for s in found if s]
+
+
+def _tm_commands(text: str) -> list[str]:
+    commands: list[str] = []
+    for snippet in _snippets(text):
+        head = _STOP.split(snippet)[0].strip()
+        if head.startswith("tm ") and head not in commands:
+            commands.append(head)
+    return commands
+
+
+def _tokens(command: str) -> list[str]:
+    try:
+        return shlex.split(command)[1:]
+    except ValueError:
+        return command.split()[1:]
+
+
+def _resolve(tokens: list[str]) -> tuple[str, Any, list[str]]:
+    """Walk the typer app down to the command the tokens name, returning it and the rest.
+
+    Typer builds its own click-compatible classes rather than click's own, so a group is what
+    carries subcommands, not what passes an isinstance check.
+    """
+    cmd: Any = typer.main.get_command(app)
+    named = ["tm"]
+    rest = list(tokens)
+    while getattr(cmd, "commands", None) and rest and not rest[0].startswith("-"):
+        sub = cmd.commands.get(rest[0])
+        assert sub is not None, f"`{' '.join(named)}` has no subcommand {rest[0]!r}"
+        named.append(rest.pop(0))
+        cmd = sub
+    return " ".join(named), cmd, rest
+
+
+def _accepted_flags(cmd: Any) -> set[str]:
+    flags = {"--help"}
+    for param in cmd.params:
+        flags.update(param.opts)
+        flags.update(param.secondary_opts)
+    return flags
+
+
+_CASES = [(topic, cmd) for topic in _topics() for cmd in _tm_commands(_guide_text(topic))]
+
+
+def test_every_topic_has_a_guide_file() -> None:
+    topics = _topics()
+    assert REQUIRED_TOPICS <= set(topics), f"missing role guides: {REQUIRED_TOPICS - set(topics)}"
+    for topic in topics:
+        assert _guide_text(topic).strip(), f"guide '{topic}' is empty"
+
+
+@pytest.mark.parametrize("topic", _topics())
+def test_guide_opens_with_a_title_and_a_one_sentence_blurb(topic: str) -> None:
+    """`tm guide` lists a topic by the paragraph under its title, so that paragraph is one sentence."""
+    text = _guide_text(topic)
+    first, *_ = text.splitlines()
+    assert first.startswith("# "), f"guide '{topic}' does not open with a `# ` title"
+
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    assert len(paragraphs) >= 2, f"guide '{topic}' has no paragraph under its title"
+    blurb = paragraphs[1]
+    assert "\n" not in blurb, f"guide '{topic}' blurb is more than one line: {blurb!r}"
+    assert blurb.endswith("."), f"guide '{topic}' blurb is not a sentence: {blurb!r}"
+    assert ". " not in blurb, f"guide '{topic}' blurb is more than one sentence: {blurb!r}"
+
+
+def test_the_guides_show_enough_commands_to_be_worth_checking() -> None:
+    """A collection that silently shrinks to nothing would leave every case below green."""
+    assert len(_CASES) >= COMMAND_FLOOR, f"only {len(_CASES)} `tm` commands found in the guides"
+    for topic in _topics():
+        assert _tm_commands(_guide_text(topic)), f"guide '{topic}' shows no `tm` command"
+
+
+@pytest.mark.parametrize("topic,command", _CASES, ids=[f"{t}:{c}" for t, c in _CASES])
+def test_guide_command_exists(topic: str, command: str) -> None:
+    tokens = _tokens(command)
+    if not tokens:
+        return
+    name, cmd, rest = _resolve(tokens)
+    accepted = _accepted_flags(cmd)
+    for token in rest:
+        if not token.startswith("-"):
+            continue
+        flag = token.split("=", 1)[0]
+        assert flag in accepted, f"`{name}` has no flag {flag} ({topic}.md shows `{command}`)"
