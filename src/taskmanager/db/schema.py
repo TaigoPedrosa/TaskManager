@@ -39,6 +39,10 @@ CREATE TABLE IF NOT EXISTS node_verifications (
     codegraph_query_json TEXT
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS uq_node_verifications ON node_verifications (
+    node_id, verification_type, target_path, COALESCE(expected_pattern, '')
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
     node_id UNINDEXED,
     title,

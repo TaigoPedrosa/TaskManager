@@ -126,6 +126,18 @@ class BulkImporter:
                     )
                 )
 
+        known = {n.id for n in nodes}
+        unknown = sorted(
+            {
+                i
+                for r in relations
+                for i in (r.source_id, r.target_id)
+                if i not in known and self.node_repo.get_node(i) is None
+            }
+        )
+        if unknown:
+            raise ValueError(f"import refused, nothing written: unknown ids {unknown}")
+
         for node in nodes:
             self.node_repo.save_node(node)
         for section in sections:

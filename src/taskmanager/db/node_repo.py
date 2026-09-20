@@ -341,6 +341,7 @@ class NodeRepository:
                         expected_pattern, codegraph_query_json
                     )
                     VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT DO NOTHING
                     """,
                     (
                         ver.node_id,
@@ -350,8 +351,37 @@ class NodeRepository:
                         ver.codegraph_query_json,
                     ),
                 )
-                ver.id = cursor.lastrowid
+                ver.id = cursor.lastrowid if cursor.rowcount else None
             conn.commit()
+
+    def declared_files(self, task_id: str) -> list[str]:
+        """The paths a task claims, which is what its lease locks and what `next` filters on.
+
+        A `test_command` or `codegraph_query` puts a label or a query in `target_path`, not a
+        path, so only the path-bearing verification types count.
+        """
+        pathy = {
+            VerificationType.FILE_EXISTS,
+            VerificationType.FILE_ABSENT,
+            VerificationType.SYMBOL_SIGNATURE,
+            VerificationType.AST_EXPORT,
+        }
+        files = [
+            v.target_path
+            for v in self.get_verifications(task_id)
+            if v.verification_type in pathy and v.target_path
+        ]
+        node = self.get_node(task_id)
+        declared = (
+            (node.frontmatter.get("declared_files") or node.frontmatter.get("files"))
+            if node
+            else None
+        )
+        if isinstance(declared, list):
+            files.extend(str(f) for f in declared)
+        elif isinstance(declared, str):
+            files.append(declared)
+        return list(dict.fromkeys(files))
 
     def get_verifications(self, node_id: str) -> list[NodeVerification]:
         with self.db.get_spec_connection() as conn:

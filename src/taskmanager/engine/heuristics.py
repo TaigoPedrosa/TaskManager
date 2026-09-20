@@ -73,15 +73,7 @@ class RecommendationEngine:
             ):
                 continue
 
-            verifications = self.node_repo.get_verifications(task.id)
-            declared_files = [v.target_path for v in verifications]
-            fm_files = task.frontmatter.get("declared_files") or task.frontmatter.get("files")
-            if fm_files:
-                if isinstance(fm_files, list):
-                    declared_files.extend(str(f) for f in fm_files)
-                elif isinstance(fm_files, str):
-                    declared_files.append(fm_files)
-            declared_files = list(dict.fromkeys(declared_files))
+            declared_files = self.node_repo.declared_files(task.id)
 
             if declared_files and self.runtime_repo.get_conflicting_tasks(declared_files):
                 continue
@@ -137,4 +129,14 @@ class RecommendationEngine:
             )
 
         scored.sort(key=lambda x: x.score, reverse=True)
-        return scored[:limit]
+        # A batch is started together, so no two of its tasks may claim one file.
+        chosen: list[ScoredTask] = []
+        taken: set[str] = set()
+        for candidate in scored:
+            if taken.intersection(candidate.declared_files):
+                continue
+            chosen.append(candidate)
+            taken.update(candidate.declared_files)
+            if len(chosen) >= limit:
+                break
+        return chosen

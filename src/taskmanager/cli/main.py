@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import sqlite3
 import subprocess
 import sys
@@ -67,12 +68,89 @@ app.add_typer(web_app)
 app.add_typer(plugin_app)
 
 
-def _get_root(path: Path | None) -> Path:
-    return (path or Path.cwd()).resolve()
+def _emit(data: Any, as_yaml: bool = False) -> None:
+    """Raw to stdout: `rich.print` wraps long lines inside strings and the output stops parsing.
+
+    YAML carries the same document in fewer tokens, which is what an agent reading it pays for.
+    """
+    if as_yaml:
+        import yaml
+
+        class _Dumper(yaml.SafeDumper):  # type: ignore[misc]
+            pass
+
+        def _text(dumper: yaml.SafeDumper, value: str) -> yaml.ScalarNode:
+            style = "|" if "\n" in value else None
+            return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
+
+        _Dumper.add_representer(str, _text)
+        sys.stdout.write(
+            yaml.dump(
+                json.loads(json.dumps(data, default=str)),
+                Dumper=_Dumper,
+                sort_keys=False,
+                allow_unicode=True,
+                width=10_000,
+            )
+        )
+        return
+    sys.stdout.write(json.dumps(data, indent=2, ensure_ascii=False, default=str) + "\n")
+
+
+def _node_row(node: Any, state: str | None = None) -> dict[str, Any]:
+    return {
+        "id": node.id,
+        "kind": node.kind.value,
+        "title": node.title,
+        "status": node.status.value,
+        "state": state or node.status.value,
+        "priority": node.priority,
+        "target_repo": node.target_repo,
+        "acceptable_models": node.acceptable_models,
+    }
+
+
+def _find_root(start: Path) -> Path | None:
+    for candidate in (start, *start.parents):
+        if (candidate / ".taskmanager").is_dir():
+            return candidate
+    return None
+
+
+def _get_root(path: Path | None, *, must_exist: bool = True) -> Path:
+    """`-C`, then `$TM_ROOT`, then the nearest ancestor holding a `.taskmanager`, then the same
+    search from the repository a worktree was cut from (a worktree can live outside the root).
+
+    A root with no database is an error, never a fresh empty one: opening it used to create a
+    `.taskmanager` wherever the command happened to run, and every claim made in it was invisible.
+    """
+    if path is not None:
+        root = path.resolve()
+    elif os.environ.get("TM_ROOT"):
+        root = Path(os.environ["TM_ROOT"]).resolve()
+    else:
+        cwd = Path.cwd().resolve()
+        found = _find_root(cwd)
+        if found is None:
+            res = subprocess.run(
+                ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                found = _find_root(Path(res.stdout.strip()).resolve().parent)
+        root = found if found is not None else cwd
+    if must_exist and not (root / ".taskmanager").is_dir():
+        raise typer.BadParameter(
+            f"no .taskmanager at {root}: pass -C, set TM_ROOT, or run `tm init` there"
+        )
+    return root
 
 
 def _get_container(path: Path | None) -> Container:
-    root = _get_root(path)
+    root = _get_root(path, must_exist=False)
     return make_container(TaskManagerProvider(root))
 
 
@@ -136,7 +214,7 @@ def init(
         Path | None, typer.Option("--path", "-C", help="Target project root directory")
     ] = None,
 ) -> None:
-    root = _get_root(path)
+    root = _get_root(path, must_exist=False)
     container = _get_container(root)
     db = container.get(DatabaseManager)
     db.init_all()
@@ -179,12 +257,19 @@ def spec_add(
 @spec_app.command("list")
 def spec_list(
     status: Annotated[NodeStatus | None, typer.Option("--status", help="Filter by status")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+    yaml_output: Annotated[
+        bool, typer.Option("--yaml", help="Output as YAML (fewer tokens than JSON)")
+    ] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
     container = _get_container(root)
     node_repo = container.get(NodeRepository)
     specs = node_repo.list_nodes(kind=NodeKind.SPEC, status=status)
+    if json_output or yaml_output:
+        _emit([_node_row(s) for s in specs], yaml_output)
+        return
 
     table = Table(title="Specifications")
     table.add_column("ID", style="cyan")
@@ -273,6 +358,10 @@ def plan_add(
 def plan_list(
     spec: Annotated[str | None, typer.Option("--spec", help="Filter by spec ID")] = None,
     status: Annotated[NodeStatus | None, typer.Option("--status", help="Filter by status")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+    yaml_output: Annotated[
+        bool, typer.Option("--yaml", help="Output as YAML (fewer tokens than JSON)")
+    ] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
@@ -282,6 +371,10 @@ def plan_list(
     if spec:
         children = set(node_repo.get_children(spec))
         plans = [p for p in plans if p.id in children or p.id.startswith(f"{spec}-")]
+    if json_output or yaml_output:
+        graph = container.get(GraphEngine)
+        _emit([_node_row(p, graph.resolve_plan_status(p.id).value) for p in plans], yaml_output)
+        return
 
     table = Table(title="Plans")
     table.add_column("ID", style="cyan")
@@ -396,6 +489,12 @@ def task_supersede(
         print(f"[red]Task '{old_id}' not found[/red]")
         raise typer.Exit(code=1)
 
+    if new_id == old_id or node_repo.get_node(new_id) is None:
+        print(f"[red]Replacement task '{new_id}' not found; nothing was changed[/red]")
+        raise typer.Exit(code=1)
+
+    # A replaced task is not being worked on: its lease and file locks go with it.
+    container.get(RuntimeRepository).release_lease(old_id)
     old_node.status = NodeStatus.SUPERSEDED
     node_repo.save_node(old_node)
 
@@ -425,6 +524,10 @@ def task_supersede(
 def task_list(
     plan: Annotated[str | None, typer.Option("--plan", help="Filter by plan ID")] = None,
     status: Annotated[NodeStatus | None, typer.Option("--status", help="Filter by status")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+    yaml_output: Annotated[
+        bool, typer.Option("--yaml", help="Output as YAML (fewer tokens than JSON)")
+    ] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
@@ -434,6 +537,10 @@ def task_list(
     if plan:
         children = set(node_repo.get_children(plan))
         tasks = [t for t in tasks if t.id in children or t.id.startswith(f"{plan}-")]
+    if json_output or yaml_output:
+        graph = container.get(GraphEngine)
+        _emit([_node_row(t, graph.resolve_task_state(t.id).value) for t in tasks], yaml_output)
+        return
 
     table = Table(title="Tasks")
     table.add_column("ID", style="cyan")
@@ -448,9 +555,72 @@ def task_list(
     print(table)
 
 
+@task_app.command("update")
+def task_update(
+    task_id: str,
+    title: Annotated[str | None, typer.Option("--title")] = None,
+    priority: Annotated[int | None, typer.Option("--priority", "-p")] = None,
+    models: Annotated[
+        str | None, typer.Option("--models", help="Comma-separated acceptable models")
+    ] = None,
+    repo: Annotated[str | None, typer.Option("--repo", help="Target repository directory")] = None,
+    set_frontmatter: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--set",
+            help="Frontmatter key=value, repeatable; the value is JSON when it parses "
+            '(declared_files=\'["a","b"]\'), else text',
+        ),
+    ] = None,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    from datetime import UTC, datetime
+
+    root = _get_root(path)
+    container = _get_container(root)
+    node_repo = container.get(NodeRepository)
+    node = node_repo.get_node(task_id)
+    if node is None:
+        raise typer.BadParameter(f"task '{task_id}' not found")
+    changed: dict[str, Any] = {}
+    if title is not None:
+        node.title = title
+        changed["title"] = title
+    if priority is not None:
+        if not 1 <= priority <= 100:
+            raise typer.BadParameter("priority is 1-100")
+        node.priority = priority
+        changed["priority"] = priority
+    if models is not None:
+        node.acceptable_models = [m.strip() for m in models.split(",") if m.strip()]
+        changed["acceptable_models"] = node.acceptable_models
+    if repo is not None:
+        node.target_repo = repo
+        changed["target_repo"] = repo
+    for pair in set_frontmatter or []:
+        key, sep, raw = pair.partition("=")
+        if not sep or not key:
+            raise typer.BadParameter(f"--set takes key=value, got '{pair}'")
+        try:
+            node.frontmatter[key] = json.loads(raw)
+        except ValueError:
+            node.frontmatter[key] = raw
+        changed[f"frontmatter.{key}"] = node.frontmatter[key]
+    if not changed:
+        raise typer.BadParameter("nothing to update")
+    node.updated_at = datetime.now(tz=UTC)
+    node_repo.save_node(node)
+    _record_ledger(container, command="task update", target_id=task_id, payload=changed)
+    print(f"[green]Updated {task_id}: {', '.join(changed)}[/green]")
+
+
 @task_app.command("get")
 def task_get(
     task_id: str,
+    json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+    yaml_output: Annotated[
+        bool, typer.Option("--yaml", help="Output as YAML (fewer tokens than JSON)")
+    ] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
@@ -463,6 +633,46 @@ def task_get(
 
     deps = node_repo.get_dependencies(task_id)
     verifications = node_repo.get_verifications(task_id)
+    if json_output or yaml_output:
+        graph = container.get(GraphEngine)
+        runtime_repo = container.get(RuntimeRepository)
+        lease = runtime_repo.get_lease(task_id)
+        doc = _node_row(task, graph.resolve_task_state(task_id).value)
+        doc["frontmatter"] = task.frontmatter
+        doc["depends_on"] = [
+            {"id": d, "status": dn.status.value} if (dn := node_repo.get_node(d)) else {"id": d}
+            for d in deps
+        ]
+        doc["blocked_by"] = [
+            d
+            for d in deps
+            if (dn := node_repo.get_node(d)) is None
+            or dn.status not in (NodeStatus.COMPLETED, NodeStatus.SUPERSEDED)
+        ]
+        doc["declared_files"] = node_repo.declared_files(task_id)
+        doc["sections"] = [s.section_key for s in node_repo.get_all_sections(task_id)]
+        doc["verifications"] = [
+            {
+                "type": v.verification_type.value,
+                "target_path": v.target_path,
+                "expected_pattern": v.expected_pattern,
+            }
+            for v in verifications
+        ]
+        doc["lease"] = (
+            {
+                "agent_id": lease.agent_id,
+                "session_id": lease.session_id,
+                "worktree_path": lease.worktree_path,
+                "branch_name": lease.branch_name,
+                "last_heartbeat": lease.last_heartbeat.isoformat(),
+                "ttl_seconds": lease.ttl_seconds,
+            }
+            if lease
+            else None
+        )
+        _emit(doc, yaml_output)
+        return
     print(f"[bold cyan]Task:[/] {task.id}")
     print(f"[bold]Title:[/] {task.title}")
     print(f"[bold]Status:[/] {task.status.value}")
@@ -525,6 +735,14 @@ def section_set(
     if not qp.section_key:
         print(f"[red]Qualified path must include section key (e.g. {qp.node_id}:steps)[/red]")
         raise typer.Exit(code=1)
+    if node_repo.get_node(qp.node_id) is None:
+        hint = (
+            " Create it once with `tm spec add 'Project guide' --slug guide`."
+            if qp.node_id == GUIDE_NODE
+            else ""
+        )
+        print(f"[red]No node '{qp.node_id}' to hold the section.{hint}[/red]")
+        raise typer.Exit(code=1)
 
     text_content = ""
     if file:
@@ -560,21 +778,38 @@ def run_start(
     agent: Annotated[str, typer.Option("--agent", help="Agent identifier")] = "agent-1",
     session: Annotated[str, typer.Option("--session", help="Session identifier")] = "session-1",
     account: Annotated[str | None, typer.Option("--account", help="Account identifier")] = None,
+    worktree_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--worktree-dir", help="Where worktrees go (env TM_WORKTREES, else .worktrees)"
+        ),
+    ] = None,
+    ttl: Annotated[
+        int | None,
+        typer.Option("--ttl", help="Lease seconds before it reads as abandoned (env TM_LEASE_TTL)"),
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
     container = _get_container(root)
     coordinator = container.get(ExecutionCoordinator)
 
-    worktree_base = root / ".worktrees" if worktree else None
-    lease = coordinator.start_task(
-        task_id=task_id,
-        agent_id=agent,
-        session_id=session,
-        account_id=account,
-        create_worktree=worktree,
-        worktree_base=worktree_base,
-    )
+    worktree_base: Path | None = None
+    if worktree:
+        worktree_base = worktree_dir or Path(os.environ.get("TM_WORKTREES", root / ".worktrees"))
+    try:
+        lease = coordinator.start_task(
+            task_id=task_id,
+            agent_id=agent,
+            session_id=session,
+            account_id=account,
+            create_worktree=worktree,
+            worktree_base=worktree_base,
+            ttl_seconds=ttl or int(os.environ.get("TM_LEASE_TTL", "0")) or None,
+        )
+    except ValueError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
     _record_ledger(
         container,
         command=LedgerCommand.TASK_START,
@@ -642,6 +877,9 @@ def run_stop(
 @run_app.command("list")
 def run_list(
     json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+    yaml_output: Annotated[
+        bool, typer.Option("--yaml", help="Output as YAML (fewer tokens than JSON)")
+    ] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
@@ -654,7 +892,7 @@ def run_list(
         ).fetchall()
         locks = conn.execute("SELECT file_path, task_id, lock_type FROM file_locks").fetchall()
 
-    if json_output:
+    if json_output or yaml_output:
         data = {
             "leases": [
                 {
@@ -672,7 +910,7 @@ def run_list(
             ],
             "locks": [{"file_path": r[0], "task_id": r[1], "lock_type": r[2]} for r in locks],
         }
-        print(json.dumps(data, indent=2))
+        _emit(data, yaml_output)
         return
 
     table_leases = Table(title="Active Leases")
@@ -703,6 +941,18 @@ def run_sweep(
     runtime_repo = container.get(RuntimeRepository)
     swept = runtime_repo.sweep_expired_leases()
     if swept:
+        # An abandoned claim returns the task to the state before it, or nobody could claim it.
+        node_repo = container.get(NodeRepository)
+        back = {
+            NodeStatus.IMPLEMENTING: NodeStatus.NOT_STARTED,
+            NodeStatus.REVIEWING: NodeStatus.WAITING_REVIEW,
+            NodeStatus.FIXING: NodeStatus.WAITING_FIXES,
+        }
+        for task_id in swept:
+            node = node_repo.get_node(task_id)
+            if node is not None and node.status in back:
+                node.status = back[node.status]
+                node_repo.save_node(node)
         _record_ledger(container, command=LedgerCommand.LEASE_SWEEP, payload={"swept_tasks": swept})
         print(f"[yellow]Swept {len(swept)} expired lease(s): {', '.join(swept)}[/yellow]")
     else:
@@ -768,8 +1018,11 @@ def verify_run(
             vers.extend(node_repo.get_verifications(t.id))
 
     if not vers:
-        print("[yellow]No verifications to run.[/yellow]")
-        return
+        print(
+            "[yellow]No verifications to run: an empty check set proves nothing. Add one with "
+            "`tm verify add`, or attest the task.[/yellow]"
+        )
+        raise typer.Exit(code=2)
 
     results = verification_engine.verify_all(vers)
     table = Table(title="Verification Results")
@@ -805,6 +1058,9 @@ def next_tasks(
     plan: Annotated[str | None, typer.Option("--plan", help="Filter by plan ID")] = None,
     model: Annotated[str | None, typer.Option("--model", help="Filter by acceptable model")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+    yaml_output: Annotated[
+        bool, typer.Option("--yaml", help="Output as YAML (fewer tokens than JSON)")
+    ] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
@@ -815,7 +1071,7 @@ def next_tasks(
         plan_id=plan, model_filter=model, strategy=strategy, limit=limit
     )
 
-    if json_output:
+    if json_output or yaml_output:
         data = [
             {
                 "task_id": t.task_id,
@@ -829,7 +1085,7 @@ def next_tasks(
             }
             for t in ranked
         ]
-        print(json.dumps(data, indent=2))
+        _emit(data, yaml_output)
         return
 
     table = Table(title="Recommended Next Tasks")
@@ -863,8 +1119,196 @@ def render(
     container = _get_container(root)
     renderer = container.get(MarkdownRenderer)
     qp = QualifiedPath.parse(qualified_id)
-    output = renderer.render(qp.node_id, view=view)
+    try:
+        output = renderer.render(qp.node_id, view=view)
+    except ValueError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
     print(output)
+
+
+class _RefusingImporter:
+    """A refused import prints why and exits 1 instead of a traceback."""
+
+    def __init__(self, importer: BulkImporter) -> None:
+        self._importer = importer
+
+    def import_dict(self, data: dict[str, Any]) -> None:
+        try:
+            self._importer.import_dict(data)
+        except ValueError as exc:
+            print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1) from exc
+
+
+GUIDE_NODE = "guide"
+
+
+def _guide_topics() -> dict[str, str]:
+    """Built-in topic -> one-line description (the first sentence after the title)."""
+    from importlib.resources import files
+
+    topics: dict[str, str] = {}
+    for entry in sorted(files("taskmanager").joinpath("guides").iterdir(), key=lambda e: e.name):
+        if entry.name.endswith(".md"):
+            lines = [ln.strip() for ln in entry.read_text(encoding="utf-8").splitlines()]
+            body = next((ln for ln in lines[1:] if ln), "")
+            topics[entry.name[: -len(".md")]] = body.split(". ")[0].rstrip(".")
+    return topics
+
+
+@app.command("guide")
+def guide(
+    topic: Annotated[str | None, typer.Argument(help="Topic; omit to list them")] = None,
+    builtin_only: Annotated[
+        bool, typer.Option("--builtin", help="Only the guidance shipped with tm")
+    ] = False,
+    project_only: Annotated[
+        bool, typer.Option("--project", help="Only this project's addendum")
+    ] = False,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """How to work with tm, by role. Built-in guidance first, then the project's addendum.
+
+    The addendum is the section named after the topic on the node `guide`
+    (`tm section set guide:<topic> --file ...`), so a project's conventions live and version with
+    its tasks.
+    """
+    from importlib.resources import files
+
+    topics = _guide_topics()
+    try:
+        overlay_repo: NodeRepository | None = _get_container(_get_root(path)).get(NodeRepository)
+    except typer.BadParameter:
+        overlay_repo = None
+    if topic is None:
+        overlay_keys = (
+            {sec.section_key for sec in overlay_repo.get_all_sections(GUIDE_NODE)}
+            if overlay_repo
+            else set()
+        )
+        for name, blurb in topics.items():
+            marker = " (+ project addendum)" if name in overlay_keys else ""
+            sys.stdout.write(f"{name}: {blurb}{marker}\n")
+        for name in sorted(overlay_keys - set(topics)):
+            sys.stdout.write(f"{name}: (project topic)\n")
+        return
+    overlay = overlay_repo.get_section(GUIDE_NODE, topic) if overlay_repo else None
+    if topic not in topics and overlay is None:
+        raise typer.BadParameter(f"no guide '{topic}'; topics: {', '.join(topics)}")
+    parts: list[str] = []
+    if topic in topics and not project_only:
+        parts.append(
+            files("taskmanager").joinpath(f"guides/{topic}.md").read_text(encoding="utf-8")
+        )
+    if overlay is not None and not builtin_only:
+        parts.append(overlay.content)
+    sys.stdout.write("\n\n---\n\n".join(p.rstrip("\n") for p in parts) + "\n")
+
+
+def _export_node(node_repo: NodeRepository, node: Any) -> dict[str, Any]:
+    return {
+        "id": node.id,
+        "kind": node.kind.value,
+        "title": node.title,
+        "status": node.status.value,
+        "priority": node.priority,
+        "target_repo": node.target_repo,
+        "acceptable_models": node.acceptable_models,
+        "frontmatter": node.frontmatter,
+        "depends_on": sorted(node_repo.get_dependencies(node.id)),
+        "sections": [
+            {"key": s.section_key, "ordinal": s.ordinal, "header": s.header, "content": s.content}
+            for s in node_repo.get_all_sections(node.id)
+        ],
+        "verifications": [
+            {
+                "type": v.verification_type.value,
+                "target_path": v.target_path,
+                "expected_pattern": v.expected_pattern,
+            }
+            for v in node_repo.get_verifications(node.id)
+        ],
+    }
+
+
+@app.command("export")
+def export_cmd(
+    directory: Path,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Write the whole database as importable JSON: one file per plan and one per spec.
+
+    No timestamps, so two exports of the same state are byte-identical: commit the directory and
+    its history is a diff of what changed. `tm restore <dir>` rebuilds a database from it.
+    """
+    root = _get_root(path)
+    container = _get_container(root)
+    node_repo = container.get(NodeRepository)
+
+    def dump(name: str, doc: dict[str, Any]) -> None:
+        (directory / name).write_text(
+            json.dumps(doc, indent=1, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+
+    directory.mkdir(parents=True, exist_ok=True)
+    specs = {n.id: n for n in node_repo.list_nodes(kind=NodeKind.SPEC)}
+    tasks = node_repo.list_nodes(kind=NodeKind.TASK)
+    plans = node_repo.list_nodes(kind=NodeKind.PLAN)
+    for plan in plans:
+        children = set(node_repo.get_children(plan.id))
+        plan_doc = _export_node(node_repo, plan)
+        plan_doc["tasks"] = [_export_node(node_repo, t) for t in tasks if t.id in children]
+        owner = next((sid for sid in sorted(specs) if plan.id in node_repo.get_children(sid)), None)
+        dump(
+            f"{plan.id}.json",
+            {
+                "spec": {"id": owner, "title": specs[owner].title} if owner else None,
+                "plans": [plan_doc],
+            },
+        )
+    for spec_id in sorted(specs):
+        dump(f"_spec-{spec_id}.json", {"spec": _export_node(node_repo, specs[spec_id])})
+    print(f"[green]Exported {len(plans)} plans and {len(specs)} specs to {directory}[/green]")
+
+
+@app.command("restore")
+def restore_cmd(
+    directory: Path,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Rebuild a database from a `tm export` directory (into a root that may be new)."""
+    import copy
+
+    root = _get_root(path, must_exist=False)
+    container = _get_container(root)
+    container.get(DatabaseManager).init_all()
+    importer = _RefusingImporter(container.get(BulkImporter))
+
+    docs = [json.loads(f.read_text(encoding="utf-8")) for f in sorted(directory.glob("*.json"))]
+    if not docs:
+        print(f"[red]No export files in {directory}[/red]")
+        raise typer.Exit(code=1)
+    # Plans depend on each other, so the first pass keeps only the edges a document can satisfy
+    # by itself and the second adds the rest; specs go last so their full data wins.
+    plan_docs = [d for d in docs if d.get("plans")]
+    spec_docs = [d for d in docs if not d.get("plans")]
+    for doc in plan_docs:
+        first = copy.deepcopy(doc)
+        own = {n["id"] for p in first["plans"] for n in [p, *p.get("tasks", [])]}
+        for p in first["plans"]:
+            for n in [p, *p.get("tasks", [])]:
+                n["depends_on"] = [d for d in n.get("depends_on", []) if d in own]
+        importer.import_dict(first)
+    for doc in [*plan_docs, *spec_docs]:
+        importer.import_dict(doc)
+    print(f"[green]Restored {len(plan_docs)} plans and {len(spec_docs)} specs into {root}[/green]")
+
+
+@app.command("root")
+def root_cmd(path: Annotated[Path | None, typer.Option("--path", "-C")] = None) -> None:
+    """Print the project root `tm` resolved (a `target_repo` is `<root>/<target_repo>`)."""
+    sys.stdout.write(f"{_get_root(path)}\n")
 
 
 @app.command("import")
@@ -879,7 +1323,7 @@ def import_cmd(
 ) -> None:
     root = _get_root(path)
     container = _get_container(root)
-    importer = container.get(BulkImporter)
+    importer = _RefusingImporter(container.get(BulkImporter))
 
     if file:
         content = file.read_text(encoding="utf-8")
@@ -1042,7 +1486,7 @@ def web_export(
     """Export standalone self-contained static HTML visualizer."""
     from taskmanager.web.static_export import export_static_html
 
-    root = _get_root(path)
+    root = _get_root(path, must_exist=False)
     db_mgr = DatabaseManager(root / ".taskmanager")
     if not db_mgr.is_initialized():
         print(f"[red]Error:[/red] TaskManager is not initialized in {root}. Run 'tm init' first.")
@@ -1073,7 +1517,7 @@ def cli_install(
     import shutil
     import subprocess
 
-    root = _get_root(path)
+    root = _get_root(path, must_exist=False)
     install_script = root / "install.sh"
     if not install_script.exists():
         pkg_root = Path(__file__).resolve().parents[3]

@@ -38,6 +38,21 @@ class DatabaseManager:
                 if "ordinal" not in cols:
                     conn.execute("ALTER TABLE nodes ADD COLUMN ordinal INTEGER NOT NULL DEFAULT 0;")
                     conn.commit()
+                # A repeat import used to insert every verification again.
+                conn.execute(
+                    """
+                    DELETE FROM node_verifications WHERE id NOT IN (
+                        SELECT MIN(id) FROM node_verifications
+                        GROUP BY node_id, verification_type, target_path,
+                                 COALESCE(expected_pattern, '')
+                    )
+                    """
+                )
+                conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_node_verifications ON node_verifications "
+                    "(node_id, verification_type, target_path, COALESCE(expected_pattern, ''))"
+                )
+                conn.commit()
         except sqlite3.Error:
             pass
 
