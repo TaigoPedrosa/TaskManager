@@ -1035,5 +1035,60 @@ def web_export(
     )
 
 
+@app.command("install")
+def cli_install(
+    status: Annotated[
+        bool, typer.Option("--status", "-s", help="Check installation status")
+    ] = False,
+    tool_only: Annotated[
+        bool, typer.Option("--tool-only", help="Install CLI executable only")
+    ] = False,
+    claude_only: Annotated[
+        bool, typer.Option("--claude-only", help="Register Claude Code plugin only")
+    ] = False,
+    path: Annotated[
+        Path | None, typer.Option("--path", "-C", help="TaskManager repository directory")
+    ] = None,
+) -> None:
+    """Install TaskManager globally as an executable CLI and harness plugin."""
+    import shutil
+    import subprocess
+
+    root = _get_root(path)
+    install_script = root / "install.sh"
+    if not install_script.exists():
+        pkg_root = Path(__file__).resolve().parents[3]
+        if (pkg_root / "install.sh").exists():
+            install_script = pkg_root / "install.sh"
+            root = pkg_root
+
+    if status:
+        if install_script.exists():
+            subprocess.run([str(install_script), "status"], check=False)
+        else:
+            is_installed = shutil.which("tm") is not None
+            print(f"tm in PATH: {is_installed}")
+        return
+
+    if tool_only:
+        subprocess.run(["uv", "tool", "install", "--editable", str(root), "--force"], check=False)
+        print("[green]Installed TaskManager executable tool[/green]")
+        return
+
+    if claude_only:
+        subprocess.run(["claude", "plugin", "marketplace", "add", str(root)], check=False)
+        subprocess.run(["claude", "plugin", "install", "taskmanager@taskmanager"], check=False)
+        print("[green]Registered TaskManager plugin in Claude Code[/green]")
+        return
+
+    if install_script.exists():
+        subprocess.run([str(install_script), "install"], check=False)
+    else:
+        subprocess.run(["uv", "tool", "install", "--editable", str(root), "--force"], check=False)
+        subprocess.run(["claude", "plugin", "marketplace", "add", str(root)], check=False)
+        subprocess.run(["claude", "plugin", "install", "taskmanager@taskmanager"], check=False)
+        print("[green]TaskManager installed successfully[/green]")
+
+
 if __name__ == "__main__":
     app()

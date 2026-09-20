@@ -352,3 +352,12 @@ def test_cli_import_hierarchy(tmp_path: Path) -> None:
     )
     assert res.exit_code == 0
     assert "Step A" in res.stdout
+
+
+def test_cli_install_command(tmp_path: Path) -> None:
+    res_help = runner.invoke(app, ["install", "--help"])
+    assert res_help.exit_code == 0
+    assert "Install TaskManager globally" in res_help.stdout
+
+    res_status = runner.invoke(app, ["install", "--status", "--path", str(tmp_path)])
+    assert res_status.exit_code == 0

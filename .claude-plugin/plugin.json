@@ -1,0 +1,18 @@
+{
+  "name": "taskmanager",
+  "version": "0.1.0",
+  "description": "Local agentic task tracker system powered by SQLite, DAG heuristics, worktrees and live visualizer",
+  "author": {
+    "name": "Taigo Pedrosa"
+  },
+  "license": "MIT",
+  "keywords": [
+    "taskmanager",
+    "tm",
+    "dag",
+    "agentic-engineering",
+    "worktrees",
+    "dispatching",
+    "concurrency"
+  ]
+}
