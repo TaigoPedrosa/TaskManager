@@ -41,7 +41,7 @@ from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.di.container import TaskManagerProvider
 from taskmanager.engine.config import ConfigError, ConfigStore
-from taskmanager.engine.graph import GraphEngine
+from taskmanager.engine.graph import GraphEngine, gate_satisfied
 from taskmanager.engine.heuristics import RecommendationEngine
 from taskmanager.engine.runtime import ExecutionCoordinator
 from taskmanager.engine.search import SearchEngine, SearchError
@@ -584,7 +584,16 @@ def task_list(
 def task_depends(
     task_id: str,
     add: Annotated[
-        str | None, typer.Option("--add", help="Comma-separated ids this task now depends on")
+        str | None,
+        typer.Option(
+            "--add",
+            help=(
+                "Comma-separated ids this task now depends on. An id alone gates on the "
+                "dependency reaching COMPLETED, same as always; 'id:STATUS' (e.g. "
+                "'AUTH-T01:WAITING_REVIEW') gates on it reaching STATUS or later in the "
+                "lifecycle instead."
+            ),
+        ),
     ] = None,
     remove: Annotated[
         str | None, typer.Option("--remove", help="Comma-separated ids to stop depending on")
@@ -603,12 +612,26 @@ def task_depends(
     def ids(raw: str | None) -> list[str]:
         return [x.strip() for x in (raw or "").split(",") if x.strip()]
 
-    to_add, to_remove = ids(add), ids(remove)
+    def parse_add(raw: str | None) -> list[tuple[str, NodeStatus | None]]:
+        parsed: list[tuple[str, NodeStatus | None]] = []
+        for item in ids(raw):
+            dep_id, sep, gate_raw = item.partition(":")
+            if not sep:
+                parsed.append((dep_id, None))
+                continue
+            try:
+                parsed.append((dep_id, NodeStatus(gate_raw)))
+            except ValueError:
+                valid = ", ".join(s.value for s in NodeStatus)
+                raise typer.BadParameter(f"'{gate_raw}' is not a status; one of: {valid}") from None
+        return parsed
+
+    to_add, to_remove = parse_add(add), ids(remove)
     if not to_add and not to_remove:
         raise typer.BadParameter("give --add and/or --remove")
     current = set(node_repo.get_dependencies(task_id))
     problems: list[str] = []
-    for dep in to_add:
+    for dep, _gate in to_add:
         if node_repo.get_node(dep) is None:
             problems.append(f"'{dep}' does not exist")
         elif dep not in current and graph.would_cause_cycle(task_id, dep):
@@ -619,9 +642,14 @@ def task_depends(
     if problems:
         print(f"[red]Nothing changed: {'; '.join(problems)}[/red]")
         raise typer.Exit(code=1)
-    for dep in to_add:
+    for dep, gate in to_add:
         node_repo.add_relation(
-            NodeRelation(source_id=task_id, target_id=dep, relation_type=RelationType.DEPENDS_ON)
+            NodeRelation(
+                source_id=task_id,
+                target_id=dep,
+                relation_type=RelationType.DEPENDS_ON,
+                metadata={"gate": gate.value} if gate is not None else {},
+            )
         )
     for dep in to_remove:
         node_repo.remove_relation(task_id, dep, RelationType.DEPENDS_ON)
@@ -629,11 +657,14 @@ def task_depends(
         container,
         command="task depends",
         target_id=task_id,
-        payload={"add": to_add, "remove": to_remove},
+        payload={"add": [d for d, _ in to_add], "remove": to_remove},
     )
-    print(
-        f"[green]{task_id} depends on: {', '.join(node_repo.get_dependencies(task_id)) or '-'}[/green]"
-    )
+    edges = node_repo.get_dependency_edges(task_id)
+    shown = [
+        f"{dep_id}:{gate.value}" if gate != NodeStatus.COMPLETED else dep_id
+        for dep_id, gate in edges
+    ]
+    print(f"[green]{task_id} depends on: {', '.join(shown) or '-'}[/green]")
 
 
 @task_app.command("update")
@@ -718,17 +749,22 @@ def task_get(
         graph = container.get(GraphEngine)
         runtime_repo = container.get(RuntimeRepository)
         lease = runtime_repo.get_lease(task_id)
+        dep_edges = node_repo.get_dependency_edges(task_id)
         doc = _node_row(task, graph.resolve_task_state(task_id).value)
         doc["frontmatter"] = task.frontmatter
         doc["depends_on"] = [
-            {"id": d, "status": dn.status.value} if (dn := node_repo.get_node(d)) else {"id": d}
-            for d in deps
+            (
+                {"id": dep_id, "status": dn.status.value}
+                | ({"gate": gate.value} if gate != NodeStatus.COMPLETED else {})
+                if (dn := node_repo.get_node(dep_id))
+                else {"id": dep_id}
+            )
+            for dep_id, gate in dep_edges
         ]
         doc["blocked_by"] = [
-            d
-            for d in deps
-            if (dn := node_repo.get_node(d)) is None
-            or dn.status not in (NodeStatus.COMPLETED, NodeStatus.SUPERSEDED)
+            dep_id
+            for dep_id, gate in dep_edges
+            if (dn := node_repo.get_node(dep_id)) is None or not gate_satisfied(dn.status, gate)
         ]
         doc["declared_files"] = node_repo.declared_files(task_id)
         doc["sections"] = [s.section_key for s in node_repo.get_all_sections(task_id)]
@@ -1388,7 +1424,10 @@ def _export_node(node_repo: NodeRepository, node: Any) -> dict[str, Any]:
         "target_repo": node.target_repo,
         "acceptable_models": node.acceptable_models,
         "frontmatter": node.frontmatter,
-        "depends_on": sorted(node_repo.get_dependencies(node.id)),
+        "depends_on": [
+            {"id": dep_id, "gate": gate.value} if gate != NodeStatus.COMPLETED else dep_id
+            for dep_id, gate in sorted(node_repo.get_dependency_edges(node.id))
+        ],
         "sections": [
             {"key": s.section_key, "ordinal": s.ordinal, "header": s.header, "content": s.content}
             for s in node_repo.get_all_sections(node.id)

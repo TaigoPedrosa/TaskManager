@@ -229,6 +229,13 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
     let isStaticMode = typeof window.STATIC_DATA !== 'undefined';
     const collapsedNodes = new Set();
     const expandedSections = new Set();
+    // Group headers ("Tasks (N)", "Sections (N)") are a third, independent collapse level:
+    // they hide a plan's task-card list or a section list's row of <details> summaries
+    // without touching collapsedNodes (the plan/task body) or expandedSections (a section's
+    // own open state). A group id's default (collapsed or not) varies by group type, so this
+    // set stores only ids whose state differs from their default; see groupCollapsed().
+    // Session-only, never persisted, same as the two sets above.
+    const collapsedGroups = new Set();
     let allSectionIds = [];
 
     // DOM Elements
@@ -362,10 +369,12 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
       renderUnifiedDocument();
     }});
 
-    // Expand / Collapse All
+    // Expand / Collapse All. Expanding also opens every group header; collapsing does not
+    // fold them back, since a group's default state already starts most of them closed.
     expandAllBtn.addEventListener('click', () => {{
       if (collapsedNodes.size > 0) {{
         collapsedNodes.clear();
+        collapsedGroups.clear();
       }} else {{
         function collect(node) {{
           if (node.children && node.children.length > 0) {{
@@ -451,7 +460,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
 
     function statusIcon(code, size = 'w-3.5 h-3.5') {{
       const t = getTheme(code);
-      return `<span class="st-text st-${{t.code}} flex-shrink-0">${{renderIcon(t.icon, size)}}</span>`;
+      return `<span class="st-text st-${{t.code}} flex-shrink-0" title="${{esc(t.label)}}">${{renderIcon(t.icon, size)}}</span>`;
     }}
 
     // A tree row carries exactly one status marker: a coloured dot, name in the tooltip only.
@@ -488,10 +497,36 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
       return marked.parse(text, {{ breaks: true }});
     }}
 
+    // A group id's collapsed state relative to its own default. collapsedGroups holds only
+    // ids that were explicitly toggled away from default, so one set serves group types with
+    // opposite defaults (Tasks starts expanded, Sections starts collapsed) without reseeding
+    // it on every render.
+    function groupCollapsed(groupId, defaultCollapsed) {{
+      return collapsedGroups.has(groupId) ? !defaultCollapsed : defaultCollapsed;
+    }}
+
+    function renderGroupHeader(groupId, label, count, defaultCollapsed, icon = null) {{
+      const isCollapsed = groupCollapsed(groupId, defaultCollapsed);
+      const leadIcon = icon ? renderIcon(icon, 'w-3.5 h-3.5') : '';
+      return `
+        <div class="group-header flex items-center gap-2 cursor-pointer select-none" data-group-id="${{groupId}}">
+          <button class="text-zinc-500 hover:text-white flex-shrink-0">${{renderIcon(isCollapsed ? 'chevron-right' : 'chevron-down', 'w-3 h-3')}}</button>
+          ${{leadIcon}}
+          <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">${{esc(label)}} (${{count}})</span>
+        </div>
+      `;
+    }}
+
     // Sections default collapsed; expandedSections remembers, for this session only, which
     // ones the user opened, so re-rendering after a filter change never re-collapses them.
+    // The "Sections (N)" group header is a level above that: it hides the whole row of
+    // <details> summaries at once, independent of expandedSections and of collapsedNodes.
     function renderSections(sections, ownerId) {{
-      return (sections || []).map(s => {{
+      const list = sections || [];
+      if (list.length === 0) return '';
+      const groupId = `${{ownerId}}::sections`;
+      const isGroupCollapsed = groupCollapsed(groupId, true);
+      const items = list.map(s => {{
         const id = `${{ownerId}}::${{s.key}}`;
         allSectionIds.push(id);
         const isOpen = expandedSections.has(id);
@@ -506,6 +541,12 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
           </details>
         `;
       }}).join('');
+      return `
+        <div class="space-y-2 pt-2">
+          ${{renderGroupHeader(groupId, 'Sections', list.length, true)}}
+          <div class="space-y-2 ${{isGroupCollapsed ? 'hidden' : ''}}">${{items}}</div>
+        </div>
+      `;
     }}
 
     function attachSectionToggleHandlers(root) {{
@@ -527,7 +568,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         : '';
       const rows = details.map(d => `
         <div class="flex items-center gap-2 px-2 py-1.5 bg-zinc-950/60">
-          ${{d.status ? statusChip(d.status) : '<span class="text-[10px] font-mono text-red-400">missing</span>'}}
+          ${{d.status ? statusIcon(d.status) : '<span class="text-[10px] font-mono text-red-400">missing</span>'}}
           <span class="font-mono text-[11px] text-zinc-300">${{esc(d.id)}}</span>
           <span class="truncate text-[11px] text-zinc-400">${{esc(d.title || '')}}</span>
         </div>
@@ -808,9 +849,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
           specPills += `<span class="px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-cyan-400 font-mono text-xs">${{spec.target_repo}}</span>`;
         }}
 
-        const specSectionsHtml = spec.sections && spec.sections.length > 0
-          ? `<div class="space-y-2 pt-2">${{renderSections(spec.sections, spec.id)}}</div>`
-          : '';
+        const specSectionsHtml = renderSections(spec.sections, spec.id);
 
         // Render Plans
         let plansHtml = '';
@@ -834,7 +873,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
               <div class="flex items-center gap-2">
                 <span class="px-2 py-0.5 rounded text-[11px] font-mono uppercase bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">${{spec.kind}}</span>
                 <span class="font-mono text-xs font-semibold text-zinc-400">${{spec.id}}</span>
-                ${{statusChip(specStatus, 'text-xs')}}
+                ${{statusIcon(specStatus, 'w-4 h-4')}}
               </div>
               <div class="flex items-center gap-2">
                 ${{specPills}}
@@ -870,19 +909,19 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
       const p = progressParts(plan);
       const planTextOk = textAccepts(plan, parentTextOk);
       const visibleTasks = tasks.filter(t => nodeVisible(t, planTextOk));
-      const planSectionsHtml = plan.sections && plan.sections.length > 0
-        ? `<div class="space-y-2 pt-2">${{renderSections(plan.sections, plan.id)}}</div>`
-        : '';
+      const planSectionsHtml = renderSections(plan.sections, plan.id);
+      const tasksGroupId = `${{plan.id}}::tasks`;
+      const tasksGroupCollapsed = groupCollapsed(tasksGroupId, false);
 
       return `
         <div id="doc-node-${{plan.id}}" class="border border-zinc-800 rounded-xl bg-zinc-900/30 transition">
-          <!-- Plan Header: sticky so the current plan stays identified while its tasks scroll by -->
-          <div class="h-12 px-4 rounded-t-xl bg-zinc-900/95 backdrop-blur-sm border-b border-zinc-800 flex items-center justify-between cursor-pointer plan-header sticky top-0 z-20" data-node-id="${{plan.id}}">
+          <!-- Plan Header -->
+          <div class="h-12 px-4 rounded-t-xl bg-zinc-900/95 backdrop-blur-sm border-b border-zinc-800 flex items-center justify-between cursor-pointer plan-header" data-node-id="${{plan.id}}">
             <div class="flex items-center gap-2.5 min-w-0 truncate">
               <button class="text-zinc-400 hover:text-white flex-shrink-0">${{renderIcon(isCollapsed ? 'chevron-right' : 'chevron-down', 'w-4 h-4')}}</button>
               <span class="font-mono text-xs font-semibold text-emerald-400 flex-shrink-0">${{plan.id}}</span>
               <span class="text-base font-semibold text-zinc-200 truncate">${{plan.title}}</span>
-              ${{statusChip(planStatus, 'text-[11px]')}}
+              ${{statusIcon(planStatus)}}
             </div>
             <div class="flex items-center gap-3 flex-shrink-0">
               <div class="flex items-center gap-2">
@@ -898,11 +937,8 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
           <div class="plan-body ${{isCollapsed ? 'hidden' : ''}} p-4 space-y-4">
             ${{planSectionsHtml}}
             <div class="space-y-3">
-              <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center gap-2">
-                ${{renderIcon('check', 'w-3.5 h-3.5')}}
-                <span>Tasks (${{visibleTasks.length}})</span>
-              </div>
-              <div class="space-y-2.5">
+              ${{renderGroupHeader(tasksGroupId, 'Tasks', visibleTasks.length, false, 'check')}}
+              <div class="space-y-2.5 ${{tasksGroupCollapsed ? 'hidden' : ''}}">
                 ${{visibleTasks.map(task => renderTaskCard(task)).join('')}}
               </div>
             </div>
@@ -964,8 +1000,8 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
 
       return `
         <div id="doc-node-${{task.id}}" class="border border-zinc-800/80 rounded-lg bg-zinc-950/40 hover:border-zinc-700 transition">
-          <!-- Task Header: sticky one level below the plan header it belongs to -->
-          <div class="h-10 px-3 rounded-t-lg flex items-center justify-between cursor-pointer task-header bg-zinc-900/90 backdrop-blur-sm hover:bg-zinc-900 sticky top-12 z-10" data-node-id="${{task.id}}">
+          <!-- Task Header -->
+          <div class="h-10 px-3 rounded-t-lg flex items-center justify-between cursor-pointer task-header bg-zinc-900/90 backdrop-blur-sm hover:bg-zinc-900" data-node-id="${{task.id}}">
             <div class="flex items-center gap-2 min-w-0 truncate">
               <button class="text-zinc-500 hover:text-white flex-shrink-0">${{renderIcon(isCollapsed ? 'chevron-right' : 'chevron-down', 'w-3.5 h-3.5')}}</button>
               ${{statusIcon(taskStatus)}}
@@ -975,7 +1011,6 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
             <div class="flex items-center gap-2 flex-shrink-0">
               ${{modelPills}}
               <span class="px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-400 font-mono text-[10px]">P${{task.priority || 50}}</span>
-              ${{statusChip(taskStatus)}}
             </div>
           </div>
 
@@ -984,7 +1019,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
             ${{leaseBanner}}
             ${{verificationsHtml}}
             ${{depsHtml}}
-            <div class="space-y-2 pt-2">${{sectionsHtml}}</div>
+            ${{sectionsHtml}}
           </div>
         </div>
       `;
@@ -1006,6 +1041,15 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
           const id = header.getAttribute('data-node-id');
           if (collapsedNodes.has(id)) collapsedNodes.delete(id);
           else collapsedNodes.add(id);
+          renderUnifiedDocument();
+        }};
+      }});
+
+      document.querySelectorAll('.group-header').forEach(header => {{
+        header.onclick = () => {{
+          const id = header.getAttribute('data-group-id');
+          if (collapsedGroups.has(id)) collapsedGroups.delete(id);
+          else collapsedGroups.add(id);
           renderUnifiedDocument();
         }};
       }});
@@ -1140,13 +1184,13 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
 
       body.innerHTML = `
         <div class="flex items-center gap-2">
-          ${{statusChip(status, 'text-xs')}}
+          ${{statusIcon(status, 'w-4 h-4')}}
           <span class="px-2 py-0.5 rounded bg-zinc-950 border border-zinc-800 font-mono text-zinc-400 text-xs">Prio: ${{n.priority || 50}}</span>
         </div>
         ${{leaseBanner}}
         ${{verificationsHtml}}
         ${{renderDependencies(detail.dependency_details, status)}}
-        <div class="space-y-2 pt-2">${{renderSections(detail.sections, n.id)}}</div>
+        ${{renderSections(detail.sections, n.id)}}
       `;
       attachSectionToggleHandlers(body);
     }}

@@ -198,6 +198,19 @@ def test_node_repo_relations(tmp_path: Path) -> None:
     blocked = repo.get_blocked_by("AUTH-T01")
     assert blocked == ["AUTH-T02"]
 
+    edges = repo.get_dependency_edges("AUTH-T02")
+    assert edges == [("AUTH-T01", NodeStatus.COMPLETED)]
+
+    repo.add_relation(
+        NodeRelation(
+            source_id="AUTH-T02",
+            target_id="AUTH-T01",
+            relation_type=RelationType.DEPENDS_ON,
+            metadata={"gate": NodeStatus.WAITING_REVIEW.value},
+        )
+    )
+    assert repo.get_dependency_edges("AUTH-T02") == [("AUTH-T01", NodeStatus.WAITING_REVIEW)]
+
 
 def test_node_repo_transfer_blocks(tmp_path: Path) -> None:
     db = DatabaseManager(tmp_path)

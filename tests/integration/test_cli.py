@@ -251,6 +251,91 @@ def test_cli_task_supersede(tmp_path: Path) -> None:
     assert "SUPERSEDED" in res.stdout
 
 
+def test_cli_task_depends_gated_edge(tmp_path: Path) -> None:
+    runner.invoke(app, ["init", "--path", str(tmp_path)])
+    runner.invoke(app, ["spec", "add", "Gate Spec", "--slug", "GAT", "--path", str(tmp_path)])
+    runner.invoke(
+        app, ["plan", "add", "Gate Plan", "--spec", "GAT", "--slug", "P1", "--path", str(tmp_path)]
+    )
+    runner.invoke(
+        app,
+        ["task", "add", "Implement", "--plan", "GAT-P1", "--slug", "IMPL", "--path", str(tmp_path)],
+    )
+    runner.invoke(
+        app,
+        ["task", "add", "Review", "--plan", "GAT-P1", "--slug", "REV", "--path", str(tmp_path)],
+    )
+
+    res = runner.invoke(
+        app,
+        [
+            "task",
+            "depends",
+            "GAT-P1-REV",
+            "--add",
+            "GAT-P1-IMPL:WAITING_REVIEW",
+            "--path",
+            str(tmp_path),
+        ],
+    )
+    assert res.exit_code == 0
+    assert "GAT-P1-IMPL:WAITING_REVIEW" in res.stdout
+
+    doc = json.loads(
+        runner.invoke(app, ["task", "get", "GAT-P1-REV", "--json", "--path", str(tmp_path)]).stdout
+    )
+    assert doc["state"] == "BLOCKED"
+    assert doc["depends_on"] == [
+        {"id": "GAT-P1-IMPL", "status": "NOT_STARTED", "gate": "WAITING_REVIEW"}
+    ]
+
+    runner.invoke(
+        app,
+        [
+            "run",
+            "start",
+            "GAT-P1-IMPL",
+            "--agent",
+            "agent-a",
+            "--session",
+            "sess-a",
+            "--path",
+            str(tmp_path),
+        ],
+    )
+    runner.invoke(
+        app,
+        [
+            "run",
+            "stop",
+            "GAT-P1-IMPL",
+            "--status",
+            "WAITING_REVIEW",
+            "--path",
+            str(tmp_path),
+        ],
+    )
+
+    doc = json.loads(
+        runner.invoke(app, ["task", "get", "GAT-P1-REV", "--json", "--path", str(tmp_path)]).stdout
+    )
+    assert doc["state"] == "READY"
+
+    res = runner.invoke(
+        app,
+        [
+            "task",
+            "depends",
+            "GAT-P1-REV",
+            "--add",
+            "GAT-P1-IMPL:NOT_A_STATUS",
+            "--path",
+            str(tmp_path),
+        ],
+    )
+    assert res.exit_code != 0
+
+
 def test_cli_verification_and_audit(tmp_path: Path) -> None:
     runner.invoke(app, ["init", "--path", str(tmp_path)])
     runner.invoke(app, ["spec", "add", "Spec V", "--slug", "SPV", "--path", str(tmp_path)])

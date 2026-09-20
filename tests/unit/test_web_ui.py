@@ -123,12 +123,59 @@ def test_document_sections_default_collapsed_and_remember_expand_state() -> None
     assert "expandedSections" in _function_body(html, "attachSectionToggleHandlers")
 
 
-def test_plan_and_task_headers_are_sticky_at_distinct_offsets() -> None:
+def test_plan_and_task_headers_are_not_sticky() -> None:
     html = get_web_html()
-    assert "plan-header sticky top-0 z-20" in html
+    assert "sticky" not in html
     assert (
-        "task-header bg-zinc-900/90 backdrop-blur-sm hover:bg-zinc-900 sticky top-12 z-10" in html
+        'class="h-12 px-4 rounded-t-xl bg-zinc-900/95 backdrop-blur-sm border-b border-zinc-800 flex items-center justify-between cursor-pointer plan-header"'
+        in html
     )
+    assert (
+        'class="h-10 px-3 rounded-t-lg flex items-center justify-between cursor-pointer task-header bg-zinc-900/90 backdrop-blur-sm hover:bg-zinc-900"'
+        in html
+    )
+
+
+def test_status_icon_carries_a_title_and_chip_is_legend_only() -> None:
+    html = get_web_html()
+    status_icon = _function_body(html, "statusIcon")
+    assert 'title="${esc(t.label)}"' in status_icon
+    # statusChip (visible label) survives only in its own definition and the legend.
+    assert html.count("statusChip(") == 2
+    assert "renderLegend" in html
+    legend = _function_body(html, "renderLegend")
+    assert "statusChip(" in legend
+
+
+def test_group_headers_default_tasks_expanded_and_sections_collapsed() -> None:
+    html = get_web_html()
+    group_collapsed = _function_body(html, "groupCollapsed")
+    assert "collapsedGroups.has(groupId) ? !defaultCollapsed : defaultCollapsed" in group_collapsed
+
+    render_sections = _function_body(html, "renderSections")
+    assert "groupCollapsed(groupId, true)" in render_sections
+    assert "renderGroupHeader(groupId, 'Sections'" in render_sections
+
+    render_plan_card = _function_body(html, "renderPlanCard")
+    assert "groupCollapsed(tasksGroupId, false)" in render_plan_card
+    assert "renderGroupHeader(tasksGroupId, 'Tasks'" in render_plan_card
+
+
+def test_group_header_toggle_is_wired_independently_of_node_and_section_collapse() -> None:
+    html = get_web_html()
+    attach = _function_body(html, "attachCollapsibleHandlers")
+    assert "'.group-header'" in attach
+    assert "collapsedGroups.has(id)) collapsedGroups.delete(id)" in attach
+    assert "collapsedGroups.add(id)" in attach
+
+    # The all-sections toolbar button only ever touches expandedSections, never the groups.
+    toggle_sections_handler = re.search(
+        r"toggleSectionsBtn\.addEventListener\('click', \(\) => \{(.*?)\n    \}\);",
+        html,
+        re.DOTALL,
+    )
+    assert toggle_sections_handler, "toggleSectionsBtn click handler not found"
+    assert "collapsedGroups" not in toggle_sections_handler.group(1)
 
 
 def test_graph_layout_gives_nodes_room_and_a_shape_per_kind() -> None:

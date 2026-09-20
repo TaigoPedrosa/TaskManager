@@ -5,6 +5,31 @@ from taskmanager.core.models import Lease, Node, NodeRelation
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 
+# A task's forward progress through one lease cycle. SUPERSEDED, ABANDONED and DEFERRED are
+# side-exits, not positions on this line, and are handled separately by `gate_satisfied`.
+LIFECYCLE_ORDER: dict[NodeStatus, int] = {
+    NodeStatus.NOT_STARTED: 0,
+    NodeStatus.IMPLEMENTING: 1,
+    NodeStatus.WAITING_REVIEW: 2,
+    NodeStatus.REVIEWING: 3,
+    NodeStatus.WAITING_FIXES: 4,
+    NodeStatus.FIXING: 5,
+    NodeStatus.WAITING_MERGE: 6,
+    NodeStatus.COMPLETED: 7,
+}
+
+
+def gate_satisfied(status: NodeStatus, gate: NodeStatus) -> bool:
+    """Whether a dependency's current status clears a `depends_on` edge's gate: at or past
+    `gate` in the lifecycle order. SUPERSEDED clears any gate, same as it always cleared the
+    implicit COMPLETED gate every bare edge carries; ABANDONED and DEFERRED clear none."""
+    if status == NodeStatus.SUPERSEDED:
+        return True
+    status_order = LIFECYCLE_ORDER.get(status)
+    if status_order is None:
+        return False
+    return status_order >= LIFECYCLE_ORDER.get(gate, LIFECYCLE_ORDER[NodeStatus.COMPLETED])
+
 
 class GraphEngine:
     def __init__(self, node_repo: NodeRepository, runtime_repo: RuntimeRepository) -> None:
@@ -34,13 +59,10 @@ class GraphEngine:
         if node.status != NodeStatus.NOT_STARTED:
             return node.status
 
-        deps = self.node_repo.get_dependencies(task_id)
-        for dep_id in deps:
+        deps = self.node_repo.get_dependency_edges(task_id)
+        for dep_id, gate in deps:
             dep_node = self.node_repo.get_node(dep_id)
-            if dep_node is None or dep_node.status not in (
-                NodeStatus.COMPLETED,
-                NodeStatus.SUPERSEDED,
-            ):
+            if dep_node is None or not gate_satisfied(dep_node.status, gate):
                 return VirtualStatus.BLOCKED
 
         return VirtualStatus.READY

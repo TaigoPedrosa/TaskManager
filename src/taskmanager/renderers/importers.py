@@ -80,11 +80,13 @@ class BulkImporter:
             nodes.append(spec_node)
             sections.extend(self._parse_sections(spec_node.id, spec_data.get("sections")))
             for dep in spec_data.get("depends_on", []):
+                dep_id, metadata = self._parse_dep(dep)
                 relations.append(
                     NodeRelation(
                         source_id=spec_node.id,
-                        target_id=dep,
+                        target_id=dep_id,
                         relation_type=RelationType.DEPENDS_ON,
+                        metadata=metadata,
                     )
                 )
 
@@ -105,11 +107,13 @@ class BulkImporter:
                     )
                 )
             for dep in plan_data.get("depends_on", []):
+                dep_id, metadata = self._parse_dep(dep)
                 relations.append(
                     NodeRelation(
                         source_id=plan_node.id,
-                        target_id=dep,
+                        target_id=dep_id,
                         relation_type=RelationType.DEPENDS_ON,
+                        metadata=metadata,
                     )
                 )
 
@@ -129,11 +133,13 @@ class BulkImporter:
                     )
                 )
                 for dep in task_data.get("depends_on", []):
+                    dep_id, metadata = self._parse_dep(dep)
                     relations.append(
                         NodeRelation(
                             source_id=task_node.id,
-                            target_id=dep,
+                            target_id=dep_id,
                             relation_type=RelationType.DEPENDS_ON,
+                            metadata=metadata,
                         )
                     )
                 if "verifications" in task_data:
@@ -168,11 +174,13 @@ class BulkImporter:
                     )
                 )
             for dep in task_data.get("depends_on", []):
+                dep_id, metadata = self._parse_dep(dep)
                 relations.append(
                     NodeRelation(
                         source_id=task_node.id,
-                        target_id=dep,
+                        target_id=dep_id,
                         relation_type=RelationType.DEPENDS_ON,
+                        metadata=metadata,
                     )
                 )
             if "verifications" in task_data:
@@ -213,6 +221,13 @@ class BulkImporter:
             self.node_repo.clear_verifications(node_id)
         for ver in verifications:
             self.node_repo.add_verification(ver)
+
+    @staticmethod
+    def _parse_dep(dep: Any) -> tuple[str, dict[str, Any]]:
+        """A `depends_on` entry: a bare id (COMPLETED gate, as always), or `{"id", "gate"}`."""
+        if isinstance(dep, dict):
+            return dep["id"], ({"gate": dep["gate"]} if dep.get("gate") else {})
+        return dep, {}
 
     @staticmethod
     def _parse_node(

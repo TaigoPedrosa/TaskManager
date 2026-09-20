@@ -268,6 +268,23 @@ class NodeRepository:
             ).fetchall()
             return [r[0] for r in rows]
 
+    def get_dependency_edges(self, node_id: str) -> list[tuple[str, NodeStatus]]:
+        """Each dependency with the status its target must reach to satisfy it — `COMPLETED`
+        for a bare edge (today's behavior, unchanged), or the edge's own `gate` metadata."""
+        with self.db.get_spec_connection() as conn:
+            rows = conn.execute(
+                "SELECT target_id, metadata_json FROM node_relations "
+                "WHERE source_id = ? AND relation_type = ? ORDER BY rowid ASC",
+                (node_id, RelationType.DEPENDS_ON.value),
+            ).fetchall()
+            edges: list[tuple[str, NodeStatus]] = []
+            for target_id, metadata_json in rows:
+                metadata = json.loads(metadata_json) if metadata_json else {}
+                gate_raw = metadata.get("gate")
+                gate = NodeStatus(gate_raw) if gate_raw else NodeStatus.COMPLETED
+                edges.append((target_id, gate))
+            return edges
+
     def get_blocked_by(self, node_id: str) -> list[str]:
         with self.db.get_spec_connection() as conn:
             rows = conn.execute(

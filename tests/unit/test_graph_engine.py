@@ -80,6 +80,74 @@ def test_resolve_task_state_ready_vs_blocked(
         engine.resolve_task_state("NONEXISTENT")
 
 
+def test_resolve_task_state_gated_dependency(
+    repos: tuple[NodeRepository, RuntimeRepository, GraphEngine],
+) -> None:
+    node_repo, _, engine = repos
+
+    a = Node(id="AUTH-T01", kind=NodeKind.TASK, title="Implement", status=NodeStatus.NOT_STARTED)
+    b = Node(id="AUTH-T02", kind=NodeKind.TASK, title="Review", status=NodeStatus.NOT_STARTED)
+    node_repo.save_node(a)
+    node_repo.save_node(b)
+    node_repo.add_relation(
+        NodeRelation(
+            source_id="AUTH-T02",
+            target_id="AUTH-T01",
+            relation_type=RelationType.DEPENDS_ON,
+            metadata={"gate": NodeStatus.WAITING_REVIEW.value},
+        )
+    )
+
+    assert engine.resolve_task_state("AUTH-T02") == VirtualStatus.BLOCKED
+
+    a.status = NodeStatus.IMPLEMENTING
+    node_repo.save_node(a)
+    assert engine.resolve_task_state("AUTH-T02") == VirtualStatus.BLOCKED
+
+    a.status = NodeStatus.WAITING_REVIEW
+    node_repo.save_node(a)
+    assert engine.resolve_task_state("AUTH-T02") == VirtualStatus.READY
+
+    a.status = NodeStatus.WAITING_MERGE
+    node_repo.save_node(a)
+    assert engine.resolve_task_state("AUTH-T02") == VirtualStatus.READY
+
+    a.status = NodeStatus.COMPLETED
+    node_repo.save_node(a)
+    assert engine.resolve_task_state("AUTH-T02") == VirtualStatus.READY
+
+
+def test_resolve_task_state_bare_dependency_still_gates_on_completed(
+    repos: tuple[NodeRepository, RuntimeRepository, GraphEngine],
+) -> None:
+    node_repo, _, engine = repos
+
+    a = Node(id="AUTH-T01", kind=NodeKind.TASK, title="Implement", status=NodeStatus.NOT_STARTED)
+    b = Node(id="AUTH-T02", kind=NodeKind.TASK, title="Merge", status=NodeStatus.NOT_STARTED)
+    node_repo.save_node(a)
+    node_repo.save_node(b)
+    node_repo.add_relation(
+        NodeRelation(
+            source_id="AUTH-T02",
+            target_id="AUTH-T01",
+            relation_type=RelationType.DEPENDS_ON,
+        )
+    )
+
+    for status in (
+        NodeStatus.IMPLEMENTING,
+        NodeStatus.WAITING_REVIEW,
+        NodeStatus.WAITING_MERGE,
+    ):
+        a.status = status
+        node_repo.save_node(a)
+        assert engine.resolve_task_state("AUTH-T02") == VirtualStatus.BLOCKED
+
+    a.status = NodeStatus.COMPLETED
+    node_repo.save_node(a)
+    assert engine.resolve_task_state("AUTH-T02") == VirtualStatus.READY
+
+
 def test_resolve_task_state_in_flight(
     repos: tuple[NodeRepository, RuntimeRepository, GraphEngine],
 ) -> None:
