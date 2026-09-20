@@ -74,3 +74,15 @@ class DatabaseManager:
         with self.get_ledger_connection() as conn:
             conn.executescript(LEDGER_SCHEMA_SQL)
             conn.commit()
+
+    def is_initialized(self) -> bool:
+        if not self.spec_db.exists():
+            return False
+        try:
+            with self.get_spec_connection() as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='nodes'"
+                ).fetchone()
+                return bool(row)
+        except sqlite3.Error, OSError:
+            return False

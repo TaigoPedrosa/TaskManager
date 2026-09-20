@@ -43,6 +43,7 @@ section_app = typer.Typer(name="section", help="Manage node sections")
 run_app = typer.Typer(name="run", help="Manage execution leases")
 verify_app = typer.Typer(name="verify", help="Static verification and assertions")
 audit_app = typer.Typer(name="audit", help="Audit ledger events")
+web_app = typer.Typer(name="web", help="Interactive web visualizer and exporter")
 
 app.add_typer(spec_app)
 app.add_typer(plan_app)
@@ -51,6 +52,7 @@ app.add_typer(section_app)
 app.add_typer(run_app)
 app.add_typer(verify_app)
 app.add_typer(audit_app)
+app.add_typer(web_app)
 
 
 def _get_root(path: Path | None) -> Path:
@@ -923,6 +925,114 @@ def audit_list(
     for e in events:
         table.add_row(str(e.id or "-"), str(e.timestamp), e.actor_id, e.command, e.target_id or "-")
     print(table)
+
+
+def _find_available_port(host: str, starting_port: int, max_attempts: int = 20) -> int:
+    import socket
+
+    for p in range(starting_port, starting_port + max_attempts):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind((host, p))
+                return p
+            except OSError:
+                continue
+    raise RuntimeError(
+        f"Could not find an available port in range {starting_port}..{starting_port + max_attempts}"
+    )
+
+
+def _run_web_server(host: str, port: int, open_browser: bool, path: Path | None) -> None:
+    import threading
+    import time
+    import webbrowser
+
+    import uvicorn
+
+    from taskmanager.web.app import create_app
+
+    root = _get_root(path)
+    db_mgr = DatabaseManager(root / ".taskmanager")
+    if not db_mgr.is_initialized():
+        print(f"[red]Error:[/red] TaskManager is not initialized in {root}. Run 'tm init' first.")
+        raise typer.Exit(code=1)
+
+    actual_port = _find_available_port(host, port)
+    if actual_port != port:
+        print(f"[yellow]Port {port} in use, auto-switched to port {actual_port}[/yellow]")
+
+    server_url = f"http://{host}:{actual_port}"
+    print(
+        f"[green]Starting TaskManager Web Visualizer at[/green] [bold cyan]{server_url}[/bold cyan]"
+    )
+    print(f"[dim]Live WebSocket connected at ws://{host}:{actual_port}/ws[/dim]")
+
+    if open_browser:
+
+        def _open() -> None:
+            time.sleep(0.6)
+            webbrowser.open(server_url)
+
+        threading.Thread(target=_open, daemon=True).start()
+
+    fastapi_app = create_app(root)
+    uvicorn.run(fastapi_app, host=host, port=actual_port, log_level="warning")
+
+
+@web_app.callback(invoke_without_command=True)
+def web_callback(
+    ctx: typer.Context,
+    host: Annotated[str, typer.Option("--host", "-h", help="Host address")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", "-p", help="Starting port number")] = 6701,
+    open_browser: Annotated[
+        bool, typer.Option("--open/--no-open", help="Auto-open browser")
+    ] = True,
+    path: Annotated[
+        Path | None, typer.Option("--path", "-C", help="Project root directory")
+    ] = None,
+) -> None:
+    """Interactive web visualizer and dashboard."""
+    if ctx.invoked_subcommand is None:
+        _run_web_server(host=host, port=port, open_browser=open_browser, path=path)
+
+
+@web_app.command("run")
+def web_run(
+    host: Annotated[str, typer.Option("--host", "-h", help="Host address")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", "-p", help="Starting port number")] = 6701,
+    open_browser: Annotated[
+        bool, typer.Option("--open/--no-open", help="Auto-open browser")
+    ] = True,
+    path: Annotated[
+        Path | None, typer.Option("--path", "-C", help="Project root directory")
+    ] = None,
+) -> None:
+    """Run interactive web server with real-time updates."""
+    _run_web_server(host=host, port=port, open_browser=open_browser, path=path)
+
+
+@web_app.command("export")
+def web_export(
+    output: Annotated[
+        Path, typer.Option("--output", "-o", help="Output static HTML file path")
+    ] = Path("spec-dashboard.html"),
+    path: Annotated[
+        Path | None, typer.Option("--path", "-C", help="Project root directory")
+    ] = None,
+) -> None:
+    """Export standalone self-contained static HTML visualizer."""
+    from taskmanager.web.static_export import export_static_html
+
+    root = _get_root(path)
+    db_mgr = DatabaseManager(root / ".taskmanager")
+    if not db_mgr.is_initialized():
+        print(f"[red]Error:[/red] TaskManager is not initialized in {root}. Run 'tm init' first.")
+        raise typer.Exit(code=1)
+
+    exported = export_static_html(root, output)
+    print(
+        f"[green]Exported static HTML visualizer to[/green] [bold cyan]{exported.resolve()}[/bold cyan]"
+    )
 
 
 if __name__ == "__main__":
