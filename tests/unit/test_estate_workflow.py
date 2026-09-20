@@ -824,3 +824,36 @@ def test_a_document_that_states_checks_replaces_them_and_verify_can_list_and_rem
     )
     assert runner.invoke(app, ["verify", "remove", "P-1", "999", "-C", root]).exit_code == 1
     assert runner.invoke(app, ["verify", "list", "NOPE", "-C", root]).exit_code == 1
+
+
+def test_an_import_with_a_key_nothing_reads_is_refused_before_anything_is_written(
+    db: DatabaseManager,
+) -> None:
+    repo = NodeRepository(db)
+    importer = BulkImporter(repo)
+    doc = {
+        "plans": [
+            {
+                "id": "P",
+                "title": "P",
+                "tasks": [
+                    {
+                        "id": "P-1",
+                        "title": "a",
+                        "deferral": "text that would have vanished",
+                        "verifications": [{"type": "file_exists", "target_path": "f", "typo": 1}],
+                    }
+                ],
+            }
+        ],
+        "oops": 1,
+    }
+    with pytest.raises(ValueError, match="unknown keys") as excinfo:
+        importer.import_dict(doc)
+    message = str(excinfo.value)
+    assert (
+        "task P-1: deferral" in message
+        and "verification: typo" in message
+        and "document: oops" in message
+    )
+    assert repo.get_node("P") is None

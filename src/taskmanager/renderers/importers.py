@@ -14,7 +14,58 @@ class BulkImporter:
     def __init__(self, node_repo: NodeRepository) -> None:
         self.node_repo = node_repo
 
+    NODE_KEYS = frozenset(
+        {
+            "id",
+            "kind",
+            "title",
+            "status",
+            "priority",
+            "ordinal",
+            "target_repo",
+            "acceptable_models",
+            "frontmatter",
+            "sections",
+            "depends_on",
+            "verifications",
+            "tasks",
+        }
+    )
+    DOCUMENT_KEYS = frozenset({"spec", "plans", "tasks"})
+    VERIFICATION_KEYS = frozenset(
+        {"type", "verification_type", "target_path", "expected_pattern", "codegraph_query_json"}
+    )
+
+    def _refuse_unknown_keys(self, data: dict[str, Any]) -> None:
+        """A key nothing reads would be dropped silently, and its content with it."""
+        problems: list[str] = []
+
+        def check(where: str, doc: dict[str, Any], allowed: frozenset[str]) -> None:
+            extra = sorted(set(doc) - allowed)
+            if extra:
+                problems.append(f"{where}: {', '.join(extra)}")
+
+        check("document", data, self.DOCUMENT_KEYS)
+        nodes: list[tuple[str, dict[str, Any]]] = []
+        if isinstance(data.get("spec"), dict):
+            nodes.append(("spec", data["spec"]))
+        for plan in data.get("plans") or []:
+            nodes.append((f"plan {plan.get('id')}", plan))
+            nodes.extend((f"task {t.get('id')}", t) for t in plan.get("tasks") or [])
+        nodes.extend((f"task {t.get('id')}", t) for t in data.get("tasks") or [])
+        for where, node in nodes:
+            check(where, node, self.NODE_KEYS)
+            for v in node.get("verifications") or []:
+                check(f"{where} verification", v, self.VERIFICATION_KEYS)
+        if problems:
+            raise ValueError(
+                "import refused, nothing written: unknown keys ("
+                + "; ".join(problems)
+                + "). Section text belongs under `sections:`, other data under `frontmatter:`."
+            )
+
     def import_dict(self, data: dict[str, Any]) -> None:
+        self._refuse_unknown_keys(data)
         nodes: list[Node] = []
         sections: list[NodeSection] = []
         relations: list[NodeRelation] = []
