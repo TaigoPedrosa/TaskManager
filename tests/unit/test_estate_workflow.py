@@ -473,8 +473,67 @@ def test_each_stage_of_the_lifecycle_is_claimed_by_its_own_lease(db: DatabaseMan
         coord.start_task("T-2", "other", "s")
     coord.stop_task("T-1", NodeStatus.WAITING_MERGE)
 
+    coord.start_task("T-1", "merger", "s")
+    assert repo.get_node("T-1").status == NodeStatus.MERGING  # type: ignore[union-attr]
+    # A merge locks nothing either, same as a review.
+    coord.start_task("T-2", "other", "s")
+    coord.stop_task("T-2", NodeStatus.NOT_STARTED)
+    with pytest.raises(ValueError, match="not ready to start"):
+        coord.start_task("T-1", "second merger", "s")
+    coord.stop_task("T-1", NodeStatus.COMPLETED)
+
     with pytest.raises(ValueError, match="not ready to start"):
         coord.start_task("T-1", "late", "s")
+
+
+def test_a_merge_claim_refuses_a_worktree(db: DatabaseManager) -> None:
+    repo = NodeRepository(db)
+    task(repo, "T-1")
+    coord = coordinator(db)
+    coord.start_task("T-1", "impl", "s")
+    coord.stop_task("T-1", NodeStatus.WAITING_REVIEW)
+    coord.start_task("T-1", "rev", "s")
+    coord.stop_task("T-1", NodeStatus.WAITING_MERGE)
+
+    with pytest.raises(ValueError, match="does not cut a worktree"):
+        coord.start_task("T-1", "merger", "s", create_worktree=True, worktree_base=Path("/tmp"))
+
+    coord.start_task("T-1", "merger", "s")
+    assert repo.get_node("T-1").status == NodeStatus.MERGING  # type: ignore[union-attr]
+
+
+def test_a_swept_merge_lease_returns_the_task_to_waiting_merge(tmp_path: Path) -> None:
+    _seed_estate(tmp_path)
+    for status_flag in ("WAITING_REVIEW", "WAITING_FIXES", "WAITING_MERGE"):
+        runner.invoke(
+            app, ["run", "start", "S1-P1-a", "--agent", "x", "--session", "y", "-C", str(tmp_path)]
+        )
+        runner.invoke(app, ["run", "stop", "S1-P1-a", "--status", status_flag, "-C", str(tmp_path)])
+    runner.invoke(
+        app,
+        [
+            "run",
+            "start",
+            "S1-P1-a",
+            "--agent",
+            "merger",
+            "--session",
+            "y",
+            "--ttl",
+            "1",
+            "-C",
+            str(tmp_path),
+        ],
+    )
+    import time
+
+    time.sleep(1.2)
+    out = runner.invoke(app, ["run", "sweep", "-C", str(tmp_path)])
+    assert "S1-P1-a" in out.output
+    doc = json.loads(
+        runner.invoke(app, ["task", "get", "S1-P1-a", "--json", "-C", str(tmp_path)]).stdout
+    )
+    assert doc["status"] == "WAITING_MERGE" and doc["lease"] is None
 
 
 def test_a_fix_round_reuses_the_branch_and_worktree_its_first_round_cut(

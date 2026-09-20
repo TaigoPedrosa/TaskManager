@@ -1074,6 +1074,7 @@ def run_sweep(
             NodeStatus.IMPLEMENTING: NodeStatus.NOT_STARTED,
             NodeStatus.REVIEWING: NodeStatus.WAITING_REVIEW,
             NodeStatus.FIXING: NodeStatus.WAITING_FIXES,
+            NodeStatus.MERGING: NodeStatus.WAITING_MERGE,
         }
         for task_id in swept:
             node = node_repo.get_node(task_id)

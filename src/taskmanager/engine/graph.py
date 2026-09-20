@@ -15,7 +15,8 @@ LIFECYCLE_ORDER: dict[NodeStatus, int] = {
     NodeStatus.WAITING_FIXES: 4,
     NodeStatus.FIXING: 5,
     NodeStatus.WAITING_MERGE: 6,
-    NodeStatus.COMPLETED: 7,
+    NodeStatus.MERGING: 7,
+    NodeStatus.COMPLETED: 8,
 }
 
 

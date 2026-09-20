@@ -278,6 +278,17 @@ class StatusVisual(Enum):
         "#115e59",
         "#ccfbf1",
     )
+    MERGING = StatusTheme(
+        "MERGING",
+        "Merging",
+        AppIcon.GIT_BRANCH,
+        StatusGroup.IN_PROGRESS,
+        "An agent is landing the branch on main.",
+        "#93c5fd",
+        "#1e3a8a",
+        "#1d4ed8",
+        "#dbeafe",
+    )
     COMPLETED = StatusTheme(
         "COMPLETED",
         "Completed",

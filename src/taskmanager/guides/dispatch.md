@@ -52,18 +52,18 @@ tm run sweep           # drops leases past their TTL
 
 Wave size is how many reports you can read carefully, not how many tasks `tm next` offers. One agent per task and one task per agent: a second agent on a live task is refused, and an agent holding two leases cannot heartbeat either reliably. Keep the slots full by replacing a finished task rather than by dispatching a whole new wave.
 
-A lease past its TTL does not free its task until it is swept. `tm run sweep` prints `Swept 1 expired lease(s): <id>`, releases the lease and its locks, and returns the task to the state before the abandoned claim: `NOT_STARTED` for an implementation (it appears in `tm next` again), `WAITING_REVIEW` for a review, `WAITING_FIXES` for a fix round. The lost agent's branch and worktree remain; read them before dispatching the replacement.
+A lease past its TTL does not free its task until it is swept. `tm run sweep` prints `Swept 1 expired lease(s): <id>`, releases the lease and its locks, and returns the task to the state before the abandoned claim: `NOT_STARTED` for an implementation (it appears in `tm next` again), `WAITING_REVIEW` for a review, `WAITING_FIXES` for a fix round, `WAITING_MERGE` for a merge. The lost agent's branch and worktree remain; read them before dispatching the replacement.
 
 ## 6. Move it through the cadence
 
-Each stage is one claim and one release. The implementer, the reviewer and the fixer each hold their own lease, so `tm run list` always names who has it.
+Each stage is one claim and one release. The implementer, the reviewer, the fixer and the merge agent each hold their own lease, so `tm run list` always names who has it — including a merge in progress, which used to be invisible to it.
 
 | State | Dispatch | It claims, setting | It releases to |
 |:--|:--|:--|:--|
 | `READY` | an implementer | `IMPLEMENTING`, locking the task's files | `WAITING_REVIEW`, or `NOT_STARTED` if blocked |
 | `WAITING_REVIEW` | a reviewer | `REVIEWING`, locking nothing | `WAITING_FIXES` or `WAITING_MERGE` |
 | `WAITING_FIXES` | a fixer | `FIXING`, locking the task's files again | `WAITING_REVIEW` |
-| `WAITING_MERGE` | a merge agent | nothing — a claim is refused here | `COMPLETED`, after the merge verifies |
+| `WAITING_MERGE` | a merge agent | `MERGING`, locking nothing | `COMPLETED`, after the merge verifies |
 
 Find each wave's next move with `tm task list --status <S> --yaml`. `COMPLETED` is set by the merge agent and nowhere else; what you set directly, with `tm run stop <id> --status <S>` and no lease, is `NOT_STARTED`, `DEFERRED` and `ABANDONED`.
 

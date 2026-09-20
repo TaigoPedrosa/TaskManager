@@ -6,10 +6,11 @@ For the agent that lands a `WAITING_MERGE` task's branch on its repository's mai
 
 ```
 tm task list --status WAITING_MERGE --yaml
+tm run start <task-id>
 tm task get <task-id> --yaml
 ```
 
-A merge holds no lease: `tm run start <task-id>` is refused with `Task <id> is not ready to start (current state: WAITING_MERGE)`. Nothing is claimed, so merge one task at a time and finish it before starting the next. `tm task get` names the `target_repo` and the `declared_files` you will confirm in step 3; the branch is `tm/<task-id>` in `<project root>/<target_repo>`.
+`tm run start` claims a `WAITING_MERGE` task into `MERGING`, no `--worktree` flag (there is no fresh worktree to cut — the merge works from the branch `tm/<task-id>` already sitting in `<project root>/<target_repo>`). The lease locks no file: a merge writes the repository's main branch, not the worktree, so a sibling whose task shares a declared file is free to start while this runs. Two agents claiming the same `WAITING_MERGE` task race on this exactly like a review does: the second gets `Task <id> is not ready to start (current state: MERGING)`. `tm task get` names the `target_repo` and the `declared_files` you will confirm in step 3.
 
 ## 2. Merge and push
 
@@ -50,7 +51,7 @@ This is the only place `COMPLETED` is ever set, and only after steps 3 and 4 bot
 
 ## 6. Remove the worktree
 
-Add `--remove-worktree` to the completing stop, `tm run stop <task-id> --status COMPLETED --remove-worktree`. A task in `WAITING_MERGE` holds no lease, so `tm` finds its worktree by the branch `tm/<task-id>` in the task's repository and removes it. It never forces: a refusal means the worktree holds uncommitted work or is not yours, and that is information. Leave the branch `tm/<task-id>` in place unless your project says otherwise; the merge commit is what makes it disposable.
+Add `--remove-worktree` to the completing stop, `tm run stop <task-id> --status COMPLETED --remove-worktree`. The `MERGING` lease never recorded a worktree path (none was cut), so `tm` finds it by the branch `tm/<task-id>` in the task's repository and removes it — same fallback used for a task completed without ever claiming a lease at all. It never forces: a refusal means the worktree holds uncommitted work or is not yours, and that is information. Leave the branch `tm/<task-id>` in place unless your project says otherwise; the merge commit is what makes it disposable.
 
 ## Waiting on something that takes time
 
@@ -60,7 +61,7 @@ A gate, a push, an external state change — pick by duration, because duration 
 |:--|:--|
 | under 10 minutes | a single foreground call to completion: the tool's own blocking `wait` where one exists, else `timeout 540 bash -c 'until <cond>; do sleep 15; done'; echo $?` |
 | 10–30 minutes | a Monitor with a filter matching every terminal state, not only success |
-| over 30 minutes | leave the task at `WAITING_MERGE`, report what is pending, and let it be picked up again rather than holding your own turn open |
+| over 30 minutes | `tm run stop <task-id> --status WAITING_MERGE`, report what is pending, and let it be picked up again rather than holding your own turn open |
 
 Never end your turn to wait on a background run "until notified." A background command's completion notification reaches you only while you are still working — ending your turn is what loses it, and nothing resumes you afterward. The output is already on disk; `tail` it instead of waiting for word of it.
 
@@ -72,5 +73,6 @@ Task id, merge commit sha, the push, each declared path with its `cat-file` resu
 
 - Never complete a task whose verification failed or whose deliverable you did not find on `origin/main`.
 - Never force-push, never rewrite the repository's main branch, never `git checkout`, `reset` or `clean` in a checkout you share.
-- Never merge a branch whose task is not `WAITING_MERGE`, and never review or fix the code while merging it — it goes back to `WAITING_FIXES` instead.
+- Never merge a branch you did not claim into `MERGING` yourself, and never review or fix the code while merging it — it goes back to `WAITING_FIXES` instead.
+- Run `tm run heartbeat <task-id>` if any step runs long; a swept `MERGING` lease returns the task to `WAITING_MERGE` for someone else to pick up.
 - Never open or edit anything under `.taskmanager/`.

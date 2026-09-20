@@ -232,7 +232,7 @@ def test_stats_reports_every_status_including_zeros(every_status_project: Path) 
     stats = TestClient(create_app(every_status_project)).get("/api/stats").json()
 
     assert ALL_STATUS_CODES <= stats.keys()
-    assert stats["total"] == 13
+    assert stats["total"] == 14
     assert {code: stats[code] for code in ALL_STATUS_CODES} == {
         **{code: 1 for code in ALL_STATUS_CODES},
         NodeStatus.NOT_STARTED.value: 0,
@@ -245,7 +245,7 @@ def test_tree_progress_counts_each_status_separately(every_status_project: Path)
     plan = spec["children"][0]
 
     expected = {code: 1 for code in ALL_STATUS_CODES if code != NodeStatus.NOT_STARTED.value}
-    assert plan["progress"] == {"total": 13, "counts": expected}
+    assert plan["progress"] == {"total": 14, "counts": expected}
     assert spec["progress"] == plan["progress"]
     assert plan["progress"]["counts"]["COMPLETED"] == 1
 
@@ -308,7 +308,7 @@ def test_static_export_embeds_every_status_and_the_filter_ui(
     static = json.loads(static_match.group(1))
     assert set(themes) == ALL_STATUS_CODES
     assert ALL_STATUS_CODES <= static["stats"].keys()
-    assert static["tree"][0]["progress"]["total"] == 13
+    assert static["tree"][0]["progress"]["total"] == 14
     for element_id in (
         "stats-digest",
         "repo-filter",

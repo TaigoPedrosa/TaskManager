@@ -41,16 +41,23 @@ class ExecutionCoordinator:
             VirtualStatus.READY: NodeStatus.IMPLEMENTING,
             NodeStatus.WAITING_REVIEW: NodeStatus.REVIEWING,
             NodeStatus.WAITING_FIXES: NodeStatus.FIXING,
+            NodeStatus.WAITING_MERGE: NodeStatus.MERGING,
         }
         if state not in claims:
             raise ValueError(f"Task {task_id} is not ready to start (current state: {state})")
         claimed_status = claims[state]
-        if claimed_status == NodeStatus.REVIEWING and create_worktree:
-            raise ValueError("a review reads the branch; it does not cut a worktree")
+        if claimed_status in (NodeStatus.REVIEWING, NodeStatus.MERGING) and create_worktree:
+            raise ValueError(
+                "this stage works from the branch already cut; it does not cut a worktree"
+            )
 
-        # A review reads and writes nothing, so it locks no file.
+        # A review reads and writes nothing; a merge writes the repository's main branch, not
+        # the worktree — locking declared_files would hold a sibling out of a wave for the
+        # length of a push, for no protection it actually needs. Neither locks a file.
         declared_files = (
-            [] if claimed_status == NodeStatus.REVIEWING else self.node_repo.declared_files(task_id)
+            []
+            if claimed_status in (NodeStatus.REVIEWING, NodeStatus.MERGING)
+            else self.node_repo.declared_files(task_id)
         )
 
         conflicts = self.runtime_repo.get_conflicting_tasks(declared_files)
@@ -119,7 +126,9 @@ class ExecutionCoordinator:
     ) -> None:
         lease = self.runtime_repo.get_lease(task_id)
         if remove_worktree and self.git:
-            # A task waiting for merge holds no lease, so its worktree is found by its branch.
+            # A MERGING lease was never asked to cut a worktree, and a task completed without
+            # ever claiming one holds no lease at all either way: both fall back to finding the
+            # worktree by its branch.
             recorded = lease.worktree_path if lease and lease.worktree_path else None
             found = recorded or self._worktree_of(task_id)
             if found:

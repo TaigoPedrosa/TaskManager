@@ -9,7 +9,7 @@ tm task list --status WAITING_REVIEW --yaml
 tm run start <task-id> --agent <name> --session <id>
 ```
 
-The claim sets the task to `REVIEWING` and locks nothing, because a review writes nothing. `--worktree` is refused with `a review reads the branch; it does not cut a worktree` — a review needs no checkout of its own.
+The claim sets the task to `REVIEWING` and locks nothing, because a review writes nothing. `--worktree` is refused with `this stage works from the branch already cut; it does not cut a worktree` — a review needs no checkout of its own.
 
 Other refusals, exit 1: `Task <id> is not ready to start (current state: IN_FLIGHT)` means another agent already claimed the review; `(current state: WAITING_FIXES)` or `(current state: WAITING_MERGE)` means someone already reviewed it.
 
