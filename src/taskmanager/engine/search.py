@@ -4,6 +4,7 @@ from typing import Any, Protocol
 
 import httpx
 
+from taskmanager.core.enums import NodeKind, NodeStatus, SearchTargetType
 from taskmanager.db.connection import DatabaseManager
 
 
@@ -58,9 +59,10 @@ class SearchEngine:
         self,
         node_id: str,
         vector: list[float],
-        target_type: str = "title",
+        target_type: SearchTargetType | str = SearchTargetType.TITLE,
         section_key: str | None = None,
     ) -> None:
+        target_type_str = target_type.value if hasattr(target_type, "value") else str(target_type)
         raw_bytes = self._serialize_vec(vector)
         with self.db.get_spec_connection() as conn:
             conn.execute("DELETE FROM vec_nodes WHERE node_id = ?", (node_id,))
@@ -69,7 +71,7 @@ class SearchEngine:
                 INSERT INTO vec_nodes (node_id, target_type, section_key, embedding)
                 VALUES (?, ?, ?, ?)
                 """,
-                (node_id, target_type, section_key or "", raw_bytes),
+                (node_id, target_type_str, section_key or "", raw_bytes),
             )
             conn.commit()
 
@@ -77,8 +79,8 @@ class SearchEngine:
         self,
         query: str,
         query_vector: list[float] | None = None,
-        kinds: list[str] | None = None,
-        statuses: list[str] | None = None,
+        kinds: list[NodeKind | str] | None = None,
+        statuses: list[NodeStatus | str] | None = None,
         limit: int = 5,
     ) -> list[dict[str, Any]]:
         vec = query_vector if query_vector is not None else self.provider.get_embedding(query)

@@ -1,6 +1,11 @@
 from dataclasses import dataclass
 
-from taskmanager.core.enums import NodeKind, NodeStatus, VirtualStatus
+from taskmanager.core.enums import (
+    NodeKind,
+    NodeStatus,
+    RecommendationStrategy,
+    VirtualStatus,
+)
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine.graph import GraphEngine
@@ -34,15 +39,19 @@ class RecommendationEngine:
         self,
         plan_id: str | None = None,
         model_filter: str | None = None,
-        strategy: str = "balanced",
+        strategy: RecommendationStrategy | str = RecommendationStrategy.BALANCED,
         limit: int = 5,
     ) -> list[ScoredTask]:
-        normalized_strategy = strategy.lower().replace("_", "-")
-        if normalized_strategy == "unblock-first":
+        strat = (
+            RecommendationStrategy(strategy.lower().replace("_", "-"))
+            if isinstance(strategy, str)
+            else strategy
+        )
+        if strat == RecommendationStrategy.UNBLOCK_FIRST:
             w_prio, w_unlock, w_close, w_adv = 0.20, 0.60, 0.10, 0.10
-        elif normalized_strategy == "finish-plans":
+        elif strat == RecommendationStrategy.FINISH_PLANS:
             w_prio, w_unlock, w_close, w_adv = 0.10, 0.10, 0.50, 0.30
-        elif normalized_strategy == "priority-strict":
+        elif strat == RecommendationStrategy.PRIORITY_STRICT:
             w_prio, w_unlock, w_close, w_adv = 1.0, 0.0, 0.0, 0.0
         else:
             w_prio, w_unlock, w_close, w_adv = 0.35, 0.30, 0.20, 0.15

@@ -34,7 +34,9 @@ class BulkImporter:
                     )
                 )
 
-        for plan_data in data.get("plans", []):
+        for p_idx, plan_data in enumerate(data.get("plans", []), start=1):
+            if "ordinal" not in plan_data:
+                plan_data["ordinal"] = p_idx
             plan_node = self._parse_node(plan_data, NodeKind.PLAN)
             nodes.append(plan_node)
             sections.extend(self._parse_sections(plan_node.id, plan_data.get("sections")))
@@ -55,7 +57,9 @@ class BulkImporter:
                     )
                 )
 
-            for task_data in plan_data.get("tasks", []):
+            for t_idx, task_data in enumerate(plan_data.get("tasks", []), start=1):
+                if "ordinal" not in task_data:
+                    task_data["ordinal"] = t_idx
                 task_node = self._parse_node(task_data, NodeKind.TASK)
                 nodes.append(task_node)
                 sections.extend(self._parse_sections(task_node.id, task_data.get("sections")))
@@ -142,6 +146,7 @@ class BulkImporter:
             title=data["title"],
             status=status,
             priority=data.get("priority", 50),
+            ordinal=data.get("ordinal", 0),
             target_repo=data.get("target_repo"),
             acceptable_models=data.get("acceptable_models", []),
             frontmatter=data.get("frontmatter", {}),

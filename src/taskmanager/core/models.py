@@ -3,7 +3,14 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from taskmanager.core.enums import NodeKind, NodeStatus, RelationType, VerificationType
+from taskmanager.core.enums import (
+    LedgerCommand,
+    LockType,
+    NodeKind,
+    NodeStatus,
+    RelationType,
+    VerificationType,
+)
 
 
 class Node(BaseModel):
@@ -14,6 +21,7 @@ class Node(BaseModel):
     title: str
     status: NodeStatus = NodeStatus.NOT_STARTED
     priority: int = Field(default=50, ge=1, le=100)
+    ordinal: int = 0
     target_repo: str | None = None
     acceptable_models: list[str] = Field(default_factory=list)
     frontmatter: dict[str, Any] = Field(default_factory=dict)
@@ -70,7 +78,7 @@ class FileLock(BaseModel):
 
     file_path: str
     task_id: str
-    lock_type: str = "write"
+    lock_type: LockType = LockType.WRITE
 
 
 class LedgerEvent(BaseModel):
@@ -79,7 +87,7 @@ class LedgerEvent(BaseModel):
     id: int | None = None
     timestamp: datetime = Field(default_factory=datetime.now)
     actor_id: str
-    command: str
+    command: LedgerCommand | str
     target_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
     diff: dict[str, Any] = Field(default_factory=dict)

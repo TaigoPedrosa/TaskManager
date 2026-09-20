@@ -11,7 +11,17 @@ from dishka import Container, make_container
 from rich import print
 from rich.table import Table
 
-from taskmanager.core.enums import NodeKind, NodeStatus, RelationType, VerificationType
+from taskmanager.core.enums import (
+    ImportFormat,
+    LedgerCommand,
+    NodeKind,
+    NodeStatus,
+    RecommendationStrategy,
+    RelationType,
+    RenderView,
+    TransferMode,
+    VerificationType,
+)
 from taskmanager.core.models import (
     LedgerEvent,
     Node,
@@ -40,10 +50,11 @@ spec_app = typer.Typer(name="spec", help="Manage specifications")
 plan_app = typer.Typer(name="plan", help="Manage plans")
 task_app = typer.Typer(name="task", help="Manage tasks")
 section_app = typer.Typer(name="section", help="Manage node sections")
-run_app = typer.Typer(name="run", help="Manage execution leases")
-verify_app = typer.Typer(name="verify", help="Static verification and assertions")
-audit_app = typer.Typer(name="audit", help="Audit ledger events")
+run_app = typer.Typer(name="run", help="Execution coordination and leases")
+verify_app = typer.Typer(name="verify", help="Static and AST verifications")
+audit_app = typer.Typer(name="audit", help="Audit ledger event logs")
 web_app = typer.Typer(name="web", help="Interactive web visualizer and exporter")
+plugin_app = typer.Typer(name="plugin", help="Install and manage harness plugins")
 
 app.add_typer(spec_app)
 app.add_typer(plan_app)
@@ -53,10 +64,11 @@ app.add_typer(run_app)
 app.add_typer(verify_app)
 app.add_typer(audit_app)
 app.add_typer(web_app)
+app.add_typer(plugin_app)
 
 
 def _get_root(path: Path | None) -> Path:
-    return path.resolve() if path else Path.cwd().resolve()
+    return (path or Path.cwd()).resolve()
 
 
 def _get_container(path: Path | None) -> Container:
@@ -66,7 +78,7 @@ def _get_container(path: Path | None) -> Container:
 
 def _record_ledger(
     container: Container,
-    command: str,
+    command: LedgerCommand | str,
     target_id: str | None = None,
     actor_id: str = "cli",
     payload: dict[str, Any] | None = None,
@@ -128,7 +140,7 @@ def init(
     container = _get_container(root)
     db = container.get(DatabaseManager)
     db.init_all()
-    _record_ledger(container, command="init", target_id=str(root))
+    _record_ledger(container, command=LedgerCommand.INIT, target_id=str(root))
     print(f"[green]Initialized .taskmanager in {root}[/green]")
 
 
@@ -137,6 +149,7 @@ def spec_add(
     title: str,
     slug: Annotated[str | None, typer.Option("--slug", "-s", help="Specification slug/id")] = None,
     priority: Annotated[int, typer.Option("--priority", "-p", help="Priority (1-100)")] = 50,
+    order: Annotated[int, typer.Option("--order", "-o", help="Display order")] = 0,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
@@ -152,27 +165,26 @@ def spec_add(
             counter += 1
         spec_id = f"S{counter}"
 
-    node = Node(id=spec_id, kind=NodeKind.SPEC, title=title, priority=priority)
+    node = Node(id=spec_id, kind=NodeKind.SPEC, title=title, priority=priority, ordinal=order)
     node_repo.save_node(node)
     _record_ledger(
         container,
-        command="spec add",
+        command=LedgerCommand.SPEC_ADD,
         target_id=spec_id,
-        payload={"title": title, "priority": priority},
+        payload={"title": title, "priority": priority, "ordinal": order},
     )
     print(f"[green]Added spec {spec_id}[/green]")
 
 
 @spec_app.command("list")
 def spec_list(
-    status: Annotated[str | None, typer.Option("--status", help="Filter by status")] = None,
+    status: Annotated[NodeStatus | None, typer.Option("--status", help="Filter by status")] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
     container = _get_container(root)
     node_repo = container.get(NodeRepository)
-    status_filter = NodeStatus(status.upper()) if status else None
-    specs = node_repo.list_nodes(kind=NodeKind.SPEC, status=status_filter)
+    specs = node_repo.list_nodes(kind=NodeKind.SPEC, status=status)
 
     table = Table(title="Specifications")
     table.add_column("ID", style="cyan")
@@ -212,6 +224,7 @@ def plan_add(
     spec: Annotated[str, typer.Option("--spec", help="Parent spec ID")],
     slug: Annotated[str | None, typer.Option("--slug", "-s", help="Plan slug")] = None,
     priority: Annotated[int, typer.Option("--priority", "-p", help="Priority")] = 50,
+    order: Annotated[int, typer.Option("--order", "-o", help="Display order")] = 0,
     require_review: Annotated[
         bool, typer.Option("--require-review", help="Inject review gate")
     ] = False,
@@ -231,7 +244,7 @@ def plan_add(
             counter += 1
         plan_id = f"{spec}-P{counter}"
 
-    plan_node = Node(id=plan_id, kind=NodeKind.PLAN, title=title, priority=priority)
+    plan_node = Node(id=plan_id, kind=NodeKind.PLAN, title=title, priority=priority, ordinal=order)
     node_repo.save_node(plan_node)
     node_repo.add_relation(
         NodeRelation(source_id=spec, target_id=plan_id, relation_type=RelationType.CONTAINS)
@@ -241,14 +254,17 @@ def plan_add(
         gate_id = graph_engine.inject_plan_review_gate(plan_id)
         _record_ledger(
             container,
-            command="plan add",
+            command=LedgerCommand.PLAN_REVIEW_GATE,
             target_id=plan_id,
-            payload={"title": title, "spec": spec, "review_gate": gate_id},
+            payload={"title": title, "spec": spec, "review_gate": gate_id, "ordinal": order},
         )
         print(f"[green]Added plan {plan_id} with review gate {gate_id}[/green]")
     else:
         _record_ledger(
-            container, command="plan add", target_id=plan_id, payload={"title": title, "spec": spec}
+            container,
+            command=LedgerCommand.PLAN_ADD,
+            target_id=plan_id,
+            payload={"title": title, "spec": spec, "ordinal": order},
         )
         print(f"[green]Added plan {plan_id}[/green]")
 
@@ -256,14 +272,13 @@ def plan_add(
 @plan_app.command("list")
 def plan_list(
     spec: Annotated[str | None, typer.Option("--spec", help="Filter by spec ID")] = None,
-    status: Annotated[str | None, typer.Option("--status", help="Filter by status")] = None,
+    status: Annotated[NodeStatus | None, typer.Option("--status", help="Filter by status")] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
     container = _get_container(root)
     node_repo = container.get(NodeRepository)
-    status_filter = NodeStatus(status.upper()) if status else None
-    plans = node_repo.list_nodes(kind=NodeKind.PLAN, status=status_filter)
+    plans = node_repo.list_nodes(kind=NodeKind.PLAN, status=status)
     if spec:
         children = set(node_repo.get_children(spec))
         plans = [p for p in plans if p.id in children or p.id.startswith(f"{spec}-")]
@@ -306,6 +321,7 @@ def task_add(
     plan: Annotated[str, typer.Option("--plan", help="Parent plan ID")],
     slug: Annotated[str | None, typer.Option("--slug", "-s", help="Task slug")] = None,
     priority: Annotated[int, typer.Option("--priority", "-p", help="Priority")] = 50,
+    order: Annotated[int, typer.Option("--order", "-o", help="Display order")] = 0,
     depends_on: Annotated[
         str | None, typer.Option("--depends-on", help="Comma-separated dependency task IDs")
     ] = None,
@@ -333,6 +349,7 @@ def task_add(
         kind=NodeKind.TASK,
         title=title,
         priority=priority,
+        ordinal=order,
         acceptable_models=acceptable_models,
     )
     node_repo.save_node(task_node)
@@ -350,7 +367,10 @@ def task_add(
             )
 
     _record_ledger(
-        container, command="task add", target_id=task_id, payload={"title": title, "plan": plan}
+        container,
+        command=LedgerCommand.TASK_ADD,
+        target_id=task_id,
+        payload={"title": title, "plan": plan},
     )
     print(f"[green]Added task {task_id}[/green]")
 
@@ -364,7 +384,7 @@ def task_supersede(
         typer.Option(
             "--transfer-blocks", help="Transfer blocks: all, none, or comma-separated task IDs"
         ),
-    ] = "all",
+    ] = TransferMode.ALL.value,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
@@ -384,17 +404,17 @@ def task_supersede(
     )
 
     tb_val = transfer_blocks.strip().lower()
-    if tb_val == "all":
-        node_repo.transfer_blocks(old_id, new_id, "all")
-    elif tb_val == "none":
-        node_repo.transfer_blocks(old_id, new_id, "none")
+    if tb_val == TransferMode.ALL.value:
+        node_repo.transfer_blocks(old_id, new_id, TransferMode.ALL)
+    elif tb_val == TransferMode.NONE.value:
+        node_repo.transfer_blocks(old_id, new_id, TransferMode.NONE)
     else:
         custom_ids = [x.strip() for x in transfer_blocks.split(",") if x.strip()]
-        node_repo.transfer_blocks(old_id, new_id, "custom", custom_ids=custom_ids)
+        node_repo.transfer_blocks(old_id, new_id, TransferMode.CUSTOM, custom_ids=custom_ids)
 
     _record_ledger(
         container,
-        command="task supersede",
+        command=LedgerCommand.TASK_SUPERSEDE,
         target_id=old_id,
         payload={"superseded_by": new_id, "transfer_blocks": transfer_blocks},
     )
@@ -404,14 +424,13 @@ def task_supersede(
 @task_app.command("list")
 def task_list(
     plan: Annotated[str | None, typer.Option("--plan", help="Filter by plan ID")] = None,
-    status: Annotated[str | None, typer.Option("--status", help="Filter by status")] = None,
+    status: Annotated[NodeStatus | None, typer.Option("--status", help="Filter by status")] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
     container = _get_container(root)
     node_repo = container.get(NodeRepository)
-    status_filter = NodeStatus(status.upper()) if status else None
-    tasks = node_repo.list_nodes(kind=NodeKind.TASK, status=status_filter)
+    tasks = node_repo.list_nodes(kind=NodeKind.TASK, status=status)
     if plan:
         children = set(node_repo.get_children(plan))
         tasks = [t for t in tasks if t.id in children or t.id.startswith(f"{plan}-")]
@@ -528,7 +547,7 @@ def section_set(
         content=text_content,
     )
     node_repo.save_section(node_section)
-    _record_ledger(container, command="section set", target_id=qualified_path)
+    _record_ledger(container, command=LedgerCommand.SECTION_SET, target_id=qualified_path)
     print(f"[green]Saved section {qualified_path}[/green]")
 
 
@@ -558,7 +577,7 @@ def run_start(
     )
     _record_ledger(
         container,
-        command="run start",
+        command=LedgerCommand.TASK_START,
         target_id=task_id,
         payload={"agent_id": agent, "session_id": session, "worktree": worktree},
     )
@@ -584,7 +603,7 @@ def run_heartbeat(
     tid = _resolve_task_id(runtime_repo, task_id)
     success = coordinator.heartbeat(tid)
     if success:
-        _record_ledger(container, command="run heartbeat", target_id=tid)
+        _record_ledger(container, command=LedgerCommand.TASK_HEARTBEAT, target_id=tid)
         print(f"[green]Heartbeat recorded for {tid}[/green]")
     else:
         print(f"[red]No active lease found for {tid}[/red]")
@@ -596,7 +615,9 @@ def run_stop(
     task_id: Annotated[
         str | None, typer.Argument(help="Task ID (optional if inside worktree)")
     ] = None,
-    status: Annotated[str, typer.Option("--status", help="Target status")] = "WAITING_REVIEW",
+    status: Annotated[
+        NodeStatus, typer.Option("--status", help="Target status")
+    ] = NodeStatus.WAITING_REVIEW,
     remove_worktree: Annotated[
         bool, typer.Option("--remove-worktree", help="Remove worktree if created")
     ] = False,
@@ -608,15 +629,14 @@ def run_stop(
     coordinator = container.get(ExecutionCoordinator)
 
     tid = _resolve_task_id(runtime_repo, task_id)
-    status_enum = NodeStatus(status.upper())
-    coordinator.stop_task(task_id=tid, new_status=status_enum, remove_worktree=remove_worktree)
+    coordinator.stop_task(task_id=tid, new_status=status, remove_worktree=remove_worktree)
     _record_ledger(
         container,
-        command="run stop",
+        command=LedgerCommand.TASK_STOP,
         target_id=tid,
-        payload={"status": status_enum.value, "remove_worktree": remove_worktree},
+        payload={"status": status.value, "remove_worktree": remove_worktree},
     )
-    print(f"[green]Stopped task {tid} with status {status_enum.value}[/green]")
+    print(f"[green]Stopped task {tid} with status {status.value}[/green]")
 
 
 @run_app.command("list")
@@ -683,7 +703,7 @@ def run_sweep(
     runtime_repo = container.get(RuntimeRepository)
     swept = runtime_repo.sweep_expired_leases()
     if swept:
-        _record_ledger(container, command="run sweep", payload={"swept_tasks": swept})
+        _record_ledger(container, command=LedgerCommand.LEASE_SWEEP, payload={"swept_tasks": swept})
         print(f"[yellow]Swept {len(swept)} expired lease(s): {', '.join(swept)}[/yellow]")
     else:
         print("[green]No expired leases found.[/green]")
@@ -693,7 +713,8 @@ def run_sweep(
 def verify_add(
     task_id: str,
     type: Annotated[
-        str, typer.Option("--type", "-t", help="Verification type (e.g. file_exists, test_command)")
+        VerificationType,
+        typer.Option("--type", "-t", help="Verification type (e.g. file_exists, test_command)"),
     ],
     target: Annotated[str, typer.Option("--target", help="Target path or command")],
     pattern: Annotated[
@@ -704,21 +725,20 @@ def verify_add(
     root = _get_root(path)
     container = _get_container(root)
     node_repo = container.get(NodeRepository)
-    v_type = VerificationType(type.lower())
     ver = NodeVerification(
         node_id=task_id,
-        verification_type=v_type,
+        verification_type=type,
         target_path=target,
         expected_pattern=pattern,
     )
     node_repo.add_verification(ver)
     _record_ledger(
         container,
-        command="verify add",
+        command=LedgerCommand.VERIFICATION_ADD,
         target_id=task_id,
-        payload={"type": v_type.value, "target": target},
+        payload={"type": type.value, "target": target},
     )
-    print(f"[green]Added {v_type.value} verification to task {task_id}[/green]")
+    print(f"[green]Added {type.value} verification to task {task_id}[/green]")
 
 
 @verify_app.command("run")
@@ -768,7 +788,7 @@ def verify_run(
 
     _record_ledger(
         container,
-        command="verify run",
+        command=LedgerCommand.VERIFICATION_RUN,
         target_id=target_tid,
         payload={"passed": all_passed, "count": len(results)},
     )
@@ -779,7 +799,9 @@ def verify_run(
 @app.command("next")
 def next_tasks(
     limit: Annotated[int, typer.Option("--limit", "-n", help="Number of tasks")] = 5,
-    strategy: Annotated[str, typer.Option("--strategy", help="Scoring strategy")] = "balanced",
+    strategy: Annotated[
+        RecommendationStrategy, typer.Option("--strategy", help="Scoring strategy")
+    ] = RecommendationStrategy.BALANCED,
     plan: Annotated[str | None, typer.Option("--plan", help="Filter by plan ID")] = None,
     model: Annotated[str | None, typer.Option("--model", help="Filter by acceptable model")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
@@ -833,8 +855,8 @@ def next_tasks(
 def render(
     qualified_id: Annotated[str, typer.Argument(help="Qualified node path (e.g. AUTH-USER-LOGIN)")],
     view: Annotated[
-        str, typer.Option("--view", "-v", help="View projection: summary, subagent, or full")
-    ] = "full",
+        RenderView, typer.Option("--view", "-v", help="View projection: summary, subagent, or full")
+    ] = RenderView.FULL,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
@@ -848,8 +870,8 @@ def render(
 @app.command("import")
 def import_cmd(
     format: Annotated[
-        str, typer.Option("--format", help="Input format: markdown, yaml, or json")
-    ] = "json",
+        ImportFormat, typer.Option("--format", help="Input format: json, yaml, or markdown")
+    ] = ImportFormat.JSON,
     file: Annotated[
         Path | None, typer.Option("--file", "-f", help="File to import (defaults to stdin)")
     ] = None,
@@ -864,11 +886,10 @@ def import_cmd(
     else:
         content = sys.stdin.read()
 
-    fmt = format.lower()
-    if fmt == "json":
+    if format == ImportFormat.JSON:
         data = json.loads(content)
         importer.import_dict(data)
-    elif fmt == "yaml":
+    elif format == ImportFormat.YAML:
         try:
             import importlib
 
@@ -877,7 +898,7 @@ def import_cmd(
         except ImportError, ValueError, AttributeError:
             data = json.loads(content)
         importer.import_dict(data)
-    elif fmt == "markdown":
+    elif format == ImportFormat.MARKDOWN:
         if content.startswith("---"):
             parts = content.split("---", 2)
             if len(parts) >= 3:
@@ -894,13 +915,11 @@ def import_cmd(
                 raise typer.BadParameter("Invalid markdown frontmatter")
         else:
             raise typer.BadParameter("Markdown format requires frontmatter structure")
-    else:
-        raise typer.BadParameter(f"Unsupported format '{format}'")
 
     _record_ledger(
         container,
-        command="import",
-        payload={"format": fmt, "file": str(file) if file else "stdin"},
+        command=LedgerCommand.IMPORT,
+        payload={"format": format.value, "file": str(file) if file else "stdin"},
     )
     print(f"[green]Successfully imported data from {file or 'stdin'}[/green]")
 

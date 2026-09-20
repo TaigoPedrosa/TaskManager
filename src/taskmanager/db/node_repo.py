@@ -1,7 +1,13 @@
 import json
 from typing import Any
 
-from taskmanager.core.enums import NodeKind, NodeStatus, VerificationType
+from taskmanager.core.enums import (
+    NodeKind,
+    NodeStatus,
+    RelationType,
+    TransferMode,
+    VerificationType,
+)
 from taskmanager.core.models import (
     Node,
     NodeRelation,
@@ -21,15 +27,16 @@ class NodeRepository:
             conn.execute(
                 """
                 INSERT INTO nodes (
-                    id, kind, title, status, priority, target_repo,
+                    id, kind, title, status, priority, ordinal, target_repo,
                     acceptable_models, frontmatter_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     kind=excluded.kind,
                     title=excluded.title,
                     status=excluded.status,
                     priority=excluded.priority,
+                    ordinal=excluded.ordinal,
                     target_repo=excluded.target_repo,
                     acceptable_models=excluded.acceptable_models,
                     frontmatter_json=excluded.frontmatter_json,
@@ -41,6 +48,7 @@ class NodeRepository:
                     node.title,
                     node.status.value,
                     node.priority,
+                    node.ordinal,
                     node.target_repo,
                     json.dumps(node.acceptable_models),
                     json.dumps(node.frontmatter),
@@ -82,7 +90,7 @@ class NodeRepository:
         with self.db.get_spec_connection() as conn:
             row = conn.execute(
                 """
-                SELECT id, kind, title, status, priority, target_repo,
+                SELECT id, kind, title, status, priority, ordinal, target_repo,
                        acceptable_models, frontmatter_json, created_at, updated_at
                 FROM nodes WHERE id = ?
                 """,
@@ -96,7 +104,7 @@ class NodeRepository:
         self, kind: NodeKind | None = None, status: NodeStatus | None = None
     ) -> list[Node]:
         query = (
-            "SELECT id, kind, title, status, priority, target_repo, "
+            "SELECT id, kind, title, status, priority, ordinal, target_repo, "
             "acceptable_models, frontmatter_json, created_at, updated_at "
             "FROM nodes WHERE 1=1"
         )
@@ -107,7 +115,7 @@ class NodeRepository:
         if status is not None:
             query += " AND status = ?"
             params.append(status.value if hasattr(status, "value") else str(status))
-        query += " ORDER BY id ASC"
+        query += " ORDER BY ordinal ASC, priority DESC, id ASC"
         with self.db.get_spec_connection() as conn:
             rows = conn.execute(query, tuple(params)).fetchall()
             return [self._row_to_node(r) for r in rows]
@@ -232,24 +240,30 @@ class NodeRepository:
     def get_children(self, parent_id: str) -> list[str]:
         with self.db.get_spec_connection() as conn:
             rows = conn.execute(
-                "SELECT target_id FROM node_relations WHERE source_id = ? AND relation_type = 'contains' ORDER BY rowid ASC",
-                (parent_id,),
+                """
+                SELECT r.target_id
+                FROM node_relations r
+                JOIN nodes n ON r.target_id = n.id
+                WHERE r.source_id = ? AND r.relation_type = ?
+                ORDER BY n.ordinal ASC, n.priority DESC, n.id ASC
+                """,
+                (parent_id, RelationType.CONTAINS.value),
             ).fetchall()
             return [r[0] for r in rows]
 
     def get_dependencies(self, node_id: str) -> list[str]:
         with self.db.get_spec_connection() as conn:
             rows = conn.execute(
-                "SELECT target_id FROM node_relations WHERE source_id = ? AND relation_type = 'depends_on' ORDER BY rowid ASC",
-                (node_id,),
+                "SELECT target_id FROM node_relations WHERE source_id = ? AND relation_type = ? ORDER BY rowid ASC",
+                (node_id, RelationType.DEPENDS_ON.value),
             ).fetchall()
             return [r[0] for r in rows]
 
     def get_blocked_by(self, node_id: str) -> list[str]:
         with self.db.get_spec_connection() as conn:
             rows = conn.execute(
-                "SELECT source_id FROM node_relations WHERE target_id = ? AND relation_type = 'depends_on' ORDER BY rowid ASC",
-                (node_id,),
+                "SELECT source_id FROM node_relations WHERE target_id = ? AND relation_type = ? ORDER BY rowid ASC",
+                (node_id, RelationType.DEPENDS_ON.value),
             ).fetchall()
             return [r[0] for r in rows]
 
@@ -257,31 +271,34 @@ class NodeRepository:
         self,
         old_id: str,
         new_id: str,
-        transfer_mode: str,
+        transfer_mode: TransferMode | str,
         custom_ids: list[str] | None = None,
     ) -> None:
-        mode = transfer_mode.lower()
+        mode = (
+            TransferMode(transfer_mode.lower()) if isinstance(transfer_mode, str) else transfer_mode
+        )
+        dep_val = RelationType.DEPENDS_ON.value
         with self.db.get_spec_connection() as conn:
-            if mode == "all":
+            if mode == TransferMode.ALL:
                 conn.execute(
-                    "UPDATE OR IGNORE node_relations SET target_id = ? WHERE target_id = ? AND relation_type = 'depends_on'",
-                    (new_id, old_id),
+                    "UPDATE OR IGNORE node_relations SET target_id = ? WHERE target_id = ? AND relation_type = ?",
+                    (new_id, old_id, dep_val),
                 )
                 conn.execute(
-                    "DELETE FROM node_relations WHERE target_id = ? AND relation_type = 'depends_on'",
-                    (old_id,),
+                    "DELETE FROM node_relations WHERE target_id = ? AND relation_type = ?",
+                    (old_id, dep_val),
                 )
-            elif mode == "none":
+            elif mode == TransferMode.NONE:
                 pass
-            elif mode == "custom" and custom_ids:
+            elif mode == TransferMode.CUSTOM and custom_ids:
                 placeholders = ",".join("?" for _ in custom_ids)
                 conn.execute(
-                    f"UPDATE OR IGNORE node_relations SET target_id = ? WHERE target_id = ? AND relation_type = 'depends_on' AND source_id IN ({placeholders})",
-                    (new_id, old_id, *custom_ids),
+                    f"UPDATE OR IGNORE node_relations SET target_id = ? WHERE target_id = ? AND relation_type = ? AND source_id IN ({placeholders})",
+                    (new_id, old_id, dep_val, *custom_ids),
                 )
                 conn.execute(
-                    f"DELETE FROM node_relations WHERE target_id = ? AND relation_type = 'depends_on' AND source_id IN ({placeholders})",
-                    (old_id, *custom_ids),
+                    f"DELETE FROM node_relations WHERE target_id = ? AND relation_type = ? AND source_id IN ({placeholders})",
+                    (old_id, dep_val, *custom_ids),
                 )
             conn.commit()
 
@@ -368,9 +385,18 @@ class NodeRepository:
             title=row[2],
             status=NodeStatus(row[3]),
             priority=row[4],
-            target_repo=row[5],
-            acceptable_models=json.loads(row[6]),
-            frontmatter=json.loads(row[7]),
-            created_at=parse_db_datetime(row[8]),
-            updated_at=parse_db_datetime(row[9]),
+            ordinal=row[5],
+            target_repo=row[6],
+            acceptable_models=json.loads(row[7]),
+            frontmatter=json.loads(row[8]),
+            created_at=parse_db_datetime(row[9]),
+            updated_at=parse_db_datetime(row[10]),
         )
+
+    def update_ordinal(self, node_id: str, ordinal: int) -> None:
+        with self.db.get_spec_connection() as conn:
+            conn.execute(
+                "UPDATE nodes SET ordinal = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (ordinal, node_id),
+            )
+            conn.commit()

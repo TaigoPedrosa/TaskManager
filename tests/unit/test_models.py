@@ -4,9 +4,17 @@ import pytest
 from pydantic import ValidationError
 
 from taskmanager.core.enums import (
+    EmbeddingProviderType,
+    ImportFormat,
+    LedgerCommand,
+    LockType,
     NodeKind,
     NodeStatus,
+    RecommendationStrategy,
     RelationType,
+    RenderView,
+    SearchTargetType,
+    TransferMode,
     VerificationType,
     VirtualStatus,
 )
@@ -54,6 +62,37 @@ def test_enums_values() -> None:
     assert VerificationType.AST_EXPORT.value == "ast_export"
     assert VerificationType.TEST_COMMAND.value == "test_command"
     assert VerificationType.CODEGRAPH_QUERY.value == "codegraph_query"
+
+    assert LockType.WRITE.value == "write"
+    assert LockType.READ.value == "read"
+
+    assert TransferMode.ALL.value == "all"
+    assert TransferMode.NONE.value == "none"
+    assert TransferMode.CUSTOM.value == "custom"
+
+    assert RecommendationStrategy.BALANCED.value == "balanced"
+    assert RecommendationStrategy.UNBLOCK_FIRST.value == "unblock-first"
+    assert RecommendationStrategy.FINISH_PLANS.value == "finish-plans"
+    assert RecommendationStrategy.PRIORITY_STRICT.value == "priority-strict"
+
+    assert RenderView.SUMMARY.value == "summary"
+    assert RenderView.SUBAGENT.value == "subagent"
+    assert RenderView.FULL.value == "full"
+
+    assert ImportFormat.JSON.value == "json"
+    assert ImportFormat.YAML.value == "yaml"
+    assert ImportFormat.MARKDOWN.value == "markdown"
+
+    assert LedgerCommand.INIT.value == "init"
+    assert LedgerCommand.SPEC_ADD.value == "spec_add"
+    assert LedgerCommand.TASK_START.value == "task_start"
+
+    assert SearchTargetType.TITLE.value == "title"
+    assert SearchTargetType.SECTION.value == "section"
+    assert SearchTargetType.OVERVIEW.value == "overview"
+
+    assert EmbeddingProviderType.MOCK.value == "mock"
+    assert EmbeddingProviderType.OPENAI.value == "openai"
 
 
 def test_node_instantiation_defaults() -> None:
@@ -192,23 +231,26 @@ def test_file_lock() -> None:
     lock = FileLock(file_path="src/auth/jwt.py", task_id="AUTH-T01")
     assert lock.file_path == "src/auth/jwt.py"
     assert lock.task_id == "AUTH-T01"
-    assert lock.lock_type == "write"
+    assert lock.lock_type == LockType.WRITE
+    assert lock.lock_type.value == "write"
 
-    read_lock = FileLock(file_path="src/auth/jwt.py", task_id="AUTH-T01", lock_type="read")
-    assert read_lock.lock_type == "read"
+    read_lock = FileLock(file_path="src/auth/jwt.py", task_id="AUTH-T01", lock_type=LockType.READ)
+    assert read_lock.lock_type == LockType.READ
+    assert read_lock.lock_type.value == "read"
 
 
 def test_ledger_event() -> None:
     event = LedgerEvent(
         actor_id="agent-123",
-        command="node.create",
+        command=LedgerCommand.TASK_ADD,
         target_id="AUTH-T01",
         payload={"title": "Test"},
         diff={"status": ["NOT_STARTED", "IMPLEMENTING"]},
     )
     assert event.id is None
     assert event.actor_id == "agent-123"
-    assert event.command == "node.create"
+    assert event.command == LedgerCommand.TASK_ADD
+    assert str(event.command) == "task_add"
     assert event.target_id == "AUTH-T01"
     assert event.payload == {"title": "Test"}
     assert event.diff == {"status": ["NOT_STARTED", "IMPLEMENTING"]}

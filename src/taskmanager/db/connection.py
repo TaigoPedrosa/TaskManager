@@ -28,9 +28,23 @@ class DatabaseManager:
             conn.enable_load_extension(False)
         return conn
 
+    def _ensure_spec_migrations(self, conn: sqlite3.Connection) -> None:
+        try:
+            has_nodes = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='nodes'"
+            ).fetchone()
+            if has_nodes:
+                cols = [r[1] for r in conn.execute("PRAGMA table_info(nodes)").fetchall()]
+                if "ordinal" not in cols:
+                    conn.execute("ALTER TABLE nodes ADD COLUMN ordinal INTEGER NOT NULL DEFAULT 0;")
+                    conn.commit()
+        except sqlite3.Error:
+            pass
+
     @contextmanager
     def get_spec_connection(self) -> Generator[sqlite3.Connection]:
         conn = self._create_connection(self.spec_db, load_vec=True)
+        self._ensure_spec_migrations(conn)
         try:
             yield conn
         finally:
@@ -55,6 +69,10 @@ class DatabaseManager:
     def init_all(self, vector_dimensions: int = 384) -> None:
         with self.get_spec_connection() as conn:
             conn.executescript(SPEC_SCHEMA_SQL)
+            # Safe migration for existing databases
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(nodes)").fetchall()]
+            if "ordinal" not in cols:
+                conn.execute("ALTER TABLE nodes ADD COLUMN ordinal INTEGER NOT NULL DEFAULT 0;")
             conn.execute(
                 f"""
                 CREATE VIRTUAL TABLE IF NOT EXISTS vec_nodes USING vec0(

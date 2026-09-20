@@ -2,7 +2,13 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from taskmanager.core.enums import NodeKind, NodeStatus, RelationType, VerificationType
+from taskmanager.core.enums import (
+    LockType,
+    NodeKind,
+    NodeStatus,
+    RelationType,
+    VerificationType,
+)
 from taskmanager.core.models import (
     FileLock,
     Lease,
@@ -274,7 +280,7 @@ def test_runtime_repo_leases_and_locks(tmp_path: Path) -> None:
         ttl_seconds=300,
     )
     lock1 = FileLock(file_path="src/auth/jwt.py", task_id="AUTH-T01")
-    lock2 = FileLock(file_path="src/auth/utils.py", task_id="AUTH-T01", lock_type="read")
+    lock2 = FileLock(file_path="src/auth/utils.py", task_id="AUTH-T01", lock_type=LockType.READ)
     repo.acquire_lease(lease, [lock1, lock2])
 
     loaded = repo.get_lease("AUTH-T01")

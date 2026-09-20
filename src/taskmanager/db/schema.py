@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     title TEXT NOT NULL,
     status TEXT NOT NULL,
     priority INTEGER NOT NULL DEFAULT 50,
+    ordinal INTEGER NOT NULL DEFAULT 0,
     target_repo TEXT,
     acceptable_models TEXT NOT NULL DEFAULT '[]',
     frontmatter_json TEXT NOT NULL DEFAULT '{}',

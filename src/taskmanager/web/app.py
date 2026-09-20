@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
-from taskmanager.core.enums import NodeKind, NodeStatus, VirtualStatus
+from taskmanager.core.enums import NodeKind, NodeStatus, RenderView, VirtualStatus
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
@@ -112,65 +112,95 @@ def create_app(project_root: Path) -> FastAPI:
         plans = node_repo.list_nodes(kind=NodeKind.PLAN)
         tasks = node_repo.list_nodes(kind=NodeKind.TASK)
 
-        tree: list[dict[str, Any]] = []
+        def node_to_dict(n: Any) -> dict[str, Any]:
+            v_status = n.status.value
+            if n.kind == NodeKind.TASK:
+                v_status = graph_engine.resolve_task_state(n.id).value
+            elif n.kind == NodeKind.PLAN:
+                v_status = graph_engine.resolve_plan_status(n.id).value
 
-        def build_task_dict(task_node: Any) -> dict[str, Any]:
-            v_status = graph_engine.resolve_task_state(task_node.id)
+            sections = node_repo.get_all_sections(n.id)
+            verifications = node_repo.get_verifications(n.id) if n.kind == NodeKind.TASK else []
+            lease = runtime_repo.get_lease(n.id) if n.kind == NodeKind.TASK else None
+
             return {
-                "id": task_node.id,
-                "kind": task_node.kind.value,
-                "title": task_node.title,
-                "status": task_node.status.value,
-                "virtual_status": v_status.value,
-                "priority": task_node.priority,
-                "acceptable_models": task_node.acceptable_models,
+                "id": n.id,
+                "kind": n.kind.value,
+                "title": n.title,
+                "status": n.status.value,
+                "virtual_status": v_status,
+                "priority": n.priority,
+                "ordinal": n.ordinal,
+                "target_repo": n.target_repo,
+                "acceptable_models": n.acceptable_models,
+                "frontmatter": n.frontmatter,
+                "dependencies": node_repo.get_dependencies(n.id),
+                "blocked_by": node_repo.get_blocked_by(n.id),
+                "sections": [
+                    {
+                        "key": s.section_key,
+                        "header": s.header,
+                        "content": s.content,
+                        "ordinal": s.ordinal,
+                    }
+                    for s in sections
+                ],
+                "verifications": [
+                    {
+                        "id": v.id,
+                        "type": v.verification_type.value,
+                        "target": v.target_path,
+                        "pattern": v.expected_pattern,
+                    }
+                    for v in verifications
+                ],
+                "lease": {
+                    "agent_id": lease.agent_id,
+                    "session_id": lease.session_id,
+                    "branch_name": lease.branch_name,
+                    "worktree_path": lease.worktree_path,
+                }
+                if lease
+                else None,
                 "children": [],
             }
 
-        def build_plan_dict(plan_node: Any) -> dict[str, Any]:
-            child_ids = node_repo.get_children(plan_node.id)
-            plan_status = graph_engine.resolve_plan_status(plan_node.id)
-            children: list[dict[str, Any]] = []
-            for cid in child_ids:
-                cnode = node_repo.get_node(cid)
-                if cnode and cnode.kind in (NodeKind.TASK, NodeKind.REVIEW_GATE):
-                    children.append(build_task_dict(cnode))
-            return {
-                "id": plan_node.id,
-                "kind": plan_node.kind.value,
-                "title": plan_node.title,
-                "status": plan_node.status.value,
-                "virtual_status": plan_status.value,
-                "priority": plan_node.priority,
-                "children": children,
-            }
+        tree: list[dict[str, Any]] = []
 
         if specs:
             for s in specs:
+                s_dict = node_to_dict(s)
                 plan_children_ids = node_repo.get_children(s.id)
                 plan_children: list[dict[str, Any]] = []
                 for pid in plan_children_ids:
                     pnode = node_repo.get_node(pid)
                     if pnode and pnode.kind == NodeKind.PLAN:
-                        plan_children.append(build_plan_dict(pnode))
-                tree.append(
-                    {
-                        "id": s.id,
-                        "kind": s.kind.value,
-                        "title": s.title,
-                        "status": s.status.value,
-                        "virtual_status": s.status.value,
-                        "priority": s.priority,
-                        "children": plan_children,
-                    }
-                )
+                        p_dict = node_to_dict(pnode)
+                        task_children_ids = node_repo.get_children(pnode.id)
+                        task_children: list[dict[str, Any]] = []
+                        for cid in task_children_ids:
+                            cnode = node_repo.get_node(cid)
+                            if cnode:
+                                task_children.append(node_to_dict(cnode))
+                        p_dict["children"] = task_children
+                        plan_children.append(p_dict)
+                s_dict["children"] = plan_children
+                tree.append(s_dict)
         else:
             # Standalone plans without specs
             for p in plans:
-                tree.append(build_plan_dict(p))
+                p_dict = node_to_dict(p)
+                task_children_ids = node_repo.get_children(p.id)
+                task_children = []
+                for cid in task_children_ids:
+                    cnode = node_repo.get_node(cid)
+                    if cnode:
+                        task_children.append(node_to_dict(cnode))
+                p_dict["children"] = task_children
+                tree.append(p_dict)
 
         # Add any orphan tasks
-        parented_ids = set()
+        parented_ids: set[str] = set()
         for s in specs:
             parented_ids.update(node_repo.get_children(s.id))
         for p in plans:
@@ -178,7 +208,7 @@ def create_app(project_root: Path) -> FastAPI:
 
         for t in tasks:
             if t.id not in parented_ids:
-                tree.append(build_task_dict(t))
+                tree.append(node_to_dict(t))
 
         return tree
 
@@ -200,6 +230,7 @@ def create_app(project_root: Path) -> FastAPI:
                     "kind": n.kind.value,
                     "status": v_status,
                     "priority": n.priority,
+                    "ordinal": n.ordinal,
                 }
             )
 
@@ -234,7 +265,8 @@ def create_app(project_root: Path) -> FastAPI:
         sections = node_repo.get_all_sections(node_id)
         verifications = node_repo.get_verifications(node_id)
         lease = runtime_repo.get_lease(node_id)
-        rendered = renderer.render(node_id, view="full")
+        dependencies = node_repo.get_dependencies(node_id)
+        blocked_by = node_repo.get_blocked_by(node_id)
 
         return {
             "node": {
@@ -243,11 +275,15 @@ def create_app(project_root: Path) -> FastAPI:
                 "title": node.title,
                 "status": node.status.value,
                 "priority": node.priority,
+                "ordinal": node.ordinal,
                 "target_repo": node.target_repo,
                 "acceptable_models": node.acceptable_models,
                 "frontmatter": node.frontmatter,
             },
             "virtual_status": v_status,
+            "rendered_markdown": renderer.render(node_id, view=RenderView.FULL),
+            "dependencies": dependencies,
+            "blocked_by": blocked_by,
             "sections": [
                 {
                     "key": s.section_key,
@@ -262,6 +298,7 @@ def create_app(project_root: Path) -> FastAPI:
                     "id": v.id,
                     "verification_type": v.verification_type.value,
                     "target_path": v.target_path,
+                    "expected_pattern": v.expected_pattern,
                 }
                 for v in verifications
             ],
@@ -274,34 +311,35 @@ def create_app(project_root: Path) -> FastAPI:
             }
             if lease
             else None,
-            "rendered_markdown": rendered,
         }
 
     @app.get("/api/stats")
     async def get_stats() -> dict[str, int]:
         all_tasks = node_repo.list_nodes(kind=NodeKind.TASK)
-        ready_count = 0
-        inflight_count = 0
-        review_count = 0
-        completed_count = 0
+        stats: dict[str, int] = {
+            "total": len(all_tasks),
+            **{s.value: 0 for s in NodeStatus},
+            **{v.value: 0 for v in VirtualStatus},
+        }
 
         for t in all_tasks:
             state = graph_engine.resolve_task_state(t.id)
-            if state == VirtualStatus.READY:
-                ready_count += 1
-            elif state == VirtualStatus.IN_FLIGHT or state == NodeStatus.IMPLEMENTING:
-                inflight_count += 1
-            elif state in (NodeStatus.WAITING_REVIEW, NodeStatus.REVIEWING):
-                review_count += 1
-            elif state in (NodeStatus.COMPLETED, NodeStatus.SUPERSEDED):
-                completed_count += 1
+            val = state.value if hasattr(state, "value") else str(state)
+            if val in stats:
+                stats[val] += 1
+            else:
+                stats[val] = 1
 
-        return {
-            "total": len(all_tasks),
-            "ready": ready_count,
-            "in_flight": inflight_count,
-            "waiting_review": review_count,
-            "completed": completed_count,
-        }
+        stats["ready"] = stats[VirtualStatus.READY.value]
+        stats["in_flight"] = (
+            stats[VirtualStatus.IN_FLIGHT.value] + stats[NodeStatus.IMPLEMENTING.value]
+        )
+        stats["waiting_review"] = (
+            stats[NodeStatus.WAITING_REVIEW.value] + stats[NodeStatus.REVIEWING.value]
+        )
+        stats["completed"] = stats[NodeStatus.COMPLETED.value]
+        stats["blocked"] = stats[VirtualStatus.BLOCKED.value]
+
+        return stats
 
     return app
