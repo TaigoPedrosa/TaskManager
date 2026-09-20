@@ -5,7 +5,13 @@ from pathlib import Path
 
 import sqlite_vec  # type: ignore[import-untyped]
 
-from taskmanager.db.schema import LEDGER_SCHEMA_SQL, RUNTIME_SCHEMA_SQL, SPEC_SCHEMA_SQL
+from taskmanager.db.schema import (
+    INDEX_STATE_SQL,
+    LEDGER_SCHEMA_SQL,
+    RUNTIME_SCHEMA_SQL,
+    SPEC_SCHEMA_SQL,
+    vec_nodes_sql,
+)
 
 
 class DatabaseManager:
@@ -38,6 +44,7 @@ class DatabaseManager:
                 if "ordinal" not in cols:
                     conn.execute("ALTER TABLE nodes ADD COLUMN ordinal INTEGER NOT NULL DEFAULT 0;")
                     conn.commit()
+                conn.executescript(INDEX_STATE_SQL)
                 # A repeat import used to insert every verification again.
                 conn.execute(
                     """
@@ -84,20 +91,12 @@ class DatabaseManager:
     def init_all(self, vector_dimensions: int = 384) -> None:
         with self.get_spec_connection() as conn:
             conn.executescript(SPEC_SCHEMA_SQL)
+            conn.executescript(INDEX_STATE_SQL)
             # Safe migration for existing databases
             cols = [r[1] for r in conn.execute("PRAGMA table_info(nodes)").fetchall()]
             if "ordinal" not in cols:
                 conn.execute("ALTER TABLE nodes ADD COLUMN ordinal INTEGER NOT NULL DEFAULT 0;")
-            conn.execute(
-                f"""
-                CREATE VIRTUAL TABLE IF NOT EXISTS vec_nodes USING vec0(
-                    node_id TEXT PRIMARY KEY,
-                    target_type TEXT,
-                    section_key TEXT,
-                    embedding FLOAT[{vector_dimensions}] DISTANCE_METRIC=cosine
-                );
-                """
-            )
+            conn.execute(vec_nodes_sql(vector_dimensions))
             conn.commit()
 
         with self.get_runtime_connection() as conn:

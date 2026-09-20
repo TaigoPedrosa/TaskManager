@@ -60,6 +60,30 @@ CREATE TABLE IF NOT EXISTS embedding_metadata (
 );
 """
 
+# One row per embedded (node, target, section): the hash of the text its vectors were made from.
+INDEX_STATE_SQL = """
+CREATE TABLE IF NOT EXISTS index_state (
+    node_id TEXT NOT NULL,
+    target_type TEXT NOT NULL,
+    section_key TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    PRIMARY KEY (node_id, target_type, section_key)
+);
+"""
+
+
+def vec_nodes_sql(dimensions: int) -> str:
+    # No primary key: a node holds one vector per title, section and chunk.
+    return f"""
+    CREATE VIRTUAL TABLE IF NOT EXISTS vec_nodes USING vec0(
+        node_id TEXT,
+        target_type TEXT,
+        section_key TEXT,
+        embedding FLOAT[{dimensions}] DISTANCE_METRIC=cosine
+    );
+    """
+
+
 RUNTIME_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS leases (
     task_id TEXT PRIMARY KEY,

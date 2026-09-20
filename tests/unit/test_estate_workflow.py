@@ -343,12 +343,15 @@ def test_an_export_restores_into_a_fresh_root_and_exports_identically(tmp_path: 
     )
     runner.invoke(app, ["run", "stop", "S1-P1-a", "--status", "DEFERRED", "-C", str(source)])
     runner.invoke(app, ["section", "set", "S1:overview", "the spec text", "-C", str(source)])
+    runner.invoke(app, ["config", "set", "lease_ttl", "600", "-C", str(source)])
+    runner.invoke(app, ["config", "set", "embeddings.provider", "mock", "-C", str(source)])
     assert runner.invoke(app, ["export", str(tmp_path / "e1"), "-C", str(source)]).exit_code == 0
 
     fresh = tmp_path / "fresh"
     fresh.mkdir()
     res = runner.invoke(app, ["restore", str(tmp_path / "e1"), "-C", str(fresh)])
     assert res.exit_code == 0, res.output
+    assert "Restored 2 plans and 1 specs" in res.output
     assert runner.invoke(app, ["export", str(tmp_path / "e2"), "-C", str(fresh)]).exit_code == 0
     for f in sorted((tmp_path / "e1").glob("*.json")):
         assert f.read_bytes() == (tmp_path / "e2" / f.name).read_bytes(), f.name
@@ -356,6 +359,29 @@ def test_an_export_restores_into_a_fresh_root_and_exports_identically(tmp_path: 
         runner.invoke(app, ["task", "get", "S1-P2-b", "--json", "-C", str(fresh)]).stdout
     )
     assert [d["id"] for d in restored["depends_on"]] == ["S1-P1-a"]
+    assert json.loads((tmp_path / "e1" / "_config.json").read_text()) == {
+        "embeddings": {"provider": "mock"},
+        "lease_ttl": 600,
+    }
+    assert (fresh / ".taskmanager" / "config.yaml").read_bytes() == (
+        source / ".taskmanager" / "config.yaml"
+    ).read_bytes()
+
+
+def test_a_directory_without_a_config_file_restores_with_defaults(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    runner.invoke(app, ["init", "-C", str(source)])
+    runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "-C", str(source)])
+    assert runner.invoke(app, ["export", str(tmp_path / "e1"), "-C", str(source)]).exit_code == 0
+    assert not (tmp_path / "e1" / "_config.json").exists()
+
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    assert runner.invoke(app, ["restore", str(tmp_path / "e1"), "-C", str(fresh)]).exit_code == 0
+    assert not (fresh / ".taskmanager" / "config.yaml").exists()
+    listed = json.loads(runner.invoke(app, ["config", "list", "--json", "-C", str(fresh)]).stdout)
+    assert {row["source"] for row in listed} == {"default"}
 
 
 def _seed_estate(tmp_path: Path) -> None:
