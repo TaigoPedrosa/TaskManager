@@ -22,7 +22,9 @@ class BulkImporter:
 
         spec_data = data.get("spec")
         if spec_data:
-            spec_node = self._parse_node(spec_data, NodeKind.SPEC)
+            spec_node = self._parse_node(
+                spec_data, NodeKind.SPEC, self.node_repo.get_node(spec_data["id"])
+            )
             nodes.append(spec_node)
             sections.extend(self._parse_sections(spec_node.id, spec_data.get("sections")))
             for dep in spec_data.get("depends_on", []):
@@ -37,7 +39,9 @@ class BulkImporter:
         for p_idx, plan_data in enumerate(data.get("plans", []), start=1):
             if "ordinal" not in plan_data:
                 plan_data["ordinal"] = p_idx
-            plan_node = self._parse_node(plan_data, NodeKind.PLAN)
+            plan_node = self._parse_node(
+                plan_data, NodeKind.PLAN, self.node_repo.get_node(plan_data["id"])
+            )
             nodes.append(plan_node)
             sections.extend(self._parse_sections(plan_node.id, plan_data.get("sections")))
             if spec_data:
@@ -60,7 +64,9 @@ class BulkImporter:
             for t_idx, task_data in enumerate(plan_data.get("tasks", []), start=1):
                 if "ordinal" not in task_data:
                     task_data["ordinal"] = t_idx
-                task_node = self._parse_node(task_data, NodeKind.TASK)
+                task_node = self._parse_node(
+                    task_data, NodeKind.TASK, self.node_repo.get_node(task_data["id"])
+                )
                 nodes.append(task_node)
                 sections.extend(self._parse_sections(task_node.id, task_data.get("sections")))
                 relations.append(
@@ -94,7 +100,9 @@ class BulkImporter:
                     )
 
         for task_data in data.get("tasks", []):
-            task_node = self._parse_node(task_data, NodeKind.TASK)
+            task_node = self._parse_node(
+                task_data, NodeKind.TASK, self.node_repo.get_node(task_data["id"])
+            )
             nodes.append(task_node)
             sections.extend(self._parse_sections(task_node.id, task_data.get("sections")))
             if spec_data:
@@ -148,20 +156,28 @@ class BulkImporter:
             self.node_repo.add_verification(ver)
 
     @staticmethod
-    def _parse_node(data: dict[str, Any], default_kind: NodeKind) -> Node:
-        kind = NodeKind(data.get("kind", default_kind))
-        status_val = data.get("status", NodeStatus.NOT_STARTED)
-        status = NodeStatus(status_val) if isinstance(status_val, str) else status_val
+    def _parse_node(
+        data: dict[str, Any], default_kind: NodeKind, existing: Node | None = None
+    ) -> Node:
+        """A key the document omits keeps the value the node already has, so importing a document
+        again never resets the progress recorded since; a key it states wins."""
+
+        def pick(key: str, default: Any) -> Any:
+            if key in data:
+                return data[key]
+            return getattr(existing, key) if existing is not None else default
+
+        status_val = pick("status", NodeStatus.NOT_STARTED)
         return Node(
             id=data["id"],
-            kind=kind,
+            kind=NodeKind(data.get("kind", default_kind)),
             title=data["title"],
-            status=status,
-            priority=data.get("priority", 50),
-            ordinal=data.get("ordinal", 0),
-            target_repo=data.get("target_repo"),
-            acceptable_models=data.get("acceptable_models", []),
-            frontmatter=data.get("frontmatter", {}),
+            status=NodeStatus(status_val) if isinstance(status_val, str) else status_val,
+            priority=pick("priority", 50),
+            ordinal=data.get("ordinal", existing.ordinal if existing is not None else 0),
+            target_repo=pick("target_repo", None),
+            acceptable_models=pick("acceptable_models", []),
+            frontmatter=pick("frontmatter", {}),
         )
 
     @staticmethod

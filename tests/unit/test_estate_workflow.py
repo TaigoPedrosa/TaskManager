@@ -710,3 +710,45 @@ def test_brackets_in_task_text_reach_the_reader_untouched(tmp_path: Path) -> Non
     for args in (["task", "list"], ["task", "get", "S1-P1-a"]):
         out = runner.invoke(app, [*args, "-C", root])
         assert out.exit_code == 0 and "[x]" in out.output and "[/y]" in out.output
+
+
+def test_reimporting_a_document_keeps_the_progress_it_does_not_state(db: DatabaseManager) -> None:
+    repo = NodeRepository(db)
+    importer = BulkImporter(repo)
+    doc = {
+        "plans": [{"id": "P", "title": "P", "tasks": [{"id": "P-1", "title": "a", "priority": 70}]}]
+    }
+    importer.import_dict(doc)
+    coord = coordinator(db)
+    coord.start_task("P-1", "x", "s")
+    coord.stop_task("P-1", NodeStatus.WAITING_MERGE)
+    node = repo.get_node("P-1")
+    assert node is not None
+    node.acceptable_models = ["claude-sonnet-5"]
+    node.frontmatter = {"declared_files": ["web/a"]}
+    repo.save_node(node)
+
+    importer.import_dict(
+        {"plans": [{"id": "P", "title": "P", "tasks": [{"id": "P-1", "title": "a renamed"}]}]}
+    )
+    kept = repo.get_node("P-1")
+    assert kept is not None
+    assert kept.title == "a renamed"
+    assert kept.status == NodeStatus.WAITING_MERGE and kept.priority == 70
+    assert kept.acceptable_models == ["claude-sonnet-5"] and kept.frontmatter == {
+        "declared_files": ["web/a"]
+    }
+
+    importer.import_dict(
+        {
+            "plans": [
+                {
+                    "id": "P",
+                    "title": "P",
+                    "tasks": [{"id": "P-1", "title": "a", "status": "COMPLETED", "priority": 20}],
+                }
+            ]
+        }
+    )
+    stated = repo.get_node("P-1")
+    assert stated is not None and stated.status == NodeStatus.COMPLETED and stated.priority == 20

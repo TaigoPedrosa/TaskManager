@@ -27,7 +27,7 @@ Every node takes `id`, `title`, `priority`, `ordinal`, `target_repo`, `acceptabl
 | `depends_on` | Ids this node cannot start before. See §4. |
 | `verifications` | Machine checks. See §5. |
 
-Never write `kind` or `status`: position decides the first, and the run commands own the second.
+Never write `kind`: position decides it. Write `status` only to record work that already exists (`WAITING_MERGE`, `COMPLETED`, `DEFERRED`); otherwise omit it and the run commands own it. Any key a document omits keeps the node's current value on a re-import.
 
 ## 2. Sections and frontmatter
 
@@ -86,9 +86,9 @@ tm export docs/tm/                       # sorted, timestamp-free text, for vers
 
 Read the brief before dispatching anyone: a section you meant to write and did not is invisible in the database and obvious here.
 
-## 8. Amend, never re-import
+## 8. Amend a landed document, or re-import it
 
-**Re-importing a document that already landed resets every node's status to `NOT_STARTED`**, silently discarding the progress under it. Change landed work with:
+While you are still authoring, re-importing the same document is safe: it refuses before writing when an id is unknown, adds no verification twice, and a node keeps its current status, priority, models and frontmatter for every key the document does not state (a key it does state is overwritten, so state `status` only where you mean it). Once work has landed, change it with:
 
 ```
 tm task update <id> --title ... --priority ... --models a,b --repo <dir>
@@ -179,4 +179,4 @@ plans:
 - Never leave a task's `declared_files` unwritten, and never list a file two open tasks both claim.
 - Never write a verification that passes before the work starts.
 - Never state a dependency in prose: an id in `depends_on`, or it does not exist.
-- Never write `status`, and never describe a set of blockers instead of naming them.
+- Never write `status` except to record work that already exists, and never describe a set of blockers instead of naming them.
