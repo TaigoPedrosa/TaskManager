@@ -52,6 +52,18 @@ This is the only place `COMPLETED` is ever set, and only after steps 3 and 4 bot
 
 Add `--remove-worktree` to the completing stop, `tm run stop <task-id> --status COMPLETED --remove-worktree`. A task in `WAITING_MERGE` holds no lease, so `tm` finds its worktree by the branch `tm/<task-id>` in the task's repository and removes it. It never forces: a refusal means the worktree holds uncommitted work or is not yours, and that is information. Leave the branch `tm/<task-id>` in place unless your project says otherwise; the merge commit is what makes it disposable.
 
+## Waiting on something that takes time
+
+A gate, a push, an external state change — pick by duration, because duration is what you actually know:
+
+| The wait is | Do |
+|:--|:--|
+| under 10 minutes | a single foreground call to completion: the tool's own blocking `wait` where one exists, else `timeout 540 bash -c 'until <cond>; do sleep 15; done'; echo $?` |
+| 10–30 minutes | a Monitor with a filter matching every terminal state, not only success |
+| over 30 minutes | leave the task at `WAITING_MERGE`, report what is pending, and let it be picked up again rather than holding your own turn open |
+
+Never end your turn to wait on a background run "until notified." A background command's completion notification reaches you only while you are still working — ending your turn is what loses it, and nothing resumes you afterward. The output is already on disk; `tail` it instead of waiting for word of it.
+
 ## 7. Report
 
 Task id, merge commit sha, the push, each declared path with its `cat-file` result, the `tm verify run` exit code, the status you set, and whether the worktree was removed.

@@ -60,7 +60,19 @@ A table of the task's checks, exit 1 if any failed. What each type asserts:
 - `test_command` — the command runs in a shell; exit 0 passes.
 - `codegraph_query` — passes with `codegraph CLI not installed; skipped` where that tool is absent.
 
-Two things to know before you trust it. Paths and commands resolve against the **project root**, never against your worktree, so the path checks stay red until the work is merged — before then, read the table as the acceptance list and confirm every row by hand inside the worktree. And `No verifications to run.` exits 0: a task with no checks has not passed anything, and that is worth a line in your report.
+Two things to know before you trust it. Paths and commands resolve against the **project root**, never against your worktree, so the path checks stay red until the work is merged — before then, read the table as the acceptance list and confirm every row by hand inside the worktree. And `No verifications to run.` exits 2: a task with no checks has not passed anything, and that is worth a line in your report.
+
+## Waiting on something that takes time
+
+A gate, a build, an external state change — pick by duration, because duration is what you actually know:
+
+| The wait is | Do |
+|:--|:--|
+| under 10 minutes | a single foreground call to completion: the tool's own blocking `wait` where one exists (`aws ... wait ...`), else `timeout 540 bash -c 'until <cond>; do sleep 15; done'; echo $?` |
+| 10–30 minutes | a Monitor with a filter matching every terminal state, not only success |
+| over 30 minutes | it is not a wait, it is a task — `tm run stop --status NOT_STARTED`, report what is pending, let the dispatcher re-dispatch behind it |
+
+Never end your turn to wait on a background run "until notified." A background command's completion notification reaches you only while you are still working — ending your turn is what loses it, and nothing resumes you afterward. The output is already on disk; `tail` it instead of waiting for word of it.
 
 ## 6. Hand it off — on every exit path
 

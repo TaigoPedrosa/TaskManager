@@ -57,6 +57,8 @@ import refused, nothing written: unknown ids ['DOES-NOT-EXIST']
 
 Where the dependency is only about ordering an agent can work around, it is `soft_depends_on`, not an edge.
 
+A cross-cutting hold — a decision that gates several unrelated tasks at once — is a node, and every task it holds `depends_on` it, never a transcript of its terms. A transcript cannot lift when the decision does, and every agent already dispatched under it is still carrying the stale copy; a `depends_on` edge lifts the moment the decision node completes, with no message to anybody.
+
 ## 5. Verifications
 
 A verification is the task's own proof. `file_exists`, `file_absent`, `symbol_signature` and `ast_export` take a repo-relative path in `target_path` and count towards `declared_files`. `test_command` puts a label in `target_path` and the command in `expected_pattern`, and counts towards nothing. `codegraph_query` **passes when `codegraph` is not installed**, so it never proves anything on its own.
