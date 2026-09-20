@@ -92,6 +92,24 @@ class MarkdownRenderer:
 
         raise ValueError(f"Unknown view '{view}'. Supported views: summary, subagent, full")
 
+    def render_recursive(
+        self, node_id: str, view: RenderView | str = RenderView.FULL, _seen: set[str] | None = None
+    ) -> str:
+        """The node's own render, then each child's, depth-first, in `get_children`'s order.
+
+        A spec recurses through its plans into their tasks; a task has no children and returns
+        just its own render. `_seen` guards a relation cycle the schema does not otherwise forbid.
+        """
+        seen = _seen if _seen is not None else set()
+        if node_id in seen:
+            return f"<!-- {node_id}: already rendered above, relation cycle -->"
+        seen.add(node_id)
+
+        parts = [self.render(node_id, view)]
+        for child_id in self.node_repo.get_children(node_id):
+            parts.append(self.render_recursive(child_id, view, seen))
+        return "\n\n---\n\n".join(parts)
+
     def _get_parent_ids(self, node_id: str) -> list[str]:
         with self.node_repo.db.get_spec_connection() as conn:
             rows = conn.execute(

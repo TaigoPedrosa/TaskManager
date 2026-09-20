@@ -889,3 +889,61 @@ def test_a_specs_state_rolls_up_from_its_plans_the_way_a_plans_does_from_its_tas
 
     get_out = runner.invoke(app, ["spec", "get", "S1", "-C", root]).stdout
     assert "State: COMPLETED" in get_out and "Status: NOT_STARTED" in get_out
+
+
+def test_render_recursive_walks_spec_to_plans_to_tasks_in_order(tmp_path: Path) -> None:
+    root = str(tmp_path)
+    runner.invoke(app, ["init", "-C", root])
+    runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "-C", root])
+    runner.invoke(app, ["plan", "add", "P", "--spec", "S1", "--slug", "P1", "-C", root])
+    runner.invoke(app, ["task", "add", "a", "--plan", "S1-P1", "--slug", "a", "-C", root])
+    runner.invoke(app, ["task", "add", "b", "--plan", "S1-P1", "--slug", "b", "-C", root])
+    runner.invoke(app, ["section", "set", "S1-P1-a:objective", "objective of a", "-C", root])
+
+    flat = runner.invoke(app, ["render", "S1", "-C", root])
+    assert flat.exit_code == 0
+    assert "S1-P1-a" not in flat.stdout  # a flat render of the spec does not descend
+
+    deep = runner.invoke(app, ["render", "S1", "--recursive", "-C", root])
+    assert deep.exit_code == 0
+    assert (
+        deep.stdout.index("id: S1")
+        < deep.stdout.index("id: S1-P1")
+        < deep.stdout.index("id: S1-P1-a")
+        < deep.stdout.index("id: S1-P1-b")
+    )
+    assert "objective of a" in deep.stdout
+    assert deep.stdout.count("\n\n---\n\n") == 3  # three joins for four rendered nodes
+
+
+def test_render_recursive_on_a_leaf_task_is_just_its_own_render(tmp_path: Path) -> None:
+    root = str(tmp_path)
+    _seed_estate(tmp_path)
+    leaf = runner.invoke(app, ["render", "S1-P1-a", "-C", root])
+    deep = runner.invoke(app, ["render", "S1-P1-a", "--recursive", "-C", root])
+    assert leaf.stdout == deep.stdout
+
+
+def test_render_recursive_refuses_a_section_path(tmp_path: Path) -> None:
+    root = str(tmp_path)
+    _seed_estate(tmp_path)
+    res = runner.invoke(app, ["render", "S1-P1-a:objective", "--recursive", "-C", root])
+    assert res.exit_code == 1 and "section" in res.output
+
+
+def test_render_recursive_survives_a_relation_cycle(tmp_path: Path) -> None:
+    from taskmanager.core.enums import RelationType
+    from taskmanager.core.models import NodeRelation
+    from taskmanager.db.connection import DatabaseManager
+    from taskmanager.db.node_repo import NodeRepository
+
+    root = str(tmp_path)
+    runner.invoke(app, ["init", "-C", root])
+    runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "-C", root])
+    runner.invoke(app, ["plan", "add", "P", "--spec", "S1", "--slug", "P1", "-C", root])
+    repo = NodeRepository(DatabaseManager(Path(root) / ".taskmanager"))
+    repo.add_relation(
+        NodeRelation(source_id="S1-P1", target_id="S1", relation_type=RelationType.CONTAINS)
+    )
+    res = runner.invoke(app, ["render", "S1", "--recursive", "-C", root])
+    assert res.exit_code == 0 and "relation cycle" in res.output

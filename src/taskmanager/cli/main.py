@@ -1268,14 +1268,31 @@ def render(
     view: Annotated[
         RenderView, typer.Option("--view", "-v", help="View projection: summary, subagent, or full")
     ] = RenderView.FULL,
+    recursive: Annotated[
+        bool,
+        typer.Option(
+            "--recursive",
+            "-r",
+            help="Also render every child, depth-first (a spec's plans and their tasks)",
+        ),
+    ] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
     container = _get_container(root)
     renderer = container.get(MarkdownRenderer)
     qp = QualifiedPath.parse(qualified_id)
+    if recursive and qp.section_key:
+        print(
+            "[red]--recursive renders a node, not one of its sections; drop the `:section` part[/red]"
+        )
+        raise typer.Exit(code=1)
     try:
-        output = renderer.render(qp.node_id, view=view)
+        output = (
+            renderer.render_recursive(qp.node_id, view=view)
+            if recursive
+            else renderer.render(qp.node_id, view=view)
+        )
     except ValueError as exc:
         print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc

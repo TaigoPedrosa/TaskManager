@@ -23,7 +23,7 @@ A lease lasts 300 seconds unless `--ttl` or `TM_LEASE_TTL` says otherwise, and `
 
 - `tm next -n 5` lists what can start now. `tm next --model <id>` filters by an acceptable model.
 - `tm task list --yaml` and `tm task get <task-id> --yaml` are the compact reads (`--json` is the same data); `tm plan list`, `tm spec list` and `tm run list` take the same flags. `--status <S>` filters a list.
-- `tm render <task-id> --view subagent` is a task's full brief. `tm section get <task-id>:<key>` reads one section.
+- `tm render <task-id> --view subagent` is a task's full brief. `tm section get <task-id>:<key>` reads one section. `--recursive` (`-r`) also renders every child depth-first — a spec's plans and their tasks, or a plan's tasks — separated by `---`; a leaf task ignores it and a `:section` path refuses it.
 - `tm verify run <task-id>` runs the task's checks and exits 1 if one fails.
 - `tm audit list --target <task-id>` is the event log of everything done to a node.
 - `tm search <words>` finds tasks, plans and specs by text, or by meaning once `tm index` has run; `--kind`, `--status` and `--plan` narrow it.
