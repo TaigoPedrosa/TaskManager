@@ -10,6 +10,7 @@ from typing import Annotated, Any
 import typer
 from dishka import Container, make_container
 from rich import print
+from rich.markup import escape
 from rich.table import Table
 
 from taskmanager.core.enums import (
@@ -277,7 +278,7 @@ def spec_list(
     table.add_column("Status", style="yellow")
     table.add_column("Priority", justify="right")
     for s in specs:
-        table.add_row(s.id, s.title, s.status.value, str(s.priority))
+        table.add_row(escape(s.id), escape(s.title), s.status.value, str(s.priority))
     print(table)
 
 
@@ -296,11 +297,11 @@ def spec_get(
 
     children = node_repo.get_children(spec_id)
     print(f"[bold cyan]Spec:[/] {spec.id}")
-    print(f"[bold]Title:[/] {spec.title}")
+    print(f"[bold]Title:[/] {escape(spec.title)}")
     print(f"[bold]Status:[/] {spec.status.value}")
     print(f"[bold]Priority:[/] {spec.priority}")
     if children:
-        print(f"[bold]Plans:[/] {', '.join(children)}")
+        print(f"[bold]Plans:[/] {escape(', '.join(children))}")
 
 
 @plan_app.command("add")
@@ -382,7 +383,7 @@ def plan_list(
     table.add_column("Status", style="yellow")
     table.add_column("Priority", justify="right")
     for p in plans:
-        table.add_row(p.id, p.title, p.status.value, str(p.priority))
+        table.add_row(escape(p.id), escape(p.title), p.status.value, str(p.priority))
     print(table)
 
 
@@ -401,11 +402,11 @@ def plan_get(
 
     children = node_repo.get_children(plan_id)
     print(f"[bold cyan]Plan:[/] {plan.id}")
-    print(f"[bold]Title:[/] {plan.title}")
+    print(f"[bold]Title:[/] {escape(plan.title)}")
     print(f"[bold]Status:[/] {plan.status.value}")
     print(f"[bold]Priority:[/] {plan.priority}")
     if children:
-        print(f"[bold]Tasks:[/] {', '.join(children)}")
+        print(f"[bold]Tasks:[/] {escape(', '.join(children))}")
 
 
 @task_app.command("add")
@@ -550,7 +551,11 @@ def task_list(
     table.add_column("Models")
     for t in tasks:
         table.add_row(
-            t.id, t.title, t.status.value, str(t.priority), ", ".join(t.acceptable_models)
+            escape(t.id),
+            escape(t.title),
+            t.status.value,
+            str(t.priority),
+            escape(", ".join(t.acceptable_models)),
         )
     print(table)
 
@@ -730,15 +735,15 @@ def task_get(
         _emit(doc, yaml_output)
         return
     print(f"[bold cyan]Task:[/] {task.id}")
-    print(f"[bold]Title:[/] {task.title}")
+    print(f"[bold]Title:[/] {escape(task.title)}")
     print(f"[bold]Status:[/] {task.status.value}")
     print(f"[bold]Priority:[/] {task.priority}")
-    print(f"[bold]Models:[/] {', '.join(task.acceptable_models)}")
+    print(f"[bold]Models:[/] {escape(', '.join(task.acceptable_models))}")
     if deps:
-        print(f"[bold]Depends On:[/] {', '.join(deps)}")
+        print(f"[bold]Depends On:[/] {escape(', '.join(deps))}")
     if verifications:
         v_str = ", ".join(f"{v.verification_type.value}:{v.target_path}" for v in verifications)
-        print(f"[bold]Verifications:[/] {v_str}")
+        print(f"[bold]Verifications:[/] {escape(v_str)}")
 
 
 @section_app.command("get")
@@ -757,7 +762,7 @@ def section_get(
             print(f"[yellow]No sections found for node '{qp.node_id}'[/yellow]")
             return
         for s in secs:
-            print(f"{s.header}\n{s.content}\n")
+            sys.stdout.write(f"{s.header}\n{s.content}\n\n")
         return
 
     sec = node_repo.get_section(qp.node_id, qp.section_key)
@@ -765,7 +770,7 @@ def section_get(
         print(f"[red]Section '{qp.section_key}' not found on node '{qp.node_id}'[/red]")
         raise typer.Exit(code=1)
     output = f"{sec.header}\n{sec.content}" if sec.header else sec.content
-    print(output)
+    sys.stdout.write(output + "\n")
 
 
 @section_app.command("set")
@@ -1092,7 +1097,9 @@ def verify_run(
         status_str = "[green]PASSED[/green]" if r.passed else "[red]FAILED[/red]"
         if not r.passed:
             all_passed = False
-        table.add_row(r.target_path, r.verification_type.value, status_str, r.message)
+        table.add_row(
+            escape(r.target_path), r.verification_type.value, status_str, escape(r.message)
+        )
     print(table)
 
     _record_ledger(
@@ -1153,9 +1160,9 @@ def next_tasks(
     table.add_column("Models")
     for t in ranked:
         table.add_row(
-            t.task_id,
-            t.title,
-            t.plan_id or "-",
+            escape(t.task_id),
+            escape(t.title),
+            escape(t.plan_id or "-"),
             f"{t.score:.2f}",
             str(t.priority),
             ", ".join(t.acceptable_models),
@@ -1180,7 +1187,7 @@ def render(
     except ValueError as exc:
         print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc
-    print(output)
+    sys.stdout.write(output + "\n")
 
 
 class _RefusingImporter:
@@ -1442,7 +1449,13 @@ def audit_list(
     table.add_column("Command")
     table.add_column("Target ID", style="magenta")
     for e in events:
-        table.add_row(str(e.id or "-"), str(e.timestamp), e.actor_id, e.command, e.target_id or "-")
+        table.add_row(
+            str(e.id or "-"),
+            str(e.timestamp),
+            escape(e.actor_id),
+            escape(e.command),
+            escape(e.target_id or "-"),
+        )
     print(table)
 
 

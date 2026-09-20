@@ -686,3 +686,27 @@ def test_task_depends_adds_removes_and_refuses_a_cycle_or_an_unknown_id(tmp_path
         ).exit_code
         == 1
     )
+
+
+def test_brackets_in_task_text_reach_the_reader_untouched(tmp_path: Path) -> None:
+    _seed_estate(tmp_path)
+    root = str(tmp_path)
+    text = "route /teams/[/{level_id}] and the rule [report-path] and a [bold]tag[/bold]"
+    runner.invoke(app, ["section", "set", "S1-P1-a:objective", text, "-C", root])
+    runner.invoke(
+        app, ["task", "update", "S1-P1-a", "--title", "keep [x] and [/y] in a title", "-C", root]
+    )
+    for args in (
+        ["render", "S1-P1-a", "--view", "subagent"],
+        ["section", "get", "S1-P1-a:objective"],
+    ):
+        out = runner.invoke(app, [*args, "-C", root])
+        assert out.exit_code == 0, out.output
+        assert (
+            "[/{level_id}]" in out.output
+            and "[report-path]" in out.output
+            and "[bold]tag[/bold]" in out.output
+        )
+    for args in (["task", "list"], ["task", "get", "S1-P1-a"]):
+        out = runner.invoke(app, [*args, "-C", root])
+        assert out.exit_code == 0 and "[x]" in out.output and "[/y]" in out.output
