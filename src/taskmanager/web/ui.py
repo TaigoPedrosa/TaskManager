@@ -13,6 +13,8 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         embedded_script = f"<script>window.STATIC_DATA = {raw_json};</script>"
 
     themes_json = json.dumps(StatusVisual.all_themes_dict())
+    groups_json = json.dumps(StatusVisual.groups_list())
+    status_css = StatusVisual.css()
     sprite_svg = AppIcon.generate_svg_sprite()
 
     return f"""<!DOCTYPE html>
@@ -73,9 +75,16 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
       animation: pulse-highlight 1.5s ease-out;
       border-color: #10b981 !important;
     }}
+    {status_css}
+    .st-chip {{ color: var(--st-fg); background: var(--st-bg); border: 1px solid color-mix(in srgb, var(--st-fg) 40%, transparent); }}
+    .st-text {{ color: var(--st-fg); }}
+    .st-seg {{ background: var(--st-fg); height: 100%; }}
+    details > summary {{ list-style: none; }}
+    details > summary::-webkit-details-marker {{ display: none; }}
   </style>
   <script>
     window.STATUS_THEMES = {themes_json};
+    window.STATUS_GROUPS = {groups_json};
     window.VIEW_MODES = {{
       DOCUMENT: '{WebViewMode.DOCUMENT.value}',
       GRAPH: '{WebViewMode.GRAPH.value}'
@@ -99,11 +108,6 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
       </span>
     </div>
 
-    <!-- Complete Status Digest Chips -->
-    <div id="stats-digest" class="hidden xl:flex items-center gap-1.5 text-xs overflow-x-auto py-1">
-      <!-- Populated dynamically via STATUS_THEMES -->
-    </div>
-
     <!-- View Switcher & Controls -->
     <div class="flex items-center space-x-2">
       <div class="bg-zinc-900 p-0.5 rounded-lg border border-zinc-800 flex text-xs">
@@ -116,11 +120,36 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
           <span>Graph</span>
         </button>
       </div>
+      <button id="legend-btn" aria-expanded="false" aria-controls="legend-panel" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 hover:text-white transition">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-info"/></svg>
+        <span>Legend</span>
+      </button>
       <button id="refresh-btn" title="Refresh state" class="p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition">
         <svg class="w-4 h-4" fill="none" stroke="currentColor"><use href="#icon-rotate-cw"/></svg>
       </button>
     </div>
   </header>
+
+  <!-- Status digest and filters -->
+  <div id="filter-bar" class="border-b border-zinc-800 bg-zinc-900/40 px-4 py-2 space-y-2 flex-shrink-0">
+    <div id="stats-digest" class="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs"></div>
+    <div class="flex flex-wrap items-center gap-2 text-xs">
+      <select id="repo-filter" aria-label="Filter by target repo" class="bg-zinc-950 border border-zinc-800 rounded-lg px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-emerald-500"></select>
+      <select id="model-filter" aria-label="Filter by model" class="bg-zinc-950 border border-zinc-800 rounded-lg px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-emerald-500"></select>
+      <div id="active-filters" class="flex flex-wrap items-center gap-1.5"></div>
+    </div>
+  </div>
+
+  <!-- Status legend -->
+  <div id="legend-panel" role="dialog" aria-label="Status legend" class="hidden fixed top-16 right-4 w-[26rem] max-w-[calc(100vw-2rem)] max-h-[75vh] overflow-y-auto z-40 rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl p-4 space-y-2">
+    <div class="flex items-start justify-between gap-3">
+      <p class="text-xs text-zinc-300 leading-relaxed"><strong class="text-white">Done means Completed and nothing else.</strong> Superseded, Abandoned and Deferred work is set aside: progress bars show it as its own segment and never count it as completed. A Superseded task still unblocks its dependents.</p>
+      <button id="legend-close-btn" aria-label="Close legend" class="p-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-800 flex-shrink-0">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor"><use href="#icon-x"/></svg>
+      </button>
+    </div>
+    <div id="legend-body"></div>
+  </div>
 
   <!-- Main View Area -->
   <div class="flex-1 flex overflow-hidden">
@@ -188,7 +217,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
     let graphData = {{ nodes: [], edges: [] }};
     let statsData = {{}};
     let selectedNodeId = null;
-    let activeStatusFilter = null;
+    let visNodesDS = null;
     let currentMode = window.VIEW_MODES.DOCUMENT;
     let networkInstance = null;
     let isStaticMode = typeof window.STATIC_DATA !== 'undefined';
@@ -210,13 +239,20 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
     const inspectorCloseBtn = document.getElementById('inspector-close-btn');
     const connectionStatus = document.getElementById('connection-status');
     const connectionDot = document.getElementById('connection-dot');
+    const repoFilter = document.getElementById('repo-filter');
+    const modelFilter = document.getElementById('model-filter');
+    const activeFilters = document.getElementById('active-filters');
+    const legendBtn = document.getElementById('legend-btn');
+    const legendPanel = document.getElementById('legend-panel');
+    const legendBody = document.getElementById('legend-body');
+    const legendCloseBtn = document.getElementById('legend-close-btn');
 
     function renderIcon(iconName, classes = 'w-4 h-4') {{
       return `<svg class="${{classes}}" fill="none" stroke="currentColor"><use href="#icon-${{iconName}}"></use></svg>`;
     }}
 
     function getTheme(status) {{
-      return window.STATUS_THEMES[status] || window.STATUS_THEMES.NOT_STARTED;
+      return window.STATUS_THEMES[status] || {{ ...window.STATUS_THEMES.NOT_STARTED, label: String(status) }};
     }}
 
     // Mode Switching
@@ -257,79 +293,297 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         }}
         treeData.forEach(collect);
       }}
-      renderTree(treeData, searchBox.value);
+      renderTree(treeData);
       renderUnifiedDocument();
     }});
 
-    // Status Digest Bar
-    function updateStatsDigest(stats) {{
-      statsData = stats;
-      statsDigest.innerHTML = '';
+    // Filters (mirrored into the URL hash so a view is shareable)
+    const NO_REPO = '(none)';
+    const filters = {{ statuses: new Set(), repo: '', model: '', q: '' }};
 
-      // Total Chip
+    function structuralFilterActive() {{
+      return filters.statuses.size > 0 || filters.repo !== '' || filters.model !== '';
+    }}
+
+    function taskPasses(t) {{
+      const status = t.virtual_status || t.status;
+      if (filters.statuses.size > 0 && !filters.statuses.has(status)) return false;
+      if (filters.repo !== '' && (t.target_repo || NO_REPO) !== filters.repo) return false;
+      if (filters.model !== '' && !(t.acceptable_models || []).includes(filters.model)) return false;
+      return true;
+    }}
+
+    function textMatches(n) {{
+      return n.title.toLowerCase().includes(filters.q) || n.id.toLowerCase().includes(filters.q);
+    }}
+
+    function textAccepts(n, parentTextOk) {{
+      return filters.q === '' || parentTextOk || textMatches(n);
+    }}
+
+    function nodeVisible(n, parentTextOk = false) {{
+      const textOk = textAccepts(n, parentTextOk);
+      if (n.kind === 'task') return textOk && taskPasses(n);
+      return (n.children || []).some(c => nodeVisible(c, textOk)) || (!structuralFilterActive() && textOk);
+    }}
+
+    function readHash() {{
+      const p = new URLSearchParams(location.hash.slice(1));
+      filters.statuses = new Set((p.get('status') || '').split(',').filter(c => window.STATUS_THEMES[c]));
+      filters.repo = p.get('repo') || '';
+      filters.model = p.get('model') || '';
+      filters.q = (p.get('q') || '').toLowerCase();
+      searchBox.value = filters.q;
+    }}
+
+    function writeHash() {{
+      const p = new URLSearchParams();
+      if (filters.statuses.size) p.set('status', [...filters.statuses].join(','));
+      if (filters.repo) p.set('repo', filters.repo);
+      if (filters.model) p.set('model', filters.model);
+      if (filters.q) p.set('q', filters.q);
+      try {{
+        history.replaceState(null, '', p.toString() ? '#' + p : location.pathname + location.search);
+      }} catch (e) {{
+        console.error('Could not update the URL hash:', e);
+      }}
+    }}
+
+    function renderAll() {{
+      writeHash();
+      updateStatsDigest();
+      renderFilterBar();
+      renderTree(treeData);
+      renderUnifiedDocument();
+      applyGraphFilter();
+    }}
+
+    function esc(text) {{
+      return String(text ?? '').replace(/[&<>"']/g, ch => ({{ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }}[ch]));
+    }}
+
+    function statusChip(code, size = 'text-[10px]') {{
+      const t = getTheme(code);
+      return `<span class="st-chip st-${{t.code}} inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full font-medium ${{size}}" title="${{esc(t.description)}}">${{renderIcon(t.icon, 'w-3 h-3')}}<span>${{esc(t.label)}}</span></span>`;
+    }}
+
+    function statusIcon(code, size = 'w-3.5 h-3.5') {{
+      const t = getTheme(code);
+      return `<span class="st-text st-${{t.code}} flex-shrink-0">${{renderIcon(t.icon, size)}}</span>`;
+    }}
+
+    // Progress: per-status counts over a spec's or plan's tasks. Only COMPLETED counts as done.
+    function progressParts(node) {{
+      const p = node.progress || {{ total: 0, counts: {{}} }};
+      const codes = Object.keys(window.STATUS_THEMES).filter(c => p.counts[c]);
+      return {{ total: p.total, completed: p.counts.COMPLETED || 0, codes, counts: p.counts }};
+    }}
+
+    function progressText(node) {{
+      const p = progressParts(node);
+      if (p.total === 0) return 'No tasks';
+      return p.codes.map(c => `${{p.counts[c]}} ${{getTheme(c).label.toLowerCase()}}`).join(' · ');
+    }}
+
+    function progressBar(node, height = 'h-1.5') {{
+      const p = progressParts(node);
+      const text = esc(progressText(node));
+      const segs = p.codes.map(c => `<span class="st-seg st-${{c}}" style="width:${{(p.counts[c] / p.total) * 100}}%"></span>`).join('');
+      return `<div class="flex w-full ${{height}} rounded-full overflow-hidden bg-zinc-800" role="img" aria-label="${{text}}" title="${{text}}">${{segs}}</div>`;
+    }}
+
+    function renderSectionBody(content) {{
+      const text = content || '';
+      if (typeof marked === 'undefined') {{
+        return `<pre class="whitespace-pre-wrap font-sans">${{esc(text)}}</pre>`;
+      }}
+      return marked.parse(text, {{ breaks: true }});
+    }}
+
+    function renderSections(sections) {{
+      return (sections || []).map(s => `
+        <details open class="rounded-lg border border-zinc-800 bg-zinc-950/60">
+          <summary class="cursor-pointer select-none px-3 py-1.5 text-xs font-semibold text-zinc-300 flex items-center gap-2">
+            <span>${{esc((s.header || s.key).replace(/^#+\\s*/, ''))}}</span>
+            <span class="font-mono text-[10px] text-zinc-500 font-normal">${{esc(s.key)}}</span>
+          </summary>
+          <div class="prose prose-invert max-w-none px-3 pb-3 text-xs leading-relaxed text-zinc-400">${{renderSectionBody(s.content)}}</div>
+        </details>
+      `).join('');
+    }}
+
+    function renderDependencies(details, status) {{
+      if (!details || details.length === 0) return '';
+      const unfinished = details.filter(d => !d.finished);
+      const why = status === 'BLOCKED' && unfinished.length > 0
+        ? `<div class="st-chip st-BLOCKED rounded-lg px-2.5 py-1.5 text-xs">Blocked by ${{unfinished.map(d => esc(d.id)).join(', ')}}: not completed or superseded yet.</div>`
+        : '';
+      const rows = details.map(d => `
+        <div class="flex items-center gap-2 px-2 py-1.5 bg-zinc-950/60">
+          ${{d.status ? statusChip(d.status) : '<span class="text-[10px] font-mono text-red-400">missing</span>'}}
+          <span class="font-mono text-[11px] text-zinc-300">${{esc(d.id)}}</span>
+          <span class="truncate text-[11px] text-zinc-500">${{esc(d.title || '')}}</span>
+        </div>
+      `).join('');
+      return `
+        <div class="space-y-1.5 pt-2">
+          <div class="font-semibold text-zinc-400 uppercase tracking-wider text-[10px]">Depends on (${{details.length}})</div>
+          ${{why}}
+          <div class="divide-y divide-zinc-800 rounded border border-zinc-800">${{rows}}</div>
+        </div>
+      `;
+    }}
+
+    // Status Digest Bar
+    function updateStatsDigest() {{
+      statsDigest.innerHTML = '';
+      const allActive = filters.statuses.size === 0;
       const totalChip = document.createElement('button');
-      totalChip.className = `flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs transition ${{activeStatusFilter === null ? 'bg-zinc-800 text-white border-zinc-700' : 'bg-zinc-900/60 text-zinc-400 border-zinc-800 hover:bg-zinc-850'}}`;
-      totalChip.innerHTML = `<span>Total:</span> <strong class="text-white">${{stats.total || 0}}</strong>`;
+      totalChip.className = `flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs transition ${{allActive ? 'bg-zinc-800 text-white border-zinc-700' : 'bg-zinc-900/60 text-zinc-400 border-zinc-800 hover:bg-zinc-800'}}`;
+      totalChip.setAttribute('aria-pressed', String(allActive));
+      totalChip.innerHTML = `<span>All tasks</span> <strong class="text-white">${{statsData.total || 0}}</strong>`;
       totalChip.onclick = () => {{
-        activeStatusFilter = null;
-        updateStatsDigest(statsData);
-        renderTree(treeData, searchBox.value);
-        renderUnifiedDocument();
+        filters.statuses.clear();
+        renderAll();
       }};
       statsDigest.appendChild(totalChip);
 
-      // Render chip for all non-zero or key statuses
-      const displayStatuses = ['READY', 'IN_FLIGHT', 'WAITING_REVIEW', 'WAITING_FIXES', 'WAITING_MERGE', 'COMPLETED', 'BLOCKED', 'NOT_STARTED'];
-      displayStatuses.forEach(code => {{
-        const theme = window.STATUS_THEMES[code];
-        if (!theme) return;
-        const count = stats[code] || 0;
-        if (count === 0 && code !== 'READY' && code !== 'COMPLETED' && code !== 'BLOCKED') return;
-
-        const chip = document.createElement('button');
-        const isActive = activeStatusFilter === code;
-        chip.className = `flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs transition ${{isActive ? theme.badge_class + ' ring-1 ring-white/20' : 'bg-zinc-900/60 text-zinc-400 border-zinc-800 hover:bg-zinc-850'}}`;
-        chip.innerHTML = `
-          ${{renderIcon(theme.icon, 'w-3.5 h-3.5')}}
-          <span>${{theme.label}}</span>
-          <strong class="${{isActive ? 'text-white' : theme.text_class}}">${{count}}</strong>
-        `;
-        chip.onclick = () => {{
-          activeStatusFilter = isActive ? null : code;
-          updateStatsDigest(statsData);
-          renderTree(treeData, searchBox.value);
-          renderUnifiedDocument();
-        }};
-        statsDigest.appendChild(chip);
+      window.STATUS_GROUPS.forEach(group => {{
+        const wrap = document.createElement('div');
+        wrap.className = 'flex items-center gap-1';
+        wrap.innerHTML = `<span class="text-[10px] uppercase tracking-wider text-zinc-500 mr-0.5">${{esc(group.label)}}</span>`;
+        Object.keys(window.STATUS_THEMES).filter(code => window.STATUS_THEMES[code].group === group.code).forEach(code => {{
+          const theme = getTheme(code);
+          const count = statsData[code] || 0;
+          const active = filters.statuses.has(code);
+          const chip = document.createElement('button');
+          chip.className = `st-chip st-${{code}} flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition hover:brightness-125 ${{active ? 'ring-2 ring-white/60' : ''}} ${{count === 0 && !active ? 'opacity-50' : ''}}`;
+          chip.title = theme.description;
+          chip.setAttribute('aria-pressed', String(active));
+          chip.innerHTML = `${{renderIcon(theme.icon, 'w-3.5 h-3.5')}}<span>${{esc(theme.label)}}</span><strong>${{count}}</strong>`;
+          chip.onclick = () => {{
+            if (active) filters.statuses.delete(code);
+            else filters.statuses.add(code);
+            renderAll();
+          }};
+          wrap.appendChild(chip);
+        }});
+        statsDigest.appendChild(wrap);
       }});
     }}
 
-    // Sidebar Tree Rendering
-    function renderTree(nodes, filterText = '') {{
-      treeList.innerHTML = '';
-      const filter = filterText.toLowerCase();
+    function fillSelect(select, values, current, allLabel) {{
+      const options = [...new Set([...values, ...(current ? [current] : [])])].sort();
+      select.innerHTML = `<option value="">${{allLabel}}</option>` + options.map(v => `<option value="${{esc(v)}}">${{esc(v)}}</option>`).join('');
+      select.value = current;
+    }}
 
-      function isNodeVisible(node) {{
-        const matchesFilter = !filter || node.title.toLowerCase().includes(filter) || node.id.toLowerCase().includes(filter);
-        const effectiveStatus = node.virtual_status || node.status;
-        const matchesStatus = !activeStatusFilter || effectiveStatus === activeStatusFilter;
-        if (matchesFilter && matchesStatus) return true;
-        if (node.children) {{
-          return node.children.some(c => isNodeVisible(c));
-        }}
-        return false;
+    function collectTasks(nodes, out = []) {{
+      nodes.forEach(n => {{
+        if (n.kind === 'task') out.push(n);
+        collectTasks(n.children || [], out);
+      }});
+      return out;
+    }}
+
+    function populateFilterOptions() {{
+      const tasks = collectTasks(treeData);
+      fillSelect(repoFilter, tasks.map(t => t.target_repo || NO_REPO), filters.repo, 'All repos');
+      fillSelect(modelFilter, tasks.flatMap(t => t.acceptable_models || []), filters.model, 'All models');
+    }}
+
+    function renderFilterBar() {{
+      const pills = [];
+      filters.statuses.forEach(c => pills.push([`Status: ${{getTheme(c).label}}`, () => filters.statuses.delete(c)]));
+      if (filters.repo) pills.push([`Repo: ${{filters.repo}}`, () => {{ filters.repo = ''; }}]);
+      if (filters.model) pills.push([`Model: ${{filters.model}}`, () => {{ filters.model = ''; }}]);
+      if (filters.q) pills.push([`Text: ${{filters.q}}`, () => {{ filters.q = ''; searchBox.value = ''; }}]);
+
+      activeFilters.innerHTML = '';
+      pills.forEach(([label, remove]) => {{
+        const pill = document.createElement('button');
+        pill.className = 'flex items-center gap-1 px-2 py-0.5 rounded-full border border-zinc-600 bg-zinc-800 text-zinc-200 text-[11px] hover:bg-zinc-700';
+        pill.setAttribute('aria-label', `Remove filter ${{label}}`);
+        pill.innerHTML = `<span>${{esc(label)}}</span>${{renderIcon('x', 'w-3 h-3')}}`;
+        pill.onclick = () => {{
+          remove();
+          renderAll();
+        }};
+        activeFilters.appendChild(pill);
+      }});
+      if (pills.length > 0) {{
+        const clear = document.createElement('button');
+        clear.className = 'px-2 py-0.5 rounded-full text-[11px] text-zinc-300 underline hover:text-white';
+        clear.textContent = 'Clear all';
+        clear.onclick = () => {{
+          filters.statuses.clear();
+          filters.repo = '';
+          filters.model = '';
+          filters.q = '';
+          searchBox.value = '';
+          renderAll();
+        }};
+        activeFilters.appendChild(clear);
       }}
+      repoFilter.value = filters.repo;
+      modelFilter.value = filters.model;
+    }}
 
-      function createNodeRow(node, depth = 0) {{
-        if (!isNodeVisible(node)) return;
+    repoFilter.addEventListener('change', () => {{
+      filters.repo = repoFilter.value;
+      renderAll();
+    }});
+    modelFilter.addEventListener('change', () => {{
+      filters.model = modelFilter.value;
+      renderAll();
+    }});
+
+    // Legend
+    function renderLegend() {{
+      legendBody.innerHTML = window.STATUS_GROUPS.map(group => {{
+        const rows = Object.values(window.STATUS_THEMES).filter(t => t.group === group.code).map(t => `
+          <div class="flex items-start gap-2 py-1">
+            <div class="w-36 flex-shrink-0">${{statusChip(t.code)}}</div>
+            <p class="text-xs text-zinc-300">${{esc(t.description)}}</p>
+          </div>
+        `).join('');
+        return `<div><div class="text-[10px] uppercase tracking-wider text-zinc-500 mt-2">${{esc(group.label)}}</div>${{rows}}</div>`;
+      }}).join('');
+    }}
+
+    function setLegendOpen(open) {{
+      legendPanel.classList.toggle('hidden', !open);
+      legendBtn.setAttribute('aria-expanded', String(open));
+    }}
+
+    legendBtn.addEventListener('click', () => setLegendOpen(legendPanel.classList.contains('hidden')));
+    legendCloseBtn.addEventListener('click', () => setLegendOpen(false));
+    document.addEventListener('keydown', (e) => {{
+      if (e.key === 'Escape') setLegendOpen(false);
+    }});
+
+    function applyGraphFilter() {{
+      if (!visNodesDS) return;
+      visNodesDS.update(graphData.nodes.map(n => {{
+        const dim = n.kind === 'task' && !(taskPasses(n) && textAccepts(n, false));
+        return {{ id: n.id, opacity: dim ? 0.2 : 1 }};
+      }}));
+    }}
+
+    // Sidebar Tree Rendering
+    function renderTree(nodes) {{
+      treeList.innerHTML = '';
+
+      function createNodeRow(node, depth = 0, parentTextOk = false) {{
+        if (!nodeVisible(node, parentTextOk)) return;
+        const textOk = textAccepts(node, parentTextOk);
 
         const effectiveStatus = node.virtual_status || node.status;
-        const theme = getTheme(effectiveStatus);
         const hasChildren = node.children && node.children.length > 0;
         const isCollapsed = collapsedNodes.has(node.id);
 
         const row = document.createElement('div');
-        row.className = `flex items-center justify-between px-2.5 py-1.5 rounded-lg cursor-pointer text-xs group transition ${{selectedNodeId === node.id ? 'bg-zinc-800 text-white font-medium border border-zinc-700' : 'text-zinc-400 hover:bg-zinc-850 hover:text-zinc-200'}}`;
+        row.className = `px-2.5 py-1.5 rounded-lg cursor-pointer text-xs group transition ${{selectedNodeId === node.id ? 'bg-zinc-800 text-white font-medium border border-zinc-700' : 'text-zinc-400 hover:bg-zinc-850 hover:text-zinc-200'}}`;
         row.style.paddingLeft = `${{depth * 14 + 8}}px`;
 
         let chevron = `<span class="w-3.5 h-3.5 inline-block"></span>`;
@@ -338,22 +592,27 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         }}
 
         let progressHtml = '';
-        if (node.kind === 'plan' && hasChildren) {{
-          const doneCount = node.children.filter(c => c.status === 'COMPLETED' || c.status === 'SUPERSEDED').length;
-          progressHtml = `<span class="text-[10px] font-mono text-zinc-500 mr-1">${{doneCount}}/${{node.children.length}}</span>`;
+        if (node.progress && node.progress.total > 0) {{
+          const p = progressParts(node);
+          progressHtml = `<span class="text-[10px] font-mono text-zinc-500 mr-1" title="${{esc(progressText(node))}}">${{p.completed}}/${{p.total}}</span>`;
         }}
 
+        const progressBarRow = progressHtml ? `<div class="pt-1.5">${{progressBar(node, 'h-1')}}</div>` : '';
+
         row.innerHTML = `
-          <div class="flex items-center gap-1.5 truncate">
-            ${{chevron}}
-            <span class="${{theme.text_class}} flex-shrink-0">${{renderIcon(theme.icon, 'w-3.5 h-3.5')}}</span>
-            <span class="font-mono text-[10px] text-zinc-500 uppercase">${{node.id}}</span>
-            <span class="truncate">${{node.title}}</span>
+          <div class="flex items-center justify-between gap-2">
+            <div class="flex items-center gap-1.5 min-w-0 truncate">
+              ${{chevron}}
+              ${{statusIcon(effectiveStatus)}}
+              <span class="font-mono text-[10px] text-zinc-500 uppercase">${{node.id}}</span>
+              <span class="truncate">${{node.title}}</span>
+            </div>
+            <div class="flex items-center gap-1 flex-shrink-0">
+              ${{progressHtml}}
+              ${{statusChip(effectiveStatus)}}
+            </div>
           </div>
-          <div class="flex items-center gap-1 flex-shrink-0">
-            ${{progressHtml}}
-            <span class="px-1.5 py-0.5 rounded text-[10px] font-mono border ${{theme.badge_class}}">${{theme.label}}</span>
-          </div>
+          ${{progressBarRow}}
         `;
 
         const toggleBtn = row.querySelector('.toggle-btn');
@@ -362,7 +621,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
             e.stopPropagation();
             if (isCollapsed) collapsedNodes.delete(node.id);
             else collapsedNodes.add(node.id);
-            renderTree(treeData, searchBox.value);
+            renderTree(treeData);
             renderUnifiedDocument();
           }};
         }}
@@ -371,7 +630,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         treeList.appendChild(row);
 
         if (hasChildren && !isCollapsed) {{
-          node.children.forEach(c => createNodeRow(c, depth + 1));
+          node.children.forEach(c => createNodeRow(c, depth + 1, textOk));
         }}
       }}
 
@@ -379,14 +638,14 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
     }}
 
     searchBox.addEventListener('input', (e) => {{
-      renderTree(treeData, e.target.value);
-      renderUnifiedDocument();
+      filters.q = e.target.value.toLowerCase();
+      renderAll();
     }});
 
     // Select Node Action (Coordinates Tree, Document, and Graph)
     function selectNode(nodeId) {{
       selectedNodeId = nodeId;
-      renderTree(treeData, searchBox.value);
+      renderTree(treeData);
 
       if (currentMode === window.VIEW_MODES.DOCUMENT) {{
         const targetEl = document.getElementById(`doc-node-${{nodeId}}`);
@@ -419,14 +678,9 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         return;
       }}
 
-      function renderSectionMarkdown(content) {{
-        if (!content) return '';
-        return marked.parse(content);
-      }}
-
-      treeData.forEach(spec => {{
+      treeData.filter(root => nodeVisible(root)).forEach(spec => {{
         const specStatus = spec.virtual_status || spec.status;
-        const specTheme = getTheme(specStatus);
+        const specTextOk = textAccepts(spec, false);
 
         const specCard = document.createElement('article');
         specCard.id = `doc-node-${{spec.id}}`;
@@ -448,10 +702,10 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
               ${{spec.sections.map(sec => `
                 <section class="bg-zinc-900/30 border border-zinc-800/80 rounded-xl p-5 space-y-2">
                   <h3 class="text-sm font-semibold text-zinc-200 flex items-center gap-2">
-                    ${{sec.header || sec.key}}
+                    ${{esc((sec.header || sec.key).replace(/^#+\\s*/, ''))}}
                   </h3>
                   <div class="prose prose-invert max-w-none text-xs leading-relaxed text-zinc-300 prose-headings:font-semibold prose-a:text-emerald-400 prose-pre:bg-zinc-950 prose-pre:border prose-pre:border-zinc-800">
-                    ${{renderSectionMarkdown(sec.content)}}
+                    ${{renderSectionBody(sec.content)}}
                   </div>
                 </section>
               `).join('')}}
@@ -469,7 +723,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
                 <span>Implementation Plans (${{spec.children.length}})</span>
               </h2>
               <div class="space-y-4">
-                ${{spec.children.map(plan => renderPlanCard(plan)).join('')}}
+                ${{spec.children.filter(plan => nodeVisible(plan, specTextOk)).map(plan => renderPlanCard(plan, specTextOk)).join('')}}
               </div>
             </div>
           `;
@@ -481,16 +735,17 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
               <div class="flex items-center gap-2">
                 <span class="px-2 py-0.5 rounded text-[11px] font-mono uppercase bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">${{spec.kind}}</span>
                 <span class="font-mono text-xs font-semibold text-zinc-400">${{spec.id}}</span>
-                <span class="px-2 py-0.5 rounded-full text-xs font-medium border flex items-center gap-1.5 ${{specTheme.badge_class}}">
-                  ${{renderIcon(specTheme.icon, 'w-3 h-3')}}
-                  <span>${{specTheme.label}}</span>
-                </span>
+                ${{statusChip(specStatus, 'text-xs')}}
               </div>
               <div class="flex items-center gap-2">
                 ${{specPills}}
               </div>
             </div>
             <h1 class="text-2xl font-bold tracking-tight text-white">${{spec.title}}</h1>
+            <div class="space-y-1.5">
+              ${{progressBar(spec, 'h-2.5')}}
+              <div class="text-xs text-zinc-400">${{esc(progressText(spec))}}</div>
+            </div>
           </div>
           ${{specSectionsHtml}}
           ${{plansHtml}}
@@ -499,38 +754,24 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         unifiedDocument.appendChild(specCard);
       }});
 
+      if (!unifiedDocument.hasChildNodes()) {{
+        unifiedDocument.innerHTML = '<div class="text-zinc-500 text-sm italic py-12 text-center">No tasks match the active filters.</div>';
+      }}
+
       attachCollapsibleHandlers();
     }}
 
-    function renderPlanCard(plan) {{
+    function renderPlanCard(plan, parentTextOk = false) {{
       const planStatus = plan.virtual_status || plan.status;
-      const theme = getTheme(planStatus);
       const isCollapsed = collapsedNodes.has(plan.id);
 
       const tasks = plan.children || [];
-      const completedCount = tasks.filter(t => t.status === 'COMPLETED' || t.status === 'SUPERSEDED').length;
-      const percent = tasks.length > 0 ? Math.round((completedCount / tasks.length) * 100) : 0;
-
-      // Filter tasks by active status filter if set
-      const visibleTasks = activeStatusFilter 
-        ? tasks.filter(t => (t.virtual_status || t.status) === activeStatusFilter)
-        : tasks;
-
-      let planSectionsHtml = '';
-      if (plan.sections && plan.sections.length > 0) {{
-        planSectionsHtml = `
-          <div class="space-y-3 pt-2">
-            ${{plan.sections.map(s => `
-              <div class="p-3 bg-zinc-950/60 rounded-lg border border-zinc-800 text-xs">
-                <div class="font-semibold text-zinc-300 mb-1">${{s.header || s.key}}</div>
-                <div class="prose prose-invert max-w-none text-xs text-zinc-400">
-                  ${{marked.parse(s.content)}}
-                </div>
-              </div>
-            `).join('')}}
-          </div>
-        `;
-      }}
+      const p = progressParts(plan);
+      const planTextOk = textAccepts(plan, parentTextOk);
+      const visibleTasks = tasks.filter(t => nodeVisible(t, planTextOk));
+      const planSectionsHtml = plan.sections && plan.sections.length > 0
+        ? `<div class="space-y-2 pt-2">${{renderSections(plan.sections)}}</div>`
+        : '';
 
       return `
         <div id="doc-node-${{plan.id}}" class="border border-zinc-800 rounded-xl bg-zinc-900/30 overflow-hidden transition">
@@ -540,20 +781,17 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
               <button class="text-zinc-400 hover:text-white">${{renderIcon(isCollapsed ? 'chevron-right' : 'chevron-down', 'w-4 h-4')}}</button>
               <span class="font-mono text-xs font-semibold text-emerald-400">${{plan.id}}</span>
               <span class="text-sm font-semibold text-zinc-200 truncate">${{plan.title}}</span>
-              <span class="px-2 py-0.5 rounded-full text-[11px] font-medium border flex items-center gap-1 ${{theme.badge_class}}">
-                ${{renderIcon(theme.icon, 'w-3 h-3')}}
-                <span>${{theme.label}}</span>
-              </span>
+              ${{statusChip(planStatus, 'text-[11px]')}}
             </div>
             <div class="flex items-center gap-3 flex-shrink-0">
               <div class="flex items-center gap-2">
-                <div class="w-20 bg-zinc-800 rounded-full h-1.5 overflow-hidden">
-                  <div class="bg-emerald-500 h-full rounded-full" style="width: ${{percent}}%"></div>
-                </div>
-                <span class="font-mono text-xs text-zinc-400">${{completedCount}}/${{tasks.length}}</span>
+                <div class="w-40">${{progressBar(plan, 'h-2')}}</div>
+                <span class="font-mono text-xs text-zinc-400" title="Completed of total tasks">${{p.completed}}/${{p.total}}</span>
               </div>
             </div>
           </div>
+
+          <div class="px-4 py-1.5 text-[11px] text-zinc-400 border-b border-zinc-800/60 bg-zinc-900/40">${{esc(progressText(plan))}}</div>
 
           <!-- Plan Body -->
           <div class="plan-body ${{isCollapsed ? 'hidden' : ''}} p-4 space-y-4">
@@ -574,7 +812,6 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
 
     function renderTaskCard(task) {{
       const taskStatus = task.virtual_status || task.status;
-      const theme = getTheme(taskStatus);
       const isCollapsed = collapsedNodes.has(task.id);
 
       // Model pills
@@ -621,18 +858,8 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         `;
       }}
 
-      // Task Sections
-      let sectionsHtml = '';
-      if (task.sections && task.sections.length > 0) {{
-        sectionsHtml = task.sections.map(s => `
-          <div class="space-y-1 pt-2">
-            <div class="font-semibold text-zinc-300 text-xs">${{s.header || s.key}}</div>
-            <div class="prose prose-invert max-w-none text-xs text-zinc-400">
-              ${{marked.parse(s.content)}}
-            </div>
-          </div>
-        `).join('');
-      }}
+      const sectionsHtml = renderSections(task.sections);
+      const depsHtml = renderDependencies(task.dependency_details, taskStatus);
 
       return `
         <div id="doc-node-${{task.id}}" class="border border-zinc-800/80 rounded-lg bg-zinc-950/40 overflow-hidden hover:border-zinc-700 transition">
@@ -640,14 +867,14 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
           <div class="p-3 flex items-center justify-between cursor-pointer task-header bg-zinc-900/30 hover:bg-zinc-900/60" data-node-id="${{task.id}}">
             <div class="flex items-center gap-2 truncate">
               <button class="text-zinc-500 hover:text-white">${{renderIcon(isCollapsed ? 'chevron-right' : 'chevron-down', 'w-3.5 h-3.5')}}</button>
-              <span class="${{theme.text_class}} flex-shrink-0">${{renderIcon(theme.icon, 'w-3.5 h-3.5')}}</span>
+              ${{statusIcon(taskStatus)}}
               <span class="font-mono text-xs font-semibold text-emerald-400 flex-shrink-0">${{task.id}}</span>
               <span class="text-xs font-medium text-zinc-200 truncate">${{task.title}}</span>
             </div>
             <div class="flex items-center gap-2 flex-shrink-0">
               ${{modelPills}}
               <span class="px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-400 font-mono text-[10px]">P${{task.priority || 50}}</span>
-              <span class="px-2 py-0.5 rounded-full text-[10px] font-mono border ${{theme.badge_class}}">${{theme.label}}</span>
+              ${{statusChip(taskStatus)}}
             </div>
           </div>
 
@@ -655,7 +882,8 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
           <div class="task-body ${{isCollapsed ? 'hidden' : ''}} p-3.5 bg-zinc-950/80 border-t border-zinc-800/60 space-y-2">
             ${{leaseBanner}}
             ${{verificationsHtml}}
-            ${{sectionsHtml}}
+            ${{depsHtml}}
+            <div class="space-y-2 pt-2">${{sectionsHtml}}</div>
           </div>
         </div>
       `;
@@ -668,7 +896,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
           if (collapsedNodes.has(id)) collapsedNodes.delete(id);
           else collapsedNodes.add(id);
           renderUnifiedDocument();
-          renderTree(treeData, searchBox.value);
+          renderTree(treeData);
         }};
       }});
 
@@ -690,7 +918,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         const theme = getTheme(n.status);
         return {{
           id: n.id,
-          label: `${{n.id}}\\n${{n.title}}`,
+          label: `${{n.id}}\\n${{n.title}}\\n*${{theme.label}}*`,
           shape: 'box',
           margin: 10,
           color: {{
@@ -713,7 +941,8 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         width: e.type === 'contains' ? 1 : 2
       }}));
 
-      const data = {{ nodes: new vis.DataSet(visNodes), edges: new vis.DataSet(visEdges) }};
+      visNodesDS = new vis.DataSet(visNodes);
+      const data = {{ nodes: visNodesDS, edges: new vis.DataSet(visEdges) }};
       const options = {{
         layout: {{
           hierarchical: {{
@@ -731,6 +960,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         networkInstance.destroy();
       }}
       networkInstance = new vis.Network(container, data, options);
+      applyGraphFilter();
 
       networkInstance.on('click', (params) => {{
         if (params.nodes.length > 0) {{
@@ -759,7 +989,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
       if (!detail) return;
 
       const n = detail.node;
-      const theme = getTheme(detail.virtual_status || n.status);
+      const status = detail.virtual_status || n.status;
 
       document.getElementById('inspector-kind').textContent = n.kind;
       document.getElementById('inspector-id').textContent = n.id;
@@ -797,29 +1027,15 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         `;
       }}
 
-      let sectionsHtml = '';
-      if (detail.sections && detail.sections.length > 0) {{
-        sectionsHtml = detail.sections.map(s => `
-          <div class="space-y-1 pt-2">
-            <div class="font-semibold text-zinc-300 text-xs">${{s.header || s.key}}</div>
-            <div class="prose prose-invert max-w-none text-xs text-zinc-400">
-              ${{marked.parse(s.content)}}
-            </div>
-          </div>
-        `).join('');
-      }}
-
       body.innerHTML = `
         <div class="flex items-center gap-2">
-          <span class="px-2 py-0.5 rounded-full text-xs font-medium border flex items-center gap-1 ${{theme.badge_class}}">
-            ${{renderIcon(theme.icon, 'w-3 h-3')}}
-            <span>${{theme.label}}</span>
-          </span>
+          ${{statusChip(status, 'text-xs')}}
           <span class="px-2 py-0.5 rounded bg-zinc-950 border border-zinc-800 font-mono text-zinc-400 text-xs">Prio: ${{n.priority || 50}}</span>
         </div>
         ${{leaseBanner}}
         ${{verificationsHtml}}
-        ${{sectionsHtml}}
+        ${{renderDependencies(detail.dependency_details, status)}}
+        <div class="space-y-2 pt-2">${{renderSections(detail.sections)}}</div>
       `;
     }}
 
@@ -829,9 +1045,8 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         treeData = window.STATIC_DATA.tree || [];
         graphData = window.STATIC_DATA.graph || {{ nodes: [], edges: [] }};
         statsData = window.STATIC_DATA.stats || {{}};
-        updateStatsDigest(statsData);
-        renderTree(treeData);
-        renderUnifiedDocument();
+        populateFilterOptions();
+        renderAll();
         renderGraph(graphData);
         return;
       }}
@@ -846,9 +1061,8 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         graphData = await graphRes.json();
         statsData = await statsRes.json();
 
-        updateStatsDigest(statsData);
-        renderTree(treeData);
-        renderUnifiedDocument();
+        populateFilterOptions();
+        renderAll();
         renderGraph(graphData);
       }} catch (err) {{
         console.error('Failed to load data:', err);
@@ -891,6 +1105,13 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
     }}
 
     // Initialize
+    readHash();
+    renderLegend();
+    window.addEventListener('hashchange', () => {{
+      readHash();
+      populateFilterOptions();
+      renderAll();
+    }});
     loadAllData();
   </script>
 </body>

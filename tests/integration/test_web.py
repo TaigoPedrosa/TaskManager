@@ -1,15 +1,26 @@
 """Integration tests for the TaskManager web visualizer and CLI commands."""
 
+import json
+import re
+from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import _find_available_port, app
-from taskmanager.core.enums import NodeKind, NodeStatus, VerificationType
-from taskmanager.core.models import Node, NodeSection, NodeVerification
+from taskmanager.core.enums import (
+    NodeKind,
+    NodeStatus,
+    RelationType,
+    VerificationType,
+    VirtualStatus,
+)
+from taskmanager.core.models import Lease, Node, NodeRelation, NodeSection, NodeVerification
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
+from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.web.app import create_app
 from taskmanager.web.static_export import export_static_html
 
@@ -96,7 +107,7 @@ def test_web_api_endpoints_and_ui(tmp_path: Path) -> None:
     assert res_stats.status_code == 200
     stats = res_stats.json()
     assert stats["total"] >= 1
-    assert stats["ready"] >= 1
+    assert stats["READY"] >= 1
 
     # 7. WebSocket connection
     with client.websocket_connect("/ws") as ws:
@@ -142,3 +153,167 @@ def test_cli_web_uninitialized_error(tmp_path: Path) -> None:
     res = runner.invoke(app, ["web", "export", "--path", str(empty_dir)])
     assert res.exit_code != 0
     assert "not initialized" in res.stdout
+
+
+ALL_STATUS_CODES = {s.value for s in NodeStatus} | {v.value for v in VirtualStatus}
+
+
+@pytest.fixture
+def every_status_project(tmp_path: Path) -> Path:
+    db_mgr = DatabaseManager(tmp_path / ".taskmanager")
+    db_mgr.init_all()
+    node_repo = NodeRepository(db_mgr)
+    node_repo.save_node(Node(id="SPEC", kind=NodeKind.SPEC, title="Spec"))
+    node_repo.save_node(Node(id="PLAN", kind=NodeKind.PLAN, title="Plan"))
+    node_repo.add_relation(
+        NodeRelation(source_id="SPEC", target_id="PLAN", relation_type=RelationType.CONTAINS)
+    )
+
+    def add_task(task_id: str, status: NodeStatus, repo: str = "core") -> None:
+        node_repo.save_node(
+            Node(
+                id=task_id,
+                kind=NodeKind.TASK,
+                title=f"Task {task_id}",
+                status=status,
+                target_repo=repo,
+                acceptable_models=["claude-opus-5"] if repo == "core" else ["gemini-flash"],
+            )
+        )
+        node_repo.add_relation(
+            NodeRelation(source_id="PLAN", target_id=task_id, relation_type=RelationType.CONTAINS)
+        )
+
+    for status in NodeStatus:
+        if status is not NodeStatus.NOT_STARTED:
+            add_task(
+                f"T-{status.value}",
+                status,
+                repo="web" if status is NodeStatus.IMPLEMENTING else "core",
+            )
+    add_task("T-READY", NodeStatus.NOT_STARTED)
+    add_task("T-BLOCKED", NodeStatus.NOT_STARTED)
+    add_task("T-INFLIGHT", NodeStatus.NOT_STARTED)
+    node_repo.add_relation(
+        NodeRelation(
+            source_id="T-BLOCKED", target_id="T-IMPLEMENTING", relation_type=RelationType.DEPENDS_ON
+        )
+    )
+    node_repo.add_relation(
+        NodeRelation(
+            source_id="T-BLOCKED", target_id="T-SUPERSEDED", relation_type=RelationType.DEPENDS_ON
+        )
+    )
+    node_repo.save_section(
+        NodeSection(
+            node_id="T-DEFERRED",
+            section_key="deferral",
+            ordinal=1,
+            header="## Deferral",
+            content="line one\nline two",
+        )
+    )
+    RuntimeRepository(db_mgr).acquire_lease(
+        Lease(
+            task_id="T-INFLIGHT",
+            agent_id="agent",
+            session_id="session",
+            branch_name="branch",
+            acquired_at=datetime.now(tz=UTC),
+            last_heartbeat=datetime.now(tz=UTC),
+            ttl_seconds=300,
+        ),
+        [],
+    )
+    return tmp_path
+
+
+def test_stats_reports_every_status_including_zeros(every_status_project: Path) -> None:
+    stats = TestClient(create_app(every_status_project)).get("/api/stats").json()
+
+    assert ALL_STATUS_CODES <= stats.keys()
+    assert stats["total"] == 13
+    assert {code: stats[code] for code in ALL_STATUS_CODES} == {
+        **{code: 1 for code in ALL_STATUS_CODES},
+        NodeStatus.NOT_STARTED.value: 0,
+    }
+
+
+def test_tree_progress_counts_each_status_separately(every_status_project: Path) -> None:
+    tree = TestClient(create_app(every_status_project)).get("/api/tree").json()
+    spec = tree[0]
+    plan = spec["children"][0]
+
+    expected = {code: 1 for code in ALL_STATUS_CODES if code != NodeStatus.NOT_STARTED.value}
+    assert plan["progress"] == {"total": 13, "counts": expected}
+    assert spec["progress"] == plan["progress"]
+    assert plan["progress"]["counts"]["COMPLETED"] == 1
+
+
+def test_tree_task_lists_dependencies_with_their_own_status(every_status_project: Path) -> None:
+    plan = TestClient(create_app(every_status_project)).get("/api/tree").json()[0]["children"][0]
+    blocked = next(t for t in plan["children"] if t["id"] == "T-BLOCKED")
+
+    assert blocked["virtual_status"] == "BLOCKED"
+    assert blocked["dependency_details"] == [
+        {
+            "id": "T-IMPLEMENTING",
+            "title": "Task T-IMPLEMENTING",
+            "status": "IMPLEMENTING",
+            "finished": False,
+        },
+        {
+            "id": "T-SUPERSEDED",
+            "title": "Task T-SUPERSEDED",
+            "status": "SUPERSEDED",
+            "finished": True,
+        },
+    ]
+
+
+def test_node_detail_lists_dependencies_and_every_section(every_status_project: Path) -> None:
+    client = TestClient(create_app(every_status_project))
+    blocked = client.get("/api/nodes/T-BLOCKED").json()
+    deferred = client.get("/api/nodes/T-DEFERRED").json()
+
+    assert [d["id"] for d in blocked["dependency_details"] if not d["finished"]] == [
+        "T-IMPLEMENTING"
+    ]
+    assert deferred["virtual_status"] == "DEFERRED"
+    assert deferred["sections"][0]["content"] == "line one\nline two"
+
+
+def test_graph_nodes_carry_repo_and_models_for_filtering(every_status_project: Path) -> None:
+    nodes = TestClient(create_app(every_status_project)).get("/api/graph").json()["nodes"]
+    by_id = {n["id"]: n for n in nodes}
+
+    assert by_id["T-COMPLETED"]["target_repo"] == "core"
+    assert by_id["T-COMPLETED"]["acceptable_models"] == ["claude-opus-5"]
+    assert by_id["T-IMPLEMENTING"]["target_repo"] == "web"
+    assert by_id["T-IMPLEMENTING"]["acceptable_models"] == ["gemini-flash"]
+    assert by_id["T-INFLIGHT"]["status"] == "IN_FLIGHT"
+
+
+def test_static_export_embeds_every_status_and_the_filter_ui(
+    every_status_project: Path, tmp_path: Path
+) -> None:
+    out = export_static_html(every_status_project, tmp_path / "out" / "all.html")
+    html = out.read_text(encoding="utf-8")
+
+    themes_match = re.search(r"window.STATUS_THEMES = (\{.*?\});\n", html)
+    static_match = re.search(r"window.STATIC_DATA = (\{.*?\});</script>", html)
+    assert themes_match
+    assert static_match
+    themes = json.loads(themes_match.group(1))
+    static = json.loads(static_match.group(1))
+    assert set(themes) == ALL_STATUS_CODES
+    assert ALL_STATUS_CODES <= static["stats"].keys()
+    assert static["tree"][0]["progress"]["total"] == 13
+    for element_id in (
+        "stats-digest",
+        "repo-filter",
+        "model-filter",
+        "active-filters",
+        "legend-panel",
+    ):
+        assert f'id="{element_id}"' in html

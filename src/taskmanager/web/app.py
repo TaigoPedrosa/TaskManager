@@ -2,6 +2,7 @@
 
 import asyncio
 import sqlite3
+from collections import Counter
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -17,6 +18,17 @@ from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine.graph import GraphEngine
 from taskmanager.renderers.markdown import MarkdownRenderer
 from taskmanager.web.ui import get_web_html
+
+
+def add_progress(node: dict[str, Any]) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    if node["kind"] == NodeKind.TASK.value:
+        counts[node["virtual_status"]] += 1
+    for child in node["children"]:
+        counts += add_progress(child)
+    if node["kind"] != NodeKind.TASK.value:
+        node["progress"] = {"total": sum(counts.values()), "counts": dict(counts)}
+    return counts
 
 
 class ConnectionManager:
@@ -93,6 +105,29 @@ def create_app(project_root: Path) -> FastAPI:
 
     app = FastAPI(title="TaskManager Visualizer", lifespan=lifespan)
 
+    def effective_status(n: Any) -> str:
+        if n.kind == NodeKind.TASK:
+            return graph_engine.resolve_task_state(n.id).value
+        if n.kind == NodeKind.PLAN:
+            return graph_engine.resolve_plan_status(n.id).value
+        return str(n.status.value)
+
+    def dependency_details(node_id: str) -> list[dict[str, Any]]:
+        details: list[dict[str, Any]] = []
+        for dep_id in node_repo.get_dependencies(node_id):
+            dep = node_repo.get_node(dep_id)
+            details.append(
+                {
+                    "id": dep_id,
+                    "title": dep.title if dep else None,
+                    "status": effective_status(dep) if dep else None,
+                    # Same rule as GraphEngine.resolve_task_state: a missing dependency blocks.
+                    "finished": dep is not None
+                    and dep.status in (NodeStatus.COMPLETED, NodeStatus.SUPERSEDED),
+                }
+            )
+        return details
+
     @app.get("/", response_class=HTMLResponse)
     async def index() -> str:
         return get_web_html()
@@ -113,12 +148,6 @@ def create_app(project_root: Path) -> FastAPI:
         tasks = node_repo.list_nodes(kind=NodeKind.TASK)
 
         def node_to_dict(n: Any) -> dict[str, Any]:
-            v_status = n.status.value
-            if n.kind == NodeKind.TASK:
-                v_status = graph_engine.resolve_task_state(n.id).value
-            elif n.kind == NodeKind.PLAN:
-                v_status = graph_engine.resolve_plan_status(n.id).value
-
             sections = node_repo.get_all_sections(n.id)
             verifications = node_repo.get_verifications(n.id) if n.kind == NodeKind.TASK else []
             lease = runtime_repo.get_lease(n.id) if n.kind == NodeKind.TASK else None
@@ -128,13 +157,14 @@ def create_app(project_root: Path) -> FastAPI:
                 "kind": n.kind.value,
                 "title": n.title,
                 "status": n.status.value,
-                "virtual_status": v_status,
+                "virtual_status": effective_status(n),
                 "priority": n.priority,
                 "ordinal": n.ordinal,
                 "target_repo": n.target_repo,
                 "acceptable_models": n.acceptable_models,
                 "frontmatter": n.frontmatter,
                 "dependencies": node_repo.get_dependencies(n.id),
+                "dependency_details": dependency_details(n.id),
                 "blocked_by": node_repo.get_blocked_by(n.id),
                 "sections": [
                     {
@@ -210,6 +240,8 @@ def create_app(project_root: Path) -> FastAPI:
             if t.id not in parented_ids:
                 tree.append(node_to_dict(t))
 
+        for root in tree:
+            add_progress(root)
         return tree
 
     @app.get("/api/graph")
@@ -217,20 +249,16 @@ def create_app(project_root: Path) -> FastAPI:
         all_nodes = node_repo.list_nodes()
         nodes_out: list[dict[str, Any]] = []
         for n in all_nodes:
-            v_status = n.status.value
-            if n.kind == NodeKind.TASK:
-                v_status = graph_engine.resolve_task_state(n.id).value
-            elif n.kind == NodeKind.PLAN:
-                v_status = graph_engine.resolve_plan_status(n.id).value
-
             nodes_out.append(
                 {
                     "id": n.id,
                     "title": n.title,
                     "kind": n.kind.value,
-                    "status": v_status,
+                    "status": effective_status(n),
                     "priority": n.priority,
                     "ordinal": n.ordinal,
+                    "target_repo": n.target_repo,
+                    "acceptable_models": n.acceptable_models,
                 }
             )
 
@@ -256,12 +284,6 @@ def create_app(project_root: Path) -> FastAPI:
         if not node:
             raise HTTPException(status_code=404, detail="Node not found")
 
-        v_status = node.status.value
-        if node.kind == NodeKind.TASK:
-            v_status = graph_engine.resolve_task_state(node.id).value
-        elif node.kind == NodeKind.PLAN:
-            v_status = graph_engine.resolve_plan_status(node.id).value
-
         sections = node_repo.get_all_sections(node_id)
         verifications = node_repo.get_verifications(node_id)
         lease = runtime_repo.get_lease(node_id)
@@ -280,9 +302,10 @@ def create_app(project_root: Path) -> FastAPI:
                 "acceptable_models": node.acceptable_models,
                 "frontmatter": node.frontmatter,
             },
-            "virtual_status": v_status,
+            "virtual_status": effective_status(node),
             "rendered_markdown": renderer.render(node_id, view=RenderView.FULL),
             "dependencies": dependencies,
+            "dependency_details": dependency_details(node_id),
             "blocked_by": blocked_by,
             "sections": [
                 {
@@ -323,22 +346,7 @@ def create_app(project_root: Path) -> FastAPI:
         }
 
         for t in all_tasks:
-            state = graph_engine.resolve_task_state(t.id)
-            val = state.value if hasattr(state, "value") else str(state)
-            if val in stats:
-                stats[val] += 1
-            else:
-                stats[val] = 1
-
-        stats["ready"] = stats[VirtualStatus.READY.value]
-        stats["in_flight"] = (
-            stats[VirtualStatus.IN_FLIGHT.value] + stats[NodeStatus.IMPLEMENTING.value]
-        )
-        stats["waiting_review"] = (
-            stats[NodeStatus.WAITING_REVIEW.value] + stats[NodeStatus.REVIEWING.value]
-        )
-        stats["completed"] = stats[NodeStatus.COMPLETED.value]
-        stats["blocked"] = stats[VirtualStatus.BLOCKED.value]
+            stats[effective_status(t)] += 1
 
         return stats
 

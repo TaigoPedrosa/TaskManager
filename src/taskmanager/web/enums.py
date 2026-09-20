@@ -127,6 +127,10 @@ class AppIcon(Enum):
         "check",
         '<path d="M20 6 9 17l-5-5"/>',
     )
+    INFO = IconData(
+        "info",
+        '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+    )
 
     def as_symbol(self) -> str:
         return (
@@ -143,172 +147,180 @@ class AppIcon(Enum):
         )
 
 
+class StatusGroup(Enum):
+    NOT_STARTED = "Not started"
+    IN_PROGRESS = "In progress"
+    WAITING = "Waiting"
+    FINISHED = "Finished"
+    SET_ASIDE = "Set aside"
+
+
 class StatusTheme(NamedTuple):
     code: str
     label: str
     icon: AppIcon
-    badge_class: str
-    text_class: str
-    bg_class: str
-    border_class: str
-    graph_bg: str
-    graph_border: str
+    group: StatusGroup
+    description: str
+    dark_fg: str
+    dark_bg: str
+    light_fg: str
+    light_bg: str
 
 
 class StatusVisual(Enum):
+    NOT_STARTED = StatusTheme(
+        "NOT_STARTED",
+        "Not Started",
+        AppIcon.CIRCLE_DASHED,
+        StatusGroup.NOT_STARTED,
+        "Recorded but not begun; shown as Ready or Blocked once its dependencies are checked.",
+        "#a1a1aa",
+        "#27272a",
+        "#52525b",
+        "#f4f4f5",
+    )
     READY = StatusTheme(
-        code="READY",
-        label="Ready",
-        icon=AppIcon.PLAY_CIRCLE,
-        badge_class="bg-emerald-950/80 text-emerald-400 border-emerald-800",
-        text_class="text-emerald-400",
-        bg_class="bg-emerald-950/50",
-        border_class="border-emerald-800",
-        graph_bg="#065f46",
-        graph_border="#10b981",
-    )
-    IN_FLIGHT = StatusTheme(
-        code="IN_FLIGHT",
-        label="In Flight",
-        icon=AppIcon.FLAME,
-        badge_class="bg-blue-950/80 text-blue-400 border-blue-800",
-        text_class="text-blue-400",
-        bg_class="bg-blue-950/50",
-        border_class="border-blue-800",
-        graph_bg="#1e3a8a",
-        graph_border="#3b82f6",
-    )
-    IMPLEMENTING = StatusTheme(
-        code="IMPLEMENTING",
-        label="Implementing",
-        icon=AppIcon.PLAY,
-        badge_class="bg-indigo-950/80 text-indigo-400 border-indigo-800",
-        text_class="text-indigo-400",
-        bg_class="bg-indigo-950/50",
-        border_class="border-indigo-800",
-        graph_bg="#312e81",
-        graph_border="#6366f1",
-    )
-    WAITING_REVIEW = StatusTheme(
-        code="WAITING_REVIEW",
-        label="Review Wait",
-        icon=AppIcon.CLOCK,
-        badge_class="bg-amber-950/80 text-amber-400 border-amber-800",
-        text_class="text-amber-400",
-        bg_class="bg-amber-950/50",
-        border_class="border-amber-800",
-        graph_bg="#78350f",
-        graph_border="#f59e0b",
-    )
-    REVIEWING = StatusTheme(
-        code="REVIEWING",
-        label="Reviewing",
-        icon=AppIcon.EYE,
-        badge_class="bg-yellow-950/80 text-yellow-400 border-yellow-800",
-        text_class="text-yellow-400",
-        bg_class="bg-yellow-950/50",
-        border_class="border-yellow-800",
-        graph_bg="#713f12",
-        graph_border="#eab308",
-    )
-    WAITING_FIXES = StatusTheme(
-        code="WAITING_FIXES",
-        label="Fixes Wait",
-        icon=AppIcon.ALERT_TRIANGLE,
-        badge_class="bg-rose-950/80 text-rose-400 border-rose-800",
-        text_class="text-rose-400",
-        bg_class="bg-rose-950/50",
-        border_class="border-rose-800",
-        graph_bg="#881337",
-        graph_border="#f43f5e",
-    )
-    FIXING = StatusTheme(
-        code="FIXING",
-        label="Fixing",
-        icon=AppIcon.WRENCH,
-        badge_class="bg-pink-950/80 text-pink-400 border-pink-800",
-        text_class="text-pink-400",
-        bg_class="bg-pink-950/50",
-        border_class="border-pink-800",
-        graph_bg="#831843",
-        graph_border="#ec4899",
-    )
-    WAITING_MERGE = StatusTheme(
-        code="WAITING_MERGE",
-        label="Merge Wait",
-        icon=AppIcon.GIT_PULL_REQUEST,
-        badge_class="bg-cyan-950/80 text-cyan-400 border-cyan-800",
-        text_class="text-cyan-400",
-        bg_class="bg-cyan-950/50",
-        border_class="border-cyan-800",
-        graph_bg="#164e63",
-        graph_border="#06b6d4",
-    )
-    COMPLETED = StatusTheme(
-        code="COMPLETED",
-        label="Completed",
-        icon=AppIcon.CHECK_CIRCLE_2,
-        badge_class="bg-green-950/80 text-green-400 border-green-800",
-        text_class="text-green-400",
-        bg_class="bg-green-950/50",
-        border_class="border-green-800",
-        graph_bg="#14532d",
-        graph_border="#22c55e",
+        "READY",
+        "Ready",
+        AppIcon.PLAY_CIRCLE,
+        StatusGroup.NOT_STARTED,
+        "Not started and every dependency is finished, so it can be claimed now.",
+        "#bef264",
+        "#365314",
+        "#3f6212",
+        "#ecfccb",
     )
     BLOCKED = StatusTheme(
-        code="BLOCKED",
-        label="Blocked",
-        icon=AppIcon.LOCK,
-        badge_class="bg-red-950/80 text-red-400 border-red-800",
-        text_class="text-red-400",
-        bg_class="bg-red-950/50",
-        border_class="border-red-800",
-        graph_bg="#450a0a",
-        graph_border="#ef4444",
+        "BLOCKED",
+        "Blocked",
+        AppIcon.LOCK,
+        StatusGroup.NOT_STARTED,
+        "Not started and at least one dependency is not yet completed or superseded.",
+        "#fca5a5",
+        "#7f1d1d",
+        "#b91c1c",
+        "#fee2e2",
     )
-    NOT_STARTED = StatusTheme(
-        code="NOT_STARTED",
-        label="Not Started",
-        icon=AppIcon.CIRCLE_DASHED,
-        badge_class="bg-zinc-900/80 text-zinc-400 border-zinc-700",
-        text_class="text-zinc-400",
-        bg_class="bg-zinc-900/50",
-        border_class="border-zinc-700",
-        graph_bg="#1f2937",
-        graph_border="#4b5563",
+    IMPLEMENTING = StatusTheme(
+        "IMPLEMENTING",
+        "Implementing",
+        AppIcon.PLAY,
+        StatusGroup.IN_PROGRESS,
+        "An agent is writing the change.",
+        "#a5b4fc",
+        "#312e81",
+        "#4338ca",
+        "#e0e7ff",
+    )
+    IN_FLIGHT = StatusTheme(
+        "IN_FLIGHT",
+        "In Flight",
+        AppIcon.FLAME,
+        StatusGroup.IN_PROGRESS,
+        "An agent holds an active lease on it right now.",
+        "#7dd3fc",
+        "#0c4a6e",
+        "#0369a1",
+        "#e0f2fe",
+    )
+    REVIEWING = StatusTheme(
+        "REVIEWING",
+        "Reviewing",
+        AppIcon.EYE,
+        StatusGroup.IN_PROGRESS,
+        "A reviewer is reading the change.",
+        "#c4b5fd",
+        "#4c1d95",
+        "#6d28d9",
+        "#ede9fe",
+    )
+    FIXING = StatusTheme(
+        "FIXING",
+        "Fixing",
+        AppIcon.WRENCH,
+        StatusGroup.IN_PROGRESS,
+        "An agent is fixing what the review found.",
+        "#f9a8d4",
+        "#831843",
+        "#be185d",
+        "#fce7f3",
+    )
+    WAITING_REVIEW = StatusTheme(
+        "WAITING_REVIEW",
+        "Waiting Review",
+        AppIcon.CLOCK,
+        StatusGroup.WAITING,
+        "The change is done and waits for a reviewer.",
+        "#fcd34d",
+        "#78350f",
+        "#92400e",
+        "#fef3c7",
+    )
+    WAITING_FIXES = StatusTheme(
+        "WAITING_FIXES",
+        "Waiting Fixes",
+        AppIcon.ALERT_TRIANGLE,
+        StatusGroup.WAITING,
+        "The review found defects and the fixes wait for an agent.",
+        "#fdba74",
+        "#7c2d12",
+        "#9a3412",
+        "#ffedd5",
+    )
+    WAITING_MERGE = StatusTheme(
+        "WAITING_MERGE",
+        "Waiting Merge",
+        AppIcon.GIT_PULL_REQUEST,
+        StatusGroup.WAITING,
+        "The review is closed and the branch waits to be merged.",
+        "#5eead4",
+        "#134e4a",
+        "#115e59",
+        "#ccfbf1",
+    )
+    COMPLETED = StatusTheme(
+        "COMPLETED",
+        "Completed",
+        AppIcon.CHECK_CIRCLE_2,
+        StatusGroup.FINISHED,
+        "Merged and verified; the only status that counts as done.",
+        "#86efac",
+        "#14532d",
+        "#166534",
+        "#dcfce7",
     )
     SUPERSEDED = StatusTheme(
-        code="SUPERSEDED",
-        label="Superseded",
-        icon=AppIcon.ARCHIVE,
-        badge_class="bg-purple-950/80 text-purple-400 border-purple-800",
-        text_class="text-purple-400",
-        bg_class="bg-purple-950/50",
-        border_class="border-purple-800",
-        graph_bg="#581c87",
-        graph_border="#a855f7",
+        "SUPERSEDED",
+        "Superseded",
+        AppIcon.ARCHIVE,
+        StatusGroup.SET_ASIDE,
+        "Replaced by another task; it unblocks dependents but is not counted as done.",
+        "#f0abfc",
+        "#701a75",
+        "#a21caf",
+        "#fae8ff",
     )
     ABANDONED = StatusTheme(
-        code="ABANDONED",
-        label="Abandoned",
-        icon=AppIcon.X_CIRCLE,
-        badge_class="bg-stone-900/80 text-stone-400 border-stone-700",
-        text_class="text-stone-400",
-        bg_class="bg-stone-900/50",
-        border_class="border-stone-700",
-        graph_bg="#292524",
-        graph_border="#78716c",
+        "ABANDONED",
+        "Abandoned",
+        AppIcon.X_CIRCLE,
+        StatusGroup.SET_ASIDE,
+        "Dropped for good and never counted as done.",
+        "#d6d3d1",
+        "#44403c",
+        "#57534e",
+        "#e7e5e4",
     )
     DEFERRED = StatusTheme(
-        code="DEFERRED",
-        label="Deferred",
-        icon=AppIcon.PAUSE_CIRCLE,
-        badge_class="bg-slate-900/80 text-slate-400 border-slate-700",
-        text_class="text-slate-400",
-        bg_class="bg-slate-900/50",
-        border_class="border-slate-700",
-        graph_bg="#0f172a",
-        graph_border="#64748b",
+        "DEFERRED",
+        "Deferred",
+        AppIcon.PAUSE_CIRCLE,
+        StatusGroup.SET_ASIDE,
+        "Postponed to a later date and never counted as done.",
+        "#94a3b8",
+        "#1e293b",
+        "#475569",
+        "#e2e8f0",
     )
 
     @classmethod
@@ -324,14 +336,32 @@ class StatusVisual(Enum):
             "code": theme.code,
             "label": theme.label,
             "icon": theme.icon.value.name,
-            "badge_class": theme.badge_class,
-            "text_class": theme.text_class,
-            "bg_class": theme.bg_class,
-            "border_class": theme.border_class,
-            "graph_bg": theme.graph_bg,
-            "graph_border": theme.graph_border,
+            "group": theme.group.name,
+            "description": theme.description,
+            "dark_fg": theme.dark_fg,
+            "dark_bg": theme.dark_bg,
+            "light_fg": theme.light_fg,
+            "light_bg": theme.light_bg,
+            "graph_bg": theme.dark_bg,
+            "graph_border": theme.dark_fg,
         }
 
     @classmethod
     def all_themes_dict(cls) -> dict[str, dict[str, Any]]:
         return {item.value.code: item.to_dict() for item in cls}
+
+    @classmethod
+    def groups_list(cls) -> list[dict[str, str]]:
+        return [{"code": g.name, "label": g.value} for g in StatusGroup]
+
+    @classmethod
+    def css(cls) -> str:
+        light = "".join(
+            f".st-{t.code}{{--st-fg:{t.light_fg};--st-bg:{t.light_bg}}}"
+            for t in (m.value for m in cls)
+        )
+        dark = "".join(
+            f".dark .st-{t.code}{{--st-fg:{t.dark_fg};--st-bg:{t.dark_bg}}}"
+            for t in (m.value for m in cls)
+        )
+        return light + dark
