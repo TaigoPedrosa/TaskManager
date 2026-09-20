@@ -857,3 +857,35 @@ def test_an_import_with_a_key_nothing_reads_is_refused_before_anything_is_writte
         and "document: oops" in message
     )
     assert repo.get_node("P") is None
+
+
+def test_a_specs_state_rolls_up_from_its_plans_the_way_a_plans_does_from_its_tasks(
+    tmp_path: Path,
+) -> None:
+    root = str(tmp_path)
+    runner.invoke(app, ["init", "-C", root])
+    runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "-C", root])
+    runner.invoke(app, ["plan", "add", "P1", "--spec", "S1", "--slug", "P1", "-C", root])
+    runner.invoke(app, ["plan", "add", "P2", "--spec", "S1", "--slug", "P2", "-C", root])
+    runner.invoke(app, ["task", "add", "a", "--plan", "S1-P1", "--slug", "a", "-C", root])
+    runner.invoke(app, ["task", "add", "b", "--plan", "S1-P2", "--slug", "b", "-C", root])
+
+    def spec_row() -> dict[str, str]:
+        rows = json.loads(runner.invoke(app, ["spec", "list", "--json", "-C", root]).stdout)
+        return next(r for r in rows if r["id"] == "S1")
+
+    row = spec_row()
+    assert row["status"] == "NOT_STARTED" and row["state"] == "NOT_STARTED"
+
+    runner.invoke(app, ["run", "start", "S1-P1-a", "--agent", "x", "--session", "y", "-C", root])
+    row = spec_row()
+    assert row["status"] == "NOT_STARTED" and row["state"] == "IMPLEMENTING"
+
+    runner.invoke(app, ["run", "stop", "S1-P1-a", "--status", "COMPLETED", "-C", root])
+    runner.invoke(app, ["run", "start", "S1-P2-b", "--agent", "x", "--session", "y", "-C", root])
+    runner.invoke(app, ["run", "stop", "S1-P2-b", "--status", "COMPLETED", "-C", root])
+    row = spec_row()
+    assert row["status"] == "NOT_STARTED" and row["state"] == "COMPLETED"
+
+    get_out = runner.invoke(app, ["spec", "get", "S1", "-C", root]).stdout
+    assert "State: COMPLETED" in get_out and "Status: NOT_STARTED" in get_out

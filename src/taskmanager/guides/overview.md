@@ -15,7 +15,7 @@ Run `tm guide` for the topics and `tm guide <topic>` for the one that matches yo
 | `WAITING_FIXES` | `FIXING` | yes | `WAITING_REVIEW` |
 | (no claim) | | | `COMPLETED` once merged and verified; `DEFERRED`; `SUPERSEDED`; `ABANDONED` |
 
-While a lease is live the task reads `IN_FLIGHT`, whatever status it holds underneath: `tm task get <task-id> --yaml` prints both, `status` and `state`.
+While a lease is live the task reads `IN_FLIGHT`, whatever status it holds underneath: `tm task get <task-id> --yaml` prints both, `status` and `state`. A plan or spec is never leased, so its own `status` never moves by itself; its `state` is rolled up live from its children (all done is `COMPLETED`, all blocked is `BLOCKED`, all untouched is `NOT_STARTED`, anything else is `IMPLEMENTING`) and is the one to read for progress. `tm plan list --yaml` and `tm spec list --yaml` print both.
 
 A lease lasts 300 seconds unless `--ttl` or `TM_LEASE_TTL` says otherwise, and `tm run heartbeat` renews it. An expired lease does not free the task by itself: `tm run sweep` names it, drops the lease and its locks, and returns the task to the state before the claim (`NOT_STARTED`, `WAITING_REVIEW` or `WAITING_FIXES`), so it can be claimed again.
 

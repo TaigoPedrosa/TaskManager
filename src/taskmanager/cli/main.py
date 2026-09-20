@@ -286,7 +286,8 @@ def spec_list(
     node_repo = container.get(NodeRepository)
     specs = node_repo.list_nodes(kind=NodeKind.SPEC, status=status)
     if json_output or yaml_output:
-        _emit([_node_row(s) for s in specs], yaml_output)
+        graph = container.get(GraphEngine)
+        _emit([_node_row(s, graph.resolve_spec_status(s.id).value) for s in specs], yaml_output)
         return
 
     table = Table(title="Specifications")
@@ -315,7 +316,9 @@ def spec_get(
     children = node_repo.get_children(spec_id)
     print(f"[bold cyan]Spec:[/] {spec.id}")
     print(f"[bold]Title:[/] {escape(spec.title)}")
+    graph = container.get(GraphEngine)
     print(f"[bold]Status:[/] {spec.status.value}")
+    print(f"[bold]State:[/] {graph.resolve_spec_status(spec.id).value}")
     print(f"[bold]Priority:[/] {spec.priority}")
     if children:
         print(f"[bold]Plans:[/] {escape(', '.join(children))}")

@@ -85,6 +85,38 @@ class GraphEngine:
 
         return NodeStatus.IMPLEMENTING
 
+    def resolve_spec_status(self, spec_id: str) -> NodeStatus | VirtualStatus:
+        """A spec's status the same way a plan's is: rolled up from its children, here plans
+        rather than tasks. Reuses `resolve_plan_status`'s already-coarse result per child."""
+        spec_node = self.node_repo.get_node(spec_id)
+        if spec_node is None:
+            raise ValueError(f"Spec '{spec_id}' not found")
+
+        children = self.node_repo.get_children(spec_id)
+        plan_ids = [
+            cid
+            for cid in children
+            if (child := self.node_repo.get_node(cid)) is not None and child.kind == NodeKind.PLAN
+        ]
+        if not plan_ids:
+            return spec_node.status
+
+        plan_states = [self.resolve_plan_status(pid) for pid in plan_ids]
+
+        if all(s in (NodeStatus.COMPLETED, NodeStatus.SUPERSEDED) for s in plan_states):
+            return NodeStatus.COMPLETED
+
+        uncompleted = [
+            s for s in plan_states if s not in (NodeStatus.COMPLETED, NodeStatus.SUPERSEDED)
+        ]
+        if uncompleted and all(s == VirtualStatus.BLOCKED for s in uncompleted):
+            return VirtualStatus.BLOCKED
+
+        if all(s == NodeStatus.NOT_STARTED for s in plan_states):
+            return NodeStatus.NOT_STARTED
+
+        return NodeStatus.IMPLEMENTING
+
     def would_cause_cycle(self, source_id: str, target_id: str) -> bool:
         if source_id == target_id:
             return True
