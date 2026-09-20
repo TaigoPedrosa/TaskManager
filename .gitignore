@@ -7,8 +7,8 @@ __pycache__/
 dist/
 build/
 *.egg-info/
-.taskmanager/worktrees/
-.taskmanager/runtime.db*
+.taskmanager/
+spec-dashboard.html
 .coverage
 coverage.xml
 htmlcov/
