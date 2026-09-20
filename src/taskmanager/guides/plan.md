@@ -96,7 +96,7 @@ tm section set <id>:<key> --file <path> --header "## Context"
 tm verify add <id> --type test_command --target api-suite --pattern "pytest tests/notify/test_api.py -q"
 ```
 
-Change `declared_files` later with `tm task update <id> --set 'declared_files=["path", ...]'`; a `file_exists` verification for a path joins the same list.
+Change a task's dependencies later with `tm task depends <id> --add a,b --remove c`: it refuses an unknown id or a cycle and then writes nothing. Change `declared_files` later with `tm task update <id> --set 'declared_files=["path", ...]'`; a `file_exists` verification for a path joins the same list.
 
 ## Worked example
 

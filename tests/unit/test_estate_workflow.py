@@ -647,3 +647,42 @@ def test_plan_list_reports_the_state_its_tasks_add_up_to(tmp_path: Path) -> None
         runner.invoke(app, ["run", "stop", t, "--status", "COMPLETED", "-C", str(tmp_path)])
     rows = json.loads(runner.invoke(app, ["plan", "list", "--json", "-C", str(tmp_path)]).stdout)
     assert rows[0]["status"] == "NOT_STARTED" and rows[0]["state"] == "COMPLETED"
+
+
+def test_task_depends_adds_removes_and_refuses_a_cycle_or_an_unknown_id(tmp_path: Path) -> None:
+    _seed_estate(tmp_path)
+    root = str(tmp_path)
+    # b already depends on a: a depending on b would close a cycle.
+    cycle = runner.invoke(app, ["task", "depends", "S1-P1-a", "--add", "S1-P1-b", "-C", root])
+    assert cycle.exit_code == 1 and "cycle" in cycle.output
+    unknown = runner.invoke(
+        app, ["task", "depends", "S1-P1-b", "--add", "S1-P1-a,NOPE", "-C", root]
+    )
+    assert unknown.exit_code == 1 and "NOPE" in unknown.output
+    same = json.loads(runner.invoke(app, ["task", "get", "S1-P1-b", "--json", "-C", root]).stdout)
+    assert [d["id"] for d in same["depends_on"]] == ["S1-P1-a"]  # nothing partial was written
+    runner.invoke(app, ["task", "add", "c", "--plan", "S1-P1", "--slug", "c", "-C", root])
+    assert (
+        runner.invoke(
+            app, ["task", "depends", "S1-P1-c", "--add", "S1-P1-a,S1-P1-b", "-C", root]
+        ).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(app, ["task", "depends", "S1-P1-c", "--add", "S1-P1-a", "-C", root]).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(
+            app, ["task", "depends", "S1-P1-c", "--remove", "S1-P1-b", "-C", root]
+        ).exit_code
+        == 0
+    )
+    got = json.loads(runner.invoke(app, ["task", "get", "S1-P1-c", "--json", "-C", root]).stdout)
+    assert [d["id"] for d in got["depends_on"]] == ["S1-P1-a"]
+    assert (
+        runner.invoke(
+            app, ["task", "depends", "S1-P1-c", "--remove", "S1-P1-b", "-C", root]
+        ).exit_code
+        == 1
+    )

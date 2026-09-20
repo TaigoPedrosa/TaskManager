@@ -555,6 +555,62 @@ def task_list(
     print(table)
 
 
+@task_app.command("depends")
+def task_depends(
+    task_id: str,
+    add: Annotated[
+        str | None, typer.Option("--add", help="Comma-separated ids this task now depends on")
+    ] = None,
+    remove: Annotated[
+        str | None, typer.Option("--remove", help="Comma-separated ids to stop depending on")
+    ] = None,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Add or remove dependency edges on an existing task; nothing is written if any is refused."""
+    root = _get_root(path)
+    container = _get_container(root)
+    node_repo = container.get(NodeRepository)
+    graph = container.get(GraphEngine)
+    if node_repo.get_node(task_id) is None:
+        print(f"[red]Task '{task_id}' not found[/red]")
+        raise typer.Exit(code=1)
+
+    def ids(raw: str | None) -> list[str]:
+        return [x.strip() for x in (raw or "").split(",") if x.strip()]
+
+    to_add, to_remove = ids(add), ids(remove)
+    if not to_add and not to_remove:
+        raise typer.BadParameter("give --add and/or --remove")
+    current = set(node_repo.get_dependencies(task_id))
+    problems: list[str] = []
+    for dep in to_add:
+        if node_repo.get_node(dep) is None:
+            problems.append(f"'{dep}' does not exist")
+        elif dep not in current and graph.would_cause_cycle(task_id, dep):
+            problems.append(f"'{dep}' would make a cycle")
+    for dep in to_remove:
+        if dep not in current:
+            problems.append(f"'{dep}' is not a dependency")
+    if problems:
+        print(f"[red]Nothing changed: {'; '.join(problems)}[/red]")
+        raise typer.Exit(code=1)
+    for dep in to_add:
+        node_repo.add_relation(
+            NodeRelation(source_id=task_id, target_id=dep, relation_type=RelationType.DEPENDS_ON)
+        )
+    for dep in to_remove:
+        node_repo.remove_relation(task_id, dep, RelationType.DEPENDS_ON)
+    _record_ledger(
+        container,
+        command="task depends",
+        target_id=task_id,
+        payload={"add": to_add, "remove": to_remove},
+    )
+    print(
+        f"[green]{task_id} depends on: {', '.join(node_repo.get_dependencies(task_id)) or '-'}[/green]"
+    )
+
+
 @task_app.command("update")
 def task_update(
     task_id: str,

@@ -251,6 +251,15 @@ class NodeRepository:
             ).fetchall()
             return [r[0] for r in rows]
 
+    def remove_relation(self, source_id: str, target_id: str, relation_type: RelationType) -> None:
+        with self.db.get_spec_connection() as conn:
+            conn.execute(
+                "DELETE FROM node_relations WHERE source_id = ? AND target_id = ? "
+                "AND relation_type = ?",
+                (source_id, target_id, relation_type.value),
+            )
+            conn.commit()
+
     def get_dependencies(self, node_id: str) -> list[str]:
         with self.db.get_spec_connection() as conn:
             rows = conn.execute(
