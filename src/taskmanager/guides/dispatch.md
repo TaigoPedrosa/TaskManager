@@ -67,16 +67,30 @@ Each stage is one claim and one release. The implementer, the reviewer, the fixe
 
 Find each wave's next move with `tm task list --status <S> --yaml`. `COMPLETED` is set by the merge agent and nowhere else; what you set directly, with `tm run stop <id> --status <S>` and no lease, is `NOT_STARTED`, `DEFERRED` and `ABANDONED`.
 
-A reviewer is dispatched without `--worktree`; its claim reads the branch and locks nothing, so it never holds a sibling out of a wave. Batch review by plan, not by task: collect the plan's `WAITING_REVIEW` tasks, review them in one dispatch, and send one findings list per task. A fix round returns to `WAITING_REVIEW` and reuses the same branch, so the reviewer re-reads a diff rather than a tree.
+A reviewer is dispatched without `--worktree`; its claim reads the branch and locks nothing, so it never holds a sibling out of a wave. A fix round returns to `WAITING_REVIEW` and reuses the same branch, so the reviewer re-reads a diff rather than a tree.
 
-## 7. When the plan changes
+**That table is per task, not per wave.** A task advances the moment its own stage releases, so one task can be merging while another is on its first fix round and a third has not been claimed. One reviewer per task, dispatched as soon as *that* task reaches `WAITING_REVIEW` — do not collect a plan's `WAITING_REVIEW` tasks and review them together. Batching by plan makes the slowest task in the batch the release time of every task in it, spends one reviewer's context on work it was not briefed on, and produces a single findings list somebody then has to split back apart.
+
+## 7. Chain the stages as one workflow
+
+Where the orchestration tool takes a script, the table above *is* the script, and the whole of the design is that no stage waits for a sibling:
+
+- **Pipeline, never a barrier.** Run each task through implement → review → fix → re-review → merge independently. Putting a barrier between stages — every task reviewed before any is fixed — makes each task wait for the slowest sibling at five separate points, and there is no cross-task decision at any of them to pay for it. Wall clock becomes the slowest single chain instead of the sum of the slowest per stage.
+- **Enter at the current status, not at the start.** Read each task's status when the wave is built and let it skip what it is already past: `WAITING_REVIEW` enters at review, `WAITING_MERGE` enters at merge. Re-implementing a task that is already implemented is the common failure of a script that assumes a wave starts from `READY`.
+- **Let each stage pick the next.** A review finding nothing blocking skips fix and re-review and goes to merge; one that finds something routes through fix and back. Have the stage return a structured verdict rather than prose, so the branch is a value and not a reading of a paragraph.
+- **Declare the holds before the first dispatch, not inside a stage.** A merge that is irreversible, applies to production, or is the user's decision is excluded from the script's input and reported as held. A stage that discovers the hold has already spent an agent reaching it.
+- **A status is not a lock.** Two stages of one task never run at once, so nothing needs a second lock beyond the lease — but a shared resource outside `tm` is not covered by either. A migration chain admits one **unmerged** writer, not one live lease: the seat stays taken until that branch merges, so a task releasing its lease at `WAITING_REVIEW` has not freed it, and the next claimant computes the same "next free" revision and builds a second head on one parent.
+
+Build the wave against the trees, not against the last wave's reports. A pin, a migration head, an ahead/behind count and a seam's status all decay between waves, and re-deriving them is the dispatcher's job rather than the implementer's: a stale premise dispatched is an agent spent proving the brief wrong.
+
+## 8. When the plan changes
 
 - **Defer.** Write why first, then park it: `tm section set <id>:deferral --file <path>` then `tm run stop <id> --status DEFERRED`. A deferred task leaves `tm next` and keeps its dependents blocked, so defer a blocker only after superseding or re-pointing them.
 - **Supersede.** `tm task supersede <old-id> <new-id> --transfer-blocks all` sets the old task `SUPERSEDED` and re-points every dependent at the new one. The new task must already exist (otherwise nothing is changed and it exits 1). A lease and file locks held by the old task are released. A comma-separated id list re-points only those; `--transfer-blocks none` re-points nobody and leaves each dependent pointing at a `SUPERSEDED` task, **which satisfies the dependency** — use it to release dependents, never to hold them.
 - **Abandon.** `tm run stop <id> --status ABANDONED`, and only where nothing depends on it: `ABANDONED` never satisfies a dependency, so every dependent stays blocked forever.
 - **Close a plan.** When its tasks are `COMPLETED` or `SUPERSEDED`, `tm run stop <plan-id> --status COMPLETED`. Check with `tm task list --plan <plan-id> --yaml` first; nothing closes it for you. `tm plan list --yaml` shows the stored `status` and a `state` worked out from the plan's tasks: a plan whose tasks are all done reads `state: COMPLETED` while its `status` stays until you stop it.
 
-## 8. Write rulings down where the work is
+## 9. Write rulings down where the work is
 
 A decision, a constraint, a hazard or an answer the next agent will need goes on the node it applies to, not into a document and not into your own notes:
 
@@ -87,7 +101,7 @@ tm section set <plan-id>:context --file <path>      # reaches every task's brief
 
 Anything a `tm` command can answer — what is claimed, what is ready, who holds a file, which tasks are left in a plan — is not written down at all. It decays the moment someone claims something.
 
-## 9. Escalate rather than repeat
+## 10. Escalate rather than repeat
 
 An implementer that comes back blocked twice on the same task is not going to succeed on a third identical dispatch. Re-dispatch on a stronger model and say what changed, or split the task. Two review rounds on one task means the brief was wrong: fix the task's sections before the third.
 
@@ -98,3 +112,6 @@ An implementer that comes back blocked twice on the same task is not going to su
 - Never poll `tm run list` in a loop, and never end a turn waiting for a background job to report.
 - Never dispatch the replacement of a lost agent before running `tm run sweep`.
 - Never keep a second record of what is in flight; `tm run list` and `tm next` are it.
+- Never hold a task at a stage because a sibling has not reached it; only `depends_on` makes one task wait for another.
+- Never treat a released lease as a freed migration chain: that seat is held until the branch merges.
+- Never dispatch on a premise carried from the last wave's report without re-deriving it against the tree.

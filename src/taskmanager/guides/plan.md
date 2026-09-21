@@ -40,6 +40,8 @@ Frontmatter keys the estate reads:
 - `declared_files`: every repo-relative path the task will create or modify. This is what the lease locks and what `tm next` filters on, so an unlisted file is a collision nobody sees and a listed file nobody touches is a task needlessly held out of a wave. Tests count.
 - `soft_depends_on`: ids this task builds against a stub or a mock until they land. It creates no edge and holds nothing back; it tells the implementer what the stub is for.
 - `external_blockers`: prose conditions outside the corpus (an approval, a credential, a third party). Nothing enforces them; they are what the dispatcher checks before claiming.
+- `review_models`: who reviews this task, as model ids. Distinct from `acceptable_models`, which is who *implements* it: a task that is cheap to write can be expensive to check, and a migration, an RLS policy or a crypto boundary is reviewed on the strongest model whatever wrote it. Nothing in `tm` reads this; the dispatcher and the rendered brief do.
+- `gate_lane`: where this task's own gate can run — a database or a real browser needs the estate's shared machine, anything CPU-light runs beside the session. It is a claim about this task's files, so its author owns it: a dispatcher re-deriving it per wave from the file list gets it wrong on exactly the tasks where it matters, and a gate in the wrong lane is either a wedged container or an hour of queueing for a two-file diff.
 
 ## 3. Models
 
@@ -76,7 +78,20 @@ A check that passes before the work starts is not a check. Every path resolves a
 
 One agent, one sitting, one branch: an objective of a sentence, acceptance of a handful of lines, and a `declared_files` list short enough that no sibling wants any of it. Two objectives joined by "and" are two tasks.
 
-## 7. Import it, then read it back
+## 7. Provision the review and the merge on the task, not on the wave
+
+A task's review, its fix rounds and its merge are stages of **that task**. Nothing in `tm` couples them to a sibling: the lease is per task, the locks are per task, and `depends_on` is the only thing that makes one task wait for another. So a plan is authored to let each task advance alone — one task merging while another is on its first fix round is the normal shape, not a special case.
+
+What that costs the author is four lines per task:
+
+- **`acceptance` is the review's brief.** One check per line, each one a reviewer can actually run, and each one about *this* task's own deliverable. "The suite is green" is not a check: it is equally true of every task in the plan, so it tells a reviewer nothing and cannot fail for this task's reasons.
+- **`review_models` is who runs it.** Set it wherever checking is harder than writing, which is most migrations, every RLS or tenant-isolation change, and anything holding a key.
+- **A merge precondition is an edge or an `external_blocker`, never a sentence.** A task that cannot merge until another lands says so in `depends_on`. One that cannot merge until something outside the corpus happens — a release tag cut, an approval, a credential — says so in `external_blockers`. Written into `acceptance` instead it reads as a review check, passes review, and is then discovered by the merge agent with the branch already built and the gate already spent.
+- **Do not write the merge's outward effect on the task.** Whether the target repo deploys, applies or publishes on push is two live measurements — the workflow's job list and the current value of whatever variable gates it — and a copy on the task is wrong the day either changes. The merge agent measures it at merge time.
+
+A task provisioned this way needs nothing from its siblings to move, which is exactly what lets a dispatcher run implement, review, fix and merge concurrently across a wave instead of in lockstep. A task that hides a precondition in prose forces the whole wave back into lockstep, because the only safe thing to do with it is wait.
+
+## 8. Import it, then read it back
 
 ```
 tm import --format yaml -f plan.yaml     # stdin when there is no -f
@@ -88,7 +103,7 @@ tm export docs/tm/                       # sorted, timestamp-free text, for vers
 
 Read the brief before dispatching anyone: a section you meant to write and did not is invisible in the database and obvious here.
 
-## 8. Amend a landed document, or re-import it
+## 9. Amend a landed document, or re-import it
 
 While you are still authoring, re-importing the same document is safe: it refuses before writing when an id is unknown, adds no verification twice, and a node keeps its current status, priority, models and frontmatter for every key the document does not state (a key it does state is overwritten, so state `status` only where you mean it). A task whose `verifications` a document states has exactly those afterwards, so a corrected check replaces the stale one; `tm verify list <id>` shows each check's id and `tm verify remove <id> <verification-id>` deletes one. Once work has landed, change it with:
 
@@ -182,3 +197,5 @@ plans:
 - Never write a verification that passes before the work starts.
 - Never state a dependency in prose: an id in `depends_on`, or it does not exist.
 - Never write `status` except to record work that already exists, and never describe a set of blockers instead of naming them.
+- Never write a merge precondition as prose in `acceptance`: it is a `depends_on` edge or an `external_blocker`.
+- Never write a task whose review or merge depends on a sibling finishing first unless that sibling is in `depends_on`.
