@@ -258,3 +258,72 @@ def test_verify_all(tmp_path: Path) -> None:
     assert len(results) == 2
     assert results[0].passed is True
     assert results[1].passed is False
+
+
+def test_ast_symbol_verification_annotated_field(tmp_path: Path) -> None:
+    source_file = tmp_path / "schemas.py"
+    source_file.write_text(
+        "class OpsTenantDetailOut(BaseModel):\n    campaigns_in_use: int\n"
+    )
+
+    ver = NodeVerification(
+        node_id="AUTH-T01",
+        verification_type=VerificationType.SYMBOL_SIGNATURE,
+        target_path="schemas.py",
+        expected_pattern="campaigns_in_use: int",
+    )
+
+    engine = VerificationEngine(tmp_path)
+    result = engine.verify_assertion(ver)
+    assert result.passed is True
+    assert "Symbol campaigns_in_use found" in result.message
+
+
+def test_ast_symbol_verification_plain_assignment(tmp_path: Path) -> None:
+    source_file = tmp_path / "settings.py"
+    source_file.write_text("OPS_ORIGIN = 'https://ops.example'\n")
+
+    ver = NodeVerification(
+        node_id="AUTH-T01",
+        verification_type=VerificationType.SYMBOL_SIGNATURE,
+        target_path="settings.py",
+        expected_pattern="OPS_ORIGIN",
+    )
+
+    engine = VerificationEngine(tmp_path)
+    result = engine.verify_assertion(ver)
+    assert result.passed is True
+
+
+def test_ast_symbol_verification_absent_field_still_fails(tmp_path: Path) -> None:
+    source_file = tmp_path / "schemas.py"
+    source_file.write_text("class OpsTenantDetailOut(BaseModel):\n    slug: str\n")
+
+    ver = NodeVerification(
+        node_id="AUTH-T01",
+        verification_type=VerificationType.SYMBOL_SIGNATURE,
+        target_path="schemas.py",
+        expected_pattern="campaigns_in_use: int",
+    )
+
+    engine = VerificationEngine(tmp_path)
+    result = engine.verify_assertion(ver)
+    assert result.passed is False
+
+
+def test_ast_symbol_verification_refuses_a_non_python_target(tmp_path: Path) -> None:
+    source_file = tmp_path / "themeChoice.ts"
+    source_file.write_text("export const themeChoice = 'dark';\n")
+
+    ver = NodeVerification(
+        node_id="AUTH-T01",
+        verification_type=VerificationType.SYMBOL_SIGNATURE,
+        target_path="themeChoice.ts",
+        expected_pattern="themeChoice",
+    )
+
+    engine = VerificationEngine(tmp_path)
+    result = engine.verify_assertion(ver)
+    assert result.passed is False
+    assert "parses Python" in result.message
+    assert "test_command" in result.message

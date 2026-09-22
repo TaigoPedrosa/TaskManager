@@ -32,6 +32,30 @@ def _extract_symbol_name(pattern: str) -> str:
     return cleaned
 
 
+PYTHON_SUFFIXES = frozenset({".py", ".pyi"})
+
+
+def _binds_name(node: ast.AST, name: str) -> bool:
+    """A module-, class- or function-level binding of `name`, by any statement that creates one.
+
+    Annotated and plain assignments count: a schema field is `x: int` or `x = 0`, and matching only
+    def/class made every field-adding task's check unsatisfiable.
+    """
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return node.name == name
+    if isinstance(node, ast.AnnAssign):
+        return isinstance(node.target, ast.Name) and node.target.id == name
+    if isinstance(node, ast.Assign):
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == name:
+                return True
+            if isinstance(target, (ast.Tuple, ast.List)) and any(
+                isinstance(elt, ast.Name) and elt.id == name for elt in target.elts
+            ):
+                return True
+    return False
+
+
 class VerificationEngine:
     def __init__(self, target_root: Path) -> None:
         self.root = Path(target_root)
@@ -82,6 +106,17 @@ class VerificationEngine:
                     passed=False,
                     message=f"File {ver.target_path} missing",
                 )
+            if full_path.suffix not in PYTHON_SUFFIXES:
+                return VerificationResult(
+                    verification_id=ver.id,
+                    target_path=ver.target_path,
+                    verification_type=ver.verification_type,
+                    passed=False,
+                    message=(
+                        f"symbol_signature parses Python; {ver.target_path} is "
+                        f"'{full_path.suffix or 'extensionless'}'. Use a test_command."
+                    ),
+                )
             try:
                 content = full_path.read_text(encoding="utf-8")
                 tree = ast.parse(content)
@@ -112,14 +147,7 @@ class VerificationEngine:
                 )
 
             symbol_name = _extract_symbol_name(ver.expected_pattern)
-            found = False
-            for node in ast.walk(tree):
-                if (
-                    isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-                    and node.name == symbol_name
-                ):
-                    found = True
-                    break
+            found = any(_binds_name(node, symbol_name) for node in ast.walk(tree))
 
             if found:
                 return VerificationResult(
