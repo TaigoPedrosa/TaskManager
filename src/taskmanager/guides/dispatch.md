@@ -81,6 +81,47 @@ Where the orchestration tool takes a script, the table above *is* the script, an
 - **Declare the holds before the first dispatch, not inside a stage.** A merge that is irreversible, applies to production, or is the user's decision is excluded from the script's input and reported as held. A stage that discovers the hold has already spent an agent reaching it.
 - **A status is not a lock.** Two stages of one task never run at once, so nothing needs a second lock beyond the lease — but a shared resource outside `tm` is not covered by either. A migration chain admits one **unmerged** writer, not one live lease: the seat stays taken until that branch merges, so a task releasing its lease at `WAITING_REVIEW` has not freed it, and the next claimant computes the same "next free" revision and builds a second head on one parent.
 
+**The script is not a second task database.** `tm` holds the status; the script holds only the
+control flow that gets an agent to the next one. Everything below follows from that one asymmetry.
+
+- **Read the task set from `tm` at runtime, not from a literal in the script.** A hard-coded
+  `const TASKS = [...]` freezes the queue at the moment the script was written, so work that
+  becomes ready while the run is in flight is invisible to it and a task someone else claimed in
+  the meantime is dispatched into a collision. Call `tm next` / `tm task list --status <S> --yaml`
+  inside the first stage, or re-read between rounds of a loop. A named, owner-authorised set of
+  ids is the one case where a literal is correct — and then it is a literal because the *user*
+  fixed the set, not because the script did.
+- **A stage's return value is a routing decision; the status write is the agent's.** Have each
+  stage return a structured verdict and branch on it, but never set a task's status from the
+  script — the agent inside the stage claims with `tm run start` and releases with `tm run stop`,
+  because that is what writes the lease, the file locks and the history. A script that writes
+  status directly produces a task whose status moved with no lease behind it, and `tm run list`
+  then disagrees with `tm task list`.
+- **An agent that dies leaves its lease held.** `agent()` returns `null` when a subagent is
+  skipped or dies on a terminal error, and the task it claimed stays `IMPLEMENTING` with its files
+  locked, blocking every sibling that declared one of them. Filter `null` before using a stage's
+  results, treat it as "this task stopped here", and run `tm run sweep` before dispatching a
+  replacement — never dispatch the replacement first.
+- **Cap the fix rounds inside the stage, and make the cap do something.** Two review rounds on one
+  task means the brief was wrong, not the implementer (§10). Loop fix → re-review at most twice,
+  then stop that task's chain and report it rather than starting a third round: leave it at
+  `WAITING_FIXES` for a human or a stronger model, and say which findings are still open. A loop
+  with no cap spends a wave's whole budget on the one task whose sections are wrong.
+- **A review that says DEFECTS and lists no finding is a defect in the review, not a clean task.**
+  Stop that chain and report it. The fixer downstream would otherwise claim `WAITING_FIXES` and
+  find nothing on it to fix, which is exactly what happens when a reviewer delivers its findings to
+  the dispatcher's mailbox instead of to the task's `:review` section.
+- **Resume re-runs the script, not the world.** Resuming a run replays cached results for every
+  `agent()` call whose prompt and options are unchanged — but the trees and `tm` have moved since,
+  so a cached "reviewed CLEAN" can be a verdict on a commit that is no longer the tip. Re-read each
+  task's status from `tm` at the top of a resumed run and let the entry rule above send it to the
+  right stage, rather than trusting where the cache says it was.
+- **Hold the merge stage, not the whole task, for owner-gated work.** A task whose merge is
+  irreversible, applies to production or deploys a live site still gets implemented and reviewed by
+  the script; it is the merge stage that is excluded and reported. Declaring the hold at the merge
+  boundary keeps the work moving without ever letting a script make the decision that was the
+  user's.
+
 Build the wave against the trees, not against the last wave's reports. A pin, a migration head, an ahead/behind count and a seam's status all decay between waves, and re-deriving them is the dispatcher's job rather than the implementer's: a stale premise dispatched is an agent spent proving the brief wrong.
 
 ## 8. When the plan changes
