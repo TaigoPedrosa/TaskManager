@@ -47,6 +47,10 @@ const legendBtn = document.getElementById('legend-btn');
 const legendPanel = document.getElementById('legend-panel');
 const legendBody = document.getElementById('legend-body');
 const legendCloseBtn = document.getElementById('legend-close-btn');
+const toolbarActions = document.getElementById('toolbar-actions');
+const dialogRoot = document.getElementById('dialog-root');
+const toastRoot = document.getElementById('toast-root');
+toastRoot.className = 'fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2 pointer-events-none';
 
 
 // Sidebar width: Graph view only, drag-resizable, remembered per browser.
@@ -248,6 +252,47 @@ function progressBar(node, height = 'h-1.5') {
 // True once server-backed writes exist; a static export (window.STATIC_DATA) is always read-only.
 function canEdit() {
   return !isStaticMode;
+}
+
+// One JSON round trip for every write route: throws with the server's own `detail` message
+// (OperationError's text, per the write guard's refusal contract) so a caller can show it
+// verbatim in a toast rather than a generic "request failed".
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body !== undefined) opts.body = JSON.stringify(body);
+  let res;
+  try {
+    res = await fetch(path, opts);
+  } catch (e) {
+    throw new Error('Network error: could not reach the server.');
+  }
+  let data = null;
+  const text = await res.text();
+  if (text) {
+    try { data = JSON.parse(text); } catch (e) { /* non-JSON body */ }
+  }
+  if (!res.ok) {
+    throw new Error((data && data.detail) || `${method} ${path} failed (${res.status})`);
+  }
+  return data;
+}
+
+const TOAST_TONE = {
+  info: 'bg-zinc-800 border-zinc-700 text-zinc-100',
+  success: 'bg-emerald-950 border-emerald-700 text-emerald-200',
+  error: 'bg-red-950 border-red-700 text-red-200'
+};
+
+function toast(message, tone = 'info') {
+  const el = document.createElement('div');
+  el.className = `pointer-events-auto px-3 py-2 rounded-lg border text-xs shadow-2xl max-w-sm transition-opacity ${TOAST_TONE[tone] || TOAST_TONE.info}`;
+  el.setAttribute('role', tone === 'error' ? 'alert' : 'status');
+  el.textContent = message;
+  toastRoot.appendChild(el);
+  setTimeout(() => {
+    el.classList.add('opacity-0');
+    setTimeout(() => el.remove(), 200);
+  }, 3500);
 }
 
 // Fetch and Load Data
