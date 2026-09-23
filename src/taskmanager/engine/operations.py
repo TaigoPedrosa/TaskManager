@@ -168,13 +168,15 @@ class Operations:
         plan_node = Node(
             id=plan_id, kind=NodeKind.PLAN, title=title, priority=priority, ordinal=order
         )
-        self.node_repo.save_node(plan_node)
-        self.node_repo.add_relation(
-            NodeRelation(source_id=spec, target_id=plan_id, relation_type=RelationType.CONTAINS)
-        )
+        with self.node_repo.transaction():
+            self.node_repo.save_node(plan_node)
+            self.node_repo.add_relation(
+                NodeRelation(source_id=spec, target_id=plan_id, relation_type=RelationType.CONTAINS)
+            )
+            if require_review:
+                gate_id = self.graph.inject_plan_review_gate(plan_id)
 
         if require_review:
-            gate_id = self.graph.inject_plan_review_gate(plan_id)
             self._ledger(
                 LedgerCommand.PLAN_REVIEW_GATE,
                 target_id=plan_id,
@@ -224,17 +226,17 @@ class Operations:
             ordinal=order,
             acceptable_models=models or [],
         )
-        self.node_repo.save_node(task_node)
-        self.node_repo.add_relation(
-            NodeRelation(source_id=plan, target_id=task_id, relation_type=RelationType.CONTAINS)
-        )
-
-        for dep in depends_on or []:
+        with self.node_repo.transaction():
+            self.node_repo.save_node(task_node)
             self.node_repo.add_relation(
-                NodeRelation(
-                    source_id=task_id, target_id=dep, relation_type=RelationType.DEPENDS_ON
-                )
+                NodeRelation(source_id=plan, target_id=task_id, relation_type=RelationType.CONTAINS)
             )
+            for dep in depends_on or []:
+                self.node_repo.add_relation(
+                    NodeRelation(
+                        source_id=task_id, target_id=dep, relation_type=RelationType.DEPENDS_ON
+                    )
+                )
 
         self._ledger(
             LedgerCommand.TASK_ADD, target_id=task_id, payload={"title": title, "plan": plan}
@@ -304,17 +306,18 @@ class Operations:
                 problems.append(f"'{dep}' is not a dependency")
         if problems:
             raise OperationError(f"Nothing changed: {'; '.join(problems)}", 409)
-        for dep, gate in add:
-            self.node_repo.add_relation(
-                NodeRelation(
-                    source_id=task_id,
-                    target_id=dep,
-                    relation_type=RelationType.DEPENDS_ON,
-                    metadata={"gate": gate.value} if gate is not None else {},
+        with self.node_repo.transaction():
+            for dep, gate in add:
+                self.node_repo.add_relation(
+                    NodeRelation(
+                        source_id=task_id,
+                        target_id=dep,
+                        relation_type=RelationType.DEPENDS_ON,
+                        metadata={"gate": gate.value} if gate is not None else {},
+                    )
                 )
-            )
-        for dep in remove:
-            self.node_repo.remove_relation(task_id, dep, RelationType.DEPENDS_ON)
+            for dep in remove:
+                self.node_repo.remove_relation(task_id, dep, RelationType.DEPENDS_ON)
         self._ledger(
             LedgerCommand.TASK_DEPENDS,
             target_id=task_id,
@@ -331,25 +334,29 @@ class Operations:
         if new_id == old_id or self.node_repo.get_node(new_id) is None:
             raise OperationError(f"Replacement task '{new_id}' not found; nothing was changed", 400)
 
-        # A replaced task is not being worked on: its lease and file locks go with it.
+        # A replaced task is not being worked on: its lease and file locks go with it. The
+        # lease lives in a separate database from the node writes below, so it is released
+        # ahead of, and independent of, the transaction guarding those.
         self.runtime_repo.release_lease(old_id)
         old_node.status = NodeStatus.SUPERSEDED
-        self.node_repo.save_node(old_node)
 
-        self.node_repo.add_relation(
-            NodeRelation(source_id=new_id, target_id=old_id, relation_type=RelationType.SUPERSEDES)
-        )
-
-        tb_val = transfer_blocks.strip().lower()
-        if tb_val == TransferMode.ALL.value:
-            self.node_repo.transfer_blocks(old_id, new_id, TransferMode.ALL)
-        elif tb_val == TransferMode.NONE.value:
-            self.node_repo.transfer_blocks(old_id, new_id, TransferMode.NONE)
-        else:
-            custom_ids = [x.strip() for x in transfer_blocks.split(",") if x.strip()]
-            self.node_repo.transfer_blocks(
-                old_id, new_id, TransferMode.CUSTOM, custom_ids=custom_ids
+        with self.node_repo.transaction():
+            self.node_repo.save_node(old_node)
+            self.node_repo.add_relation(
+                NodeRelation(
+                    source_id=new_id, target_id=old_id, relation_type=RelationType.SUPERSEDES
+                )
             )
+            tb_val = transfer_blocks.strip().lower()
+            if tb_val == TransferMode.ALL.value:
+                self.node_repo.transfer_blocks(old_id, new_id, TransferMode.ALL)
+            elif tb_val == TransferMode.NONE.value:
+                self.node_repo.transfer_blocks(old_id, new_id, TransferMode.NONE)
+            else:
+                custom_ids = [x.strip() for x in transfer_blocks.split(",") if x.strip()]
+                self.node_repo.transfer_blocks(
+                    old_id, new_id, TransferMode.CUSTOM, custom_ids=custom_ids
+                )
 
         self._ledger(
             LedgerCommand.TASK_SUPERSEDE,
@@ -368,17 +375,21 @@ class Operations:
             raise OperationError(f"Plan '{plan_id}' not found", 404)
         if plan_node.kind != NodeKind.PLAN:
             raise OperationError(f"'{plan_id}' is not a plan", 400)
-        with self.node_repo.db.get_spec_connection() as conn:
-            row = conn.execute(
-                "SELECT source_id FROM node_relations WHERE target_id = ? AND relation_type = ?",
-                (task_id, RelationType.CONTAINS.value),
-            ).fetchone()
-        old_plan = row[0] if row else None
-        if old_plan is not None:
-            self.node_repo.remove_relation(old_plan, task_id, RelationType.CONTAINS)
-        self.node_repo.add_relation(
-            NodeRelation(source_id=plan_id, target_id=task_id, relation_type=RelationType.CONTAINS)
-        )
+        with self.node_repo.transaction():
+            with self.node_repo.db.get_spec_connection() as conn:
+                row = conn.execute(
+                    "SELECT source_id FROM node_relations "
+                    "WHERE target_id = ? AND relation_type = ?",
+                    (task_id, RelationType.CONTAINS.value),
+                ).fetchone()
+            old_plan = row[0] if row else None
+            if old_plan is not None:
+                self.node_repo.remove_relation(old_plan, task_id, RelationType.CONTAINS)
+            self.node_repo.add_relation(
+                NodeRelation(
+                    source_id=plan_id, target_id=task_id, relation_type=RelationType.CONTAINS
+                )
+            )
         self._ledger(
             LedgerCommand.TASK_MOVE, target_id=task_id, payload={"from": old_plan, "to": plan_id}
         )
@@ -397,20 +408,20 @@ class Operations:
             raise OperationError(
                 f"'{task_id}' is a decision; use `tm decision answer/withdraw/reopen`", 409
             )
-        # `stop_task` raises before touching the node on every refusal it has (missing task,
-        # nothing else today), so a failed status write never reaches the section write below --
-        # a ruling can never land without its status.
-        self.coordinator.stop_task(
-            task_id=task_id, new_status=status, remove_worktree=remove_worktree
-        )
-        self._ledger(
-            LedgerCommand.TASK_STOP,
-            target_id=task_id,
-            payload={"status": status.value, "remove_worktree": remove_worktree},
-        )
-        if section is not None:
-            key, content, header = section
-            self.set_section(task_id, key, content, header)
+        payload: dict[str, Any] = {"status": status.value, "remove_worktree": remove_worktree}
+        # Both writes share one `node_repo` transaction: `stop_task`'s status change and the
+        # section write either both land or neither does, so a ruling can never land without
+        # its status even when the status write itself succeeds and the section write is what
+        # fails.
+        with self.node_repo.transaction():
+            self.coordinator.stop_task(
+                task_id=task_id, new_status=status, remove_worktree=remove_worktree
+            )
+            if section is not None:
+                key, content, header = section
+                self._write_section(task_id, key, content, header)
+                payload["section"] = key
+        self._ledger(LedgerCommand.TASK_STOP, target_id=task_id, payload=payload)
 
     def release_lease(self, task_id: str) -> None:
         if self.node_repo.get_node(task_id) is None:
@@ -422,15 +433,33 @@ class Operations:
         swept = self.runtime_repo.sweep_expired_leases()
         if swept:
             # An abandoned claim returns the task to the state before it, or nobody could claim it.
-            for task_id in swept:
-                node = self.node_repo.get_node(task_id)
-                if node is not None and node.status in _SWEEP_BACK:
-                    node.status = _SWEEP_BACK[node.status]
-                    self.node_repo.save_node(node)
+            with self.node_repo.transaction():
+                for task_id in swept:
+                    node = self.node_repo.get_node(task_id)
+                    if node is not None and node.status in _SWEEP_BACK:
+                        node.status = _SWEEP_BACK[node.status]
+                        self.node_repo.save_node(node)
             self._ledger(LedgerCommand.LEASE_SWEEP, payload={"swept_tasks": swept})
         return swept
 
     # -- sections -------------------------------------------------------------------------
+
+    def _write_section(
+        self, node_id: str, section_key: str, content: str, header: str | None
+    ) -> None:
+        sec_header = header or f"## {section_key.capitalize()}"
+        existing_secs = self.node_repo.get_all_sections(node_id)
+        existing = next((s for s in existing_secs if s.section_key == section_key), None)
+        ordinal = existing.ordinal if existing else len(existing_secs) + 1
+        self.node_repo.save_section(
+            NodeSection(
+                node_id=node_id,
+                section_key=section_key,
+                ordinal=ordinal,
+                header=sec_header,
+                content=content,
+            )
+        )
 
     def set_section(
         self, node_id: str, section_key: str, content: str, header: str | None = None
@@ -442,21 +471,7 @@ class Operations:
                 else ""
             )
             raise OperationError(f"No node '{node_id}' to hold the section.{hint}", 404)
-
-        sec_header = header or f"## {section_key.capitalize()}"
-        existing_secs = self.node_repo.get_all_sections(node_id)
-        existing = next((s for s in existing_secs if s.section_key == section_key), None)
-        ordinal = existing.ordinal if existing else len(existing_secs) + 1
-
-        self.node_repo.save_section(
-            NodeSection(
-                node_id=node_id,
-                section_key=section_key,
-                ordinal=ordinal,
-                header=sec_header,
-                content=content,
-            )
-        )
+        self._write_section(node_id, section_key, content, header)
         self._ledger(LedgerCommand.SECTION_SET, target_id=f"{node_id}:{section_key}")
 
     def remove_section(self, node_id: str, section_key: str) -> None:
@@ -594,25 +609,26 @@ class Operations:
             priority=priority,
             frontmatter={"decision": data.model_dump(mode="json")},
         )
-        self.node_repo.save_node(node)
-        if context:
-            self.node_repo.save_section(
-                NodeSection(
-                    node_id=decision_id,
-                    section_key="context",
-                    ordinal=1,
-                    header="## Context",
-                    content=context,
+        with self.node_repo.transaction():
+            self.node_repo.save_node(node)
+            if context:
+                self.node_repo.save_section(
+                    NodeSection(
+                        node_id=decision_id,
+                        section_key="context",
+                        ordinal=1,
+                        header="## Context",
+                        content=context,
+                    )
                 )
-            )
-        for task_id in blocked_tasks:
-            self.node_repo.add_relation(
-                NodeRelation(
-                    source_id=task_id,
-                    target_id=decision_id,
-                    relation_type=RelationType.DEPENDS_ON,
+            for task_id in blocked_tasks:
+                self.node_repo.add_relation(
+                    NodeRelation(
+                        source_id=task_id,
+                        target_id=decision_id,
+                        relation_type=RelationType.DEPENDS_ON,
+                    )
                 )
-            )
         self._ledger(
             LedgerCommand.DECISION_ADD, target_id=decision_id, payload={"question": question}
         )
@@ -648,7 +664,8 @@ class Operations:
         write_decision(node, data)
         node.status = NodeStatus.COMPLETED
         node.updated_at = datetime.now(tz=UTC)
-        self.node_repo.save_node(node)
+        with self.node_repo.transaction():
+            self.node_repo.save_node(node)
         self._ledger(
             LedgerCommand.DECISION_ANSWER, target_id=decision_id, payload={"option": option}
         )
@@ -695,16 +712,17 @@ class Operations:
         for task_id in remove_ids:
             if decision_id not in self.node_repo.get_dependencies(task_id):
                 raise OperationError(f"'{task_id}' does not wait on '{decision_id}'", 409)
-        for task_id in add_ids:
-            self.node_repo.add_relation(
-                NodeRelation(
-                    source_id=task_id,
-                    target_id=decision_id,
-                    relation_type=RelationType.DEPENDS_ON,
+        with self.node_repo.transaction():
+            for task_id in add_ids:
+                self.node_repo.add_relation(
+                    NodeRelation(
+                        source_id=task_id,
+                        target_id=decision_id,
+                        relation_type=RelationType.DEPENDS_ON,
+                    )
                 )
-            )
-        for task_id in remove_ids:
-            self.node_repo.remove_relation(task_id, decision_id, RelationType.DEPENDS_ON)
+            for task_id in remove_ids:
+                self.node_repo.remove_relation(task_id, decision_id, RelationType.DEPENDS_ON)
         self._ledger(
             LedgerCommand.DECISION_LINK,
             target_id=decision_id,

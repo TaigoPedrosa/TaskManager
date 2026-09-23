@@ -167,14 +167,21 @@ class GraphEngine:
         if not plan_nodes:
             return spec_node.status
 
-        counted = [pn for pn in plan_nodes if pn.status not in _SET_ASIDE]
-        set_aside_statuses = [pn.status for pn in plan_nodes if pn.status in _SET_ASIDE]
-        plan_states = [self.resolve_plan_status(pn.id) for pn in counted]
+        # A plan's own stored `status` sits at NOT_STARTED forever in normal use -- its rollup
+        # is what "set aside" has to mean for a plan nested under a spec (a plan whose only
+        # children are all abandoned rolls up to ABANDONED itself, with nothing on the plan
+        # node's own row to show for it), unlike a task, whose stored status is transitioned
+        # directly and already is its meaningful state.
+        plan_states = [self.resolve_plan_status(pn.id) for pn in plan_nodes]
+        counted_states = [state for state in plan_states if state not in _SET_ASIDE]
+        set_aside_statuses = [
+            state for state in plan_states if isinstance(state, NodeStatus) and state in _SET_ASIDE
+        ]
 
         return self._rollup(
-            plan_states,
+            counted_states,
             set_aside_statuses,
-            all(s in (NodeStatus.NOT_STARTED, VirtualStatus.READY) for s in plan_states),
+            all(s in (NodeStatus.NOT_STARTED, VirtualStatus.READY) for s in counted_states),
         )
 
     def would_cause_cycle(self, source_id: str, target_id: str) -> bool:

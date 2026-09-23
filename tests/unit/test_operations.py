@@ -949,3 +949,208 @@ def test_detach_keeps_asset_while_a_second_entry_on_the_same_node_still_referenc
     assert len(remaining) == 1
     assert remaining[0]["asset"] == entry_a["asset"]
     assert (ops._assets_dir() / entry_a["asset"]).exists()
+
+
+# -- multi-write atomicity: a later write failing leaves an earlier one in the same operation
+# unwritten, because every method below shares one `node_repo.transaction()` for its writes. ---
+
+
+def test_add_task_second_write_failure_leaves_task_node_unwritten(ops_setup: tuple) -> None:
+    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    _spec_id, plan_id, _existing = _seed_task(ops)
+    before = len(ledger_repo.list_events(limit=1000))
+
+    def boom(*_a: object, **_kw: object) -> None:
+        raise RuntimeError("boom")
+
+    node_repo.add_relation = boom  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        ops.add_task("New", plan_id, slug="NEW2")
+    assert node_repo.get_node(f"{plan_id}-NEW2") is None
+    assert len(ledger_repo.list_events(limit=1000)) == before
+
+
+def test_add_plan_second_write_failure_leaves_plan_node_unwritten(ops_setup: tuple) -> None:
+    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    spec_id = ops.add_spec("S", slug="S1")
+    before = len(ledger_repo.list_events(limit=1000))
+
+    def boom(*_a: object, **_kw: object) -> None:
+        raise RuntimeError("boom")
+
+    node_repo.add_relation = boom  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        ops.add_plan("P", spec_id, slug="P1")
+    assert node_repo.get_node(f"{spec_id}-P1") is None
+    assert len(ledger_repo.list_events(limit=1000)) == before
+
+
+def test_set_dependencies_second_add_failure_leaves_first_unadded(ops_setup: tuple) -> None:
+    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    _spec_id, plan_id, task_id = _seed_task(ops)
+    dep_a = ops.add_task("A", plan_id, slug="DA")
+    dep_b = ops.add_task("B", plan_id, slug="DB")
+    before = len(ledger_repo.list_events(limit=1000))
+    original = node_repo.add_relation
+    calls = {"n": 0}
+
+    def boom(relation: object) -> None:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("boom")
+        original(relation)  # type: ignore[arg-type]
+
+    node_repo.add_relation = boom  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        ops.set_dependencies(task_id, add=[(dep_a, None), (dep_b, None)], remove=[])
+    assert node_repo.get_dependencies(task_id) == []
+    assert len(ledger_repo.list_events(limit=1000)) == before
+
+
+def test_supersede_second_write_failure_leaves_old_status_unchanged(ops_setup: tuple) -> None:
+    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    _spec_id, plan_id, old = _seed_task(ops)
+    new = ops.add_task("New", plan_id, slug="NEW")
+    before = len(ledger_repo.list_events(limit=1000))
+
+    def boom(*_a: object, **_kw: object) -> None:
+        raise RuntimeError("boom")
+
+    node_repo.add_relation = boom  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        ops.supersede(old, new)
+    assert node_repo.get_node(old).status == NodeStatus.NOT_STARTED
+    assert len(ledger_repo.list_events(limit=1000)) == before
+
+
+def test_move_task_second_write_failure_leaves_old_parent_intact(ops_setup: tuple) -> None:
+    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    spec_id, plan_id, task_id = _seed_task(ops)
+    other_plan, _ = ops.add_plan("Other", spec_id, slug="P2")
+    before = len(ledger_repo.list_events(limit=1000))
+
+    def boom(*_a: object, **_kw: object) -> None:
+        raise RuntimeError("boom")
+
+    node_repo.add_relation = boom  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        ops.move_task(task_id, other_plan)
+    assert task_id in node_repo.get_children(plan_id)
+    assert task_id not in node_repo.get_children(other_plan)
+    assert len(ledger_repo.list_events(limit=1000)) == before
+
+
+def test_sweep_leases_second_write_failure_leaves_first_task_unrolled_back(
+    ops_setup: tuple,
+) -> None:
+    node_repo, runtime_repo, ledger_repo, ops = ops_setup
+    _spec_id, plan_id, task_a = _seed_task(ops)
+    task_b = ops.add_task("B", plan_id, slug="B2")
+    for tid in (task_a, task_b):
+        node = node_repo.get_node(tid)
+        assert node is not None
+        node.status = NodeStatus.IMPLEMENTING
+        node_repo.save_node(node)
+    stale = datetime.now(tz=UTC) - timedelta(hours=1)
+    for tid in (task_a, task_b):
+        runtime_repo.acquire_lease(
+            Lease(
+                task_id=tid,
+                agent_id="a",
+                session_id="s",
+                branch_name=f"tm/{tid}",
+                last_heartbeat=stale,
+                ttl_seconds=60,
+            ),
+            [],
+        )
+    before = len(ledger_repo.list_events(limit=1000))
+    original = node_repo.save_node
+    calls = {"n": 0}
+
+    def boom(node: object) -> None:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("boom")
+        original(node)  # type: ignore[arg-type]
+
+    node_repo.save_node = boom  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        ops.sweep_leases()
+    assert node_repo.get_node(task_a).status == NodeStatus.IMPLEMENTING
+    assert node_repo.get_node(task_b).status == NodeStatus.IMPLEMENTING
+    assert len(ledger_repo.list_events(limit=1000)) == before
+
+
+def test_add_decision_second_write_failure_leaves_decision_node_unwritten(
+    ops_setup: tuple,
+) -> None:
+    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    before = len(ledger_repo.list_events(limit=1000))
+
+    def boom(*_a: object, **_kw: object) -> None:
+        raise RuntimeError("boom")
+
+    node_repo.save_section = boom  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        ops.add_decision("Q", slug="q1", context="ctx")
+    assert node_repo.get_node("decision-q1") is None
+    assert len(ledger_repo.list_events(limit=1000)) == before
+
+
+def test_link_decision_second_add_failure_leaves_first_unlinked(ops_setup: tuple) -> None:
+    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    _spec_id, plan_id, task_a = _seed_task(ops)
+    task_b = ops.add_task("B", plan_id, slug="B2")
+    decision_id = ops.add_decision("Q", slug="q1")
+    before = len(ledger_repo.list_events(limit=1000))
+    original = node_repo.add_relation
+    calls = {"n": 0}
+
+    def boom(relation: object) -> None:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("boom")
+        original(relation)  # type: ignore[arg-type]
+
+    node_repo.add_relation = boom  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        ops.link_decision(decision_id, add=[task_a, task_b])
+    assert decision_id not in node_repo.get_dependencies(task_a)
+    assert len(ledger_repo.list_events(limit=1000)) == before
+
+
+def test_set_status_with_section_second_write_failure_leaves_status_unchanged(
+    ops_setup: tuple,
+) -> None:
+    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    _spec_id, _plan_id, task_id = _seed_task(ops)
+    before = len(ledger_repo.list_events(limit=1000))
+
+    def boom(*_a: object, **_kw: object) -> None:
+        raise RuntimeError("boom")
+
+    node_repo.save_section = boom  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        ops.set_status(task_id, NodeStatus.COMPLETED, section=("ruling", "text", None))
+    assert node_repo.get_node(task_id).status == NodeStatus.NOT_STARTED
+    assert node_repo.get_section(task_id, "ruling") is None
+    assert len(ledger_repo.list_events(limit=1000)) == before
+
+
+def test_answer_decision_write_failure_leaves_decision_unanswered(ops_setup: tuple) -> None:
+    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    decision_id = ops.add_decision("Q", slug="q1", options=["a|A"])
+    before = len(ledger_repo.list_events(limit=1000))
+
+    def boom(*_a: object, **_kw: object) -> None:
+        raise RuntimeError("boom")
+
+    node_repo.save_node = boom  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        ops.answer_decision(decision_id, option="a")
+    node = node_repo.get_node(decision_id)
+    assert node is not None
+    assert node.status == NodeStatus.NOT_STARTED
+    assert read_decision(node).answer is None
+    assert len(ledger_repo.list_events(limit=1000)) == before
