@@ -1,7 +1,11 @@
 """FastAPI application for the TaskManager interactive web visualizer."""
 
 import asyncio
+import base64
+import mimetypes
+import re
 import sqlite3
+import tempfile
 from collections import Counter
 from collections.abc import AsyncGenerator, Iterator
 from contextlib import asynccontextmanager, contextmanager
@@ -10,7 +14,7 @@ from typing import Annotated, Any
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
 from taskmanager.core.enums import (
@@ -102,6 +106,51 @@ class VerificationCreate(BaseModel):
     type: VerificationType
     target_path: str
     expected_pattern: str | None = None
+
+
+class DecisionOptionIn(BaseModel):
+    key: str
+    label: str
+    description: str = ""
+
+
+class DecisionCreate(BaseModel):
+    question: str
+    slug: str | None = None
+    priority: int = 50
+    context: str | None = None
+    options: list[DecisionOptionIn] = Field(default_factory=list)
+    recommend: str | None = None
+    allow_custom: bool = True
+    raised_by: str | None = None
+    blocks: list[str] = Field(default_factory=list)
+
+
+class DecisionAnswerRequest(BaseModel):
+    option: str | None = None
+    text: str = ""
+    rationale: str = ""
+
+
+class DecisionWithdrawRequest(BaseModel):
+    reason: str = ""
+
+
+class DecisionBlocksUpdate(BaseModel):
+    add: list[str] = Field(default_factory=list)
+    remove: list[str] = Field(default_factory=list)
+
+
+class AttachmentCreate(BaseModel):
+    filename: str
+    content_base64: str
+    caption: str = ""
+    source: str | None = None
+
+
+# Content-addressed asset names are always 16 hex chars plus the source file's own extension
+# (`engine.assets.store_asset`); anything else cannot be one of ours.
+_ASSET_NAME_RE = re.compile(r"^[0-9a-f]{16}\.[A-Za-z0-9]{1,8}$")
 
 
 def _write_guard(request: Request) -> str:
@@ -640,5 +689,148 @@ def create_app(project_root: Path) -> FastAPI:
         with _refusals():
             swept = operations.with_actor(actor).sweep_leases()
         return {"swept": swept}
+
+    # -- decisions (§3, §5) ------------------------------------------------------------------
+
+    _DECISION_TAB_STATUS = {
+        "open": NodeStatus.NOT_STARTED,
+        "answered": NodeStatus.COMPLETED,
+        "withdrawn": NodeStatus.ABANDONED,
+    }
+
+    @app.get("/api/decisions")
+    async def list_decisions(status: str | None = None) -> list[dict[str, Any]]:
+        decisions = node_repo.list_nodes(kind=NodeKind.DECISION)
+        if status is not None:
+            wanted = _DECISION_TAB_STATUS.get(status.lower())
+            if wanted is None:
+                raise HTTPException(400, "status is one of: open, answered, withdrawn")
+            decisions = [d for d in decisions if d.status == wanted]
+        return [
+            {
+                "id": d.id,
+                "title": d.title,
+                "status": d.status.value,
+                "priority": d.priority,
+                "created_at": d.created_at.isoformat(),
+                "waiting_count": len(node_repo.get_blocked_by(d.id)),
+                "decision": d.frontmatter.get("decision") or {},
+            }
+            for d in decisions
+        ]
+
+    @app.post("/api/decisions", status_code=201)
+    async def create_decision(body: DecisionCreate, actor: Actor) -> dict[str, str]:
+        # Operations.add_decision still takes the CLI's "key|Label|description" strings; the
+        # web form collects the same three fields structured, so it is rejoined here rather
+        # than growing a second option shape inside Operations.
+        options = [f"{o.key}|{o.label}|{o.description}" for o in body.options]
+        with _refusals():
+            decision_id = operations.with_actor(actor).add_decision(
+                body.question,
+                body.slug,
+                body.priority,
+                body.context,
+                options,
+                body.recommend,
+                body.allow_custom,
+                body.raised_by,
+                body.blocks,
+            )
+        return {"id": decision_id}
+
+    @app.post("/api/decisions/{decision_id}/answer")
+    async def post_decision_answer(
+        decision_id: str, body: DecisionAnswerRequest, actor: Actor
+    ) -> dict[str, str]:
+        with _refusals():
+            operations.with_actor(actor).answer_decision(
+                decision_id, body.option, body.text, body.rationale, actor
+            )
+        return {"id": decision_id}
+
+    @app.post("/api/decisions/{decision_id}/reopen")
+    async def post_decision_reopen(decision_id: str, actor: Actor) -> dict[str, str]:
+        with _refusals():
+            operations.with_actor(actor).reopen_decision(decision_id)
+        return {"id": decision_id}
+
+    @app.post("/api/decisions/{decision_id}/withdraw")
+    async def post_decision_withdraw(
+        decision_id: str, body: DecisionWithdrawRequest, actor: Actor
+    ) -> dict[str, str]:
+        with _refusals():
+            operations.with_actor(actor).withdraw_decision(decision_id, body.reason)
+        return {"id": decision_id}
+
+    @app.post("/api/decisions/{decision_id}/blocks")
+    async def post_decision_blocks(
+        decision_id: str, body: DecisionBlocksUpdate, actor: Actor
+    ) -> dict[str, str]:
+        with _refusals():
+            operations.with_actor(actor).link_decision(
+                decision_id, add=body.add, remove=body.remove
+            )
+        return {"id": decision_id}
+
+    # -- attachments (§4, §5) ----------------------------------------------------------------
+
+    @app.post("/api/nodes/{node_id}/attachments", status_code=201)
+    async def post_attachment(node_id: str, body: AttachmentCreate, actor: Actor) -> dict[str, Any]:
+        try:
+            content = base64.b64decode(body.content_base64, validate=True)
+        except ValueError as exc:
+            raise HTTPException(400, "content_base64 is not valid base64") from exc
+        # Basename only: a filename is never a path, so `../../etc/passwd` cannot escape the
+        # temp directory it is written into before Operations.attach copies it by content hash.
+        filename = Path(body.filename).name or "attachment"
+        with _refusals(), tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir) / filename
+            tmp_path.write_bytes(content)
+            entry = operations.with_actor(actor).attach(
+                node_id, tmp_path, body.caption, body.source
+            )
+        return entry
+
+    @app.post("/api/nodes/{node_id}/attachments/check")
+    async def post_attachment_check(node_id: str, actor: Actor) -> list[dict[str, Any]]:
+        with _refusals():
+            entries = operations.with_actor(actor).list_attachments(node_id, check=True)
+        return entries
+
+    @app.delete("/api/nodes/{node_id}/attachments/{asset}")
+    async def delete_attachment(node_id: str, asset: str, actor: Actor) -> dict[str, str]:
+        with _refusals():
+            operations.with_actor(actor).detach(node_id, asset)
+        return {"asset": asset}
+
+    # -- file serving (§4): read-only, no write guard ------------------------------------------
+
+    @app.get("/assets/{name}")
+    async def get_asset(name: str) -> FileResponse:
+        if not _ASSET_NAME_RE.fullmatch(name):
+            raise HTTPException(404, "not found")
+        assets_dir = (db_dir / "assets").resolve()
+        candidate = (assets_dir / name).resolve()
+        if not candidate.is_relative_to(assets_dir) or not candidate.is_file():
+            raise HTTPException(404, "not found")
+        return FileResponse(candidate)
+
+    @app.get("/api/file")
+    async def get_file(path: str) -> FileResponse:
+        root = project_root.resolve()
+        # `.resolve()` follows symlinks, so a symlink inside root that points outside it
+        # still fails the is_relative_to check below -- the real path is what is checked,
+        # not the requested one. An absolute `path` overriding the join the same way.
+        try:
+            candidate = (root / path).resolve()
+        except (OSError, ValueError) as exc:
+            raise HTTPException(404, "not found") from exc
+        if not candidate.is_relative_to(root) or not candidate.is_file():
+            raise HTTPException(404, "not found")
+        mime = mimetypes.guess_type(candidate.name)[0] or ""
+        if not mime.startswith("image/"):
+            raise HTTPException(404, "not found")
+        return FileResponse(candidate)
 
     return app
