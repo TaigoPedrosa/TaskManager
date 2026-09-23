@@ -53,7 +53,7 @@ function renderVerifications(node, verifications, editable) {
       <span class="text-emerald-400 flex-shrink-0" title="${esc(VERIFICATION_LABEL[v.verification_type] || v.verification_type)}">${renderIcon(VERIFICATION_ICON[v.verification_type] || 'check', 'w-3.5 h-3.5')}</span>
       <span class="text-zinc-300 truncate text-left flex-1 min-w-0">${esc(v.target_path)}</span>
       <span class="ver-result text-[10px] font-semibold flex-shrink-0" data-ver-id="${v.id}"></span>
-      ${editable ? `<button type="button" class="ver-remove-btn p-1 rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-800 flex-shrink-0" data-ver-id="${v.id}" aria-label="Remove verification ${v.id}">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
+      ${editable ? `<button type="button" class="ver-remove-btn p-1 rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-800 flex-shrink-0" data-ver-id="${v.id}" data-ver-target="${esc(v.target_path)}" aria-label="Remove verification ${esc(v.target_path)}">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
     </div>
   `).join('');
 
@@ -96,7 +96,9 @@ async function runVerifications(node) {
 
 function wireVerificationControls(root, node) {
   root.querySelectorAll('.ver-remove-btn').forEach(btn => {
-    btn.addEventListener('click', () => removeVerification(node, Number(btn.getAttribute('data-ver-id'))));
+    btn.addEventListener('click', () => removeVerification(
+      node, Number(btn.getAttribute('data-ver-id')), btn.getAttribute('data-ver-target')
+    ));
   });
   const addBtn = root.querySelector('.ver-add-btn');
   if (addBtn) addBtn.addEventListener('click', () => openAddVerificationDialog(node));
@@ -154,14 +156,25 @@ function attachSectionEditControls(root, node, sections) {
 function renderActionBar(node, hasLease) {
   const btnCls = 'h-7 px-2.5 rounded-md text-[11px] font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 transition';
   const dangerCls = 'h-7 px-2.5 rounded-md text-[11px] font-medium bg-zinc-900 hover:bg-red-950 text-red-300 border border-red-900/60 transition';
+  // Each transition offers only where it changes something: Reopen showed on an already
+  // NOT_STARTED task, and Mark completed/Defer/Abandon each showed while already the status
+  // they claim to set.
   const buttons = [
     `<button type="button" class="ab-edit ${btnCls}">Edit</button>`,
-    `<button type="button" class="ab-complete ${btnCls}">Mark completed</button>`,
-    `<button type="button" class="ab-defer ${btnCls}">Defer</button>`,
-    `<button type="button" class="ab-reopen ${btnCls}">Reopen</button>`,
-    `<button type="button" class="ab-abandon ${dangerCls}">Abandon</button>`,
-    `<button type="button" class="ab-other-status ${btnCls}">Other status&hellip;</button>`,
   ];
+  if (node.status !== 'COMPLETED') {
+    buttons.push(`<button type="button" class="ab-complete ${btnCls}">Mark completed</button>`);
+  }
+  if (node.status !== 'DEFERRED') {
+    buttons.push(`<button type="button" class="ab-defer ${btnCls}">Defer</button>`);
+  }
+  if (node.status !== 'NOT_STARTED') {
+    buttons.push(`<button type="button" class="ab-reopen ${btnCls}">Reopen</button>`);
+  }
+  if (node.status !== 'ABANDONED') {
+    buttons.push(`<button type="button" class="ab-abandon ${dangerCls}">Abandon</button>`);
+  }
+  buttons.push(`<button type="button" class="ab-other-status ${btnCls}">Other status&hellip;</button>`);
   if (node.kind === 'task') {
     buttons.push(`<button type="button" class="ab-supersede ${dangerCls}">Supersede&hellip;</button>`);
     buttons.push(`<button type="button" class="ab-move ${btnCls}">Move to plan&hellip;</button>`);
@@ -403,9 +416,9 @@ async function attachFile(node, file, afterChange) {
   }
 }
 
-function detachAttachment(node, asset, afterChange) {
+function detachAttachment(node, asset, afterChange, name) {
   confirmDialog({
-    title: `Detach ${asset}?`,
+    title: `Detach ${name || asset}?`,
     message: `The attachment will be removed from ${node.id}.`,
     confirmLabel: 'Detach',
     onConfirm: async () => {
@@ -457,7 +470,9 @@ function wireAttachmentControls(root, node, attachments, editable, afterChange) 
     }
   }
   root.querySelectorAll('.att-detach-btn').forEach(btn => {
-    btn.addEventListener('click', () => detachAttachment(node, btn.getAttribute('data-asset'), afterChange));
+    const asset = btn.getAttribute('data-asset');
+    const entry = (attachments || []).find(a => a.asset === asset);
+    btn.addEventListener('click', () => detachAttachment(node, asset, afterChange, entry && entry.name));
   });
   const recheckBtn = root.querySelector('.att-recheck-btn');
   if (recheckBtn) recheckBtn.addEventListener('click', () => recheckAttachments(node, afterChange));

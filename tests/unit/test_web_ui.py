@@ -219,7 +219,7 @@ def test_group_header_is_keyboard_operable_everywhere_it_renders() -> None:
     html = get_web_html()
     header = _function_body(html, "renderGroupHeader")
     assert 'role="button"' in header
-    assert "tabindex=\"0\"" in header
+    assert 'tabindex="0"' in header
     assert "aria-expanded=" in header
     shared = _function_body(html, "attachGroupHeaderHandlers")
     assert "header.onkeydown" in shared
@@ -245,7 +245,7 @@ def test_graph_inspector_is_full_width_below_lg_not_a_fixed_384px() -> None:
     classes = inspector.group(1)
     assert "w-full" in classes
     assert "lg:w-96" in classes
-    assert re.search(r'(?<!lg:)w-96', classes) is None
+    assert re.search(r"(?<!lg:)w-96", classes) is None
 
 
 def test_sidebar_clamps_narrower_than_the_graph_pane_it_shares() -> None:
@@ -379,7 +379,7 @@ def test_tri_state_popover_button_click_toggles_back_to_neutral() -> None:
 
 def test_tri_state_popover_buttons_carry_aria_pressed() -> None:
     tri_btn = _function_body(get_web_html(), "triBtn")
-    assert "aria-pressed=\"${isActive}\"" in tri_btn
+    assert 'aria-pressed="${isActive}"' in tri_btn
 
 
 def test_tri_state_popover_row_is_not_nested_interactive() -> None:
@@ -389,8 +389,8 @@ def test_tri_state_popover_row_is_not_nested_interactive() -> None:
     # (aria-input-field-name) either.
     html = get_web_html()
     options = _function_body(html, "renderOptions")
-    assert "role=\"button\"" not in options
-    assert "tabindex=\"0\"" not in options
+    assert 'role="button"' not in options
+    assert 'tabindex="0"' not in options
     assert 'role="group" aria-label="${esc(dimension)} values"' in html
     assert 'role="listbox"' not in html
 
@@ -398,8 +398,8 @@ def test_tri_state_popover_row_is_not_nested_interactive() -> None:
 def test_tri_state_popover_label_and_count_do_not_share_one_truncated_span() -> None:
     # A long label used to truncate together with its count in one <span>, hiding the count.
     options = _function_body(get_web_html(), "renderOptions")
-    assert "<span class=\"truncate min-w-0 flex-1\">${esc(o.label)}</span>" in options
-    assert "<span class=\"text-zinc-500 flex-shrink-0\">(${o.count})</span>" in options
+    assert '<span class="truncate min-w-0 flex-1">${esc(o.label)}</span>' in options
+    assert '<span class="text-zinc-500 flex-shrink-0">(${o.count})</span>' in options
 
 
 def test_tri_state_popover_closes_on_escape_and_returns_focus() -> None:
@@ -438,7 +438,7 @@ def test_add_dependency_is_a_picker_not_free_text() -> None:
     # filtered to decisions -- both used to be missing, the field a bare free-text input.
     body = _function_body(get_web_html(), "openAddDependencyDialog")
     assert "decisionsOnly" in body
-    assert "list=\"${listId}\"" in body
+    assert 'list="${listId}"' in body
     assert "<datalist" in body
     detail = _function_body(get_web_html(), "renderDependencies")
     assert "+ Wait on decision" in detail
@@ -570,6 +570,63 @@ def test_edit_dialog_only_offers_models_repo_and_frontmatter_for_tasks() -> None
     assert "isTask ? fieldRow('Acceptable models" in body
     assert "isTask ? fieldRow('Target repo" in body
     assert "isTask ? frontmatterEditorHtml(node.frontmatter) : ''" in body
+
+
+def test_status_digest_and_legend_never_render_not_started() -> None:
+    # §3.2a: NOT_STARTED is a stored status, never a live one a task's own virtual_status can
+    # equal, so a chip for it could only ever read a count of zero.
+    html = get_web_html()
+    digest = _function_body(html, "updateStatsDigest")
+    assert "code !== 'NOT_STARTED'" in digest
+    legend = _function_body(html, "renderLegend")
+    assert "t.code !== 'NOT_STARTED'" in legend
+
+
+def test_decision_dependency_row_uses_open_answered_withdrawn_not_node_status() -> None:
+    html = get_web_html()
+    table = _function_body(html, "renderRelationTable")
+    assert "d.kind === 'decision'" in table
+    assert "decisionStatusIcon(d.status)" in table
+    assert "NOT_STARTED: 'help-circle'" in html
+
+
+def test_action_bar_hides_a_transition_already_at_its_own_target() -> None:
+    # Reopen showed on an already NOT_STARTED task, Mark completed/Defer/Abandon each showed
+    # while already the status they claim to set.
+    body = _function_body(get_web_html(), "renderActionBar")
+    assert "node.status !== 'COMPLETED'" in body
+    assert "node.status !== 'DEFERRED'" in body
+    assert "node.status !== 'NOT_STARTED'" in body
+    assert "node.status !== 'ABANDONED'" in body
+
+
+def test_other_status_and_gate_pickers_omit_not_started() -> None:
+    html = get_web_html()
+    assert "'NOT_STARTED', 'IMPLEMENTING'" not in html
+    assert "REAL_NODE_STATUSES = [\n  'IMPLEMENTING'" in html
+
+
+def test_remove_confirmations_name_the_thing_not_its_internal_id() -> None:
+    html = get_web_html()
+    render_ver = _function_body(html, "renderVerifications")
+    assert 'aria-label="Remove verification ${esc(v.target_path)}"' in render_ver
+    remove_ver = _function_body(html, "removeVerification")
+    assert 'target ? `"${target}" `' in remove_ver
+    detach = _function_body(html, "detachAttachment")
+    assert "name || asset" in detach
+
+
+def test_view_switcher_keeps_its_square_shape_across_every_mode() -> None:
+    # The first view switch replaced the square h-full aspect-square classes with a
+    # differently-shaped px-3 py-1.5 string, so the button visibly changed size.
+    html = get_web_html()
+    set_view_mode = _function_body(html, "setViewMode")
+    assert "VIEW_BTN_ACTIVE" in set_view_mode
+    assert "VIEW_BTN_INACTIVE" in set_view_mode
+    assert "aspect-square" in html
+    assert "px-3 py-1.5 rounded-md font-medium bg-zinc-800" not in html
+    # decisions.js's own setViewMode wrapper had the identical bug for its third view.
+    assert "viewDocBtn.className = VIEW_BTN_INACTIVE" in html
 
 
 def test_api_helper_surfaces_the_servers_own_refusal_message() -> None:

@@ -114,18 +114,26 @@ function getTheme(status) {
 
 // Mode Switching. The sidebar is a graph-view tool for jumping to a node; it takes
 // no space in Document view so the document pane reads at its own full width.
+// The base shape (h-full aspect-square, matching index.html's own markup) stays fixed;
+// only the active/inactive colour classes toggle. Reassigning the whole className to a
+// differently-shaped string (px-3 py-1.5, no aspect-square) on the first switch was what
+// changed the button's size -- every call after the first kept perpetuating that wrong shape.
+const VIEW_BTN_BASE = 'h-full aspect-square flex items-center justify-center rounded-md font-medium transition';
+const VIEW_BTN_ACTIVE = `${VIEW_BTN_BASE} bg-zinc-800 text-white shadow-sm`;
+const VIEW_BTN_INACTIVE = `${VIEW_BTN_BASE} text-zinc-400 hover:text-white`;
+
 function setViewMode(mode) {
   currentMode = mode;
   if (mode === window.VIEW_MODES.DOCUMENT) {
-    viewDocBtn.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium bg-zinc-800 text-white shadow-sm transition';
-    viewGraphBtn.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium text-zinc-400 hover:text-white transition';
+    viewDocBtn.className = VIEW_BTN_ACTIVE;
+    viewGraphBtn.className = VIEW_BTN_INACTIVE;
     documentPane.classList.remove('hidden');
     graphPane.classList.add('hidden');
     sidebarPane.classList.add('hidden');
     toggleSectionsBtn.classList.remove('hidden');
   } else {
-    viewGraphBtn.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium bg-zinc-800 text-white shadow-sm transition';
-    viewDocBtn.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium text-zinc-400 hover:text-white transition';
+    viewGraphBtn.className = VIEW_BTN_ACTIVE;
+    viewDocBtn.className = VIEW_BTN_INACTIVE;
     documentPane.classList.add('hidden');
     graphPane.classList.remove('hidden');
     sidebarPane.classList.remove('hidden');

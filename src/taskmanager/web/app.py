@@ -347,6 +347,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
                 {
                     "id": rel_id,
                     "title": rel.title if rel else None,
+                    "kind": rel.kind.value if rel else None,
                     "status": effective_status(rel) if rel else None,
                     # A missing dependency blocks, same as GraphEngine.resolve_task_state.
                     "finished": rel is not None and _dependency_met(rel),
@@ -840,7 +841,13 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             raise HTTPException(400, "content_base64 is not valid base64") from exc
         # Basename only: a filename is never a path, so `../../etc/passwd` cannot escape the
         # temp directory it is written into before Operations.attach copies it by content hash.
+        # `Path(name).name` passes "." and ".." through unchanged (pathlib does not treat them
+        # as having no name component), and joining either back onto the temp dir resolves to
+        # the dir itself, so `write_bytes` hit an uncaught IsADirectoryError -- a 500, not the
+        # 400 a bad filename should be.
         filename = Path(body.filename).name or "attachment"
+        if filename in (".", ".."):
+            raise HTTPException(400, "filename is not valid")
         with _refusals(), tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir) / filename
             tmp_path.write_bytes(content)

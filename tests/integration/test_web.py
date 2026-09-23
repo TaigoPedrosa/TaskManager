@@ -360,15 +360,45 @@ def test_tree_task_lists_dependencies_with_their_own_status(every_status_project
         {
             "id": "T-IMPLEMENTING",
             "title": "Task T-IMPLEMENTING",
+            "kind": "task",
             "status": "IMPLEMENTING",
             "finished": False,
         },
         {
             "id": "T-SUPERSEDED",
             "title": "Task T-SUPERSEDED",
+            "kind": "task",
             "status": "SUPERSEDED",
             "finished": True,
         },
+    ]
+
+
+def test_dependency_details_carry_kind_so_the_page_can_tell_a_decision_apart(
+    tmp_path: Path,
+) -> None:
+    # The page shows Open/Answered/Withdrawn for a decision dependency rather than the
+    # NOT_STARTED/COMPLETED/ABANDONED it reuses in storage; it needs the node's own kind to
+    # tell a decision dependency apart from a task one to do that.
+    db_mgr = DatabaseManager(tmp_path / ".taskmanager")
+    db_mgr.init_all()
+    node_repo = NodeRepository(db_mgr)
+    node_repo.save_node(Node(id="T1", kind=NodeKind.TASK, title="Task"))
+    node_repo.save_node(Node(id="decision-D1", kind=NodeKind.DECISION, title="Which way?"))
+    node_repo.add_relation(
+        NodeRelation(source_id="T1", target_id="decision-D1", relation_type=RelationType.DEPENDS_ON)
+    )
+
+    detail = TestClient(create_app(tmp_path)).get("/api/nodes/T1").json()
+
+    assert detail["dependency_details"] == [
+        {
+            "id": "decision-D1",
+            "title": "Which way?",
+            "kind": "decision",
+            "status": "NOT_STARTED",
+            "finished": False,
+        }
     ]
 
 

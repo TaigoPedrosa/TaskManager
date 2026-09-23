@@ -353,7 +353,9 @@ function renderRelationTable(ownerId, key, label, icon, rows, defaultCollapsed) 
   const isCollapsed = groupCollapsed(groupId, defaultCollapsed);
   const body = rows.map(d => `
     <div class="flex items-center gap-2 px-2 py-1.5 bg-zinc-950/60">
-      ${d.status ? statusIcon(d.status) : '<span class="text-[10px] font-mono text-red-400">missing</span>'}
+      ${d.status
+        ? (d.kind === 'decision' && typeof decisionStatusIcon === 'function' ? decisionStatusIcon(d.status) : statusIcon(d.status))
+        : '<span class="text-[10px] font-mono text-red-400">missing</span>'}
       <span class="font-mono text-[11px] text-zinc-300 flex-shrink-0">${esc(d.id)}</span>
       <span class="truncate text-[11px] text-zinc-400">${esc(d.title || '')}</span>
     </div>

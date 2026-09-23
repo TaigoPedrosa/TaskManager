@@ -218,7 +218,11 @@ function updateStatsDigest() {
       divider.className = 'w-px h-4 bg-zinc-800 mx-0.5 flex-shrink-0';
       statsDigest.appendChild(divider);
     }
-    Object.keys(window.STATUS_THEMES).filter(code => window.STATUS_THEMES[code].group === group.code).forEach(code => {
+    // §3.2a: the web never displays NOT_STARTED -- it is a stored status, not a live state,
+    // and a task's own virtual_status is never literally that value (resolve_task_state
+    // always translates it into READY/BLOCKED/... instead), so the chip could only ever
+    // read a count of zero.
+    Object.keys(window.STATUS_THEMES).filter(code => code !== 'NOT_STARTED' && window.STATUS_THEMES[code].group === group.code).forEach(code => {
       const theme = getTheme(code);
       const count = counts[code] || 0;
       const mode = filters.statusMode.get(code);
@@ -545,7 +549,7 @@ clearFiltersBtn.addEventListener('click', () => {
 // Legend
 function renderLegend() {
   legendBody.innerHTML = window.STATUS_GROUPS.map(group => {
-    const rows = Object.values(window.STATUS_THEMES).filter(t => t.group === group.code).map(t => `
+    const rows = Object.values(window.STATUS_THEMES).filter(t => t.code !== 'NOT_STARTED' && t.group === group.code).map(t => `
       <div class="flex items-start gap-2 py-1">
         <div class="w-36 flex-shrink-0">${statusChip(t.code)}</div>
         <p class="text-xs text-zinc-300">${esc(t.description)}</p>

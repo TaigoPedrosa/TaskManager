@@ -31,6 +31,15 @@ function decisionStatusLabel(status) {
   return tab ? tab.label : status;
 }
 
+// A decision dependency row (blockers/dependencies/dependents) used to fall through to
+// statusIcon(), which reads NodeStatus/VirtualStatus themes and has no entry that reads
+// "Open" -- an open decision showed the dashed "Not Started" icon instead.
+const DECISION_STATUS_ICON = { NOT_STARTED: 'help-circle', COMPLETED: 'check-circle-2', ABANDONED: 'x-circle' };
+function decisionStatusIcon(status, size = 'w-3.5 h-3.5') {
+  const icon = DECISION_STATUS_ICON[status] || 'help-circle';
+  return `<span class="flex-shrink-0" title="${esc(decisionStatusLabel(status))}">${renderIcon(icon, size)}</span>`;
+}
+
 
 // Data ---------------------------------------------------------------------------------------
 
@@ -97,8 +106,8 @@ if (typeof setViewMode === 'function') {
       sidebarPane.classList.add('hidden');
       decisionsPane.classList.remove('hidden');
       toggleSectionsBtn.classList.add('hidden');
-      viewDocBtn.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium text-zinc-400 hover:text-white transition';
-      viewGraphBtn.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium text-zinc-400 hover:text-white transition';
+      viewDocBtn.className = VIEW_BTN_INACTIVE;
+      viewGraphBtn.className = VIEW_BTN_INACTIVE;
       if (decisionsBtn) decisionsBtn.className = decisionsBtn.className.replace('bg-zinc-900', 'bg-zinc-800').replace('text-zinc-400', 'text-white');
       renderDecisionsView();
       return;

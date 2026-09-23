@@ -16,8 +16,10 @@ if (typeof DOMPurify !== 'undefined' && typeof renderSectionBody === 'function')
 
 // Only the statuses a node can actually be set to (NodeStatus). window.STATUS_THEMES also
 // carries the virtual ones (READY, BLOCKED, BLOCKED_BY_LEASE, IN_FLIGHT) a write would 422 on.
+// NOT_STARTED is left out (§3.2a: the web never displays it) -- Reopen is that transition's
+// own button, and a dependency gated on it would be satisfied by every node immediately.
 const REAL_NODE_STATUSES = [
-  'NOT_STARTED', 'IMPLEMENTING', 'WAITING_REVIEW', 'REVIEWING', 'WAITING_FIXES', 'FIXING',
+  'IMPLEMENTING', 'WAITING_REVIEW', 'REVIEWING', 'WAITING_FIXES', 'FIXING',
   'WAITING_MERGE', 'MERGING', 'COMPLETED', 'SUPERSEDED', 'ABANDONED', 'DEFERRED'
 ];
 
@@ -649,10 +651,10 @@ function openAddVerificationDialog(node) {
   });
 }
 
-function removeVerification(node, verificationId) {
+function removeVerification(node, verificationId, target) {
   confirmDialog({
     title: `Remove verification?`,
-    message: `Verification #${verificationId} on ${node.id} will be removed.`,
+    message: `The ${target ? `"${target}" ` : ''}verification on ${node.id} will be removed.`,
     confirmLabel: 'Remove',
     onConfirm: async () => {
       await api('DELETE', `/api/nodes/${node.id}/verifications/${verificationId}`);

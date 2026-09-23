@@ -606,6 +606,19 @@ def test_post_attachment_bad_base64_refused(
     assert res.status_code == 400
 
 
+def test_post_attachment_dotdot_filename_refuses_400_not_500(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    # `Path("..").name` is "..", not "" -- joining that onto the temp dir resolves to the
+    # dir itself, and write_bytes there raised an uncaught IsADirectoryError.
+    client, _node_repo, _ledger_repo = api
+    res = client.post(
+        "/api/nodes/SPEC-P1-T1/attachments",
+        json={"filename": "..", "content_base64": "aGk="},
+    )
+    assert res.status_code == 400
+
+
 def test_attachment_check_marks_stale_and_missing(
     api: tuple[TestClient, NodeRepository, LedgerRepository], tmp_path: Path
 ) -> None:
