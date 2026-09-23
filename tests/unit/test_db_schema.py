@@ -221,3 +221,37 @@ def test_foreign_key_violation_raises(tmp_path: Path) -> None:
                 """,
             ("NONEXISTENT", "details", 1, "Details", "Section content"),
         )
+
+
+def test_ensure_spec_migrations_heals_a_database_missing_only_the_uniqueness_index(
+    tmp_path: Path,
+) -> None:
+    # A database that already has `index_state` but predates the verification uniqueness index
+    # must still get it -- the fast path below only skips healing once *both* are present, not
+    # on `index_state` alone.
+    db_mgr = DatabaseManager(tmp_path)
+    db_mgr.init_all()
+    with db_mgr.get_spec_connection() as conn:
+        conn.execute("DROP INDEX uq_node_verifications")
+        conn.commit()
+    with db_mgr.get_spec_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='uq_node_verifications'"
+        ).fetchone()
+        assert row is not None
+
+
+def test_ensure_spec_migrations_skips_remediation_once_healthy(tmp_path: Path) -> None:
+    # Once `nodes` and `index_state` both exist, `_ensure_spec_migrations` has nothing to heal
+    # and must settle for the one cheap lookup that proves it -- not the executescript, dedup
+    # DELETE and CREATE UNIQUE INDEX below, which is what made 48,638 self-heal calls the
+    # dominant cost of one `/api/tree` request on a several-hundred-task database.
+    db_mgr = DatabaseManager(tmp_path)
+    db_mgr.init_all()
+    with db_mgr.get_spec_connection() as conn:
+        statements: list[str] = []
+        conn.set_trace_callback(statements.append)
+        for _ in range(20):
+            db_mgr._ensure_spec_migrations(conn)
+        conn.set_trace_callback(None)
+        assert not any("DELETE FROM node_verifications" in s for s in statements)

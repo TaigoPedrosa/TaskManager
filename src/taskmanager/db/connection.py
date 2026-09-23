@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -29,6 +30,13 @@ class DatabaseManager:
         self._spec_conn: sqlite3.Connection | None = None
         self._runtime_conn: sqlite3.Connection | None = None
         self._ledger_conn: sqlite3.Connection | None = None
+        # >0 while a caller holds `spec_transaction()` open: nested repository calls skip both
+        # their own commit (spec_commit) and the migration self-heal's commit, so a run of
+        # several writes lands as one commit or none. The lock serializes concurrent callers
+        # (the web server now runs DB routes in a threadpool) rather than interleaving two
+        # transactions' writes under one shared connection.
+        self._spec_tx_depth = 0
+        self._spec_tx_lock = threading.RLock()
 
     def _create_connection(self, db_path: Path, load_vec: bool = False) -> sqlite3.Connection:
         self.taskmanager_dir.mkdir(parents=True, exist_ok=True)
@@ -48,30 +56,45 @@ class DatabaseManager:
 
     def _ensure_spec_migrations(self, conn: sqlite3.Connection) -> None:
         try:
-            has_nodes = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='nodes'"
+            # One query decides whether anything needs healing at all: `nodes`, `index_state`
+            # and the verification uniqueness index all existing is the steady state every call
+            # hits, so that state costs one `sqlite_master` lookup rather than the five
+            # statements below (including a whole-table GROUP BY) -- with hundreds of
+            # NodeRepository calls per web request, running those five unconditionally was
+            # 48,638 calls for one `/api/tree` on a 541-task DB, 11.4s of its 12.9s. A dropped
+            # table, or a database old enough to predate the uniqueness index, is still caught
+            # and healed on the very next call, which is what the self-heal test exercises.
+            row = conn.execute(
+                "SELECT "
+                "(SELECT 1 FROM sqlite_master WHERE type='table' AND name='nodes'), "
+                "(SELECT 1 FROM sqlite_master WHERE type='table' AND name='index_state'), "
+                "(SELECT 1 FROM sqlite_master WHERE type='index' AND name='uq_node_verifications')"
             ).fetchone()
-            if has_nodes:
-                cols = [r[1] for r in conn.execute("PRAGMA table_info(nodes)").fetchall()]
-                if "ordinal" not in cols:
-                    conn.execute("ALTER TABLE nodes ADD COLUMN ordinal INTEGER NOT NULL DEFAULT 0;")
-                    conn.commit()
-                conn.executescript(INDEX_STATE_SQL)
-                # A repeat import used to insert every verification again.
-                conn.execute(
-                    """
-                    DELETE FROM node_verifications WHERE id NOT IN (
-                        SELECT MIN(id) FROM node_verifications
-                        GROUP BY node_id, verification_type, target_path,
-                                 COALESCE(expected_pattern, '')
-                    )
-                    """
-                )
-                conn.execute(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_node_verifications ON node_verifications "
-                    "(node_id, verification_type, target_path, COALESCE(expected_pattern, ''))"
-                )
+            has_nodes, has_index_state, has_uq_index = row
+            if not has_nodes:
+                return
+            if has_index_state and has_uq_index:
+                return
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(nodes)").fetchall()]
+            if "ordinal" not in cols:
+                conn.execute("ALTER TABLE nodes ADD COLUMN ordinal INTEGER NOT NULL DEFAULT 0;")
                 conn.commit()
+            conn.executescript(INDEX_STATE_SQL)
+            # A repeat import used to insert every verification again.
+            conn.execute(
+                """
+                DELETE FROM node_verifications WHERE id NOT IN (
+                    SELECT MIN(id) FROM node_verifications
+                    GROUP BY node_id, verification_type, target_path,
+                             COALESCE(expected_pattern, '')
+                )
+                """
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_node_verifications ON node_verifications "
+                "(node_id, verification_type, target_path, COALESCE(expected_pattern, ''))"
+            )
+            conn.commit()
         except sqlite3.Error:
             pass
 
@@ -85,8 +108,32 @@ class DatabaseManager:
         # 342-task DB, /api/tree went from 14.06s to 0.155s from connection reuse alone.
         if self._spec_conn is None:
             self._spec_conn = self._create_connection(self.spec_db, load_vec=True)
-        self._ensure_spec_migrations(self._spec_conn)
+        if self._spec_tx_depth == 0:
+            self._ensure_spec_migrations(self._spec_conn)
         yield self._spec_conn
+
+    def spec_commit(self, conn: sqlite3.Connection) -> None:
+        """The commit every repository write ends with -- except while `spec_transaction()`
+        is open, where the caller wants one commit (or one rollback) for the whole run rather
+        than one per write, so a later write failing does not leave an earlier one visible."""
+        if self._spec_tx_depth == 0:
+            conn.commit()
+
+    @contextmanager
+    def spec_transaction(self) -> Generator[sqlite3.Connection]:
+        with self._spec_tx_lock, self.get_spec_connection() as conn:
+            self._spec_tx_depth += 1
+            try:
+                yield conn
+            except BaseException:
+                if self._spec_tx_depth == 1:
+                    conn.rollback()
+                raise
+            else:
+                if self._spec_tx_depth == 1:
+                    conn.commit()
+            finally:
+                self._spec_tx_depth -= 1
 
     @contextmanager
     def get_runtime_connection(self) -> Generator[sqlite3.Connection]:

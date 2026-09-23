@@ -1,4 +1,6 @@
 import json
+from collections.abc import Generator
+from contextlib import contextmanager
 from typing import Any
 
 from taskmanager.core.enums import (
@@ -21,6 +23,15 @@ from taskmanager.db.utils import parse_db_datetime, to_db_timestamp
 class NodeRepository:
     def __init__(self, db_mgr: DatabaseManager) -> None:
         self.db = db_mgr
+
+    @contextmanager
+    def transaction(self) -> Generator[None]:
+        """A run of several writes below lands as one commit or none: `save_node`,
+        `save_section`, `add_relation` and the rest keep committing on their own outside this
+        scope, but inside it they share the one commit (or rollback) `spec_transaction()` does
+        at the end."""
+        with self.db.spec_transaction():
+            yield
 
     def save_node(self, node: Node) -> None:
         with self.db.get_spec_connection() as conn:
@@ -84,7 +95,7 @@ class NodeRepository:
                     """,
                     (rowid, node.id, node.title, json.dumps(node.frontmatter), content_text),
                 )
-            conn.commit()
+            self.db.spec_commit(conn)
 
     def get_node(self, node_id: str) -> Node | None:
         with self.db.get_spec_connection() as conn:
@@ -170,7 +181,7 @@ class NodeRepository:
                         """,
                         (rowid, section.node_id, title, fm, content_text),
                     )
-            conn.commit()
+            self.db.spec_commit(conn)
 
     def get_section(self, node_id: str, section_key: str) -> NodeSection | None:
         with self.db.get_spec_connection() as conn:
@@ -208,7 +219,7 @@ class NodeRepository:
                     """,
                     (node_id, node_id),
                 )
-            conn.commit()
+            self.db.spec_commit(conn)
             return cursor.rowcount > 0
 
     def get_all_sections(self, node_id: str) -> list[NodeSection]:
@@ -254,7 +265,7 @@ class NodeRepository:
                     json.dumps(relation.metadata),
                 ),
             )
-            conn.commit()
+            self.db.spec_commit(conn)
 
     def get_children(self, parent_id: str) -> list[str]:
         with self.db.get_spec_connection() as conn:
@@ -277,7 +288,7 @@ class NodeRepository:
                 "AND relation_type = ?",
                 (source_id, target_id, relation_type.value),
             )
-            conn.commit()
+            self.db.spec_commit(conn)
 
     def get_dependencies(self, node_id: str) -> list[str]:
         with self.db.get_spec_connection() as conn:
@@ -345,7 +356,7 @@ class NodeRepository:
                     f"DELETE FROM node_relations WHERE target_id = ? AND relation_type = ? AND source_id IN ({placeholders})",
                     (old_id, dep_val, *custom_ids),
                 )
-            conn.commit()
+            self.db.spec_commit(conn)
 
     def add_verification(self, ver: NodeVerification) -> None:
         vtype = (
@@ -397,7 +408,7 @@ class NodeRepository:
                     ),
                 )
                 ver.id = cursor.lastrowid if cursor.rowcount else None
-            conn.commit()
+            self.db.spec_commit(conn)
 
     def declared_files(self, task_id: str) -> list[str]:
         """The paths a task claims, which is what its lease locks and what `next` filters on.
@@ -434,13 +445,13 @@ class NodeRepository:
                 "DELETE FROM node_verifications WHERE node_id = ? AND id = ?",
                 (node_id, verification_id),
             )
-            conn.commit()
+            self.db.spec_commit(conn)
             return cursor.rowcount > 0
 
     def clear_verifications(self, node_id: str) -> None:
         with self.db.get_spec_connection() as conn:
             conn.execute("DELETE FROM node_verifications WHERE node_id = ?", (node_id,))
-            conn.commit()
+            self.db.spec_commit(conn)
 
     def get_verifications(self, node_id: str) -> list[NodeVerification]:
         with self.db.get_spec_connection() as conn:
@@ -488,4 +499,4 @@ class NodeRepository:
                 "UPDATE nodes SET ordinal = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (ordinal, node_id),
             )
-            conn.commit()
+            self.db.spec_commit(conn)
