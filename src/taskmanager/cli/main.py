@@ -269,13 +269,15 @@ def spec_list(
         _emit([_node_row(s, graph.resolve_spec_status(s.id).value) for s in specs], yaml_output)
         return
 
+    graph = container.get(GraphEngine)
     table = Table(title="Specifications")
     table.add_column("ID", style="cyan")
     table.add_column("Title")
-    table.add_column("Status", style="yellow")
+    table.add_column("State", style="yellow")
     table.add_column("Priority", justify="right")
     for s in specs:
-        table.add_row(escape(s.id), escape(s.title), s.status.value, str(s.priority))
+        state = graph.resolve_spec_status(s.id).value
+        table.add_row(escape(s.id), escape(s.title), state, str(s.priority))
     print(table)
 
 
@@ -347,13 +349,15 @@ def plan_list(
         _emit([_node_row(p, graph.resolve_plan_status(p.id).value) for p in plans], yaml_output)
         return
 
+    graph = container.get(GraphEngine)
     table = Table(title="Plans")
     table.add_column("ID", style="cyan")
     table.add_column("Title")
-    table.add_column("Status", style="yellow")
+    table.add_column("State", style="yellow")
     table.add_column("Priority", justify="right")
     for p in plans:
-        table.add_row(escape(p.id), escape(p.title), p.status.value, str(p.priority))
+        state = graph.resolve_plan_status(p.id).value
+        table.add_row(escape(p.id), escape(p.title), state, str(p.priority))
     print(table)
 
 
@@ -374,6 +378,7 @@ def plan_get(
     print(f"[bold cyan]Plan:[/] {plan.id}")
     print(f"[bold]Title:[/] {escape(plan.title)}")
     print(f"[bold]Status:[/] {plan.status.value}")
+    print(f"[bold]State:[/] {container.get(GraphEngine).resolve_plan_status(plan.id).value}")
     print(f"[bold]Priority:[/] {plan.priority}")
     if children:
         print(f"[bold]Tasks:[/] {escape(', '.join(children))}")

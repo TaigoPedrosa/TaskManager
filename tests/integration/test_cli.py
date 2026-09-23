@@ -1,7 +1,6 @@
 import json
 from pathlib import Path
 
-import pytest
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import app
@@ -567,12 +566,6 @@ def test_cli_run_release_drops_the_lease_without_changing_status(tmp_path: Path)
     assert doc["status"] == "IMPLEMENTING"
 
 
-@pytest.mark.xfail(
-    reason="cli/main.py's plan_list/spec_list table and plan_get's detail view print the "
-    "stored status, not the §3.2a rollup (spec_get already prints a State: line; plan_get "
-    "has none) -- confirmed gap, fix belongs in cli/main.py, outside this file's scope.",
-    strict=True,
-)
 def test_spec_and_plan_list_and_get_show_derived_state_not_stored_status(
     tmp_path: Path,
 ) -> None:

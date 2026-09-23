@@ -26,11 +26,11 @@ code, pre, .font-mono {
 }
 .node-highlighted {
   animation: pulse-highlight 1.5s ease-out;
-  border-color: #10b981 !important;
+  border-color: var(--tone-accent) !important;
 }
 <!--slot:status-css-->
 
-:root { --tone-dim-fg: #71717a; --tone-dim-border: #3f3f46; } /* Tailwind zinc-500 / zinc-700 */
+:root { --tone-dim-fg: #71717a; --tone-dim-border: #3f3f46; --tone-accent: #10b981; } /* Tailwind zinc-500 / zinc-700 / emerald-500 */
 .st-chip { color: var(--st-fg); background: var(--st-bg); border: 1px solid color-mix(in srgb, var(--st-fg) 40%, transparent); }
 .st-text { color: var(--st-fg); }
 .st-seg { background: var(--st-fg); height: 100%; }
@@ -45,14 +45,14 @@ code, pre, .font-mono {
 .sf-pop input[type="range"] {
   appearance: none; -webkit-appearance: none; background: transparent; pointer-events: none; margin: 0;
 }
-.sf-pop input[type="range"]::-webkit-slider-runnable-track { background: #3f3f46; height: 4px; border-radius: 2px; }
-.sf-pop input[type="range"]::-moz-range-track { background: #3f3f46; height: 4px; border-radius: 2px; }
+.sf-pop input[type="range"]::-webkit-slider-runnable-track { background: var(--tone-dim-border); height: 4px; border-radius: 2px; }
+.sf-pop input[type="range"]::-moz-range-track { background: var(--tone-dim-border); height: 4px; border-radius: 2px; }
 .sf-pop input[type="range"]::-webkit-slider-thumb {
   appearance: none; -webkit-appearance: none; pointer-events: auto; width: 12px; height: 12px;
-  border-radius: 50%; background: #10b981; margin-top: -4px; cursor: grab;
+  border-radius: 50%; background: var(--tone-accent); margin-top: -4px; cursor: grab;
 }
 .sf-pop input[type="range"]::-moz-range-thumb {
-  pointer-events: auto; width: 12px; height: 12px; border-radius: 50%; background: #10b981;
+  pointer-events: auto; width: 12px; height: 12px; border-radius: 50%; background: var(--tone-accent);
   border: none; cursor: grab;
 }
 /* The resize handle sets an inline width up to SIDEBAR_MAX_WIDTH (560px, core.js), which a
