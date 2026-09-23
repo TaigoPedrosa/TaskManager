@@ -296,6 +296,21 @@ function ageFromNow(iso) {
   return days === 1 ? '1 day ago' : `${days} days ago`;
 }
 
+// `size_bytes` is absent on an attachment recorded before the API started reporting it, so
+// null/undefined both mean "unknown" and render nothing rather than "NaN B".
+function humanBytes(n) {
+  if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) return null;
+  if (n < 1024) return `${n} B`;
+  const units = ['KB', 'MB', 'GB'];
+  let value = n / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return `${value >= 10 ? Math.round(value) : Math.round(value * 10) / 10} ${units[unit]}`;
+}
+
 const SOURCE_BADGE = {
   fresh: { cls: 'text-emerald-300 bg-emerald-950/60 border-emerald-800/80', label: 'Fresh' },
   stale: { cls: 'text-amber-300 bg-amber-950/60 border-amber-800/80', label: 'Stale' },
@@ -323,13 +338,19 @@ function renderAttachments(node, attachments, editable) {
     const nameEl = !isImage && url
       ? `<a href="${esc(url)}" download="${esc(entry.name)}" class="text-emerald-400 hover:text-emerald-300 underline decoration-dotted">${esc(entry.name)}</a>`
       : `<span>${esc(entry.caption || entry.name)}</span>`;
+    const sizeLabel = humanBytes(entry.size_bytes);
+    const uri = entry.source && entry.source.uri;
     return `
       <div class="att-card space-y-1.5" data-asset="${esc(entry.asset)}">
         ${thumb}
         <div class="flex items-center justify-between gap-1.5 text-[11px] text-zinc-300">
-          <span class="truncate" title="${esc(entry.name)}">${nameEl}</span>
-          ${editable ? `<button type="button" class="att-detach-btn p-1 rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-800 flex-shrink-0" data-asset="${esc(entry.asset)}" aria-label="Detach ${esc(entry.name)}">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
+          <span class="truncate min-w-0" title="${esc(entry.name)}">${nameEl}</span>
+          <span class="flex items-center gap-1 flex-shrink-0">
+            ${sizeLabel ? `<span class="text-zinc-500">${sizeLabel}</span>` : ''}
+            ${editable ? `<button type="button" class="att-detach-btn p-1 rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-800" data-asset="${esc(entry.asset)}" aria-label="Detach ${esc(entry.name)}">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
+          </span>
         </div>
+        ${uri ? `<div class="truncate text-[10px] font-mono text-zinc-500" title="${esc(uri)}">${esc(uri)}</div>` : ''}
         <div class="flex items-center flex-wrap gap-1">${sourceBadgeHtml(entry.source)}</div>
       </div>
     `;
