@@ -80,6 +80,26 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
     .st-text {{ color: var(--st-fg); }}
     .st-seg {{ background: var(--st-fg); height: 100%; }}
     .st-dot {{ background: var(--st-fg); }}
+    /* Status filter chip, three states: neutral (colour, no border) / include (colour,
+       coloured border) / exclude (no colour, dim disabled-looking border). */
+    .st-toggle {{ color: var(--st-fg); background: var(--st-bg); border: 1px solid transparent; }}
+    .st-toggle.st-mode-include {{ border-color: var(--st-fg); }}
+    .st-toggle.st-mode-exclude {{ color: #71717a; background: transparent; border: 1px solid #3f3f46; }}
+    /* Dual-handle score slider: two overlapping range inputs share one track, only their
+       thumbs are interactive, so both ends stay independently draggable. */
+    .sf-pop input[type="range"] {{
+      appearance: none; -webkit-appearance: none; background: transparent; pointer-events: none; margin: 0;
+    }}
+    .sf-pop input[type="range"]::-webkit-slider-runnable-track {{ background: #3f3f46; height: 4px; border-radius: 2px; }}
+    .sf-pop input[type="range"]::-moz-range-track {{ background: #3f3f46; height: 4px; border-radius: 2px; }}
+    .sf-pop input[type="range"]::-webkit-slider-thumb {{
+      appearance: none; -webkit-appearance: none; pointer-events: auto; width: 12px; height: 12px;
+      border-radius: 50%; background: #10b981; margin-top: -4px; cursor: grab;
+    }}
+    .sf-pop input[type="range"]::-moz-range-thumb {{
+      pointer-events: auto; width: 12px; height: 12px; border-radius: 50%; background: #10b981;
+      border: none; cursor: grab;
+    }}
     details > summary {{ list-style: none; }}
     details > summary::-webkit-details-marker {{ display: none; }}
     details > summary .details-caret {{ transition: transform 0.15s ease; }}
@@ -98,56 +118,59 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
 <body class="bg-zinc-950 text-zinc-100 flex flex-col h-screen overflow-hidden selection:bg-emerald-500 selection:text-black">
   {sprite_svg}
 
-  <!-- Toolbar: brand, view switcher, search and status counts in one dense bar -->
+  <!-- Toolbar: brand, view switcher, search and filters on row 1; status counts on row 2 -->
   <header id="toolbar" class="border-b border-zinc-800 px-4 py-2 bg-zinc-900/60 backdrop-blur z-20 flex-shrink-0 space-y-2">
     <div class="flex items-center gap-3 flex-wrap lg:flex-nowrap">
       <div class="flex items-center gap-2 flex-shrink-0">
-        <svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor"><use href="#icon-layers"/></svg>
+        <svg id="brand-icon" class="w-5 h-5 text-emerald-400 transition-colors" fill="none" stroke="currentColor"><title id="brand-icon-title">Synced</title><use href="#icon-layers"/></svg>
         <span class="text-sm font-semibold tracking-wide text-zinc-100 hidden sm:inline">TaskManager</span>
-        <span id="connection-pill" title="Synced" class="inline-flex items-center px-1.5 py-1.5 rounded-full bg-zinc-900 border border-zinc-800">
-          <span id="connection-dot" class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-          <span id="connection-status" class="sr-only">Synced</span>
-        </span>
       </div>
 
-      <div class="bg-zinc-900 p-0.5 rounded-lg border border-zinc-800 flex text-xs flex-shrink-0">
-        <button id="view-doc-btn" class="flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium bg-zinc-800 text-white shadow-sm transition">
+      <div class="h-8 bg-zinc-900 p-0.5 rounded-lg border border-zinc-800 flex text-xs flex-shrink-0">
+        <button id="view-doc-btn" title="Document view" aria-label="Document view" class="h-full aspect-square flex items-center justify-center rounded-md font-medium bg-zinc-800 text-white shadow-sm transition">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-file-text"/></svg>
-          <span>Document</span>
         </button>
-        <button id="view-graph-btn" class="flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium text-zinc-400 hover:text-white transition">
+        <button id="view-graph-btn" title="Graph view" aria-label="Graph view" class="h-full aspect-square flex items-center justify-center rounded-md font-medium text-zinc-400 hover:text-white transition">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-network"/></svg>
-          <span>Graph</span>
         </button>
       </div>
 
-      <div class="relative flex-1 min-w-[160px] max-w-sm">
+      <div class="relative flex-1 min-w-[160px]">
         <div class="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-zinc-500">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-search"/></svg>
         </div>
-        <input id="search-box" type="text" placeholder="Filter specs, plans, tasks..." class="w-full bg-zinc-950 border border-zinc-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+        <input id="search-box" type="text" placeholder="Filter specs, plans, tasks..." class="h-8 w-full bg-zinc-950 border border-zinc-800 rounded-lg pl-8 pr-3 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
       </div>
 
-      <div id="stats-digest" class="flex items-center gap-1 flex-wrap lg:flex-nowrap text-xs lg:ml-auto"></div>
+      <div class="w-px h-6 bg-zinc-800 flex-shrink-0"></div>
 
-      <div class="flex items-center gap-1.5 flex-shrink-0">
-        <button id="toggle-sections-btn" title="Expand all sections" aria-label="Expand all sections" class="flex items-center gap-1.5 p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition">
+      <div class="flex flex-wrap items-center gap-1.5 text-xs">
+        <div class="relative">
+          <select id="repo-filter" aria-label="Filter by target repo" class="h-8 min-w-[6.5rem] appearance-none bg-zinc-950 border border-zinc-800 rounded-lg pl-2 pr-6 text-xs text-zinc-200 focus:outline-none focus:border-emerald-500"></select>
+          <svg class="w-3 h-3 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-zinc-400" fill="none" stroke="currentColor"><use href="#icon-chevron-down"/></svg>
+        </div>
+        <div id="model-filter" class="relative"></div>
+        <div id="spec-filter" class="relative"></div>
+        <div id="score-filter" class="relative"></div>
+        <button id="clear-filters-btn" class="hidden h-8 px-2 flex items-center rounded-lg text-zinc-400 hover:text-white underline decoration-dotted">Clear</button>
+      </div>
+
+      <div class="w-px h-6 bg-zinc-800 flex-shrink-0"></div>
+
+      <div class="flex items-center gap-1.5 flex-shrink-0 lg:ml-auto">
+        <button id="toggle-sections-btn" title="Expand all sections" aria-label="Expand all sections" class="h-8 aspect-square flex items-center justify-center rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-chevrons-up-down"/></svg>
         </button>
-        <button id="legend-btn" aria-expanded="false" aria-controls="legend-panel" title="Legend" aria-label="Legend" class="flex items-center gap-1.5 p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 hover:text-white transition">
+        <button id="legend-btn" aria-expanded="false" aria-controls="legend-panel" title="Legend" aria-label="Legend" class="h-8 aspect-square flex items-center justify-center rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 hover:text-white transition">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-info"/></svg>
         </button>
-        <button id="refresh-btn" title="Refresh state" aria-label="Refresh state" class="p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition">
+        <button id="refresh-btn" title="Refresh state" aria-label="Refresh state" class="h-8 aspect-square flex items-center justify-center rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition">
           <svg class="w-4 h-4" fill="none" stroke="currentColor"><use href="#icon-rotate-cw"/></svg>
         </button>
       </div>
     </div>
 
-    <div class="flex flex-wrap items-center gap-2 text-xs">
-      <select id="repo-filter" aria-label="Filter by target repo" class="bg-zinc-950 border border-zinc-800 rounded-lg px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-emerald-500"></select>
-      <select id="model-filter" aria-label="Filter by model" class="bg-zinc-950 border border-zinc-800 rounded-lg px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-emerald-500"></select>
-      <div id="active-filters" class="flex flex-wrap items-center gap-1.5"></div>
-    </div>
+    <div id="stats-digest" class="flex items-center justify-center gap-1 flex-wrap text-xs"></div>
   </header>
 
   <!-- Status legend -->
@@ -255,12 +278,13 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
     const sidebarResizeHandle = document.getElementById('sidebar-resize-handle');
     const graphInspector = document.getElementById('graph-inspector');
     const inspectorCloseBtn = document.getElementById('inspector-close-btn');
-    const connectionPill = document.getElementById('connection-pill');
-    const connectionStatus = document.getElementById('connection-status');
-    const connectionDot = document.getElementById('connection-dot');
+    const brandIcon = document.getElementById('brand-icon');
+    const brandIconTitle = document.getElementById('brand-icon-title');
     const repoFilter = document.getElementById('repo-filter');
-    const modelFilter = document.getElementById('model-filter');
-    const activeFilters = document.getElementById('active-filters');
+    const modelFilterEl = document.getElementById('model-filter');
+    const specFilterEl = document.getElementById('spec-filter');
+    const scoreFilterEl = document.getElementById('score-filter');
+    const clearFiltersBtn = document.getElementById('clear-filters-btn');
     const legendBtn = document.getElementById('legend-btn');
     const legendPanel = document.getElementById('legend-panel');
     const legendBody = document.getElementById('legend-body');
@@ -390,17 +414,30 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
 
     // Filters (mirrored into the URL hash so a view is shareable)
     const NO_REPO = '(none)';
-    const filters = {{ statuses: new Set(), repo: '', model: '', q: '' }};
+    const NO_SPEC = '(none)';
+    // statusMode: code -> 'include' | 'exclude'. Absent = no opinion (neutral).
+    const filters = {{
+      statusMode: new Map(), repo: '', models: new Set(), specs: new Set(),
+      scoreMin: null, scoreMax: null, q: ''
+    }};
+    let scoreBounds = {{ min: 0, max: 100 }};
 
     function structuralFilterActive() {{
-      return filters.statuses.size > 0 || filters.repo !== '' || filters.model !== '';
+      return filters.statusMode.size > 0 || filters.repo !== '' || filters.models.size > 0 ||
+        filters.specs.size > 0 || filters.scoreMin !== null || filters.scoreMax !== null;
     }}
 
     function taskPasses(t) {{
       const status = t.virtual_status || t.status;
-      if (filters.statuses.size > 0 && !filters.statuses.has(status)) return false;
+      const mode = filters.statusMode.get(status);
+      if (mode === 'exclude') return false;
+      const anyIncludes = [...filters.statusMode.values()].some(m => m === 'include');
+      if (anyIncludes && mode !== 'include') return false;
       if (filters.repo !== '' && (t.target_repo || NO_REPO) !== filters.repo) return false;
-      if (filters.model !== '' && !(t.acceptable_models || []).includes(filters.model)) return false;
+      if (filters.models.size > 0 && !(t.acceptable_models || []).some(m => filters.models.has(m))) return false;
+      if (filters.specs.size > 0 && !filters.specs.has(t._specId)) return false;
+      if (filters.scoreMin !== null && typeof t.score === 'number' && t.score < filters.scoreMin) return false;
+      if (filters.scoreMax !== null && typeof t.score === 'number' && t.score > filters.scoreMax) return false;
       return true;
     }}
 
@@ -420,18 +457,35 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
 
     function readHash() {{
       const p = new URLSearchParams(location.hash.slice(1));
-      filters.statuses = new Set((p.get('status') || '').split(',').filter(c => window.STATUS_THEMES[c]));
+      filters.statusMode = new Map();
+      (p.get('status') || '').split(',').filter(c => window.STATUS_THEMES[c]).forEach(c => filters.statusMode.set(c, 'include'));
+      (p.get('xstatus') || '').split(',').filter(c => window.STATUS_THEMES[c]).forEach(c => filters.statusMode.set(c, 'exclude'));
       filters.repo = p.get('repo') || '';
-      filters.model = p.get('model') || '';
+      // Mutated in place, never reassigned: the multiselect controls captured these Sets
+      // by reference at init, so a fresh Set here would silently desync from them.
+      filters.models.clear();
+      (p.get('model') || '').split(',').filter(Boolean).forEach(v => filters.models.add(v));
+      filters.specs.clear();
+      (p.get('spec') || '').split(',').filter(Boolean).forEach(v => filters.specs.add(v));
+      const smin = p.get('smin');
+      const smax = p.get('smax');
+      filters.scoreMin = smin !== null && smin !== '' ? Number(smin) : null;
+      filters.scoreMax = smax !== null && smax !== '' ? Number(smax) : null;
       filters.q = (p.get('q') || '').toLowerCase();
       searchBox.value = filters.q;
     }}
 
     function writeHash() {{
       const p = new URLSearchParams();
-      if (filters.statuses.size) p.set('status', [...filters.statuses].join(','));
+      const inc = [...filters.statusMode.entries()].filter(([, m]) => m === 'include').map(([c]) => c);
+      const exc = [...filters.statusMode.entries()].filter(([, m]) => m === 'exclude').map(([c]) => c);
+      if (inc.length) p.set('status', inc.join(','));
+      if (exc.length) p.set('xstatus', exc.join(','));
       if (filters.repo) p.set('repo', filters.repo);
-      if (filters.model) p.set('model', filters.model);
+      if (filters.models.size) p.set('model', [...filters.models].join(','));
+      if (filters.specs.size) p.set('spec', [...filters.specs].join(','));
+      if (filters.scoreMin !== null) p.set('smin', String(filters.scoreMin));
+      if (filters.scoreMax !== null) p.set('smax', String(filters.scoreMax));
       if (filters.q) p.set('q', filters.q);
       try {{
         history.replaceState(null, '', p.toString() ? '#' + p : location.pathname + location.search);
@@ -443,7 +497,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
     function renderAll() {{
       writeHash();
       updateStatsDigest();
-      renderFilterBar();
+      renderFilterControls();
       renderTree(treeData);
       renderUnifiedDocument();
       applyGraphFilter();
@@ -461,6 +515,30 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
     function statusIcon(code, size = 'w-3.5 h-3.5') {{
       const t = getTheme(code);
       return `<span class="st-text st-${{t.code}} flex-shrink-0" title="${{esc(t.label)}}">${{renderIcon(t.icon, size)}}</span>`;
+    }}
+
+    // Copy-id button: "(icon ID)", wired via attachCopyHandlers so it works after any
+    // re-render; stopPropagation keeps it from also toggling the card it sits on.
+    function copyIdButton(id) {{
+      return `
+        <button class="copy-id-btn flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono text-zinc-400 hover:text-white hover:bg-zinc-800 transition flex-shrink-0" data-copy-id="${{esc(id)}}" title="Copy ID: ${{esc(id)}}" aria-label="Copy ID ${{esc(id)}}">
+          ${{renderIcon('copy', 'w-3 h-3')}}<span>ID</span>
+        </button>
+      `;
+    }}
+
+    function attachCopyHandlers(root) {{
+      root.querySelectorAll('.copy-id-btn').forEach(btn => {{
+        btn.onclick = (e) => {{
+          e.stopPropagation();
+          const id = btn.getAttribute('data-copy-id');
+          navigator.clipboard.writeText(id).then(() => {{
+            const original = btn.innerHTML;
+            btn.innerHTML = `${{renderIcon('check', 'w-3 h-3')}}<span>Copied</span>`;
+            setTimeout(() => {{ if (btn.isConnected) btn.innerHTML = original; }}, 1200);
+          }}).catch(err => console.error('Could not copy id:', err));
+        }};
+      }});
     }}
 
     // A tree row carries exactly one status marker: a coloured dot, name in the tooltip only.
@@ -489,6 +567,22 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
       return `<div class="flex w-full ${{height}} rounded-full overflow-hidden bg-zinc-800" role="img" aria-label="${{text}}" title="${{text}}">${{segs}}</div>`;
     }}
 
+    // A section's content is routinely imported straight from a markdown document, so its
+    // own body can start with the same "## <Header>" line the summary already shows on its
+    // own -- rendered raw, that reads as the header appearing twice. Drop the leading heading
+    // line (and any blank line after it) only when it matches the label already displayed.
+    function stripRedundantLeadingHeading(content, label) {{
+      const text = content || '';
+      const lines = text.split('\\n');
+      const headingMatch = lines[0] && lines[0].match(/^#{{1,6}}\\s*(.*)$/);
+      if (headingMatch && headingMatch[1].trim().toLowerCase() === label.trim().toLowerCase()) {{
+        let rest = lines.slice(1);
+        while (rest.length && rest[0].trim() === '') rest.shift();
+        return rest.join('\\n');
+      }}
+      return text;
+    }}
+
     function renderSectionBody(content) {{
       const text = content || '';
       if (typeof marked === 'undefined') {{
@@ -509,10 +603,12 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
       const isCollapsed = groupCollapsed(groupId, defaultCollapsed);
       const leadIcon = icon ? renderIcon(icon, 'w-3.5 h-3.5') : '';
       return `
-        <div class="group-header flex items-center gap-2 cursor-pointer select-none" data-group-id="${{groupId}}">
+        <div class="group-header flex items-center justify-between gap-2 cursor-pointer select-none" data-group-id="${{groupId}}">
+          <div class="flex items-center gap-2 min-w-0">
+            ${{leadIcon}}
+            <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">${{esc(label)}} (${{count}})</span>
+          </div>
           <button class="text-zinc-500 hover:text-white flex-shrink-0">${{renderIcon(isCollapsed ? 'chevron-right' : 'chevron-down', 'w-3 h-3')}}</button>
-          ${{leadIcon}}
-          <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">${{esc(label)}} (${{count}})</span>
         </div>
       `;
     }}
@@ -530,20 +626,24 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         const id = `${{ownerId}}::${{s.key}}`;
         allSectionIds.push(id);
         const isOpen = expandedSections.has(id);
+        const label = (s.header || s.key).replace(/^#+\\s*/, '');
+        const body = stripRedundantLeadingHeading(s.content, label);
         return `
           <details ${{isOpen ? 'open' : ''}} data-section-id="${{id}}" class="rounded-lg border border-zinc-800 bg-zinc-950/60">
-            <summary class="cursor-pointer select-none px-3 py-1.5 text-xs font-semibold text-zinc-300 flex items-center gap-2">
-              ${{renderIcon('chevron-right', 'w-3 h-3 text-zinc-500 details-caret')}}
-              <span>${{esc((s.header || s.key).replace(/^#+\\s*/, ''))}}</span>
-              <span class="font-mono text-[10px] text-zinc-400 font-normal">${{esc(s.key)}}</span>
+            <summary class="cursor-pointer select-none px-3 py-1.5 text-xs font-semibold text-zinc-300 flex items-center justify-between gap-2">
+              <div class="flex items-center gap-2 min-w-0">
+                <span>${{esc(label)}}</span>
+                <span class="font-mono text-[10px] text-zinc-400 font-normal">${{esc(s.key)}}</span>
+              </div>
+              ${{renderIcon('chevron-right', 'w-3 h-3 text-zinc-500 details-caret flex-shrink-0')}}
             </summary>
-            <div class="prose prose-invert max-w-none px-3 pb-3 text-xs leading-relaxed text-zinc-400">${{renderSectionBody(s.content)}}</div>
+            <div class="prose prose-invert max-w-none px-3 pb-3 text-xs leading-relaxed text-zinc-400">${{renderSectionBody(body)}}</div>
           </details>
         `;
       }}).join('');
       return `
         <div class="space-y-2 pt-2">
-          ${{renderGroupHeader(groupId, 'Sections', list.length, true)}}
+          ${{renderGroupHeader(groupId, 'Sections', list.length, true, 'file-text')}}
           <div class="space-y-2 ${{isGroupCollapsed ? 'hidden' : ''}}">${{items}}</div>
         </div>
       `;
@@ -583,19 +683,47 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
     }}
 
     // Status Digest Bar
-    // Icon-only chips (dot + count) so the view switcher, search box and every status count
-    // fit on one toolbar row; the status name lives in the native title tooltip instead.
+    // Three-state toggle per status: neutral (colour fill, no border) -> include (colour fill,
+    // coloured border) -> exclude (no colour, dim border) -> back to neutral. Counts reflect
+    // every OTHER active filter (repo/model/spec/score/text) so they read as "how many of this
+    // status would show", not a frozen snapshot.
+    function computeFilteredStatusCounts() {{
+      const tasks = collectTasks(treeData);
+      const counts = {{}};
+      let total = 0;
+      tasks.forEach(t => {{
+        if (filters.repo !== '' && (t.target_repo || NO_REPO) !== filters.repo) return;
+        if (filters.models.size > 0 && !(t.acceptable_models || []).some(m => filters.models.has(m))) return;
+        if (filters.specs.size > 0 && !filters.specs.has(t._specId)) return;
+        if (filters.scoreMin !== null && typeof t.score === 'number' && t.score < filters.scoreMin) return;
+        if (filters.scoreMax !== null && typeof t.score === 'number' && t.score > filters.scoreMax) return;
+        if (filters.q !== '' && !textMatches(t)) return;
+        const status = t.virtual_status || t.status;
+        counts[status] = (counts[status] || 0) + 1;
+        total += 1;
+      }});
+      return {{ total, counts }};
+    }}
+
+    function cycleStatusMode(code) {{
+      const mode = filters.statusMode.get(code);
+      if (mode === undefined) filters.statusMode.set(code, 'include');
+      else if (mode === 'include') filters.statusMode.set(code, 'exclude');
+      else filters.statusMode.delete(code);
+    }}
+
     function updateStatsDigest() {{
       statsDigest.innerHTML = '';
-      const allActive = filters.statuses.size === 0;
+      const {{ total, counts }} = computeFilteredStatusCounts();
+      const allActive = filters.statusMode.size === 0;
       const totalChip = document.createElement('button');
       totalChip.className = `flex items-center gap-1 px-2 py-1 rounded-md border text-xs transition ${{allActive ? 'bg-zinc-800 text-white border-zinc-700' : 'bg-zinc-900/60 text-zinc-400 border-zinc-800 hover:bg-zinc-800'}}`;
       totalChip.title = 'All tasks';
-      totalChip.setAttribute('aria-label', `All tasks: ${{statsData.total || 0}}`);
+      totalChip.setAttribute('aria-label', `All tasks: ${{total}}`);
       totalChip.setAttribute('aria-pressed', String(allActive));
-      totalChip.innerHTML = `${{renderIcon('layers', 'w-3.5 h-3.5')}}<strong>${{statsData.total || 0}}</strong>`;
+      totalChip.innerHTML = `${{renderIcon('layers', 'w-3.5 h-3.5')}}<strong>${{total}}</strong>`;
       totalChip.onclick = () => {{
-        filters.statuses.clear();
+        filters.statusMode.clear();
         renderAll();
       }};
       statsDigest.appendChild(totalChip);
@@ -608,17 +736,17 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         }}
         Object.keys(window.STATUS_THEMES).filter(code => window.STATUS_THEMES[code].group === group.code).forEach(code => {{
           const theme = getTheme(code);
-          const count = statsData[code] || 0;
-          const active = filters.statuses.has(code);
+          const count = counts[code] || 0;
+          const mode = filters.statusMode.get(code);
           const chip = document.createElement('button');
-          chip.className = `st-chip st-${{code}} flex items-center gap-1 px-1.5 py-1 rounded-md text-xs transition hover:brightness-125 ${{active ? 'ring-2 ring-white/60' : ''}} ${{count === 0 && !active ? 'opacity-50' : ''}}`;
-          chip.title = theme.label;
+          const modeClass = mode === 'include' ? 'st-mode-include' : mode === 'exclude' ? 'st-mode-exclude' : '';
+          chip.className = `st-toggle st-${{code}} ${{modeClass}} flex items-center gap-1 px-1.5 py-1 rounded-md text-xs transition hover:brightness-125 ${{count === 0 && !mode ? 'opacity-50' : ''}}`;
+          chip.title = `${{theme.label}} -- click to include, click again to exclude`;
           chip.setAttribute('aria-label', `${{theme.label}}: ${{count}}`);
-          chip.setAttribute('aria-pressed', String(active));
+          chip.setAttribute('aria-pressed', String(mode === 'include'));
           chip.innerHTML = `${{renderIcon(theme.icon, 'w-3.5 h-3.5')}}<strong>${{count}}</strong>`;
           chip.onclick = () => {{
-            if (active) filters.statuses.delete(code);
-            else filters.statuses.add(code);
+            cycleStatusMode(code);
             renderAll();
           }};
           statsDigest.appendChild(chip);
@@ -632,63 +760,203 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
       select.value = current;
     }}
 
-    function collectTasks(nodes, out = []) {{
+    // Also stamps each task with the id/title of the spec it descends from (NO_SPEC when it
+    // hangs off a standalone plan), so the spec filter needs no server round trip.
+    function collectTasks(nodes, specCtx = null, out = []) {{
       nodes.forEach(n => {{
-        if (n.kind === 'task') out.push(n);
-        collectTasks(n.children || [], out);
+        if (n.kind === 'task') {{
+          n._specId = specCtx ? specCtx.id : NO_SPEC;
+          n._specTitle = specCtx ? specCtx.title : 'No spec';
+          out.push(n);
+        }}
+        const nextCtx = n.kind === 'spec' ? {{ id: n.id, title: n.title }} : specCtx;
+        collectTasks(n.children || [], nextCtx, out);
       }});
       return out;
     }}
 
+    // Generic multiselect: a button ("Label (n)") opening a checkbox popover. `getOptions`
+    // is re-read on every render so it always reflects the live tree, never a stale snapshot.
+    function createMultiSelect(container, {{ label, getOptions, selected, onChange }}) {{
+      let open = false;
+
+      function renderOptions() {{
+        const options = getOptions();
+        const pop = container.querySelector('.ms-pop');
+        pop.innerHTML = options.length === 0
+          ? '<div class="px-2 py-1.5 text-zinc-500 text-xs">No options</div>'
+          : options.map(o => `
+            <label class="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-zinc-800 cursor-pointer text-xs text-zinc-200">
+              <input type="checkbox" data-value="${{esc(o.value)}}" ${{selected.has(o.value) ? 'checked' : ''}} class="rounded border-zinc-600 bg-zinc-950 text-emerald-500 focus:ring-emerald-500">
+              <span class="truncate">${{esc(o.label)}}</span>
+            </label>
+          `).join('');
+        pop.querySelectorAll('input[type=checkbox]').forEach(cb => {{
+          cb.onchange = () => {{
+            const v = cb.getAttribute('data-value');
+            if (cb.checked) selected.add(v); else selected.delete(v);
+            onChange();
+          }};
+        }});
+      }}
+
+      function render() {{
+        const n = selected.size;
+        const btn = container.querySelector('.ms-btn');
+        const active = n > 0;
+        btn.querySelector('.ms-label').textContent = n > 0 ? `${{label}} (${{n}})` : label;
+        btn.className = `ms-btn h-8 min-w-[6.5rem] flex items-center justify-between gap-1 px-2.5 rounded-lg border text-xs transition ${{active ? 'bg-zinc-800 text-white border-emerald-600' : 'bg-zinc-950 text-zinc-300 border-zinc-800 hover:bg-zinc-900'}}`;
+        btn.setAttribute('aria-expanded', String(open));
+        container.querySelector('.ms-pop').classList.toggle('hidden', !open);
+        renderOptions();
+      }}
+
+      container.innerHTML = `
+        <button type="button" class="ms-btn" aria-haspopup="listbox">
+          <span class="ms-label">${{esc(label)}}</span>
+          ${{renderIcon('chevron-down', 'w-3 h-3')}}
+        </button>
+        <div class="ms-pop absolute z-30 mt-1 w-56 max-h-64 overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl p-1 hidden" role="listbox"></div>
+      `;
+      container.querySelector('.ms-btn').addEventListener('click', (e) => {{
+        e.stopPropagation();
+        open = !open;
+        render();
+      }});
+      document.addEventListener('click', (e) => {{
+        if (open && !container.contains(e.target)) {{
+          open = false;
+          render();
+        }}
+      }});
+
+      render();
+      return {{ render }};
+    }}
+
+    // Score filter: a button ("Score: min-max") opening a dual-handle range slider (two
+    // overlapping <input type=range>, thumbs only are clickable -- the standard CSS shape
+    // for a two-sided slider with no extra dependency).
+    function createScoreFilter(container) {{
+      let open = false;
+
+      function bounds() {{
+        const min = filters.scoreMin ?? scoreBounds.min;
+        const max = filters.scoreMax ?? scoreBounds.max;
+        return {{ min, max }};
+      }}
+
+      function render() {{
+        const {{ min, max }} = bounds();
+        const active = filters.scoreMin !== null || filters.scoreMax !== null;
+        const btn = container.querySelector('.sf-btn');
+        btn.querySelector('.sf-label').textContent = `Score: ${{Math.round(min)}}-${{Math.round(max)}}`;
+        btn.className = `sf-btn h-8 min-w-[6.5rem] flex items-center justify-between gap-1 px-2.5 rounded-lg border text-xs transition ${{active ? 'bg-zinc-800 text-white border-emerald-600' : 'bg-zinc-950 text-zinc-300 border-zinc-800 hover:bg-zinc-900'}}`;
+        btn.setAttribute('aria-expanded', String(open));
+        container.querySelector('.sf-pop').classList.toggle('hidden', !open);
+        const lo = container.querySelector('.sf-lo');
+        const hi = container.querySelector('.sf-hi');
+        lo.min = hi.min = scoreBounds.min;
+        lo.max = hi.max = scoreBounds.max;
+        lo.value = min;
+        hi.value = max;
+        container.querySelector('.sf-lo-val').textContent = Math.round(min);
+        container.querySelector('.sf-hi-val').textContent = Math.round(max);
+      }}
+
+      container.innerHTML = `
+        <button type="button" class="sf-btn" aria-haspopup="true">
+          <span class="sf-label">Score</span>
+          ${{renderIcon('chevron-down', 'w-3 h-3')}}
+        </button>
+        <div class="sf-pop absolute z-30 mt-1 w-56 rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl p-3 space-y-2 hidden">
+          <div class="flex items-center justify-between text-[11px] text-zinc-400">
+            <span>Min: <span class="sf-lo-val font-mono text-zinc-200"></span></span>
+            <span>Max: <span class="sf-hi-val font-mono text-zinc-200"></span></span>
+          </div>
+          <div class="relative h-4">
+            <input type="range" class="sf-lo absolute inset-x-0 top-1/2 -translate-y-1/2 w-full" step="0.01">
+            <input type="range" class="sf-hi absolute inset-x-0 top-1/2 -translate-y-1/2 w-full" step="0.01">
+          </div>
+          <button type="button" class="sf-reset text-[11px] text-zinc-400 underline hover:text-white">Reset</button>
+        </div>
+      `;
+      container.querySelector('.sf-btn').addEventListener('click', (e) => {{
+        e.stopPropagation();
+        open = !open;
+        render();
+      }});
+      container.querySelector('.sf-lo').addEventListener('input', (e) => {{
+        filters.scoreMin = Math.min(Number(e.target.value), filters.scoreMax ?? scoreBounds.max);
+        renderAll();
+      }});
+      container.querySelector('.sf-hi').addEventListener('input', (e) => {{
+        filters.scoreMax = Math.max(Number(e.target.value), filters.scoreMin ?? scoreBounds.min);
+        renderAll();
+      }});
+      container.querySelector('.sf-reset').addEventListener('click', () => {{
+        filters.scoreMin = null;
+        filters.scoreMax = null;
+        renderAll();
+      }});
+      document.addEventListener('click', (e) => {{
+        if (open && !container.contains(e.target)) {{
+          open = false;
+          render();
+        }}
+      }});
+
+      render();
+      return {{ render }};
+    }}
+
+    const modelMultiSelect = createMultiSelect(modelFilterEl, {{
+      label: 'Model',
+      selected: filters.models,
+      onChange: renderAll,
+      getOptions: () => [...new Set(collectTasks(treeData).flatMap(t => t.acceptable_models || []))]
+        .sort().map(v => ({{ value: v, label: v }})),
+    }});
+    const specMultiSelect = createMultiSelect(specFilterEl, {{
+      label: 'Spec',
+      selected: filters.specs,
+      onChange: renderAll,
+      getOptions: () => {{
+        const byId = new Map();
+        collectTasks(treeData).forEach(t => byId.set(t._specId, t._specTitle));
+        return [...byId.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([value, label]) => ({{ value, label }}));
+      }},
+    }});
+    const scoreFilter = createScoreFilter(scoreFilterEl);
+
     function populateFilterOptions() {{
       const tasks = collectTasks(treeData);
       fillSelect(repoFilter, tasks.map(t => t.target_repo || NO_REPO), filters.repo, 'All repos');
-      fillSelect(modelFilter, tasks.flatMap(t => t.acceptable_models || []), filters.model, 'All models');
+      const scores = tasks.map(t => t.score).filter(s => typeof s === 'number');
+      scoreBounds = scores.length ? {{ min: Math.min(...scores), max: Math.max(...scores) }} : {{ min: 0, max: 100 }};
     }}
 
-    function renderFilterBar() {{
-      const pills = [];
-      filters.statuses.forEach(c => pills.push([`Status: ${{getTheme(c).label}}`, () => filters.statuses.delete(c)]));
-      if (filters.repo) pills.push([`Repo: ${{filters.repo}}`, () => {{ filters.repo = ''; }}]);
-      if (filters.model) pills.push([`Model: ${{filters.model}}`, () => {{ filters.model = ''; }}]);
-      if (filters.q) pills.push([`Text: ${{filters.q}}`, () => {{ filters.q = ''; searchBox.value = ''; }}]);
-
-      activeFilters.innerHTML = '';
-      pills.forEach(([label, remove]) => {{
-        const pill = document.createElement('button');
-        pill.className = 'flex items-center gap-1 px-2 py-0.5 rounded-full border border-zinc-600 bg-zinc-800 text-zinc-200 text-[11px] hover:bg-zinc-700';
-        pill.setAttribute('aria-label', `Remove filter ${{label}}`);
-        pill.innerHTML = `<span>${{esc(label)}}</span>${{renderIcon('x', 'w-3 h-3')}}`;
-        pill.onclick = () => {{
-          remove();
-          renderAll();
-        }};
-        activeFilters.appendChild(pill);
-      }});
-      if (pills.length > 0) {{
-        const clear = document.createElement('button');
-        clear.className = 'px-2 py-0.5 rounded-full text-[11px] text-zinc-300 underline hover:text-white';
-        clear.textContent = 'Clear all';
-        clear.onclick = () => {{
-          filters.statuses.clear();
-          filters.repo = '';
-          filters.model = '';
-          filters.q = '';
-          searchBox.value = '';
-          renderAll();
-        }};
-        activeFilters.appendChild(clear);
-      }}
+    function renderFilterControls() {{
       repoFilter.value = filters.repo;
-      modelFilter.value = filters.model;
+      modelMultiSelect.render();
+      specMultiSelect.render();
+      scoreFilter.render();
+      clearFiltersBtn.classList.toggle('hidden', !(structuralFilterActive() || filters.q !== ''));
     }}
 
     repoFilter.addEventListener('change', () => {{
       filters.repo = repoFilter.value;
       renderAll();
     }});
-    modelFilter.addEventListener('change', () => {{
-      filters.model = modelFilter.value;
+    clearFiltersBtn.addEventListener('click', () => {{
+      filters.statusMode.clear();
+      filters.repo = '';
+      filters.models.clear();
+      filters.specs.clear();
+      filters.scoreMin = null;
+      filters.scoreMax = null;
+      filters.q = '';
+      searchBox.value = '';
       renderAll();
     }});
 
@@ -877,6 +1145,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
               </div>
               <div class="flex items-center gap-2">
                 ${{specPills}}
+                ${{copyIdButton(spec.id)}}
               </div>
             </div>
             <h1 class="text-2xl font-bold tracking-tight text-white">${{spec.title}}</h1>
@@ -898,6 +1167,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
 
       attachCollapsibleHandlers();
       attachSectionToggleHandlers(unifiedDocument);
+      attachCopyHandlers(unifiedDocument);
       updateToggleSectionsButton();
     }}
 
@@ -911,38 +1181,70 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
       const visibleTasks = tasks.filter(t => nodeVisible(t, planTextOk));
       const planSectionsHtml = renderSections(plan.sections, plan.id);
       const tasksGroupId = `${{plan.id}}::tasks`;
-      const tasksGroupCollapsed = groupCollapsed(tasksGroupId, false);
+      const tasksGroupCollapsed = groupCollapsed(tasksGroupId, true);
 
       return `
         <div id="doc-node-${{plan.id}}" class="border border-zinc-800 rounded-xl bg-zinc-900/30 transition">
-          <!-- Plan Header -->
+          <!-- Plan Header: status + id left, progress + counter right, collapse control last -->
           <div class="h-12 px-4 rounded-t-xl bg-zinc-900/95 backdrop-blur-sm border-b border-zinc-800 flex items-center justify-between cursor-pointer plan-header" data-node-id="${{plan.id}}">
             <div class="flex items-center gap-2.5 min-w-0 truncate">
-              <button class="text-zinc-400 hover:text-white flex-shrink-0">${{renderIcon(isCollapsed ? 'chevron-right' : 'chevron-down', 'w-4 h-4')}}</button>
-              <span class="font-mono text-xs font-semibold text-emerald-400 flex-shrink-0">${{plan.id}}</span>
-              <span class="text-base font-semibold text-zinc-200 truncate">${{plan.title}}</span>
               ${{statusIcon(planStatus)}}
+              <span class="font-mono text-xs font-semibold text-emerald-400 flex-shrink-0">${{plan.id}}</span>
             </div>
             <div class="flex items-center gap-3 flex-shrink-0">
               <div class="flex items-center gap-2">
                 <div class="w-40">${{progressBar(plan, 'h-2')}}</div>
                 <span class="font-mono text-xs text-zinc-400" title="Completed of total tasks">${{p.completed}}/${{p.total}}</span>
               </div>
+              ${{copyIdButton(plan.id)}}
+              <button class="text-zinc-400 hover:text-white flex-shrink-0">${{renderIcon(isCollapsed ? 'chevron-right' : 'chevron-down', 'w-4 h-4')}}</button>
             </div>
           </div>
 
-          <div class="px-4 py-1.5 text-[11px] text-zinc-400 border-b border-zinc-800/60 bg-zinc-900/40">${{esc(progressText(plan))}}</div>
-
-          <!-- Plan Body -->
+          <!-- Plan Body: title lives here, before sections, folding with everything else -->
           <div class="plan-body ${{isCollapsed ? 'hidden' : ''}} p-4 space-y-4">
+            <h3 class="text-base font-semibold text-zinc-200">${{plan.title}}</h3>
             ${{planSectionsHtml}}
             <div class="space-y-3">
-              ${{renderGroupHeader(tasksGroupId, 'Tasks', visibleTasks.length, false, 'check')}}
+              ${{renderGroupHeader(tasksGroupId, 'Tasks', visibleTasks.length, true, 'check')}}
               <div class="space-y-2.5 ${{tasksGroupCollapsed ? 'hidden' : ''}}">
                 ${{visibleTasks.map(task => renderTaskCard(task)).join('')}}
               </div>
             </div>
           </div>
+        </div>
+      `;
+    }}
+
+    // Verification kind -> icon, so the row reads at a glance instead of naming the enum value.
+    // Each one is its own icon rather than borrowing a status or toolbar icon's meaning
+    // (file-text/network/play already mean Document view, Graph view and Implementing).
+    const VERIFICATION_ICON = {{
+      file_exists: 'file-check', file_absent: 'file-x', symbol_signature: 'code',
+      ast_export: 'package', test_command: 'terminal', codegraph_query: 'database'
+    }};
+    const VERIFICATION_LABEL = {{
+      file_exists: 'File exists', file_absent: 'File absent', symbol_signature: 'Symbol signature',
+      ast_export: 'AST export', test_command: 'Test command', codegraph_query: 'Codegraph query'
+    }};
+
+    // A table of tasks (id, status, title) behind a collapsible group header -- the shared
+    // shape for the task card's Blockers, Dependencies and Dependents sections.
+    function renderRelationTable(ownerId, key, label, icon, rows, defaultCollapsed) {{
+      if (!rows || rows.length === 0) return '';
+      const groupId = `${{ownerId}}::${{key}}`;
+      const isCollapsed = groupCollapsed(groupId, defaultCollapsed);
+      const body = rows.map(d => `
+        <div class="flex items-center gap-2 px-2 py-1.5 bg-zinc-950/60">
+          ${{d.status ? statusIcon(d.status) : '<span class="text-[10px] font-mono text-red-400">missing</span>'}}
+          <span class="font-mono text-[11px] text-zinc-300 flex-shrink-0">${{esc(d.id)}}</span>
+          <span class="truncate text-[11px] text-zinc-400">${{esc(d.title || '')}}</span>
+        </div>
+      `).join('');
+      return `
+        <div class="space-y-1.5 pt-2">
+          ${{renderGroupHeader(groupId, label, rows.length, defaultCollapsed, icon)}}
+          <div class="divide-y divide-zinc-800 rounded border border-zinc-800 ${{isCollapsed ? 'hidden' : ''}}">${{body}}</div>
         </div>
       `;
     }}
@@ -954,7 +1256,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
       // Model pills
       let modelPills = '';
       if (task.acceptable_models && task.acceptable_models.length > 0) {{
-        modelPills = task.acceptable_models.map(m => 
+        modelPills = task.acceptable_models.map(m =>
           `<span class="px-1.5 py-0.5 rounded bg-purple-950/60 text-purple-300 border border-purple-800/80 font-mono text-[10px]">${{m}}</span>`
         ).join('');
       }}
@@ -974,51 +1276,57 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         `;
       }}
 
-      // Verifications Table
+      // Verifications: icon names the kind (hover for the word), row stays justified
+      // (icon pinned left, target pinned right) but the target text itself reads left-aligned;
+      // a real gap keeps the two from ever touching regardless of either one's length.
       let verificationsHtml = '';
       if (task.verifications && task.verifications.length > 0) {{
+        const groupId = `${{task.id}}::verifications`;
+        const isGroupCollapsed = groupCollapsed(groupId, true);
+        const rows = task.verifications.map(v => `
+          <div class="p-2 bg-zinc-950/60 flex items-center gap-3 justify-between">
+            <span class="text-emerald-400 flex-shrink-0" title="${{esc(VERIFICATION_LABEL[v.type] || v.type)}}">${{renderIcon(VERIFICATION_ICON[v.type] || 'check', 'w-3.5 h-3.5')}}</span>
+            <span class="text-zinc-300 truncate text-left flex-1 min-w-0">${{esc(v.target)}}</span>
+          </div>
+        `).join('');
         verificationsHtml = `
           <div class="space-y-1.5 pt-2 border-t border-zinc-800/60 mb-3">
-            <div class="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
-              ${{renderIcon('shield-check', 'w-3.5 h-3.5 text-emerald-400')}}
-              <span>Verifications</span>
-            </div>
-            <div class="rounded-lg border border-zinc-800 overflow-hidden divide-y divide-zinc-800 text-[11px] font-mono">
-              ${{task.verifications.map(v => `
-                <div class="p-2 bg-zinc-950/60 flex items-center justify-between">
-                  <span class="text-emerald-400">${{v.type}}</span>
-                  <span class="text-zinc-300">${{v.target}}</span>
-                </div>
-              `).join('')}}
-            </div>
+            ${{renderGroupHeader(groupId, 'Verifications', task.verifications.length, true, 'shield-check')}}
+            <div class="rounded-lg border border-zinc-800 overflow-hidden divide-y divide-zinc-800 text-[11px] font-mono ${{isGroupCollapsed ? 'hidden' : ''}}">${{rows}}</div>
           </div>
         `;
       }}
 
       const sectionsHtml = renderSections(task.sections, task.id);
-      const depsHtml = renderDependencies(task.dependency_details, taskStatus);
+      const unfinishedDeps = (task.dependency_details || []).filter(d => !d.finished);
+      const blockersHtml = renderRelationTable(task.id, 'blockers', 'Blockers', 'ban', unfinishedDeps, true);
+      const dependenciesHtml = renderRelationTable(task.id, 'deps', 'Dependencies', 'link', task.dependency_details, true);
+      const dependentsHtml = renderRelationTable(task.id, 'dependents', 'Dependents', 'arrow-up-right', task.dependent_details, true);
 
       return `
         <div id="doc-node-${{task.id}}" class="border border-zinc-800/80 rounded-lg bg-zinc-950/40 hover:border-zinc-700 transition">
-          <!-- Task Header -->
+          <!-- Task Header: status + id left, badges + copy id + collapse control last -->
           <div class="h-10 px-3 rounded-t-lg flex items-center justify-between cursor-pointer task-header bg-zinc-900/90 backdrop-blur-sm hover:bg-zinc-900" data-node-id="${{task.id}}">
             <div class="flex items-center gap-2 min-w-0 truncate">
-              <button class="text-zinc-500 hover:text-white flex-shrink-0">${{renderIcon(isCollapsed ? 'chevron-right' : 'chevron-down', 'w-3.5 h-3.5')}}</button>
               ${{statusIcon(taskStatus)}}
               <span class="font-mono text-xs font-semibold text-emerald-400 flex-shrink-0">${{task.id}}</span>
-              <span class="text-sm font-medium text-zinc-200 truncate">${{task.title}}</span>
             </div>
             <div class="flex items-center gap-2 flex-shrink-0">
               ${{modelPills}}
               <span class="px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-400 font-mono text-[10px]">P${{task.priority || 50}}</span>
+              ${{copyIdButton(task.id)}}
+              <button class="text-zinc-500 hover:text-white flex-shrink-0">${{renderIcon(isCollapsed ? 'chevron-right' : 'chevron-down', 'w-3.5 h-3.5')}}</button>
             </div>
           </div>
 
-          <!-- Task Body -->
+          <!-- Task Body: title lives here too, like the plan card, before everything else -->
           <div class="task-body ${{isCollapsed ? 'hidden' : ''}} p-3.5 bg-zinc-950/80 border-t border-zinc-800/60 space-y-2">
+            <h3 class="text-sm font-medium text-zinc-200">${{task.title}}</h3>
             ${{leaseBanner}}
             ${{verificationsHtml}}
-            ${{depsHtml}}
+            ${{blockersHtml}}
+            ${{dependenciesHtml}}
+            ${{dependentsHtml}}
             ${{sectionsHtml}}
           </div>
         </div>
@@ -1225,6 +1533,16 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
       }}
     }}
 
+    // Live state lives on the brand icon's own colour -- no separate connection chip.
+    function setBrandLive(state) {{
+      const colors = {{
+        synced: 'text-emerald-400', disconnected: 'text-red-400', static: 'text-zinc-500'
+      }};
+      const labels = {{ synced: 'Synced', disconnected: 'Disconnected', static: 'Static Export' }};
+      brandIcon.className = `w-5 h-5 transition-colors ${{colors[state]}}`;
+      brandIconTitle.textContent = labels[state];
+    }}
+
     // WebSocket Live Updates
     if (!isStaticMode) {{
       function connectWS() {{
@@ -1232,11 +1550,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         const wsUrl = `${{protocol}}//${{location.host}}/ws`;
         const ws = new WebSocket(wsUrl);
 
-        ws.onopen = () => {{
-          connectionStatus.textContent = 'Synced';
-          connectionPill.title = 'Synced';
-          connectionDot.className = 'w-1.5 h-1.5 rounded-full bg-emerald-400';
-        }};
+        ws.onopen = () => setBrandLive('synced');
 
         ws.onmessage = (event) => {{
           try {{
@@ -1250,17 +1564,13 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         }};
 
         ws.onclose = () => {{
-          connectionStatus.textContent = 'Disconnected';
-          connectionPill.title = 'Disconnected';
-          connectionDot.className = 'w-1.5 h-1.5 rounded-full bg-red-400';
+          setBrandLive('disconnected');
           setTimeout(connectWS, 3000);
         }};
       }}
       connectWS();
     }} else {{
-      connectionStatus.textContent = 'Static Export';
-      connectionPill.title = 'Static Export';
-      connectionDot.className = 'w-1.5 h-1.5 rounded-full bg-zinc-500';
+      setBrandLive('static');
     }}
 
     // Initialize

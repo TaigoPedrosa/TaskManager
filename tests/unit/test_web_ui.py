@@ -84,7 +84,7 @@ def test_stats_digest_chips_carry_no_per_status_label_text() -> None:
     body = _function_body(get_web_html(), "updateStatsDigest")
     assert "<span>${esc(theme.label)}</span>" not in body
     assert "<span>All tasks</span>" not in body
-    assert "chip.title = theme.label" in body
+    assert "chip.title = `${theme.label}" in body
 
 
 def test_sidebar_pane_starts_hidden_and_toggles_with_view_mode() -> None:
@@ -147,7 +147,7 @@ def test_status_icon_carries_a_title_and_chip_is_legend_only() -> None:
     assert "statusChip(" in legend
 
 
-def test_group_headers_default_tasks_expanded_and_sections_collapsed() -> None:
+def test_group_headers_default_all_collapsed() -> None:
     html = get_web_html()
     group_collapsed = _function_body(html, "groupCollapsed")
     assert "collapsedGroups.has(groupId) ? !defaultCollapsed : defaultCollapsed" in group_collapsed
@@ -157,7 +157,7 @@ def test_group_headers_default_tasks_expanded_and_sections_collapsed() -> None:
     assert "renderGroupHeader(groupId, 'Sections'" in render_sections
 
     render_plan_card = _function_body(html, "renderPlanCard")
-    assert "groupCollapsed(tasksGroupId, false)" in render_plan_card
+    assert "groupCollapsed(tasksGroupId, true)" in render_plan_card
     assert "renderGroupHeader(tasksGroupId, 'Tasks'" in render_plan_card
 
 

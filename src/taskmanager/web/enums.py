@@ -131,6 +131,53 @@ class AppIcon(Enum):
         "info",
         '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
     )
+    # Verification kinds and the relation tables get their own icons rather than borrowing a
+    # status or toolbar icon's meaning (file-text/network/play/lock/git-branch already mean
+    # Document view, Graph view, Implementing, Blocked and Merging respectively).
+    FILE_CHECK = IconData(
+        "file-check",
+        '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="m9 15 2 2 4-4"/>',
+    )
+    FILE_X = IconData(
+        "file-x",
+        '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="m9.5 12.5 5 5"/><path d="m14.5 12.5-5 5"/>',
+    )
+    TERMINAL = IconData(
+        "terminal",
+        '<polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/>',
+    )
+    CODE = IconData(
+        "code",
+        '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>',
+    )
+    PACKAGE = IconData(
+        "package",
+        '<path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
+    )
+    DATABASE = IconData(
+        "database",
+        '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/>',
+    )
+    BAN = IconData(
+        "ban",
+        '<circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/>',
+    )
+    LINK = IconData(
+        "link",
+        '<path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/><line x1="8" x2="16" y1="12" y2="12"/>',
+    )
+    ARROW_UP_RIGHT = IconData(
+        "arrow-up-right",
+        '<path d="M7 7h10v10"/><path d="M7 17 17 7"/>',
+    )
+    COPY = IconData(
+        "copy",
+        '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+    )
+    HOURGLASS = IconData(
+        "hourglass",
+        '<path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/>',
+    )
 
     def as_symbol(self) -> str:
         return (
@@ -200,6 +247,18 @@ class StatusVisual(Enum):
         "#7f1d1d",
         "#b91c1c",
         "#fee2e2",
+    )
+    BLOCKED_BY_LEASE = StatusTheme(
+        "BLOCKED_BY_LEASE",
+        "Blocked by Lease",
+        AppIcon.HOURGLASS,
+        StatusGroup.NOT_STARTED,
+        "Every dependency is satisfied, but a file this task declares is locked by another "
+        "task's active lease -- ready by the graph, not claimable until that lease clears.",
+        "#fda4af",
+        "#881337",
+        "#be123c",
+        "#ffe4e6",
     )
     IMPLEMENTING = StatusTheme(
         "IMPLEMENTING",

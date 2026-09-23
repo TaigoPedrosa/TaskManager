@@ -16,6 +16,7 @@ from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine.graph import GraphEngine
+from taskmanager.engine.heuristics import score_every_task
 from taskmanager.renderers.markdown import MarkdownRenderer
 from taskmanager.web.ui import get_web_html
 
@@ -112,21 +113,27 @@ def create_app(project_root: Path) -> FastAPI:
             return graph_engine.resolve_plan_status(n.id).value
         return str(n.status.value)
 
-    def dependency_details(node_id: str) -> list[dict[str, Any]]:
+    def _relation_details(related_ids: list[str]) -> list[dict[str, Any]]:
         details: list[dict[str, Any]] = []
-        for dep_id in node_repo.get_dependencies(node_id):
-            dep = node_repo.get_node(dep_id)
+        for rel_id in related_ids:
+            rel = node_repo.get_node(rel_id)
             details.append(
                 {
-                    "id": dep_id,
-                    "title": dep.title if dep else None,
-                    "status": effective_status(dep) if dep else None,
+                    "id": rel_id,
+                    "title": rel.title if rel else None,
+                    "status": effective_status(rel) if rel else None,
                     # Same rule as GraphEngine.resolve_task_state: a missing dependency blocks.
-                    "finished": dep is not None
-                    and dep.status in (NodeStatus.COMPLETED, NodeStatus.SUPERSEDED),
+                    "finished": rel is not None
+                    and rel.status in (NodeStatus.COMPLETED, NodeStatus.SUPERSEDED),
                 }
             )
         return details
+
+    def dependency_details(node_id: str) -> list[dict[str, Any]]:
+        return _relation_details(node_repo.get_dependencies(node_id))
+
+    def dependent_details(node_id: str) -> list[dict[str, Any]]:
+        return _relation_details(node_repo.get_blocked_by(node_id))
 
     @app.get("/", response_class=HTMLResponse)
     async def index() -> str:
@@ -146,6 +153,7 @@ def create_app(project_root: Path) -> FastAPI:
         specs = node_repo.list_nodes(kind=NodeKind.SPEC)
         plans = node_repo.list_nodes(kind=NodeKind.PLAN)
         tasks = node_repo.list_nodes(kind=NodeKind.TASK)
+        task_scores = score_every_task(node_repo)
 
         def node_to_dict(n: Any) -> dict[str, Any]:
             sections = node_repo.get_all_sections(n.id)
@@ -159,6 +167,7 @@ def create_app(project_root: Path) -> FastAPI:
                 "status": n.status.value,
                 "virtual_status": effective_status(n),
                 "priority": n.priority,
+                "score": task_scores.get(n.id) if n.kind == NodeKind.TASK else None,
                 "ordinal": n.ordinal,
                 "target_repo": n.target_repo,
                 "acceptable_models": n.acceptable_models,
@@ -166,6 +175,7 @@ def create_app(project_root: Path) -> FastAPI:
                 "dependencies": node_repo.get_dependencies(n.id),
                 "dependency_details": dependency_details(n.id),
                 "blocked_by": node_repo.get_blocked_by(n.id),
+                "dependent_details": dependent_details(n.id),
                 "sections": [
                     {
                         "key": s.section_key,
@@ -197,37 +207,34 @@ def create_app(project_root: Path) -> FastAPI:
 
         tree: list[dict[str, Any]] = []
 
-        if specs:
-            for s in specs:
-                s_dict = node_to_dict(s)
-                plan_children_ids = node_repo.get_children(s.id)
-                plan_children: list[dict[str, Any]] = []
-                for pid in plan_children_ids:
-                    pnode = node_repo.get_node(pid)
-                    if pnode and pnode.kind == NodeKind.PLAN:
-                        p_dict = node_to_dict(pnode)
-                        task_children_ids = node_repo.get_children(pnode.id)
-                        task_children: list[dict[str, Any]] = []
-                        for cid in task_children_ids:
-                            cnode = node_repo.get_node(cid)
-                            if cnode:
-                                task_children.append(node_to_dict(cnode))
-                        p_dict["children"] = task_children
-                        plan_children.append(p_dict)
-                s_dict["children"] = plan_children
-                tree.append(s_dict)
-        else:
-            # Standalone plans without specs
-            for p in plans:
-                p_dict = node_to_dict(p)
-                task_children_ids = node_repo.get_children(p.id)
-                task_children = []
-                for cid in task_children_ids:
-                    cnode = node_repo.get_node(cid)
-                    if cnode:
-                        task_children.append(node_to_dict(cnode))
-                p_dict["children"] = task_children
-                tree.append(p_dict)
+        def plan_to_dict(pnode: Any) -> dict[str, Any]:
+            p_dict = node_to_dict(pnode)
+            task_children = []
+            for cid in node_repo.get_children(pnode.id):
+                cnode = node_repo.get_node(cid)
+                if cnode:
+                    task_children.append(node_to_dict(cnode))
+            p_dict["children"] = task_children
+            return p_dict
+
+        # A plan is nested under its spec when it has one; every other plan
+        # (this estate runs plenty of them) still needs a root of its own,
+        # so specs and standalone plans are both walked, never either/or.
+        spec_parented_plan_ids: set[str] = set()
+        for s in specs:
+            s_dict = node_to_dict(s)
+            plan_children: list[dict[str, Any]] = []
+            for pid in node_repo.get_children(s.id):
+                pnode = node_repo.get_node(pid)
+                if pnode and pnode.kind == NodeKind.PLAN:
+                    plan_children.append(plan_to_dict(pnode))
+                    spec_parented_plan_ids.add(pid)
+            s_dict["children"] = plan_children
+            tree.append(s_dict)
+
+        for p in plans:
+            if p.id not in spec_parented_plan_ids:
+                tree.append(plan_to_dict(p))
 
         # Add any orphan tasks
         parented_ids: set[str] = set()
@@ -247,6 +254,7 @@ def create_app(project_root: Path) -> FastAPI:
     @app.get("/api/graph")
     async def get_graph() -> dict[str, Any]:
         all_nodes = node_repo.list_nodes()
+        task_scores = score_every_task(node_repo)
         nodes_out: list[dict[str, Any]] = []
         for n in all_nodes:
             nodes_out.append(
@@ -256,6 +264,7 @@ def create_app(project_root: Path) -> FastAPI:
                     "kind": n.kind.value,
                     "status": effective_status(n),
                     "priority": n.priority,
+                    "score": task_scores.get(n.id) if n.kind == NodeKind.TASK else None,
                     "ordinal": n.ordinal,
                     "target_repo": n.target_repo,
                     "acceptable_models": n.acceptable_models,
@@ -307,6 +316,7 @@ def create_app(project_root: Path) -> FastAPI:
             "dependencies": dependencies,
             "dependency_details": dependency_details(node_id),
             "blocked_by": blocked_by,
+            "dependent_details": dependent_details(node_id),
             "sections": [
                 {
                     "key": s.section_key,

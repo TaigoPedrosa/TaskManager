@@ -17,7 +17,14 @@ from taskmanager.core.enums import (
     VerificationType,
     VirtualStatus,
 )
-from taskmanager.core.models import Lease, Node, NodeRelation, NodeSection, NodeVerification
+from taskmanager.core.models import (
+    FileLock,
+    Lease,
+    Node,
+    NodeRelation,
+    NodeSection,
+    NodeVerification,
+)
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
@@ -194,6 +201,7 @@ def every_status_project(tmp_path: Path) -> Path:
     add_task("T-READY", NodeStatus.NOT_STARTED)
     add_task("T-BLOCKED", NodeStatus.NOT_STARTED)
     add_task("T-INFLIGHT", NodeStatus.NOT_STARTED)
+    add_task("T-BLOCKED-BY-LEASE", NodeStatus.NOT_STARTED)
     node_repo.add_relation(
         NodeRelation(
             source_id="T-BLOCKED", target_id="T-IMPLEMENTING", relation_type=RelationType.DEPENDS_ON
@@ -213,6 +221,16 @@ def every_status_project(tmp_path: Path) -> Path:
             content="line one\nline two",
         )
     )
+    # T-INFLIGHT's own active lease locks a path T-BLOCKED-BY-LEASE also declares, so the
+    # latter's dependencies are all clear (it has none) but the file it needs is held.
+    shared_path = "src/shared/module.py"
+    node_repo.add_verification(
+        NodeVerification(
+            node_id="T-BLOCKED-BY-LEASE",
+            verification_type=VerificationType.FILE_EXISTS,
+            target_path=shared_path,
+        )
+    )
     RuntimeRepository(db_mgr).acquire_lease(
         Lease(
             task_id="T-INFLIGHT",
@@ -223,7 +241,7 @@ def every_status_project(tmp_path: Path) -> Path:
             last_heartbeat=datetime.now(tz=UTC),
             ttl_seconds=300,
         ),
-        [],
+        [FileLock(file_path=shared_path, task_id="T-INFLIGHT")],
     )
     return tmp_path
 
@@ -232,7 +250,7 @@ def test_stats_reports_every_status_including_zeros(every_status_project: Path) 
     stats = TestClient(create_app(every_status_project)).get("/api/stats").json()
 
     assert ALL_STATUS_CODES <= stats.keys()
-    assert stats["total"] == 14
+    assert stats["total"] == 15
     assert {code: stats[code] for code in ALL_STATUS_CODES} == {
         **{code: 1 for code in ALL_STATUS_CODES},
         NodeStatus.NOT_STARTED.value: 0,
@@ -245,9 +263,55 @@ def test_tree_progress_counts_each_status_separately(every_status_project: Path)
     plan = spec["children"][0]
 
     expected = {code: 1 for code in ALL_STATUS_CODES if code != NodeStatus.NOT_STARTED.value}
-    assert plan["progress"] == {"total": 14, "counts": expected}
+    assert plan["progress"] == {"total": 15, "counts": expected}
     assert spec["progress"] == plan["progress"]
     assert plan["progress"]["counts"]["COMPLETED"] == 1
+
+
+def test_tree_includes_standalone_plans_alongside_a_spec(tmp_path: Path) -> None:
+    # A DB can hold specs and, separately, plans with no spec parent at all --
+    # both must reach the tree root, not just whichever the (now-removed)
+    # `if specs / else` split happened to pick.
+    db_mgr = DatabaseManager(tmp_path / ".taskmanager")
+    db_mgr.init_all()
+    node_repo = NodeRepository(db_mgr)
+    node_repo.save_node(Node(id="SPEC", kind=NodeKind.SPEC, title="Spec"))
+    node_repo.save_node(Node(id="SPEC-PLAN", kind=NodeKind.PLAN, title="Spec-parented plan"))
+    node_repo.save_node(Node(id="STANDALONE-PLAN", kind=NodeKind.PLAN, title="Standalone plan"))
+    node_repo.save_node(Node(id="STANDALONE-TASK", kind=NodeKind.TASK, title="Standalone task"))
+    node_repo.add_relation(
+        NodeRelation(source_id="SPEC", target_id="SPEC-PLAN", relation_type=RelationType.CONTAINS)
+    )
+    node_repo.add_relation(
+        NodeRelation(
+            source_id="STANDALONE-PLAN",
+            target_id="STANDALONE-TASK",
+            relation_type=RelationType.CONTAINS,
+        )
+    )
+
+    tree = TestClient(create_app(tmp_path)).get("/api/tree").json()
+
+    root_ids = {n["id"] for n in tree}
+    assert "STANDALONE-PLAN" in root_ids
+    standalone = next(n for n in tree if n["id"] == "STANDALONE-PLAN")
+    assert [c["id"] for c in standalone["children"]] == ["STANDALONE-TASK"]
+    spec = next(n for n in tree if n["id"] == "SPEC")
+    assert [c["id"] for c in spec["children"]] == ["SPEC-PLAN"]
+
+
+def test_tree_and_graph_carry_task_score_and_dependents(every_status_project: Path) -> None:
+    client = TestClient(create_app(every_status_project))
+    plan = client.get("/api/tree").json()[0]["children"][0]
+    tasks_by_id = {t["id"]: t for t in plan["children"]}
+
+    assert isinstance(tasks_by_id["T-BLOCKED"]["score"], float)
+    assert tasks_by_id["T-BLOCKED"]["dependent_details"] == []
+    assert [d["id"] for d in tasks_by_id["T-IMPLEMENTING"]["dependent_details"]] == ["T-BLOCKED"]
+
+    graph_nodes = {n["id"]: n for n in client.get("/api/graph").json()["nodes"]}
+    assert isinstance(graph_nodes["T-BLOCKED"]["score"], float)
+    assert graph_nodes["PLAN"]["score"] is None
 
 
 def test_tree_task_lists_dependencies_with_their_own_status(every_status_project: Path) -> None:
@@ -308,12 +372,14 @@ def test_static_export_embeds_every_status_and_the_filter_ui(
     static = json.loads(static_match.group(1))
     assert set(themes) == ALL_STATUS_CODES
     assert ALL_STATUS_CODES <= static["stats"].keys()
-    assert static["tree"][0]["progress"]["total"] == 14
+    assert static["tree"][0]["progress"]["total"] == 15
     for element_id in (
         "stats-digest",
         "repo-filter",
         "model-filter",
-        "active-filters",
+        "spec-filter",
+        "score-filter",
+        "clear-filters-btn",
         "legend-panel",
         "sidebar-resize-handle",
         "toggle-sections-btn",
