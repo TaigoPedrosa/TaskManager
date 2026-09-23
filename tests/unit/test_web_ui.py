@@ -133,6 +133,19 @@ def test_tree_row_carries_exactly_one_status_marker() -> None:
     assert "statusIcon(" not in body
 
 
+def test_tree_row_is_keyboard_reachable_and_operable() -> None:
+    # A canvas node in the graph view has no DOM presence to Tab to, so this tree row is the
+    # only reachable path to any task's detail panel for a keyboard user; it needs a role,
+    # a tab stop and an Enter/Space handler, not only row.onclick.
+    html = get_web_html()
+    body = _function_body(html, "createNodeRow")
+    assert "role', 'treeitem'" in body
+    assert "tabindex', '0'" in body
+    assert "row.addEventListener('keydown'" in body
+    assert "selectNode(node.id)" in body
+    assert 'role="tree"' in html
+
+
 def test_document_sections_default_collapsed_and_remember_expand_state() -> None:
     html = get_web_html()
     render_sections = _function_body(html, "renderSections")
@@ -182,10 +195,12 @@ def test_group_headers_default_all_collapsed() -> None:
 
 def test_group_header_toggle_is_wired_independently_of_node_and_section_collapse() -> None:
     html = get_web_html()
+    shared = _function_body(html, "attachGroupHeaderHandlers")
+    assert "'.group-header'" in shared
+    assert "collapsedGroups.has(id)) collapsedGroups.delete(id)" in shared
+    assert "collapsedGroups.add(id)" in shared
     attach = _function_body(html, "attachCollapsibleHandlers")
-    assert "'.group-header'" in attach
-    assert "collapsedGroups.has(id)) collapsedGroups.delete(id)" in attach
-    assert "collapsedGroups.add(id)" in attach
+    assert "attachGroupHeaderHandlers(document, renderUnifiedDocument)" in attach
 
     # The all-sections toolbar button only ever touches expandedSections, never the groups.
     toggle_sections_handler = re.search(
@@ -195,6 +210,21 @@ def test_group_header_toggle_is_wired_independently_of_node_and_section_collapse
     )
     assert toggle_sections_handler, "toggleSectionsBtn click handler not found"
     assert "collapsedGroups" not in toggle_sections_handler.group(1)
+
+
+def test_group_header_is_keyboard_operable_everywhere_it_renders() -> None:
+    # renderSections()'s "Sections (N)" row is reused by the decisions detail pane, which has
+    # no plan/task collapse of its own and used to wire nothing for it at all -- a rendered
+    # group header that neither responds to a click there nor to Enter anywhere.
+    html = get_web_html()
+    header = _function_body(html, "renderGroupHeader")
+    assert 'role="button"' in header
+    assert "tabindex=\"0\"" in header
+    assert "aria-expanded=" in header
+    shared = _function_body(html, "attachGroupHeaderHandlers")
+    assert "header.onkeydown" in shared
+    detail = _function_body(html, "renderDecisionDetail")
+    assert "attachGroupHeaderHandlers(decisionsDetailEl" in detail
 
 
 def test_graph_layout_gives_nodes_room_and_a_shape_per_kind() -> None:
@@ -341,8 +371,34 @@ def test_section_preview_and_stored_markdown_are_sanitised_with_dompurify() -> N
 
 def test_frontmatter_editor_treats_declared_files_as_a_list() -> None:
     row = _function_body(get_web_html(), "frontmatterRowHtml")
-    assert "key === 'declared_files' || Array.isArray(value)" in row
+    assert "frontmatterValueKind(key, value)" in row
     assert "<textarea" in row
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is needed to exercise the JS")
+def test_frontmatter_value_kind_sends_json_not_object_object(tmp_path: Path) -> None:
+    # An attachments-shaped array (objects, not paths) used to render through the same
+    # newline-join as declared_files, which stringifies each element to the literal text
+    # "[object Object]" and, on save, sent that text back as the field's new value -- silently
+    # destroying every attachment (or any other object-valued field) an ordinary title edit
+    # touched. `declared_files` and a genuine string list still take the one-path-per-line form.
+    fn = _function_body(get_web_html(), "frontmatterValueKind")
+    script = tmp_path / "check.js"
+    script.write_text(
+        f"function frontmatterValueKind(key, value) {{{fn}\n}}\n"
+        "const assert = require('node:assert');\n"
+        "assert.strictEqual(frontmatterValueKind('declared_files', []), 'list');\n"
+        "assert.strictEqual(frontmatterValueKind('x', ['a', 'b']), 'list');\n"
+        "assert.strictEqual(frontmatterValueKind('attachments', [{asset: 'a.png'}]), 'json');\n"
+        "assert.strictEqual(frontmatterValueKind('decision', {options: []}), 'json');\n"
+        "assert.strictEqual(frontmatterValueKind('x', 'hello'), 'scalar');\n"
+        "assert.strictEqual(frontmatterValueKind('x', 5), 'scalar');\n"
+        "console.log('OK');\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(["node", str(script)], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert "OK" in result.stdout
 
 
 def test_destructive_actions_confirm_before_writing() -> None:

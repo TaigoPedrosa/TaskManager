@@ -152,18 +152,31 @@ async function afterWrite(nodeId) {
 
 
 // Frontmatter editor -----------------------------------------------------------------------
-// declared_files (and any array value) edits as one path per line; everything else edits as
-// a single field, parsed back through JSON.parse so a number/bool/object round-trips, and
-// falls back to the raw string when it doesn't parse as JSON.
+// declared_files (and any array-of-strings value) edits as one path per line. A value that is
+// an object, or an array holding anything but strings (attachments, decision, ...), edits as
+// pretty-printed JSON instead -- `[value].join('\n')` on an array of objects stringifies each
+// element to the literal text "[object Object]", so treating every array as a path list lost
+// that data on save. Anything else edits as a single field, parsed back through JSON.parse so
+// a number/bool round-trips, and falls back to the raw string when it doesn't parse as JSON.
+
+function frontmatterValueKind(key, value) {
+  if (key === 'declared_files' || (Array.isArray(value) && value.every(v => typeof v === 'string'))) {
+    return 'list';
+  }
+  if (Array.isArray(value) || (value !== null && typeof value === 'object')) return 'json';
+  return 'scalar';
+}
 
 function frontmatterRowHtml(key, value) {
-  const isList = key === 'declared_files' || Array.isArray(value);
-  const valueText = isList
+  const kind = frontmatterValueKind(key, value);
+  const valueText = kind === 'list'
     ? (Array.isArray(value) ? value.join('\n') : String(value ?? ''))
-    : (typeof value === 'string' ? value : JSON.stringify(value ?? ''));
-  const valueField = isList
-    ? `<textarea rows="3" class="fm-value ${TEXTAREA_CLS}" placeholder="one path per line">${esc(valueText)}</textarea>`
-    : `<input type="text" class="fm-value ${INPUT_CLS} font-mono" value="${esc(valueText)}">`;
+    : kind === 'json'
+      ? JSON.stringify(value, null, 2)
+      : (typeof value === 'string' ? value : JSON.stringify(value ?? ''));
+  const valueField = kind === 'scalar'
+    ? `<input type="text" class="fm-value ${INPUT_CLS} font-mono" value="${esc(valueText)}">`
+    : `<textarea rows="${kind === 'json' ? 6 : 3}" class="fm-value ${TEXTAREA_CLS}" data-fm-kind="${kind}" placeholder="${kind === 'json' ? 'JSON' : 'one path per line'}">${esc(valueText)}</textarea>`;
   return `
     <div class="fm-row flex items-start gap-2">
       <div class="flex-1 space-y-1 min-w-0">
@@ -201,8 +214,15 @@ function readFrontmatterEditor(panel) {
       return;
     }
     const valueEl = row.querySelector('.fm-value');
-    if (valueEl.tagName === 'TEXTAREA') {
+    const kind = valueEl.tagName === 'TEXTAREA' ? valueEl.dataset.fmKind : 'scalar';
+    if (kind === 'list') {
       set[key] = valueEl.value.split('\n').map(s => s.trim()).filter(Boolean);
+    } else if (kind === 'json') {
+      try {
+        set[key] = JSON.parse(valueEl.value);
+      } catch (e) {
+        throw new Error(`"${key}" is not valid JSON.`);
+      }
     } else {
       const raw = valueEl.value;
       try {

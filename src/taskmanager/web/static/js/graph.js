@@ -51,7 +51,10 @@ function renderGraph(graph) {
       }
     },
     physics: false,
-    interaction: { hover: true, selectConnectedEdges: true }
+    // A canvas node has no DOM presence to Tab to (createNodeRow's tree row is the reachable
+    // path to the same inspector), but vis's own keyboard interaction at least lets someone
+    // already focused on the canvas pan/zoom/select without a mouse.
+    interaction: { hover: true, selectConnectedEdges: true, keyboard: true }
   };
 
   if (networkInstance) {

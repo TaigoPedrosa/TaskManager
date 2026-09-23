@@ -29,13 +29,16 @@ function groupCollapsed(groupId, defaultCollapsed) {
 function renderGroupHeader(groupId, label, count, defaultCollapsed, icon = null) {
   const isCollapsed = groupCollapsed(groupId, defaultCollapsed);
   const leadIcon = icon ? renderIcon(icon, 'w-3.5 h-3.5') : '';
+  // role/tabindex/aria-expanded live on this row, not a nested control: the chevron below is
+  // a <span> rather than a second <button>, so a screen reader sees one operable toggle, not
+  // two nested interactive elements fighting over the same click.
   return `
-    <div class="group-header flex items-center justify-between gap-2 cursor-pointer select-none" data-group-id="${groupId}">
+    <div class="group-header flex items-center justify-between gap-2 cursor-pointer select-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-emerald-500 rounded" data-group-id="${groupId}" role="button" tabindex="0" aria-expanded="${!isCollapsed}" aria-label="${esc(label)} (${count})">
       <div class="flex items-center gap-2 min-w-0">
         ${leadIcon}
         <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">${esc(label)} (${count})</span>
       </div>
-      <button class="text-zinc-500 hover:text-white flex-shrink-0">${renderIcon(isCollapsed ? 'chevron-right' : 'chevron-down', 'w-3 h-3')}</button>
+      <span class="text-zinc-500 flex-shrink-0">${renderIcon(isCollapsed ? 'chevron-right' : 'chevron-down', 'w-3 h-3')}</span>
     </div>
   `;
 }
@@ -101,8 +104,15 @@ function renderTree(nodes) {
     const isCollapsed = collapsedNodes.has(node.id);
 
     const row = document.createElement('div');
-    row.className = `px-2.5 py-1.5 rounded-lg cursor-pointer text-xs group transition ${selectedNodeId === node.id ? 'bg-zinc-800 text-white font-medium border border-zinc-700' : 'text-zinc-400 hover:bg-zinc-850 hover:text-zinc-200'}`;
+    // tabindex/role/keydown: the tree is the only detail panel a keyboard user can reach
+    // through (vis-network's canvas nodes have no DOM presence to focus), so this row is
+    // reachable and operable by keyboard, not only by row.onclick below.
+    row.className = `px-2.5 py-1.5 rounded-lg cursor-pointer text-xs group transition focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-emerald-500 ${selectedNodeId === node.id ? 'bg-zinc-800 text-white font-medium border border-zinc-700' : 'text-zinc-400 hover:bg-zinc-850 hover:text-zinc-200'}`;
     row.style.paddingLeft = `${depth * 14 + 8}px`;
+    row.setAttribute('role', 'treeitem');
+    row.setAttribute('tabindex', '0');
+    row.setAttribute('aria-selected', String(selectedNodeId === node.id));
+    row.setAttribute('aria-label', `${node.id}: ${node.title}`);
 
     let chevron = `<span class="w-3.5 h-3.5 inline-block"></span>`;
     if (hasChildren) {
@@ -144,6 +154,13 @@ function renderTree(nodes) {
     }
 
     row.onclick = () => selectNode(node.id);
+    row.addEventListener('keydown', (e) => {
+      if (e.target !== row) return;  // let the nested toggle button handle its own Enter/Space
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        selectNode(node.id);
+      }
+    });
     treeList.appendChild(row);
 
     if (hasChildren && !isCollapsed) {
@@ -433,6 +450,29 @@ function renderTaskCard(task) {
   `;
 }
 
+// Shared by the document view (whole-page re-render on toggle) and any other view that embeds
+// renderSections()'s output -- the decisions view's detail pane, which has its own re-render
+// function rather than renderUnifiedDocument. Without this, a ".group-header" div (a "Sections
+// (N)" row included) is inert outside the document view: it renders with a cursor-pointer and
+// a chevron that never actually opens, and Enter does nothing because nothing is focusable.
+function attachGroupHeaderHandlers(root, rerender) {
+  root.querySelectorAll('.group-header').forEach(header => {
+    const toggle = () => {
+      const id = header.getAttribute('data-group-id');
+      if (collapsedGroups.has(id)) collapsedGroups.delete(id);
+      else collapsedGroups.add(id);
+      rerender();
+    };
+    header.onclick = toggle;
+    header.onkeydown = (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        toggle();
+      }
+    };
+  });
+}
+
 function attachCollapsibleHandlers() {
   document.querySelectorAll('.plan-header').forEach(header => {
     header.onclick = () => {
@@ -453,14 +493,7 @@ function attachCollapsibleHandlers() {
     };
   });
 
-  document.querySelectorAll('.group-header').forEach(header => {
-    header.onclick = () => {
-      const id = header.getAttribute('data-group-id');
-      if (collapsedGroups.has(id)) collapsedGroups.delete(id);
-      else collapsedGroups.add(id);
-      renderUnifiedDocument();
-    };
-  });
+  attachGroupHeaderHandlers(document, renderUnifiedDocument);
 }
 
 

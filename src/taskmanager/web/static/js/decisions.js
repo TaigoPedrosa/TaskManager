@@ -313,6 +313,7 @@ function renderDecisionDetail(id) {
     `;
 
     attachSectionToggleHandlers(decisionsDetailEl);
+    attachGroupHeaderHandlers(decisionsDetailEl, () => renderDecisionDetail(id));
     wireAttachmentControls(decisionsDetailEl, node, attachments, editable, () => renderDecisionDetail(id));
 
     decisionsDetailEl.querySelectorAll('.dec-task-link, .dec-raised-by-link').forEach(btn => {
