@@ -343,7 +343,7 @@ def plan_list(
     plans = node_repo.list_nodes(kind=NodeKind.PLAN, status=status)
     if spec:
         children = set(node_repo.get_children(spec))
-        plans = [p for p in plans if p.id in children or p.id.startswith(f"{spec}-")]
+        plans = [p for p in plans if p.id in children]
     if json_output or yaml_output:
         graph = container.get(GraphEngine)
         _emit([_node_row(p, graph.resolve_plan_status(p.id).value) for p in plans], yaml_output)
@@ -451,7 +451,7 @@ def task_list(
     tasks = node_repo.list_nodes(kind=NodeKind.TASK, status=status)
     if plan:
         children = set(node_repo.get_children(plan))
-        tasks = [t for t in tasks if t.id in children or t.id.startswith(f"{plan}-")]
+        tasks = [t for t in tasks if t.id in children]
     if render_view is not None:
         renderer = container.get(MarkdownRenderer)
         sys.stdout.write(
