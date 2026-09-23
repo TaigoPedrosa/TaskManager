@@ -141,8 +141,15 @@ Rollup over the counted children (tasks for a plan, plans for a spec):
 - no children at all: the node's own stored status (unchanged);
 - all counted children `COMPLETED` → `COMPLETED`;
 - all counted children blocked (`BLOCKED`, `BLOCKED_BY_LEASE`, `AWAITING_DECISION`) → `BLOCKED`;
-- all counted children `NOT_STARTED` and none in flight → `NOT_STARTED`;
+- no counted child has left its stored `NOT_STARTED` and none is in flight → `READY`;
 - otherwise `IMPLEMENTING`.
+
+**The web never displays `NOT_STARTED`.** It is a stored status, not a live state: a task shows
+its live state (`READY`, `BLOCKED`, `BLOCKED_BY_LEASE`, `AWAITING_DECISION`, `IN_FLIGHT`), a plan
+or spec shows its rollup (which yields `READY` for untouched work), and a decision shows Open. The
+status chips, legend, stats digest, graph, detail panel and filters omit `NOT_STARTED`, and an old
+`status=NOT_STARTED` hash value is ignored. The CLI keeps printing both `status` (stored) and
+`state` (live).
 
 **Progress** (`progress` on every tree node) is `{done, total, set_aside, counts}`: `total` counts
 tasks not set aside, `done` counts those `COMPLETED`, `set_aside` counts the rest, and `counts`
