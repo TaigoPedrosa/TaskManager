@@ -450,6 +450,82 @@ def test_spec_status_rollup_excludes_set_aside_plans(
     assert engine.resolve_spec_status("S1") == NodeStatus.COMPLETED
 
 
+def test_plan_status_rollup_set_aside_child_recounts_once_reopened(
+    repos: tuple[NodeRepository, RuntimeRepository, GraphEngine],
+) -> None:
+    # §3.2a: a set-aside child "counts again the moment its status changes back" -- proven
+    # here by reopening one rather than by the excluding side alone, which the neighbouring
+    # `test_plan_status_rollup_excludes_set_aside_children` already covers.
+    node_repo, _, engine = repos
+    plan = Node(id="P03", kind=NodeKind.PLAN, title="Plan", status=NodeStatus.NOT_STARTED)
+    done = Node(id="P03-T1", kind=NodeKind.TASK, title="Done", status=NodeStatus.COMPLETED)
+    gone = Node(id="P03-T2", kind=NodeKind.TASK, title="Gone", status=NodeStatus.ABANDONED)
+    node_repo.save_node(plan)
+    node_repo.save_node(done)
+    node_repo.save_node(gone)
+    node_repo.add_relation(
+        NodeRelation(source_id="P03", target_id="P03-T1", relation_type=RelationType.CONTAINS)
+    )
+    node_repo.add_relation(
+        NodeRelation(source_id="P03", target_id="P03-T2", relation_type=RelationType.CONTAINS)
+    )
+    assert engine.resolve_plan_status("P03") == NodeStatus.COMPLETED
+
+    gone.status = NodeStatus.NOT_STARTED
+    node_repo.save_node(gone)
+    assert engine.resolve_plan_status("P03") == NodeStatus.IMPLEMENTING
+
+
+def test_spec_status_rollup_follows_its_plans(
+    repos: tuple[NodeRepository, RuntimeRepository, GraphEngine],
+) -> None:
+    # Unlike the neighbouring `test_spec_status_rollup_excludes_set_aside_plans`, this exercises
+    # the spec's own IMPLEMENTING branch (not only its all-COMPLETED case) and a plan that only
+    # reaches ABANDONED once its own set-aside rollup runs, rather than starting there.
+    node_repo, _, engine = repos
+
+    spec = Node(id="S", kind=NodeKind.SPEC, title="Spec", status=NodeStatus.NOT_STARTED)
+    plan1 = Node(id="S-P1", kind=NodeKind.PLAN, title="Plan 1", status=NodeStatus.NOT_STARTED)
+    plan2 = Node(id="S-P2", kind=NodeKind.PLAN, title="Plan 2", status=NodeStatus.NOT_STARTED)
+    node_repo.save_node(spec)
+    node_repo.save_node(plan1)
+    node_repo.save_node(plan2)
+    node_repo.add_relation(
+        NodeRelation(source_id="S", target_id="S-P1", relation_type=RelationType.CONTAINS)
+    )
+    node_repo.add_relation(
+        NodeRelation(source_id="S", target_id="S-P2", relation_type=RelationType.CONTAINS)
+    )
+
+    t1 = Node(id="S-P1-T1", kind=NodeKind.TASK, title="T1", status=NodeStatus.COMPLETED)
+    t2 = Node(id="S-P2-T1", kind=NodeKind.TASK, title="T2", status=NodeStatus.NOT_STARTED)
+    node_repo.save_node(t1)
+    node_repo.save_node(t2)
+    node_repo.add_relation(
+        NodeRelation(source_id="S-P1", target_id="S-P1-T1", relation_type=RelationType.CONTAINS)
+    )
+    node_repo.add_relation(
+        NodeRelation(source_id="S-P2", target_id="S-P2-T1", relation_type=RelationType.CONTAINS)
+    )
+
+    assert engine.resolve_plan_status("S-P1") == NodeStatus.COMPLETED
+    # Untouched and nothing in flight under it: §3.2a's READY branch, not its stored NOT_STARTED.
+    assert engine.resolve_plan_status("S-P2") == VirtualStatus.READY
+    # A spec follows its plans' own rollups, never its own stored status.
+    assert engine.resolve_spec_status("S") == NodeStatus.IMPLEMENTING
+
+    t2.status = NodeStatus.COMPLETED
+    node_repo.save_node(t2)
+    assert engine.resolve_spec_status("S") == NodeStatus.COMPLETED
+
+    t2.status = NodeStatus.ABANDONED
+    node_repo.save_node(t2)
+    # P2 rolls up to ABANDONED (its only child is set aside); that set-asides P2 at the spec
+    # too, so the spec reads COMPLETED on P1 alone rather than IMPLEMENTING.
+    assert engine.resolve_plan_status("S-P2") == NodeStatus.ABANDONED
+    assert engine.resolve_spec_status("S") == NodeStatus.COMPLETED
+
+
 def test_awaiting_decision_clears_on_answer_or_withdraw_and_reopen_reblocks(
     repos: tuple[NodeRepository, RuntimeRepository, GraphEngine],
 ) -> None:
