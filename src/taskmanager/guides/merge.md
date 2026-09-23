@@ -12,16 +12,25 @@ tm task get <task-id> --yaml
 
 `tm run start` claims a `WAITING_MERGE` task into `MERGING`, no `--worktree` flag (there is no fresh worktree to cut — the merge works from the branch `tm/<task-id>` already sitting in `<project root>/<target_repo>`). The lease locks no file: a merge writes the repository's main branch, not the worktree, so a sibling whose task shares a declared file is free to start while this runs. Two agents claiming the same `WAITING_MERGE` task race on this exactly like a review does: the second gets `Task <id> is not ready to start (current state: MERGING)`. `tm task get` names the `target_repo` and the `declared_files` you will confirm in step 3.
 
-## 2. Merge and push
+## 2. Merge in a worktree of your own, and push by refspec
 
 ```
 git -C <repo> fetch origin
 git -C <repo> log --oneline origin/main..tm/<task-id>
-git -C <repo> merge --no-ff -m "<subject naming the change>" tm/<task-id>
-git -C <repo> push origin main
+git -C <repo> worktree add --detach <scratch>/<repo>-merge-<task-id> origin/main
+git -C <scratch>/<repo>-merge-<task-id> merge --no-ff -m "<subject naming the change>" tm/<task-id>
+git -C <repo> ls-remote origin refs/heads/main
+git -C <scratch>/<repo>-merge-<task-id> push origin HEAD:main
 ```
 
-Fetch immediately before the merge, not when you planned it: a sibling may have landed in between. A `--no-ff` merge with no `-m` commits itself with git's default subject, so always pass the subject. On a conflict, `git -C <repo> merge --abort`, change no status, and report — the task stays `WAITING_MERGE`. Never force-push, and never merge a task that is not in `WAITING_MERGE`.
+**Never merge into the shared checkout's local `main`, and never `git push origin main`.** That local branch is shared by every agent working in the repository: `git fetch` never moves it, so it is routinely behind `origin/main`, and a merge whose push was refused stays on it, where the next agent's push publishes it. A detached worktree cut from a freshly fetched `origin/main` has neither problem, and pushing `HEAD:main` sends exactly the commit you built.
+
+- **Fetch immediately before the merge, not when you planned it**, and re-read `ls-remote` just before the push. If `origin/main` moved in between, the push is rejected as non-fast-forward: remove the merge worktree and redo this step from a fresh fetch. Never force.
+- **Always pass `-m`.** A `--no-ff` merge with no subject commits itself with git's default one.
+- **Run the repository's own gate in the merge worktree before pushing** whenever `origin/main` has moved since the branch was cut. The review saw the branch on an older base, so only the merged tip shows how the two combine.
+- **On a conflict**, `git -C <scratch>/<repo>-merge-<task-id> merge --abort`, remove the worktree, change no status, and report. The task stays `WAITING_MERGE`.
+- **If the push is refused** by a permission check rather than rejected by the remote, stop. Report the merge worktree's path and the merge commit's sha so the owner can push it with one command. Never retry it, force it, or ask another agent or session to push it.
+- **Where `main` deploys on push, the push is the deploy.** Judge CI by the run at the current tip of `origin/main`, not the run your push triggered: a sibling landing seconds later cancels yours.
 
 ## 3. Prove the deliverable is on the remote
 
@@ -53,6 +62,8 @@ This is the only place `COMPLETED` is ever set, and only after steps 3 and 4 bot
 
 Add `--remove-worktree` to the completing stop, `tm run stop <task-id> --status COMPLETED --remove-worktree`. The `MERGING` lease never recorded a worktree path (none was cut), so `tm` finds it by the branch `tm/<task-id>` in the task's repository and removes it — same fallback used for a task completed without ever claiming a lease at all. It never forces: a refusal means the worktree holds uncommitted work or is not yours, and that is information. Leave the branch `tm/<task-id>` in place unless your project says otherwise; the merge commit is what makes it disposable.
 
+Remove the merge worktree from step 2 as well, by name and without `--force`: `git -C <repo> worktree remove <scratch>/<repo>-merge-<task-id>`.
+
 ## Waiting on something that takes time
 
 A gate, a push, an external state change — pick by duration, because duration is what you actually know:
@@ -67,12 +78,13 @@ Never end your turn to wait on a background run "until notified." A background c
 
 ## 7. Report
 
-Task id, merge commit sha, the push, each declared path with its `cat-file` result, the `tm verify run` exit code, the status you set, and whether the worktree was removed.
+Task id, merge commit sha, the merge worktree path, the push and its `ls-remote` before and after, each declared path with its `cat-file` result, the `tm verify run` exit code, the status you set, and whether the worktree was removed.
 
 ## Never
 
 - Never complete a task whose verification failed or whose deliverable you did not find on `origin/main`.
 - Never force-push, never rewrite the repository's main branch, never `git checkout`, `reset` or `clean` in a checkout you share.
+- Never merge into, commit on, or push the shared checkout's local `main`; the merge lives in your own worktree and is pushed as `HEAD:main`.
 - Never merge a branch you did not claim into `MERGING` yourself, and never review or fix the code while merging it — it goes back to `WAITING_FIXES` instead.
 - Run `tm run heartbeat <task-id>` if any step runs long; a swept `MERGING` lease returns the task to `WAITING_MERGE` for someone else to pick up.
 - Never open or edit anything under `.taskmanager/`.
