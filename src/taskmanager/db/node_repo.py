@@ -294,6 +294,26 @@ class NodeRepository:
             ).fetchall()
             return [r[0] for r in rows]
 
+    def get_ancestor_of_kind(self, node_id: str, kind: NodeKind) -> str | None:
+        """The nearest CONTAINS ancestor of the given kind, walking through any number of
+        intermediate parents -- `add_plan` never checks that its `--spec` argument is a spec, so
+        a plan can nest under another plan and the spec is further up than the direct parent.
+        None once the chain runs out or (a corrupt CONTAINS cycle) repeats a node."""
+        visited: set[str] = set()
+        current = node_id
+        while True:
+            parents = self.get_parent_ids(current)
+            if not parents:
+                return None
+            parent = parents[0]
+            if parent in visited:
+                return None
+            visited.add(parent)
+            node = self.get_node(parent)
+            if node is not None and node.kind == kind:
+                return parent
+            current = parent
+
     def remove_relation(self, source_id: str, target_id: str, relation_type: RelationType) -> None:
         with self.db.get_spec_connection() as conn:
             conn.execute(

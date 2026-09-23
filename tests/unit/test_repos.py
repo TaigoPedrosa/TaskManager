@@ -272,6 +272,52 @@ def test_node_repo_relations(tmp_path: Path) -> None:
     assert repo.get_dependency_edges("AUTH-T02") == [("AUTH-T01", NodeStatus.WAITING_REVIEW)]
 
 
+def test_node_repo_get_ancestor_of_kind_walks_nested_plans(tmp_path: Path) -> None:
+    db = DatabaseManager(tmp_path)
+    db.init_all()
+    repo = NodeRepository(db)
+
+    repo.save_node(Node(id="SPEC-A", kind=NodeKind.SPEC, title="Spec A"))
+    repo.save_node(Node(id="PLAN-OUTER", kind=NodeKind.PLAN, title="Outer Plan"))
+    repo.save_node(Node(id="PLAN-INNER", kind=NodeKind.PLAN, title="Inner Plan"))
+    repo.save_node(Node(id="TASK-1", kind=NodeKind.TASK, title="Task"))
+    repo.add_relation(
+        NodeRelation(source_id="SPEC-A", target_id="PLAN-OUTER", relation_type=RelationType.CONTAINS)
+    )
+    repo.add_relation(
+        NodeRelation(
+            source_id="PLAN-OUTER", target_id="PLAN-INNER", relation_type=RelationType.CONTAINS
+        )
+    )
+    repo.add_relation(
+        NodeRelation(source_id="PLAN-INNER", target_id="TASK-1", relation_type=RelationType.CONTAINS)
+    )
+
+    assert repo.get_ancestor_of_kind("TASK-1", NodeKind.SPEC) == "SPEC-A"
+    assert repo.get_ancestor_of_kind("PLAN-INNER", NodeKind.SPEC) == "SPEC-A"
+
+    # A plan chain that never reaches a spec: genuinely spec-less.
+    repo.save_node(Node(id="ORPHAN-PLAN", kind=NodeKind.PLAN, title="Orphan"))
+    repo.save_node(Node(id="ORPHAN-TASK", kind=NodeKind.TASK, title="Orphan Task"))
+    repo.add_relation(
+        NodeRelation(
+            source_id="ORPHAN-PLAN", target_id="ORPHAN-TASK", relation_type=RelationType.CONTAINS
+        )
+    )
+    assert repo.get_ancestor_of_kind("ORPHAN-TASK", NodeKind.SPEC) is None
+
+    # A CONTAINS cycle terminates instead of looping forever.
+    repo.save_node(Node(id="CYCLE-A", kind=NodeKind.PLAN, title="Cycle A"))
+    repo.save_node(Node(id="CYCLE-B", kind=NodeKind.PLAN, title="Cycle B"))
+    repo.add_relation(
+        NodeRelation(source_id="CYCLE-A", target_id="CYCLE-B", relation_type=RelationType.CONTAINS)
+    )
+    repo.add_relation(
+        NodeRelation(source_id="CYCLE-B", target_id="CYCLE-A", relation_type=RelationType.CONTAINS)
+    )
+    assert repo.get_ancestor_of_kind("CYCLE-A", NodeKind.SPEC) is None
+
+
 def test_node_repo_transfer_blocks(tmp_path: Path) -> None:
     db = DatabaseManager(tmp_path)
     db.init_all()

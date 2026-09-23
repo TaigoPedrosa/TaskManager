@@ -213,6 +213,50 @@ def test_task_list_and_next_take_a_spec_filter(tmp_path: Path) -> None:
     assert "spec_id: SPECA" in res.stdout
 
 
+def test_spec_filter_walks_a_plan_nested_under_another_plan(tmp_path: Path) -> None:
+    """`plan add --spec <id>` never checks that `<id>` is a spec, so a plan nested under another
+    plan (its own `--spec` pointed at a plan id) is real data, not a fixture contrivance."""
+    runner.invoke(app, ["init", "--path", str(tmp_path)])
+    runner.invoke(app, ["spec", "add", "Spec A", "--slug", "SPECA", "--path", str(tmp_path)])
+    runner.invoke(
+        app,
+        ["plan", "add", "Outer", "--spec", "SPECA", "--slug", "OUTER", "--path", str(tmp_path)],
+    )
+    runner.invoke(
+        app,
+        ["plan", "add", "Inner", "--spec", "SPECA-OUTER", "--slug", "INNER", "--path", str(tmp_path)],
+    )
+    runner.invoke(
+        app,
+        [
+            "task",
+            "add",
+            "Nested Task",
+            "--plan",
+            "SPECA-OUTER-INNER",
+            "--slug",
+            "T1",
+            "--path",
+            str(tmp_path),
+        ],
+    )
+
+    res = runner.invoke(
+        app, ["task", "get", "SPECA-OUTER-INNER-T1", "--yaml", "--path", str(tmp_path)]
+    )
+    assert res.exit_code == 0
+    assert "spec_id: SPECA" in res.stdout
+
+    res = runner.invoke(app, ["next", "--spec", "SPECA", "--json", "--path", str(tmp_path)])
+    assert res.exit_code == 0
+    data = json.loads(res.stdout)
+    assert [t["task_id"] for t in data] == ["SPECA-OUTER-INNER-T1"]
+
+    res = runner.invoke(app, ["task", "list", "--spec", "none", "--json", "--path", str(tmp_path)])
+    assert res.exit_code == 0
+    assert json.loads(res.stdout) == []
+
+
 def test_cli_execution_leases_and_runtime(tmp_path: Path) -> None:
     runner.invoke(app, ["init", "--path", str(tmp_path)])
     runner.invoke(app, ["spec", "add", "Core Spec", "--slug", "CORE", "--path", str(tmp_path)])

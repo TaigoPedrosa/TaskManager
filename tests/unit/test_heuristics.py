@@ -382,6 +382,38 @@ def test_spec_id_filter(
     assert every_task == {"A-T1", "B-T1", "ORPHAN-T1", "NO-PLAN-T1"}
 
 
+def test_spec_id_filter_walks_nested_plans(
+    env: tuple[NodeRepository, RuntimeRepository, GraphEngine, RecommendationEngine],
+) -> None:
+    """A plan `add`ed with another plan's id as its `--spec` nests under that plan instead of a
+    spec (`Operations.add_plan` never checks the parent's kind); the filter has to walk past it."""
+    node_repo, _, _, engine = env
+
+    node_repo.save_node(Node(id="SPEC-A", kind=NodeKind.SPEC, title="Spec A"))
+    node_repo.save_node(Node(id="OUTER-PLAN", kind=NodeKind.PLAN, title="Outer"))
+    node_repo.save_node(Node(id="INNER-PLAN", kind=NodeKind.PLAN, title="Inner"))
+    node_repo.add_relation(
+        NodeRelation(source_id="SPEC-A", target_id="OUTER-PLAN", relation_type=RelationType.CONTAINS)
+    )
+    node_repo.add_relation(
+        NodeRelation(
+            source_id="OUTER-PLAN", target_id="INNER-PLAN", relation_type=RelationType.CONTAINS
+        )
+    )
+    node_repo.save_node(Node(id="NESTED-T1", kind=NodeKind.TASK, title="Nested Task"))
+    node_repo.add_relation(
+        NodeRelation(
+            source_id="INNER-PLAN", target_id="NESTED-T1", relation_type=RelationType.CONTAINS
+        )
+    )
+
+    spec_a = [t.task_id for t in engine.get_next_tasks(spec_id="SPEC-A", limit=10)]
+    assert spec_a == ["NESTED-T1"]
+
+    none_spec = [t.task_id for t in engine.get_next_tasks(spec_id="none", limit=10)]
+    assert none_spec == []
+
+
 def test_get_next_tasks_never_offers_a_task_awaiting_decision(
     env: tuple[NodeRepository, RuntimeRepository, GraphEngine, RecommendationEngine],
 ) -> None:

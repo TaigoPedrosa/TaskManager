@@ -102,13 +102,9 @@ def _emit(data: Any, as_yaml: bool = False) -> None:
 
 
 def _task_spec_id(node_repo: NodeRepository, task_id: str) -> str | None:
-    """The spec that owns a task's plan, or None when the task has no plan or the plan has no
-    spec -- what `--spec none` filters for."""
-    plan_ids = node_repo.get_parent_ids(task_id)
-    if not plan_ids:
-        return None
-    spec_ids = node_repo.get_parent_ids(plan_ids[0])
-    return spec_ids[0] if spec_ids else None
+    """The spec that owns a task, walking up through any number of nested plans, or None when
+    no ancestor is a spec -- what `--spec none` filters for."""
+    return node_repo.get_ancestor_of_kind(task_id, NodeKind.SPEC)
 
 
 def _node_row(node: Any, state: str | None = None) -> dict[str, Any]:
