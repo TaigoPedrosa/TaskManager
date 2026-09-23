@@ -28,11 +28,17 @@ def test_add_progress_counts_set_aside_work_apart_from_completed() -> None:
 
     add_progress(spec)
 
+    # Only the COMPLETED task counts: DEFERRED/ABANDONED/SUPERSEDED can never finish, so they
+    # are set aside rather than dragging `total` (and a bar built on it) down with them.
     assert plan["progress"] == {
-        "total": 4,
+        "done": 1,
+        "total": 1,
+        "set_aside": 3,
         "counts": {"COMPLETED": 1, "DEFERRED": 1, "ABANDONED": 1, "SUPERSEDED": 1},
     }
-    assert spec["progress"]["total"] == 5
+    assert spec["progress"]["done"] == 1
+    assert spec["progress"]["total"] == 2  # the plan's one counted task + the spec's own READY one
+    assert spec["progress"]["set_aside"] == 3
     assert spec["progress"]["counts"]["COMPLETED"] == 1
 
 
@@ -41,7 +47,7 @@ def test_add_progress_of_a_plan_without_tasks_is_empty() -> None:
 
     add_progress(plan)
 
-    assert plan["progress"] == {"total": 0, "counts": {}}
+    assert plan["progress"] == {"done": 0, "total": 0, "set_aside": 0, "counts": {}}
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is needed to syntax-check the page")
@@ -55,6 +61,16 @@ def test_page_scripts_parse(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_static_data_escapes_a_closing_script_tag_inside_section_content() -> None:
+    # A section's content is user-writable (`PUT /api/nodes/{id}/sections/{key}`) and lands in
+    # `initial_data` verbatim; an unescaped `</script>` in it closes the tag early and runs
+    # whatever text follows as markup, in the one output (the static export) with no server
+    # left on the way out to sanitise it.
+    html = get_web_html(initial_data={"tree": [], "details": {"x": "</script><img src=x>"}})
+    assert "</script><img" not in html
+    assert "<\\/script><img" in html
 
 
 def _function_body(html: str, name: str) -> str:

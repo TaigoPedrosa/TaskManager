@@ -272,9 +272,37 @@ def test_tree_progress_counts_each_status_separately(every_status_project: Path)
     plan = spec["children"][0]
 
     expected = {code: 1 for code in ALL_STATUS_CODES if code != NodeStatus.NOT_STARTED.value}
-    assert plan["progress"] == {"total": 16, "counts": expected}
+    # SUPERSEDED, ABANDONED and DEFERRED (3 of the 16 tasks) are set aside: they can never
+    # finish, so they leave both `total` and its `done` count rather than diluting them.
+    assert plan["progress"] == {"done": 1, "total": 13, "set_aside": 3, "counts": expected}
     assert spec["progress"] == plan["progress"]
     assert plan["progress"]["counts"]["COMPLETED"] == 1
+
+
+def test_spec_status_in_tree_is_a_rollup_not_its_stored_status(tmp_path: Path) -> None:
+    db_mgr = DatabaseManager(tmp_path / ".taskmanager")
+    db_mgr.init_all()
+    node_repo = NodeRepository(db_mgr)
+    node_repo.save_node(
+        Node(id="S", kind=NodeKind.SPEC, title="Spec", status=NodeStatus.NOT_STARTED)
+    )
+    node_repo.save_node(Node(id="S-P1", kind=NodeKind.PLAN, title="Plan"))
+    node_repo.add_relation(
+        NodeRelation(source_id="S", target_id="S-P1", relation_type=RelationType.CONTAINS)
+    )
+    node_repo.save_node(
+        Node(id="S-P1-T1", kind=NodeKind.TASK, title="Task", status=NodeStatus.COMPLETED)
+    )
+    node_repo.add_relation(
+        NodeRelation(source_id="S-P1", target_id="S-P1-T1", relation_type=RelationType.CONTAINS)
+    )
+
+    tree = TestClient(create_app(tmp_path)).get("/api/tree").json()
+    spec = next(n for n in tree if n["id"] == "S")
+
+    # The stored field never moves; the page reads the live rollup instead (§3.2a).
+    assert spec["status"] == "NOT_STARTED"
+    assert spec["virtual_status"] == "COMPLETED"
 
 
 def test_tree_includes_standalone_plans_alongside_a_spec(tmp_path: Path) -> None:
@@ -381,7 +409,7 @@ def test_static_export_embeds_every_status_and_the_filter_ui(
     static = json.loads(static_match.group(1))
     assert set(themes) == ALL_STATUS_CODES
     assert ALL_STATUS_CODES <= static["stats"].keys()
-    assert static["tree"][0]["progress"]["total"] == 16
+    assert static["tree"][0]["progress"]["total"] == 13
     for element_id in (
         "stats-digest",
         "repo-filter",

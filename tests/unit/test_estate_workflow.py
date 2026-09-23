@@ -368,6 +368,33 @@ def test_an_export_restores_into_a_fresh_root_and_exports_identically(tmp_path: 
     ).read_bytes()
 
 
+def test_restore_handles_a_gated_dependency_without_crashing(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    runner.invoke(app, ["init", "-C", str(source)])
+    runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "-C", str(source)])
+    runner.invoke(app, ["plan", "add", "P1", "--spec", "S1", "--slug", "P1", "-C", str(source)])
+    runner.invoke(app, ["task", "add", "a", "--plan", "S1-P1", "--slug", "a", "-C", str(source)])
+    runner.invoke(app, ["task", "add", "b", "--plan", "S1-P1", "--slug", "b", "-C", str(source)])
+    # A gated dependency exports as {"id": ..., "gate": ...}, not a bare id string, so `restore`
+    # cannot put it in a plain `set` of ids without crashing on the unhashable dict.
+    add = runner.invoke(
+        app, ["task", "depends", "S1-P1-b", "--add", "S1-P1-a:WAITING_REVIEW", "-C", str(source)]
+    )
+    assert add.exit_code == 0, add.output
+    assert runner.invoke(app, ["export", str(tmp_path / "e1"), "-C", str(source)]).exit_code == 0
+
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    res = runner.invoke(app, ["restore", str(tmp_path / "e1"), "-C", str(fresh)])
+    assert res.exit_code == 0, res.output
+    restored = json.loads(
+        runner.invoke(app, ["task", "get", "S1-P1-b", "--json", "-C", str(fresh)]).stdout
+    )
+    assert [d["id"] for d in restored["depends_on"]] == ["S1-P1-a"]
+    assert [d["gate"] for d in restored["depends_on"]] == ["WAITING_REVIEW"]
+
+
 def test_a_directory_without_a_config_file_restores_with_defaults(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
@@ -801,7 +828,9 @@ def test_next_returns_a_batch_whose_tasks_share_no_file(tmp_path: Path) -> None:
 def test_plan_list_reports_the_state_its_tasks_add_up_to(tmp_path: Path) -> None:
     _seed_estate(tmp_path)
     rows = json.loads(runner.invoke(app, ["plan", "list", "--json", "-C", str(tmp_path)]).stdout)
-    assert rows[0]["status"] == "NOT_STARTED" and rows[0]["state"] == "NOT_STARTED"
+    # `status` is the plan's own stored field, untouched; `state` is the live rollup (§3.2a),
+    # which reads READY rather than NOT_STARTED once nothing has left its own starting status.
+    assert rows[0]["status"] == "NOT_STARTED" and rows[0]["state"] == "READY"
     for t in ("S1-P1-a", "S1-P1-b"):
         runner.invoke(app, ["run", "stop", t, "--status", "COMPLETED", "-C", str(tmp_path)])
     rows = json.loads(runner.invoke(app, ["plan", "list", "--json", "-C", str(tmp_path)]).stdout)
@@ -1008,7 +1037,8 @@ def test_a_specs_state_rolls_up_from_its_plans_the_way_a_plans_does_from_its_tas
         return next(r for r in rows if r["id"] == "S1")
 
     row = spec_row()
-    assert row["status"] == "NOT_STARTED" and row["state"] == "NOT_STARTED"
+    # `status` is the spec's own stored field, untouched; `state` is the live rollup (§3.2a).
+    assert row["status"] == "NOT_STARTED" and row["state"] == "READY"
 
     runner.invoke(app, ["run", "start", "S1-P1-a", "--agent", "x", "--session", "y", "-C", root])
     row = spec_row()

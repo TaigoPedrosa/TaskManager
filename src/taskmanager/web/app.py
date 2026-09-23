@@ -3,7 +3,6 @@
 import asyncio
 import base64
 import mimetypes
-import re
 import sqlite3
 import tempfile
 from collections import Counter
@@ -29,6 +28,7 @@ from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
+from taskmanager.engine.assets import ASSET_NAME_RE
 from taskmanager.engine.git import GitManager
 from taskmanager.engine.graph import GraphEngine
 from taskmanager.engine.heuristics import score_every_task
@@ -148,24 +148,37 @@ class AttachmentCreate(BaseModel):
     source: str | None = None
 
 
-# Content-addressed asset names are always 16 hex chars plus the source file's own extension
-# (`engine.assets.store_asset`); anything else cannot be one of ours.
-_ASSET_NAME_RE = re.compile(r"^[0-9a-f]{16}\.[A-Za-z0-9]{1,8}$")
+def _bound_hosts(host: str, port: int) -> frozenset[str]:
+    """Every `Host` header a write may legitimately arrive with, for the address `uvicorn` is
+    actually bound to. Under DNS rebinding, an attacker's page navigates to a hostname that
+    resolves to 127.0.0.1 but is still spelled with the attacker's own domain -- the browser then
+    sends that domain in *both* `Host` and `Origin`, so comparing them to each other (as this
+    guard used to) never catches it. Pinning `Host` to the bound loopback name/IP does, because
+    the attacker's domain is never a member of this set regardless of what it puts in `Origin`."""
+    hosts = {f"{host}:{port}"}
+    if host in ("127.0.0.1", "localhost", "0.0.0.0"):
+        hosts.add(f"127.0.0.1:{port}")
+        hosts.add(f"localhost:{port}")
+    return frozenset(hosts)
 
 
-def _write_guard(request: Request) -> str:
-    """Every mutating route depends on this: a JSON body forces a CORS preflight a foreign
-    page cannot pass, and a mismatched Origin catches what preflight alone would miss."""
-    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-    if content_type != "application/json":
-        raise HTTPException(403, "write requires Content-Type: application/json")
-    origin = request.headers.get("origin")
-    if origin is not None and urlsplit(origin).netloc != request.headers.get("host", ""):
-        raise HTTPException(403, "cross-origin write refused")
-    return request.headers.get("x-tm-actor") or "web"
+def _write_guard(allowed_hosts: frozenset[str] | None) -> Any:
+    def guard(request: Request) -> str:
+        """Every mutating route depends on this: a JSON body forces a CORS preflight a foreign
+        page cannot pass, and Host pinning plus the Origin check catch what preflight alone would
+        miss, DNS rebinding included."""
+        content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            raise HTTPException(403, "write requires Content-Type: application/json")
+        host = request.headers.get("host", "")
+        if allowed_hosts is not None and host not in allowed_hosts:
+            raise HTTPException(403, "unrecognized Host")
+        origin = request.headers.get("origin")
+        if origin is not None and urlsplit(origin).netloc != host:
+            raise HTTPException(403, "cross-origin write refused")
+        return request.headers.get("x-tm-actor") or "web"
 
-
-Actor = Annotated[str, Depends(_write_guard)]
+    return guard
 
 
 @contextmanager
@@ -176,15 +189,44 @@ def _refusals() -> Iterator[None]:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
-def add_progress(node: dict[str, Any]) -> Counter[str]:
+# A task in one of these statuses cannot reach completion (§3.2a), so it is excluded from both
+# the rollup and the progress denominator until its status changes back.
+_SET_ASIDE_STATUSES = {
+    NodeStatus.SUPERSEDED.value,
+    NodeStatus.ABANDONED.value,
+    NodeStatus.DEFERRED.value,
+}
+
+
+def add_progress(node: dict[str, Any]) -> tuple[Counter[str], int, int]:
+    """Returns (status counts, done, set_aside) for the subtree rooted at `node`, and -- on
+    every non-task node -- sets `node["progress"] = {done, total, set_aside, counts}`, where
+    `total` is `done + (non-set-aside, non-done)` and `counts` keeps every status, set-aside
+    included, so the caller can still render a full breakdown."""
     counts: Counter[str] = Counter()
+    done = 0
+    set_aside = 0
     if node["kind"] == NodeKind.TASK.value:
-        counts[node["virtual_status"]] += 1
+        vs = node["virtual_status"]
+        counts[vs] += 1
+        if vs in _SET_ASIDE_STATUSES:
+            set_aside += 1
+        elif vs == NodeStatus.COMPLETED.value:
+            done += 1
     for child in node["children"]:
-        counts += add_progress(child)
+        child_counts, child_done, child_set_aside = add_progress(child)
+        counts += child_counts
+        done += child_done
+        set_aside += child_set_aside
     if node["kind"] != NodeKind.TASK.value:
-        node["progress"] = {"total": sum(counts.values()), "counts": dict(counts)}
-    return counts
+        total = sum(counts.values()) - set_aside
+        node["progress"] = {
+            "done": done,
+            "total": total,
+            "set_aside": set_aside,
+            "counts": dict(counts),
+        }
+    return counts, done, set_aside
 
 
 class ConnectionManager:
@@ -210,7 +252,12 @@ class ConnectionManager:
             self.disconnect(dead)
 
 
-def create_app(project_root: Path) -> FastAPI:
+def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = None) -> FastAPI:
+    # `port=None` (tests, the static exporter's in-process TestClient) skips Host pinning and
+    # keeps the old Origin-must-equal-Host check; the real server always passes its bound port,
+    # so it is the only caller `_bound_hosts` needs to protect (see `_write_guard`'s docstring).
+    allowed_hosts = _bound_hosts(host, port) if port is not None else None
+    Actor = Annotated[str, Depends(_write_guard(allowed_hosts))]
     db_dir = project_root / ".taskmanager"
     db_mgr = DatabaseManager(db_dir)
     node_repo = NodeRepository(db_mgr)
@@ -280,7 +327,17 @@ def create_app(project_root: Path) -> FastAPI:
             return graph_engine.resolve_task_state(n.id).value
         if n.kind == NodeKind.PLAN:
             return graph_engine.resolve_plan_status(n.id).value
+        if n.kind == NodeKind.SPEC:
+            return graph_engine.resolve_spec_status(n.id).value
         return str(n.status.value)
+
+    def _dependency_met(rel: Any) -> bool:
+        # Same rule as GraphEngine.resolve_task_state: a decision is met once it is Answered or
+        # Withdrawn (COMPLETED or ABANDONED -- an open question no longer needs an answer to
+        # stop holding work), while every other dependency is met by COMPLETED or SUPERSEDED.
+        if rel.kind == NodeKind.DECISION:
+            return bool(rel.status in (NodeStatus.COMPLETED, NodeStatus.ABANDONED))
+        return bool(rel.status in (NodeStatus.COMPLETED, NodeStatus.SUPERSEDED))
 
     def _relation_details(related_ids: list[str]) -> list[dict[str, Any]]:
         details: list[dict[str, Any]] = []
@@ -291,9 +348,8 @@ def create_app(project_root: Path) -> FastAPI:
                     "id": rel_id,
                     "title": rel.title if rel else None,
                     "status": effective_status(rel) if rel else None,
-                    # Same rule as GraphEngine.resolve_task_state: a missing dependency blocks.
-                    "finished": rel is not None
-                    and rel.status in (NodeStatus.COMPLETED, NodeStatus.SUPERSEDED),
+                    # A missing dependency blocks, same as GraphEngine.resolve_task_state.
+                    "finished": rel is not None and _dependency_met(rel),
                 }
             )
         return details
@@ -536,6 +592,7 @@ def create_app(project_root: Path) -> FastAPI:
         all_nodes = node_repo.list_nodes()
         return {
             "statuses": [s.value for s in NodeStatus] + [v.value for v in VirtualStatus],
+            "decision_states": list(_DECISION_TAB_STATUS.keys()),
             "verification_types": [t.value for t in VerificationType],
             "models": sorted({m for n in all_nodes for m in n.acceptable_models}),
             "repos": sorted({n.target_repo for n in all_nodes if n.target_repo}),
@@ -806,15 +863,32 @@ def create_app(project_root: Path) -> FastAPI:
 
     # -- file serving (§4): read-only, no write guard ------------------------------------------
 
+    def _served_headers(mime: str, filename: str) -> dict[str, str]:
+        """A served file is same-origin content on the app that also runs `test_command`
+        verifications, so anything that can render as a *document* here (an uploaded
+        `evidence.html`, an SVG with an inline `<script>`) would execute with that origin's
+        privileges if it is opened directly rather than embedded. `nosniff` stops the browser
+        from upgrading a mislabelled file to something more active than its declared type;
+        `sandbox` strips scripts, forms and top-level navigation from a direct open; and only a
+        real image is offered `inline` -- everything else downloads, since `<img>`/`<video>`
+        embedding ignores Content-Disposition but a direct navigation honours it."""
+        disposition = "inline" if mime.startswith("image/") else "attachment"
+        return {
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "sandbox",
+            "Content-Disposition": f'{disposition}; filename="{filename}"',
+        }
+
     @app.get("/assets/{name}")
     async def get_asset(name: str) -> FileResponse:
-        if not _ASSET_NAME_RE.fullmatch(name):
+        if not ASSET_NAME_RE.fullmatch(name):
             raise HTTPException(404, "not found")
         assets_dir = (db_dir / "assets").resolve()
         candidate = (assets_dir / name).resolve()
         if not candidate.is_relative_to(assets_dir) or not candidate.is_file():
             raise HTTPException(404, "not found")
-        return FileResponse(candidate)
+        mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        return FileResponse(candidate, headers=_served_headers(mime, name))
 
     @app.get("/api/file")
     async def get_file(path: str) -> FileResponse:
@@ -831,6 +905,6 @@ def create_app(project_root: Path) -> FastAPI:
         mime = mimetypes.guess_type(candidate.name)[0] or ""
         if not mime.startswith("image/"):
             raise HTTPException(404, "not found")
-        return FileResponse(candidate)
+        return FileResponse(candidate, headers=_served_headers(mime, candidate.name))
 
     return app

@@ -112,6 +112,7 @@ class LedgerCommand(StrEnum):
     DECISION_LINK = "decision_link"
     ATTACH = "attach"
     DETACH = "detach"
+    ATTACHMENT_CHECK = "attachment_check"
 
 
 class SearchTargetType(StrEnum):

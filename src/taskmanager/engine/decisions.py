@@ -3,7 +3,16 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from taskmanager.core.enums import NodeStatus
 from taskmanager.core.models import Node
+
+# §3.1: a decision is stored as a node reusing NodeStatus, but presented under its own names
+# everywhere a human reads it -- the CLI table, `tm decision get`, the JSON/YAML rows.
+DECISION_STATUS_LABELS: dict[NodeStatus, str] = {
+    NodeStatus.NOT_STARTED: "Open",
+    NodeStatus.COMPLETED: "Answered",
+    NodeStatus.ABANDONED: "Withdrawn",
+}
 
 
 class DecisionOption(BaseModel):

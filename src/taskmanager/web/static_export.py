@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from taskmanager.engine.assets import ASSET_NAME_RE
 from taskmanager.web.app import create_app
 from taskmanager.web.ui import get_web_html
 
@@ -20,6 +21,12 @@ def _embed_attachments(details: dict[str, Any], project_root: Path) -> None:
     for detail in details.values():
         attachments = (detail.get("node") or {}).get("frontmatter", {}).get("attachments") or []
         for entry in attachments:
+            # Same pattern `/assets/{name}` enforces: a node's `attachments` frontmatter is
+            # attacker-writable through `PATCH /api/nodes/{id}`, so an unvalidated name here
+            # would let the export join `../../elsewhere` onto `assets_dir` and embed a file
+            # from outside the project as a `data:` URI.
+            if not ASSET_NAME_RE.fullmatch(entry.get("asset") or ""):
+                continue
             asset_path = assets_dir / entry["asset"]
             mime = entry.get("mime") or mimetypes.guess_type(entry["asset"])[0] or ""
             if not mime.startswith("image/") or not asset_path.is_file():

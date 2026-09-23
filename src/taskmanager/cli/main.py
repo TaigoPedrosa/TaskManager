@@ -34,7 +34,7 @@ from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.di.container import TaskManagerProvider
 from taskmanager.engine.config import ConfigError, ConfigStore
-from taskmanager.engine.decisions import read_decision
+from taskmanager.engine.decisions import DECISION_STATUS_LABELS, read_decision
 from taskmanager.engine.graph import GraphEngine, gate_satisfied
 from taskmanager.engine.heuristics import RecommendationEngine
 from taskmanager.engine.operations import GUIDE_NODE, OperationError, Operations
@@ -1159,7 +1159,14 @@ def decision_list(
             raise typer.BadParameter("--status is one of: open, answered, withdrawn")
         decisions = [d for d in decisions if d.status == wanted]
     if json_output or yaml_output:
-        _emit([_node_row(d) for d in decisions], yaml_output)
+        rows = []
+        for d in decisions:
+            row = _node_row(d)
+            label = DECISION_STATUS_LABELS.get(d.status, d.status.value)
+            row["status"] = label
+            row["state"] = label
+            rows.append(row)
+        _emit(rows, yaml_output)
         return
     table = Table(title="Decisions")
     table.add_column("ID", style="cyan")
@@ -1167,7 +1174,8 @@ def decision_list(
     table.add_column("Status", style="yellow")
     table.add_column("Priority", justify="right")
     for d in decisions:
-        table.add_row(escape(d.id), escape(d.title), d.status.value, str(d.priority))
+        label = DECISION_STATUS_LABELS.get(d.status, d.status.value)
+        table.add_row(escape(d.id), escape(d.title), label, str(d.priority))
     print(table)
 
 
@@ -1186,15 +1194,18 @@ def decision_get(
         print(f"[red]Decision '{decision_id}' not found[/red]")
         raise typer.Exit(code=1)
     data = read_decision(node)
+    label = DECISION_STATUS_LABELS.get(node.status, node.status.value)
     if json_output or yaml_output:
         doc = _node_row(node)
+        doc["status"] = label
+        doc["state"] = label
         doc["decision"] = json.loads(data.model_dump_json())
         doc["blocked_tasks"] = node_repo.get_blocked_by(decision_id)
         _emit(doc, yaml_output)
         return
     print(f"[bold cyan]Decision:[/] {node.id}")
     print(f"[bold]Question:[/] {escape(node.title)}")
-    print(f"[bold]Status:[/] {node.status.value}")
+    print(f"[bold]Status:[/] {label}")
     for opt in data.options:
         mark = " (recommended)" if opt.recommended else ""
         print(f"  - {opt.key}: {escape(opt.label)}{mark}")
@@ -1668,12 +1679,17 @@ def restore_cmd(
     # onto one resolves in the second pass, then specs go last so their full data wins.
     plan_docs = [d for d in docs if d.get("plans")]
     spec_docs = [d for d in docs if not d.get("plans")]
+
+    def _dep_id(dep: Any) -> str:
+        # A gated dependency exports as {"id": ..., "gate": ...}, not a bare id string.
+        return str(dep["id"]) if isinstance(dep, dict) else str(dep)
+
     for doc in plan_docs:
         first = copy.deepcopy(doc)
         own = {n["id"] for p in first["plans"] for n in [p, *p.get("tasks", [])]}
         for p in first["plans"]:
             for n in [p, *p.get("tasks", [])]:
-                n["depends_on"] = [d for d in n.get("depends_on", []) if d in own]
+                n["depends_on"] = [d for d in n.get("depends_on", []) if _dep_id(d) in own]
         importer.import_dict(first)
     if decisions_doc is not None:
         importer.import_dict(decisions_doc)
@@ -1947,7 +1963,7 @@ def _run_web_server(host: str, port: int, open_browser: bool, path: Path | None)
 
         threading.Thread(target=_open, daemon=True).start()
 
-    fastapi_app = create_app(root)
+    fastapi_app = create_app(root, host=host, port=actual_port)
     uvicorn.run(fastapi_app, host=host, port=actual_port, log_level="warning")
 
 
