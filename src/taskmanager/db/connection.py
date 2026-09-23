@@ -22,28 +22,20 @@ class DatabaseManager:
         self.spec_db = taskmanager_dir / "spec.db"
         self.runtime_db = taskmanager_dir / "runtime.db"
         self.ledger_db = taskmanager_dir / "ledger.db"
-        # One connection per database, reused for this DatabaseManager's whole lifetime rather
-        # than opened and closed on every get_*_connection() call -- see the three getters
-        # below. No read here holds a long transaction open (each execute() outside an explicit
-        # BEGIN is its own implicit transaction), so a reused connection still sees every write
-        # another process commits via WAL; this changes connection lifecycle only, not isolation.
-        self._spec_conn: sqlite3.Connection | None = None
-        self._runtime_conn: sqlite3.Connection | None = None
-        self._ledger_conn: sqlite3.Connection | None = None
-        # >0 while a caller holds `spec_transaction()` open: nested repository calls skip both
-        # their own commit (spec_commit) and the migration self-heal's commit, so a run of
-        # several writes lands as one commit or none. The lock serializes concurrent callers
-        # (the web server now runs DB routes in a threadpool) rather than interleaving two
-        # transactions' writes under one shared connection.
-        self._spec_tx_depth = 0
-        self._spec_tx_lock = threading.RLock()
+        # One connection per database *per thread*, reused for that thread's lifetime rather
+        # than reopened on every get_*_connection() call (reopening, with its extension load,
+        # dominated web load time). Per thread because the web server runs its database routes
+        # in a threadpool: one shared connection interleaves concurrent cursors, so a
+        # fetchone() returns another request's row or None. Each connection sees every other
+        # connection's commits through WAL, so this changes lifecycle only, not isolation.
+        self._local = threading.local()
+        self._all_conns: list[sqlite3.Connection] = []
+        self._all_conns_lock = threading.Lock()
 
     def _create_connection(self, db_path: Path, load_vec: bool = False) -> sqlite3.Connection:
         self.taskmanager_dir.mkdir(parents=True, exist_ok=True)
-        # check_same_thread=False: safe because every caller (the CLI's single process, the web
-        # server's single asyncio event-loop thread) already serializes its own access; it only
-        # guards against the connection object being handed to a thread sqlite3 doesn't know
-        # created it, which reuse now makes possible in principle even though nothing does it.
+        # check_same_thread=False only so close() can close every thread's connection from
+        # whichever thread calls it; no connection is ever used by a thread other than its own.
         conn = sqlite3.connect(str(db_path), timeout=5.0, check_same_thread=False)
         conn.execute("PRAGMA journal_mode = WAL;")
         conn.execute("PRAGMA busy_timeout = 5000;")
@@ -52,7 +44,27 @@ class DatabaseManager:
             conn.enable_load_extension(True)
             sqlite_vec.load(conn)
             conn.enable_load_extension(False)
+        with self._all_conns_lock:
+            self._all_conns.append(conn)
         return conn
+
+    def _thread_conn(self, name: str, db_path: Path, load_vec: bool = False) -> sqlite3.Connection:
+        conn: sqlite3.Connection | None = getattr(self._local, name, None)
+        if conn is None:
+            conn = self._create_connection(db_path, load_vec=load_vec)
+            setattr(self._local, name, conn)
+        return conn
+
+    @property
+    def _spec_tx_depth(self) -> int:
+        """>0 while this thread holds `spec_transaction()` open: its repository calls skip
+        their own commit and the migration self-heal, so a run of writes lands as one commit
+        or none. Per thread, like the connection, so another thread's writes keep committing."""
+        return int(getattr(self._local, "spec_tx_depth", 0))
+
+    @_spec_tx_depth.setter
+    def _spec_tx_depth(self, value: int) -> None:
+        self._local.spec_tx_depth = value
 
     def _ensure_spec_migrations(self, conn: sqlite3.Connection) -> None:
         try:
@@ -106,11 +118,10 @@ class DatabaseManager:
         # what got expensive was opening a fresh connection (with a fresh extension load) to run
         # it against, which the cached connection below already fixes on its own: profiled on a
         # 342-task DB, /api/tree went from 14.06s to 0.155s from connection reuse alone.
-        if self._spec_conn is None:
-            self._spec_conn = self._create_connection(self.spec_db, load_vec=True)
+        conn = self._thread_conn("spec", self.spec_db, load_vec=True)
         if self._spec_tx_depth == 0:
-            self._ensure_spec_migrations(self._spec_conn)
-        yield self._spec_conn
+            self._ensure_spec_migrations(conn)
+        yield conn
 
     def spec_commit(self, conn: sqlite3.Connection) -> None:
         """The commit every repository write ends with -- except while `spec_transaction()`
@@ -121,7 +132,7 @@ class DatabaseManager:
 
     @contextmanager
     def spec_transaction(self) -> Generator[sqlite3.Connection]:
-        with self._spec_tx_lock, self.get_spec_connection() as conn:
+        with self.get_spec_connection() as conn:
             self._spec_tx_depth += 1
             try:
                 yield conn
@@ -137,24 +148,20 @@ class DatabaseManager:
 
     @contextmanager
     def get_runtime_connection(self) -> Generator[sqlite3.Connection]:
-        if self._runtime_conn is None:
-            self._runtime_conn = self._create_connection(self.runtime_db, load_vec=False)
-        yield self._runtime_conn
+        yield self._thread_conn("runtime", self.runtime_db)
 
     @contextmanager
     def get_ledger_connection(self) -> Generator[sqlite3.Connection]:
-        if self._ledger_conn is None:
-            self._ledger_conn = self._create_connection(self.ledger_db, load_vec=False)
-        yield self._ledger_conn
+        yield self._thread_conn("ledger", self.ledger_db)
 
     def close(self) -> None:
-        """Close every cached connection. Optional -- process exit does this too -- but a
-        long-lived caller (the web server) that wants to drop file handles explicitly can."""
-        for attr in ("_spec_conn", "_runtime_conn", "_ledger_conn"):
-            conn = getattr(self, attr)
-            if conn is not None:
-                conn.close()
-                setattr(self, attr, None)
+        """Close every thread's cached connections. Optional -- process exit does this too --
+        but a long-lived caller (the web server) that wants to drop file handles explicitly can."""
+        with self._all_conns_lock:
+            conns, self._all_conns = self._all_conns, []
+        for conn in conns:
+            conn.close()
+        self._local = threading.local()
 
     def init_all(self, vector_dimensions: int = 384) -> None:
         with self.get_spec_connection() as conn:

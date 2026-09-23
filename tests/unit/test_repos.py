@@ -420,3 +420,68 @@ def test_ledger_repo_append_and_list(tmp_path: Path) -> None:
     assert t1_events[0].payload == {"agent": "agent-1"}
     assert t1_events[0].diff == {"status": ["NOT_STARTED", "IMPLEMENTING"]}
     assert isinstance(t1_events[0].timestamp, datetime)
+
+
+def test_concurrent_threads_never_share_a_connection(tmp_path: Path) -> None:
+    # The web server runs its database routes in a threadpool against one DatabaseManager; a
+    # single shared sqlite3 connection interleaves their cursors and a fetchone() returns
+    # another request's row or None.
+    import threading
+
+    db = DatabaseManager(tmp_path)
+    db.init_all()
+    repo = NodeRepository(db)
+    for i in range(20):
+        repo.save_node(Node(id=f"T{i}", kind=NodeKind.TASK, title=f"t{i}"))
+    errors: list[BaseException] = []
+    start = threading.Barrier(8)
+
+    def reader() -> None:
+        start.wait()
+        try:
+            for _ in range(150):
+                for i in range(20):
+                    node = repo.get_node(f"T{i}")
+                    assert node is not None and node.id == f"T{i}"
+        except BaseException as exc:  # noqa: BLE001 -- collected and re-raised below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=reader) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+
+
+def test_a_transaction_on_one_thread_does_not_swallow_another_threads_commit(
+    tmp_path: Path,
+) -> None:
+    # A write on another thread must never join this thread's open transaction: when this
+    # one rolls back, only its own write goes, and the other thread's write still lands (after
+    # waiting for sqlite's single-writer lock).
+    import threading
+
+    db = DatabaseManager(tmp_path)
+    db.init_all()
+    repo = NodeRepository(db)
+    inside = threading.Event()
+
+    def writer() -> None:
+        inside.wait(5)
+        repo.save_node(Node(id="OUTSIDE", kind=NodeKind.TASK, title="outside"))
+
+    other = threading.Thread(target=writer)
+    other.start()
+    try:
+        with repo.transaction():
+            repo.save_node(Node(id="IN-TX", kind=NodeKind.TASK, title="in tx"))
+            inside.set()
+            time.sleep(0.3)
+            raise RuntimeError("roll this transaction back")
+    except RuntimeError:
+        pass
+    other.join(10)
+    fresh = NodeRepository(DatabaseManager(tmp_path))
+    assert fresh.get_node("IN-TX") is None
+    assert fresh.get_node("OUTSIDE") is not None
