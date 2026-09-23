@@ -58,7 +58,10 @@ def test_page_scripts_parse(tmp_path: Path) -> None:
 
 
 def _function_body(html: str, name: str) -> str:
-    match = re.search(rf"function {name}\([^)]*\) \{{(.*?)\n    \}}\n", html, re.DOTALL)
+    # A top-level function's own closing brace sits at column 0, whichever static/js/*.js
+    # file get_web_html() inlined it from; a nested function's closing brace does not, so
+    # this also captures through the end of an enclosing top-level function for one.
+    match = re.search(rf"function {name}\([^)]*\) \{{(.*?)\n\}}\n", html, re.DOTALL)
     assert match, f"{name} not found in the page"
     return match.group(1)
 
@@ -170,7 +173,7 @@ def test_group_header_toggle_is_wired_independently_of_node_and_section_collapse
 
     # The all-sections toolbar button only ever touches expandedSections, never the groups.
     toggle_sections_handler = re.search(
-        r"toggleSectionsBtn\.addEventListener\('click', \(\) => \{(.*?)\n    \}\);",
+        r"toggleSectionsBtn\.addEventListener\('click', \(\) => \{(.*?)\n\}\);",
         html,
         re.DOTALL,
     )
@@ -185,3 +188,36 @@ def test_graph_layout_gives_nodes_room_and_a_shape_per_kind() -> None:
     assert "size: 16" in render_graph
     assert "widthConstraint: { minimum: 170, maximum: 260 }" in render_graph
     assert "GRAPH_SHAPE_BY_KIND" in get_web_html()
+
+
+def test_page_inlines_every_static_js_file() -> None:
+    # One string that only that file defines, so a broken concatenation (a file dropped,
+    # or read from the wrong path) shows up as a specific missing feature, not a blank page.
+    html = get_web_html()
+    known_strings_by_file = {
+        "core.js": "function canEdit()",
+        "filters.js": "const NO_REPO = '(none)';",
+        "tree.js": "function renderTaskCard(task)",
+        "graph.js": "const GRAPH_SHAPE_BY_KIND",
+        "detail.js": "async function showGraphInspector(nodeId)",
+        "main.js": "readHash();\nrenderLegend();",
+    }
+    for source_file, needle in known_strings_by_file.items():
+        assert needle in html, f"{source_file}'s own content ({needle!r}) missing from the page"
+
+
+def test_static_files_are_packaged_and_resolve_at_runtime() -> None:
+    from importlib.resources import files
+
+    static_dir = files("taskmanager.web").joinpath("static")
+    assert static_dir.joinpath("index.html").is_file()
+    assert static_dir.joinpath("app.css").is_file()
+    for name in ("core.js", "filters.js", "tree.js", "graph.js", "detail.js", "main.js"):
+        assert static_dir.joinpath("js", name).is_file(), f"js/{name} did not ship"
+
+
+def test_can_edit_is_false_only_in_static_export_mode() -> None:
+    html = get_web_html()
+    can_edit = _function_body(html, "canEdit")
+    assert "return !isStaticMode;" in can_edit
+    assert "isStaticMode = typeof window.STATIC_DATA !== 'undefined';" in html
