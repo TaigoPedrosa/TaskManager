@@ -901,6 +901,10 @@ def test_static_export_ignores_a_traversal_asset_name(tmp_path: Path) -> None:
 
     db_mgr = DatabaseManager(tmp_path / ".taskmanager")
     db_mgr.init_all()
+    # `init_all()` does not create `assets/` (only the first real attach does); the OS still
+    # needs every directory the ".." walk passes through to exist, or the traversal attempt
+    # itself 404s before the guard under test is ever reached, and the test proves nothing.
+    (tmp_path / ".taskmanager" / "assets").mkdir(parents=True, exist_ok=True)
     node_repo = NodeRepository(db_mgr)
     secret_dir = tmp_path.parent / "outside-secret"
     secret_dir.mkdir(exist_ok=True)
@@ -913,7 +917,9 @@ def test_static_export_ignores_a_traversal_asset_name(tmp_path: Path) -> None:
             frontmatter={
                 "attachments": [
                     {
-                        "asset": "../outside-secret/secret.png",
+                        # assets_dir is <project_root>/.taskmanager/assets, so it takes three
+                        # ".." segments to actually reach a sibling of project_root itself.
+                        "asset": "../../../outside-secret/secret.png",
                         "name": "secret.png",
                         "caption": "",
                         "mime": "image/png",
@@ -927,6 +933,9 @@ def test_static_export_ignores_a_traversal_asset_name(tmp_path: Path) -> None:
         html = out.read_text(encoding="utf-8")
         assert b"PNG-SECRET-BYTES".decode() not in html
         assert "SECRET" not in html
+        # A successful escape embeds the file as a base64 data URI; the plaintext checks above
+        # never see that (it is base64), so this is the assertion an unguarded traversal trips.
+        assert "data:image/png;base64" not in html
     finally:
         (secret_dir / "secret.png").unlink()
         secret_dir.rmdir()
