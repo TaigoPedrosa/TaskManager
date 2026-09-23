@@ -671,6 +671,58 @@ def test_delete_attachment_missing_is_404(
     assert res.status_code == 404
 
 
+# -- attachment size_bytes: read from the stored asset, in every place attachments render ---
+
+
+def _find_tree_node(tree: list[dict], node_id: str) -> dict:
+    for n in tree:
+        if n["id"] == node_id:
+            return n
+        found = _find_tree_node(n.get("children", []), node_id)
+        if found is not None:
+            return found
+    raise AssertionError(f"{node_id} not in tree")
+
+
+def test_tree_and_node_detail_carry_attachment_size_bytes(
+    api: tuple[TestClient, NodeRepository, LedgerRepository], tmp_path: Path
+) -> None:
+    client, _node_repo, _ledger_repo = api
+    up = client.post(
+        "/api/nodes/SPEC-P1-T1/attachments",
+        json={"filename": "shot.png", "content_base64": base64.b64encode(_PNG_1PX).decode()},
+    )
+    asset = up.json()["asset"]
+
+    tree = client.get("/api/tree").json()
+    task = _find_tree_node(tree, "SPEC-P1-T1")
+    assert task["frontmatter"]["attachments"][0]["size_bytes"] == len(_PNG_1PX)
+
+    detail = client.get("/api/nodes/SPEC-P1-T1").json()
+    assert detail["node"]["frontmatter"]["attachments"][0]["size_bytes"] == len(_PNG_1PX)
+
+    # The stored asset gone (a manual delete outside `detach`) reads as null, not an error.
+    (tmp_path / ".taskmanager" / "assets" / asset).unlink()
+    detail2 = client.get("/api/nodes/SPEC-P1-T1").json()
+    assert detail2["node"]["frontmatter"]["attachments"][0]["size_bytes"] is None
+
+
+def test_decisions_list_carries_attachment_size_bytes(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, _node_repo, _ledger_repo = api
+    decision_id = client.post("/api/decisions", json={"question": "Q?", "slug": "q1"}).json()["id"]
+    up = client.post(
+        f"/api/nodes/{decision_id}/attachments",
+        json={"filename": "shot.png", "content_base64": base64.b64encode(_PNG_1PX).decode()},
+    )
+    assert up.status_code == 201
+
+    decisions = client.get("/api/decisions").json()
+    row = next(d for d in decisions if d["id"] == decision_id)
+    assert row["attachments"][0]["size_bytes"] == len(_PNG_1PX)
+
+
 # -- /assets/{name} and /api/file: read-only, path traversal refused ------------------------
 
 
