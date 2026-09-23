@@ -13,7 +13,7 @@ from taskmanager.web.enums import AppIcon, StatusVisual, WebViewMode
 # Load order matters: later files may reference functions defined in earlier ones at
 # top-level (e.g. main.js's Initialize block calls functions core.js/filters.js/tree.js
 # define), the same constraint plain sequential <script> tags impose in the browser.
-_JS_FILES = ("core.js", "filters.js", "tree.js", "graph.js", "detail.js", "main.js")
+_JS_FILES = ("core.js", "filters.js", "tree.js", "graph.js", "edit.js", "detail.js", "main.js")
 
 
 def _read_static(*parts: str) -> str:

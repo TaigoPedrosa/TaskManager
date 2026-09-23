@@ -199,6 +199,7 @@ def test_page_inlines_every_static_js_file() -> None:
         "filters.js": "const NO_REPO = '(none)';",
         "tree.js": "function renderTaskCard(task)",
         "graph.js": "const GRAPH_SHAPE_BY_KIND",
+        "edit.js": "function openDialog(",
         "detail.js": "async function showGraphInspector(nodeId)",
         "main.js": "readHash();\nrenderLegend();",
     }
@@ -212,7 +213,7 @@ def test_static_files_are_packaged_and_resolve_at_runtime() -> None:
     static_dir = files("taskmanager.web").joinpath("static")
     assert static_dir.joinpath("index.html").is_file()
     assert static_dir.joinpath("app.css").is_file()
-    for name in ("core.js", "filters.js", "tree.js", "graph.js", "detail.js", "main.js"):
+    for name in ("core.js", "filters.js", "tree.js", "graph.js", "edit.js", "detail.js", "main.js"):
         assert static_dir.joinpath("js", name).is_file(), f"js/{name} did not ship"
 
 
@@ -221,3 +222,73 @@ def test_can_edit_is_false_only_in_static_export_mode() -> None:
     can_edit = _function_body(html, "canEdit")
     assert "return !isStaticMode;" in can_edit
     assert "isStaticMode = typeof window.STATIC_DATA !== 'undefined';" in html
+
+
+def test_new_menu_renders_nothing_in_a_read_only_static_export() -> None:
+    body = _function_body(get_web_html(), "renderNewMenu")
+    assert "if (!canEdit()) return;" in body
+
+
+def test_new_menu_offers_spec_plan_and_task_but_not_decision() -> None:
+    body = _function_body(get_web_html(), "renderNewMenu")
+    assert 'data-new-kind="spec"' in body
+    assert 'data-new-kind="plan"' in body
+    assert 'data-new-kind="task"' in body
+    assert "decision" not in body.lower()
+
+
+def test_dialog_traps_focus_and_closes_on_escape_with_focus_return() -> None:
+    html = get_web_html()
+    body = _function_body(html, "openDialog")
+    assert "e.key === 'Escape'" in body
+    assert "e.key === 'Tab'" in body
+    assert "trigger.focus()" in body
+    assert "aria-modal" in body
+
+
+def test_dialog_submit_shows_the_refusal_without_closing() -> None:
+    # An OperationError's message (400/404/409) is surfaced in the form, and the dialog is
+    # never closed by the catch branch -- only a successful onSubmit calls close().
+    html = get_web_html()
+    dialog_call_site = re.search(r"form\.addEventListener\('submit'.*?\}\);", html, re.DOTALL)
+    assert dialog_call_site, "dialog submit handler not found"
+    handler = dialog_call_site.group(0)
+    assert "errorEl.textContent" in handler
+    assert "close" not in handler.split("catch")[1].split("finally")[0]
+
+
+def test_section_preview_and_stored_markdown_are_sanitised_with_dompurify() -> None:
+    html = get_web_html()
+    assert "cdn.jsdelivr.net/npm/dompurify" in html
+    assert "DOMPurify.sanitize(unsafeRenderSectionBody(content))" in html
+    open_section_dialog = _function_body(html, "openSectionDialog")
+    assert "renderSectionBody(content.value)" in open_section_dialog
+
+
+def test_frontmatter_editor_treats_declared_files_as_a_list() -> None:
+    row = _function_body(get_web_html(), "frontmatterRowHtml")
+    assert "key === 'declared_files' || Array.isArray(value)" in row
+    assert "<textarea" in row
+
+
+def test_destructive_actions_confirm_before_writing() -> None:
+    html = get_web_html()
+    for fn_name in ("removeDependency", "removeSection", "removeVerification", "releaseLease"):
+        body = _function_body(html, fn_name)
+        assert "confirmDialog(" in body, f"{fn_name} does not confirm before writing"
+    abandon = _function_body(html, "changeStatus")
+    assert "confirmDialog(" in abandon
+    assert "status === 'ABANDONED'" in abandon
+
+
+def test_edit_dialog_only_offers_models_repo_and_frontmatter_for_tasks() -> None:
+    body = _function_body(get_web_html(), "openEditNodeDialog")
+    assert "isTask ? fieldRow('Acceptable models" in body
+    assert "isTask ? fieldRow('Target repo" in body
+    assert "isTask ? frontmatterEditorHtml(node.frontmatter) : ''" in body
+
+
+def test_api_helper_surfaces_the_servers_own_refusal_message() -> None:
+    body = _function_body(get_web_html(), "api")
+    assert "data && data.detail" in body
+    assert "!res.ok" in body
