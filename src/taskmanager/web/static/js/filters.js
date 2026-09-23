@@ -273,16 +273,6 @@ function collectAllNodes(nodes, out = []) {
   return out;
 }
 
-const TRI_ICON_PLUS = '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>';
-const TRI_ICON_MINUS = '<line x1="5" y1="12" x2="19" y2="12"/>';
-
-// Not from the page's own icon sprite (that registry is a different task's file): three
-// small inline glyphs in the same stroke style, used only inside a tri-state segmented
-// control.
-function triIcon(inner) {
-  return `<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;
-}
-
 // Generic tri-state popover: a button ("Label" or "Label +2 −1") opening a list of
 // value rows. Each row follows the same click/double-click gesture as a status chip on its
 // own label, plus a three-icon segmented control (plus/minus/circle) that sets a mode
@@ -310,11 +300,11 @@ function createTriStatePopover(container, { label, dimension, getOptions, modeMa
   // §6.2: exactly two toggle buttons, no third neutral one -- clicking the already-selected
   // one is how a value returns to neutral. Plus is green only when included, minus is red
   // only when excluded; unselected is always the same gray, never the other's colour.
-  function triBtn(mode, iconInner, isActive, activeClasses, title) {
+  function triBtn(mode, iconName, isActive, activeClasses, title) {
     return `
       <button type="button" data-mode="${mode}" title="${title}" aria-label="${title}" aria-pressed="${isActive}"
         class="w-5 h-5 flex items-center justify-center rounded transition hover:bg-zinc-700 hover:text-zinc-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${isActive ? activeClasses : 'text-zinc-500'}">
-        ${triIcon(iconInner)}
+        ${renderIcon(iconName, 'w-3 h-3')}
       </button>`;
   }
 
@@ -332,8 +322,8 @@ function createTriStatePopover(container, { label, dimension, getOptions, modeMa
             <span class="truncate min-w-0 flex-1">${esc(o.label)}</span>
             <span class="text-zinc-400 flex-shrink-0">(${o.count})</span>
             <span class="flex items-center gap-0.5 flex-shrink-0">
-              ${triBtn('include', TRI_ICON_PLUS, mode === 'include', 'bg-emerald-600 text-white hover:bg-emerald-500', 'Include ' + o.label)}
-              ${triBtn('exclude', TRI_ICON_MINUS, mode === 'exclude', 'bg-red-600 text-white hover:bg-red-500', 'Exclude ' + o.label)}
+              ${triBtn('include', 'plus', mode === 'include', 'bg-emerald-600 text-white hover:bg-emerald-500', 'Include ' + o.label)}
+              ${triBtn('exclude', 'minus', mode === 'exclude', 'bg-red-600 text-white hover:bg-red-500', 'Exclude ' + o.label)}
             </span>
           </div>
         `;
@@ -525,12 +515,35 @@ function populateFilterOptions() {
   scoreBounds = scores.length ? { min: Math.min(...scores), max: Math.max(...scores) } : { min: 0, max: 100 };
 }
 
+// Below `sm` the filter controls stay off the toolbar's one row until this button opens them;
+// at `sm` and up `filter-controls-group`'s own `sm:flex` shows them regardless of this state,
+// which is what keeps 768/1440 unchanged.
+let filtersPanelOpen = false;
+
+function activeFilterCount() {
+  return filters.repoMode.size + filters.modelMode.size + filters.specMode.size +
+    (filters.scoreMin !== null || filters.scoreMax !== null ? 1 : 0);
+}
+
+function renderFiltersToggle() {
+  const count = activeFilterCount();
+  filtersToggleBtn.querySelector('.filters-toggle-label').textContent = count ? `Filters (${count})` : 'Filters';
+  filtersToggleBtn.setAttribute('aria-expanded', String(filtersPanelOpen));
+  filterControlsGroup.classList.toggle('hidden', !filtersPanelOpen);
+}
+
+filtersToggleBtn.addEventListener('click', () => {
+  filtersPanelOpen = !filtersPanelOpen;
+  renderFiltersToggle();
+});
+
 function renderFilterControls() {
   repoTriState.render();
   modelTriState.render();
   specTriState.render();
   scoreFilter.render();
   clearFiltersBtn.classList.toggle('hidden', !(structuralFilterActive() || filters.q !== ''));
+  renderFiltersToggle();
 }
 
 clearFiltersBtn.addEventListener('click', () => {

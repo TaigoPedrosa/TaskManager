@@ -30,6 +30,7 @@ code, pre, .font-mono {
 }
 <!--slot:status-css-->
 
+:root { --tone-dim-fg: #71717a; --tone-dim-border: #3f3f46; } /* Tailwind zinc-500 / zinc-700 */
 .st-chip { color: var(--st-fg); background: var(--st-bg); border: 1px solid color-mix(in srgb, var(--st-fg) 40%, transparent); }
 .st-text { color: var(--st-fg); }
 .st-seg { background: var(--st-fg); height: 100%; }
@@ -38,7 +39,7 @@ code, pre, .font-mono {
    coloured border) / exclude (no colour, dim disabled-looking border). */
 .st-toggle { color: var(--st-fg); background: var(--st-bg); border: 1px solid transparent; }
 .st-toggle.st-mode-include { border-color: var(--st-fg); }
-.st-toggle.st-mode-exclude { color: #71717a; background: transparent; border: 1px solid #3f3f46; }
+.st-toggle.st-mode-exclude { color: var(--tone-dim-fg); background: transparent; border: 1px solid var(--tone-dim-border); }
 /* Dual-handle score slider: two overlapping range inputs share one track, only their
    thumbs are interactive, so both ends stay independently draggable. */
 .sf-pop input[type="range"] {

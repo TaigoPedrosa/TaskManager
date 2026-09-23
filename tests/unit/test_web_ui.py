@@ -756,3 +756,66 @@ def test_load_indicator_shows_while_tree_and_graph_are_loading() -> None:
     assert "loadIndicator.classList.remove('hidden')" in body
     assert "loadIndicator.classList.add('hidden')" in body
     assert "finally" in body
+
+
+def test_tri_state_buttons_use_the_icon_sprite_not_inline_svg() -> None:
+    html = get_web_html()
+    tri_btn = _function_body(html, "triBtn")
+    assert "renderIcon(iconName" in tri_btn
+    assert "TRI_ICON_PLUS" not in html
+    assert "TRI_ICON_MINUS" not in html
+    options = _function_body(html, "renderOptions")
+    assert "triBtn('include', 'plus'" in options
+    assert "triBtn('exclude', 'minus'" in options
+
+
+def test_status_exclude_toggle_uses_a_token_not_raw_hex() -> None:
+    html = get_web_html()
+    rule = re.search(r"\.st-toggle\.st-mode-exclude \{[^}]*\}", html)
+    assert rule, "st-mode-exclude rule not found"
+    assert "#71717a" not in rule.group(0)
+    assert "#3f3f46" not in rule.group(0)
+    assert "var(--tone-dim-fg)" in rule.group(0)
+    assert "var(--tone-dim-border)" in rule.group(0)
+
+
+def test_attachment_card_shows_size_and_source_uri_always_visible() -> None:
+    # §4: name, size, source URI and capture age/staleness must all be visible on the card
+    # itself, not only in a hover title.
+    render = _function_body(get_web_html(), "renderAttachments")
+    assert "humanBytes(entry.size_bytes)" in render
+    assert "entry.source && entry.source.uri" in render
+    assert 'title="${esc(uri)}">${esc(uri)}' in render
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is needed to exercise the JS")
+def test_human_bytes_formats_and_hides_unknown_size(tmp_path: Path) -> None:
+    fn = _function_body(get_web_html(), "humanBytes")
+    script = tmp_path / "check.js"
+    script.write_text(
+        f"function humanBytes(n) {{{fn}\n}}\n"
+        "const assert = require('node:assert');\n"
+        "assert.strictEqual(humanBytes(null), null);\n"
+        "assert.strictEqual(humanBytes(undefined), null);\n"
+        "assert.strictEqual(humanBytes(512), '512 B');\n"
+        "assert.strictEqual(humanBytes(86016), '84 KB');\n"
+        "assert.strictEqual(humanBytes(1048576), '1 MB');\n"
+        "console.log('OK');\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(["node", str(script)], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert "OK" in result.stdout
+
+
+def test_toolbar_filters_collapse_behind_a_toggle_below_sm() -> None:
+    # At 375px the five filter controls plus + New routinely wrapped the toolbar onto
+    # several lines; below `sm` they now sit behind one toggle, keeping row 1 to one row.
+    html = get_web_html()
+    assert '<button id="filters-toggle-btn" type="button" aria-expanded="false"' in html
+    assert "sm:hidden" in html.split('id="filters-toggle-btn"')[1].split(">")[0]
+    assert 'id="filter-controls-group" class="hidden sm:flex' in html
+    toggle = _function_body(html, "renderFiltersToggle")
+    assert "activeFilterCount()" in toggle
+    assert "filterControlsGroup.classList.toggle('hidden', !filtersPanelOpen)" in toggle
+    assert "aria-expanded" in toggle
