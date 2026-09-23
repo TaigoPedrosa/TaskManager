@@ -65,7 +65,7 @@ Each stage is one claim and one release. The implementer, the reviewer, the fixe
 | `WAITING_FIXES` | a fixer | `FIXING`, locking the task's files again | `WAITING_REVIEW` |
 | `WAITING_MERGE` | a merge agent | `MERGING`, locking nothing | `COMPLETED`, after the merge verifies |
 
-Find each wave's next move with `tm task list --status <S> --yaml`. `COMPLETED` is set by the merge agent and nowhere else; what you set directly, with `tm run stop <id> --status <S>` and no lease, is `NOT_STARTED`, `DEFERRED` and `ABANDONED`.
+Find each wave's next move with `tm task list --status <S> --yaml`. `COMPLETED` is set by whoever holds the merge lease — the merge agent, or the workflow script that claimed for it — after `tm verify run` exits 0 against `origin/main`, and nowhere else; what you set directly, with `tm run stop <id> --status <S>` and no lease, is `NOT_STARTED`, `DEFERRED` and `ABANDONED`.
 
 A reviewer is dispatched without `--worktree`; its claim reads the branch and locks nothing, so it never holds a sibling out of a wave. A fix round returns to `WAITING_REVIEW` and reuses the same branch, so the reviewer re-reads a diff rather than a tree.
 
@@ -91,17 +91,19 @@ control flow that gets an agent to the next one. Everything below follows from t
   inside the first stage, or re-read between rounds of a loop. A named, owner-authorised set of
   ids is the one case where a literal is correct — and then it is a literal because the *user*
   fixed the set, not because the script did.
-- **A stage's return value is a routing decision; the status write is the agent's.** Have each
-  stage return a structured verdict and branch on it, but never set a task's status from the
-  script — the agent inside the stage claims with `tm run start` and releases with `tm run stop`,
-  because that is what writes the lease, the file locks and the history. A script that writes
-  status directly produces a task whose status moved with no lease behind it, and `tm run list`
-  then disagrees with `tm task list`.
-- **An agent that dies leaves its lease held.** `agent()` returns `null` when a subagent is
-  skipped or dies on a terminal error, and the task it claimed stays `IMPLEMENTING` with its files
-  locked, blocking every sibling that declared one of them. Filter `null` before using a stage's
-  results, treat it as "this task stopped here", and run `tm run sweep` before dispatching a
-  replacement — never dispatch the replacement first.
+- **The script owns the transitions; the stage agent owns the work.** The script runs
+  `tm run start` before it dispatches a stage's agent and `tm run stop` after the agent returns,
+  choosing the status by branching on the agent's structured verdict. Both still go through
+  `tm run`, so the lease, the file locks and the history are written as before and `tm run list`
+  agrees with `tm task list`. An agent left to claim for itself explores first, and another
+  dispatcher reading `tm next` in the meantime sends a second agent to the same task. The agent's
+  prompt says its lease is held and forbids `tm run start`, `stop`, `release` and `heartbeat`.
+  Never move a status any other way.
+- **An agent that dies leaves the script holding its lease.** `agent()` returns `null` when a
+  subagent is skipped or dies on a terminal error, and the task claimed for it stays `IMPLEMENTING`
+  with its files locked, blocking every sibling that declared one of them. Stop it back to the
+  status it entered at before anything else is dispatched. A lease a dead script left behind is
+  what `tm run sweep` is for: run it before dispatching a replacement, never after.
 - **Cap the fix rounds inside the stage, and make the cap do something.** Two review rounds on one
   task means the brief was wrong, not the implementer (§10). Loop fix → re-review at most twice,
   then stop that task's chain and report it rather than starting a third round: leave it at

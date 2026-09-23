@@ -34,8 +34,8 @@ one-off `Agent` calls by hand appoints the session as the scheduler — the job 
 do — and rebuilds, a notification at a time, the wave barrier a pipeline removes.
 
 `tm guide dispatch` §7 carries the script's own rules. The load-bearing ones: read the task set
-from `tm` at runtime instead of freezing it in a literal, let the agent inside each stage write the
-status rather than the script, cap the fix rounds at two and report what is still open, and hold
+from `tm` at runtime instead of freezing it in a literal, run every `tm run start` and `tm run stop`
+from the script so no agent explores before its claim, cap the fix rounds at two and report what is still open, and hold
 the *merge stage* — not the whole task — for anything irreversible, production-applying or marked
 the owner's.
 
