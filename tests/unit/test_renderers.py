@@ -342,3 +342,28 @@ def test_bulk_importer_refuses_unknown_key_on_a_decision(tmp_path: Path) -> None
 
     with pytest.raises(ValueError, match="unknown keys"):
         importer.import_dict({"decisions": [{"id": "decision-D1", "title": "Q", "bogus": 1}]})
+
+
+def test_bulk_importer_reimport_without_title_keeps_existing_title(tmp_path: Path) -> None:
+    db = DatabaseManager(tmp_path)
+    db.init_all()
+    repo = NodeRepository(db)
+    importer = BulkImporter(repo)
+
+    importer.import_dict({"plans": [{"id": "AUTH-P1", "title": "Token Plan"}]})
+
+    importer.import_dict({"plans": [{"id": "AUTH-P1", "tasks": [{"id": "AUTH-T1", "title": "x"}]}]})
+
+    plan = repo.get_node("AUTH-P1")
+    assert plan is not None
+    assert plan.title == "Token Plan"
+    assert repo.get_node("AUTH-T1") is not None
+
+
+def test_bulk_importer_refuses_a_new_node_without_a_title(tmp_path: Path) -> None:
+    db = DatabaseManager(tmp_path)
+    db.init_all()
+    importer = BulkImporter(NodeRepository(db))
+
+    with pytest.raises(ValueError, match="AUTH-P1.*no title"):
+        importer.import_dict({"plans": [{"id": "AUTH-P1"}]})

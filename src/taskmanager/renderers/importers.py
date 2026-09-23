@@ -259,11 +259,18 @@ class BulkImporter:
                 return data[key]
             return getattr(existing, key) if existing is not None else default
 
+        node_id = data["id"]
+        title = pick("title", None)
+        if title is None:
+            raise ValueError(
+                f"import refused, nothing written: node {node_id!r} has no title "
+                "and none exists to fall back to"
+            )
         status_val = pick("status", NodeStatus.NOT_STARTED)
         return Node(
-            id=data["id"],
+            id=node_id,
             kind=NodeKind(data.get("kind", default_kind)),
-            title=data["title"],
+            title=title,
             status=NodeStatus(status_val) if isinstance(status_val, str) else status_val,
             priority=pick("priority", 50),
             ordinal=data.get("ordinal", existing.ordinal if existing is not None else 0),
