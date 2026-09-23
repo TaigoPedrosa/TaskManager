@@ -35,7 +35,7 @@ tm run heartbeat
 tm verify run <task-id>
 ```
 
-Exit 1 names the failing rows. Its paths resolve against the project root, not against your worktree, so the path checks stay red until the merge; confirm each one by hand inside the worktree instead, and treat `No verifications to run.` (exit 0) as no evidence at all.
+Exit 1 names the failing rows. A path check reads the task's `target_repo` at `origin/main`, never your worktree, so it stays red until the merge; check the branch instead with `tm verify run <task-id> --ref tm/<task-id>`, and treat `No verifications to run.` (exit 0) as no evidence at all.
 
 ## 4. Hand it back
 

@@ -1,5 +1,8 @@
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from taskmanager.core.enums import VerificationType
 from taskmanager.core.models import NodeVerification
@@ -325,3 +328,157 @@ def test_ast_symbol_verification_refuses_a_non_python_target(tmp_path: Path) -> 
     assert result.passed is False
     assert "parses Python" in result.message
     assert "test_command" in result.message
+
+
+# -- git-ref resolution -----------------------------------------------------------------------
+
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True
+    )
+
+
+def _commit(repo: Path, rel_path: str, content: str) -> None:
+    target = repo / rel_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    _git(repo, "add", rel_path)
+    _git(repo, "commit", "-q", "-m", f"add {rel_path}")
+
+
+@pytest.fixture
+def git_repo(tmp_path: Path) -> Path:
+    """`<tmp_path>/myrepo`, with a bare `origin` and `committed.py` pushed to `origin/main`."""
+    origin = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "init", "-q", "--bare", str(origin)], capture_output=True, text=True, check=True
+    )
+
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "remote", "add", "origin", str(origin))
+    _commit(repo, "committed.py", "def committed_symbol():\n    pass\n")
+    _git(repo, "push", "-q", "-u", "origin", "main")
+    return repo
+
+
+def test_file_exists_reads_origin_main_not_the_working_tree(git_repo: Path, tmp_path: Path) -> None:
+    (git_repo / "committed.py").unlink()  # gone on disk; still on origin/main
+
+    engine = VerificationEngine(tmp_path)
+    ver = NodeVerification(
+        node_id="T1", verification_type=VerificationType.FILE_EXISTS, target_path="committed.py"
+    )
+    result = engine.verify_assertion(ver, target_repo="myrepo")
+    assert result.passed is True
+    assert "origin/main" in result.message
+
+
+def test_file_exists_working_tree_only_fails_against_origin_main(
+    git_repo: Path, tmp_path: Path
+) -> None:
+    (git_repo / "uncommitted.py").write_text("x = 1\n", encoding="utf-8")
+
+    engine = VerificationEngine(tmp_path)
+    ver = NodeVerification(
+        node_id="T1", verification_type=VerificationType.FILE_EXISTS, target_path="uncommitted.py"
+    )
+    result = engine.verify_assertion(ver, target_repo="myrepo")
+    assert result.passed is False
+
+
+def test_ref_option_sees_a_branch_only_file(git_repo: Path, tmp_path: Path) -> None:
+    _git(git_repo, "checkout", "-q", "-b", "feature")
+    _commit(git_repo, "feature_only.py", "def feature_symbol():\n    pass\n")
+
+    engine = VerificationEngine(tmp_path)
+    ver = NodeVerification(
+        node_id="T1",
+        verification_type=VerificationType.FILE_EXISTS,
+        target_path="feature_only.py",
+    )
+    on_main = engine.verify_assertion(ver, target_repo="myrepo")
+    assert on_main.passed is False
+
+    on_feature = engine.verify_assertion(ver, target_repo="myrepo", ref="feature")
+    assert on_feature.passed is True
+    assert "feature" in on_feature.message
+
+
+def test_failed_fetch_fails_closed(git_repo: Path, tmp_path: Path) -> None:
+    _git(git_repo, "remote", "set-url", "origin", str(tmp_path / "does-not-exist.git"))
+
+    engine = VerificationEngine(tmp_path)
+    ver = NodeVerification(
+        node_id="T1", verification_type=VerificationType.FILE_EXISTS, target_path="committed.py"
+    )
+    result = engine.verify_assertion(ver, target_repo="myrepo")
+    assert result.passed is False
+    assert "fetch" in result.message
+
+
+def test_file_absent_inverts_against_origin_main(git_repo: Path, tmp_path: Path) -> None:
+    engine = VerificationEngine(tmp_path)
+
+    ver_gone = NodeVerification(
+        node_id="T1", verification_type=VerificationType.FILE_ABSENT, target_path="gone.py"
+    )
+    assert engine.verify_assertion(ver_gone, target_repo="myrepo").passed is True
+
+    ver_present = NodeVerification(
+        node_id="T1", verification_type=VerificationType.FILE_ABSENT, target_path="committed.py"
+    )
+    result = engine.verify_assertion(ver_present, target_repo="myrepo")
+    assert result.passed is False
+    assert "still exists" in result.message
+
+
+def test_file_absent_fails_closed_on_an_unresolved_ref(git_repo: Path, tmp_path: Path) -> None:
+    engine = VerificationEngine(tmp_path)
+    ver = NodeVerification(
+        node_id="T1", verification_type=VerificationType.FILE_ABSENT, target_path="committed.py"
+    )
+    result = engine.verify_assertion(ver, target_repo="myrepo", ref="no-such-ref")
+    assert result.passed is False
+    assert "fails closed" in result.message
+
+
+def test_repo_prefixed_path_is_stripped(git_repo: Path, tmp_path: Path) -> None:
+    engine = VerificationEngine(tmp_path)
+    ver = NodeVerification(
+        node_id="T1",
+        verification_type=VerificationType.FILE_EXISTS,
+        target_path="myrepo/committed.py",
+    )
+    result = engine.verify_assertion(ver, target_repo="myrepo")
+    assert result.passed is True
+
+
+def test_symbol_signature_reads_content_from_origin_main(git_repo: Path, tmp_path: Path) -> None:
+    (git_repo / "committed.py").write_text("garbage that is not what origin/main has\n")
+
+    engine = VerificationEngine(tmp_path)
+    ver = NodeVerification(
+        node_id="T1",
+        verification_type=VerificationType.SYMBOL_SIGNATURE,
+        target_path="committed.py",
+        expected_pattern="def committed_symbol()",
+    )
+    result = engine.verify_assertion(ver, target_repo="myrepo")
+    assert result.passed is True
+
+
+def test_no_target_repo_keeps_the_working_tree_fallback(git_repo: Path, tmp_path: Path) -> None:
+    (tmp_path / "root_only.py").write_text("x = 1\n", encoding="utf-8")
+
+    engine = VerificationEngine(tmp_path)
+    ver = NodeVerification(
+        node_id="T1", verification_type=VerificationType.FILE_EXISTS, target_path="root_only.py"
+    )
+    result = engine.verify_assertion(ver)
+    assert result.passed is True
+    assert result.message == "File exists"

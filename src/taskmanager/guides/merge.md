@@ -48,7 +48,7 @@ Exit 0 means that path is on `origin/main`. A push that reported success and a f
 tm verify run <task-id>
 ```
 
-It must exit 0. Now that the work is on the project's own checkout, the path checks measure the merged tree, which is what they were written for. If it exits 1, **do not complete the task**: report the failing rows, leave the status at `WAITING_MERGE`, and let it go back to fixes. If it prints `No verifications to run` it exits 2 having checked nothing: that is not a pass, so report it and let the task's owner attest it or add a check.
+It must exit 0. A path check reads the task's `target_repo` at `origin/main`, fetched first, so it measures what you just pushed regardless of what the shared checkout's own working tree happens to hold. If it exits 1, **do not complete the task**: report the failing rows, leave the status at `WAITING_MERGE`, and let it go back to fixes. If it prints `No verifications to run` it exits 2 having checked nothing: that is not a pass, so report it and let the task's owner attest it or add a check.
 
 ## 5. Complete it
 

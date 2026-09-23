@@ -1085,6 +1085,16 @@ def verify_remove(
 @verify_app.command("run")
 def verify_run(
     task_id: Annotated[str | None, typer.Argument(help="Task ID to verify")] = None,
+    ref: Annotated[
+        str | None,
+        typer.Option(
+            "--ref",
+            help=(
+                "Git ref to check the task's path verifications against (e.g. tm/<task-id>), "
+                "read as-is with no fetch. Default: origin/main, fetched first."
+            ),
+        ),
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
@@ -1100,7 +1110,7 @@ def verify_run(
             target_tid = None
 
     try:
-        all_passed, results = ops.run_verifications(target_tid)
+        all_passed, results = ops.run_verifications(target_tid, ref=ref)
     except OperationError as exc:
         print(f"[yellow]{exc}[/yellow]")
         raise typer.Exit(code=2) from exc

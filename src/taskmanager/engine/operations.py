@@ -511,12 +511,23 @@ class Operations:
             "verify remove", target_id=task_id, payload={"verification_id": verification_id}
         )
 
-    def run_verifications(self, task_id: str | None) -> tuple[bool, list[VerificationResult]]:
+    def run_verifications(
+        self, task_id: str | None, ref: str | None = None
+    ) -> tuple[bool, list[VerificationResult]]:
+        if ref is not None and not task_id:
+            raise OperationError("--ref checks one task's repo; pass a task id", 400)
+
+        repo_for_node: dict[str, str | None] = {}
         if task_id:
+            node = self.node_repo.get_node(task_id)
+            if node is None:
+                raise OperationError(f"task '{task_id}' not found", 404)
+            repo_for_node[task_id] = node.target_repo
             vers = self.node_repo.get_verifications(task_id)
         else:
             vers = []
             for t in self.node_repo.list_nodes(kind=NodeKind.TASK):
+                repo_for_node[t.id] = t.target_repo
                 vers.extend(self.node_repo.get_verifications(t.id))
 
         if not vers:
@@ -526,7 +537,7 @@ class Operations:
                 400,
             )
 
-        results = self.verification_engine.verify_all(vers)
+        results = self.verification_engine.verify_all(vers, repo_for_node, ref)
         all_passed = all(r.passed for r in results)
         self._ledger(
             LedgerCommand.VERIFICATION_RUN,

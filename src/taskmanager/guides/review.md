@@ -36,10 +36,10 @@ Read only. Do not check the branch out in the project's own checkout, do not edi
 ## 4. Run the checks
 
 ```
-tm verify run <task-id>
+tm verify run <task-id> --ref tm/<task-id>
 ```
 
-Exit 1 names each failing row. Its paths and commands resolve against the **project root**, not against the branch, so before the merge the path checks are red for work that is genuinely finished — confirm each one against the branch with `git -C <repo> show tm/<task-id>:<path>` and report what you measured, not the row. `No verifications to run.` exits 0 and proves nothing: a task with no checks is itself a finding.
+`file_exists`, `file_absent`, `symbol_signature` and `ast_export` read that ref directly, with no fetch, so a check against the unmerged branch is real evidence, not a guess. Without `--ref` they read the task's `target_repo` at `origin/main`, fetched first — which is still red before the merge for work that is genuinely finished, so use `--ref` here rather than a manual `git -C <repo> show tm/<task-id>:<path>`. `test_command` still runs from the project root regardless. Exit 1 names each failing row; `No verifications to run.` exits 0 and proves nothing — a task with no checks is itself a finding.
 
 ## 5. Write the findings
 

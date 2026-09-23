@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -194,9 +195,7 @@ def test_task_list_and_next_take_a_spec_filter(tmp_path: Path) -> None:
     assert "SPECA-PLANA-T1" in res.stdout
     assert "SPECB-PLANB-T1" not in res.stdout
 
-    res = runner.invoke(
-        app, ["task", "list", "--spec", "SPECA", "--json", "--path", str(tmp_path)]
-    )
+    res = runner.invoke(app, ["task", "list", "--spec", "SPECA", "--json", "--path", str(tmp_path)])
     assert res.exit_code == 0
     data = json.loads(res.stdout)
     assert [t["id"] for t in data] == ["SPECA-PLANA-T1"]
@@ -206,9 +205,7 @@ def test_task_list_and_next_take_a_spec_filter(tmp_path: Path) -> None:
     data = json.loads(res.stdout)
     assert [t["task_id"] for t in data] == ["SPECB-PLANB-T1"]
 
-    res = runner.invoke(
-        app, ["task", "get", "SPECA-PLANA-T1", "--yaml", "--path", str(tmp_path)]
-    )
+    res = runner.invoke(app, ["task", "get", "SPECA-PLANA-T1", "--yaml", "--path", str(tmp_path)])
     assert res.exit_code == 0
     assert "spec_id: SPECA" in res.stdout
 
@@ -224,7 +221,17 @@ def test_spec_filter_walks_a_plan_nested_under_another_plan(tmp_path: Path) -> N
     )
     runner.invoke(
         app,
-        ["plan", "add", "Inner", "--spec", "SPECA-OUTER", "--slug", "INNER", "--path", str(tmp_path)],
+        [
+            "plan",
+            "add",
+            "Inner",
+            "--spec",
+            "SPECA-OUTER",
+            "--slug",
+            "INNER",
+            "--path",
+            str(tmp_path),
+        ],
     )
     runner.invoke(
         app,
@@ -467,6 +474,78 @@ def test_cli_verification_and_audit(tmp_path: Path) -> None:
     res = runner.invoke(app, ["audit", "list", "--path", str(tmp_path)])
     assert res.exit_code == 0
     assert "init" in res.stdout or "spec add" in res.stdout
+
+
+def test_cli_verify_run_reads_a_branch_ref_before_merge(tmp_path: Path) -> None:
+    runner.invoke(app, ["init", "--path", str(tmp_path)])
+    runner.invoke(app, ["spec", "add", "Spec R", "--slug", "SPR", "--path", str(tmp_path)])
+    runner.invoke(
+        app, ["plan", "add", "Plan R", "--spec", "SPR", "--slug", "PLR", "--path", str(tmp_path)]
+    )
+    runner.invoke(
+        app, ["task", "add", "Task R", "--plan", "SPR-PLR", "--slug", "TR", "--path", str(tmp_path)]
+    )
+    runner.invoke(
+        app, ["task", "update", "SPR-PLR-TR", "--repo", "myrepo", "--path", str(tmp_path)]
+    )
+
+    origin = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "init", "-q", "--bare", str(origin)], capture_output=True, text=True, check=True
+    )
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    subprocess.run(
+        ["git", "-C", str(repo), "init", "-q", "-b", "main"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(origin)], check=True)
+    (repo / "README.md").write_text("root\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True)
+    subprocess.run(["git", "-C", str(repo), "push", "-q", "-u", "origin", "main"], check=True)
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-b", "tm/SPR-PLR-TR"], check=True)
+    (repo / "delivered.py").write_text("def deliver():\n    pass\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "delivered.py"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "deliver"], check=True)
+
+    runner.invoke(
+        app,
+        [
+            "verify",
+            "add",
+            "SPR-PLR-TR",
+            "--type",
+            "file_exists",
+            "--target",
+            "delivered.py",
+            "--path",
+            str(tmp_path),
+        ],
+    )
+
+    unmerged = runner.invoke(app, ["verify", "run", "SPR-PLR-TR", "--path", str(tmp_path)])
+    assert unmerged.exit_code == 1
+    assert "FAILED" in unmerged.stdout
+
+    on_branch = runner.invoke(
+        app,
+        [
+            "verify",
+            "run",
+            "SPR-PLR-TR",
+            "--ref",
+            "tm/SPR-PLR-TR",
+            "--path",
+            str(tmp_path),
+        ],
+    )
+    assert on_branch.exit_code == 0
+    assert "PASSED" in on_branch.stdout
 
 
 def test_cli_import_hierarchy(tmp_path: Path) -> None:

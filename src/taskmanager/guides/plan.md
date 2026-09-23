@@ -72,7 +72,7 @@ $ tm verify run NOTIFY-EMAIL-SENDER
 symbol_signature  src/notify/email/sender.py  FAILED  File src/notify/email/sender.py missing
 ```
 
-A check that passes before the work starts is not a check. Every path resolves against the tm root, so write the command to run from there.
+A check that passes before the work starts is not a check. `file_exists`, `file_absent`, `symbol_signature` and `ast_export` read the task's `target_repo` at `origin/main` (fetched first), never the working tree; a failed fetch fails the check rather than falling back to disk. A task with no `target_repo` still reads a tm-root-relative path off the working tree. Before the merge, check the unmerged branch with `tm verify run <id> --ref tm/<id>`, which reads that ref with no fetch. `test_command` still runs from the tm root's working tree, so write the command to run from there.
 
 ## 6. Size a task to one agent
 

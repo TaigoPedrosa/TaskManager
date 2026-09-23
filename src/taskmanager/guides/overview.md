@@ -43,7 +43,7 @@ A claim locks the paths the task declares — its path-bearing verifications plu
 
 ## Verification
 
-`tm verify run` resolves every path and runs every `test_command` **against the project root**, never against a worktree or a branch. Before a merge, a path check is therefore red for work that is finished but unmerged: read the table as the acceptance list and confirm each row where the work actually is. After the merge, the same command is the gate, and it must exit 0.
+`tm verify run` reads `file_exists`, `file_absent`, `symbol_signature` and `ast_export` from a git ref of the task's `target_repo` — `origin/main` by default, fetched first, never a worktree — and runs every `test_command` against the project root. Before a merge, a path check is therefore red for work that is finished but unmerged: pass `--ref tm/<task-id>` to read that branch instead, with no fetch. A task with no `target_repo` still reads a tm-root-relative path off the working tree. After the merge, the default (`origin/main`) command is the gate, and it must exit 0.
 
 `No verifications to run` exits 2. Nothing was checked; that is not a pass. `tm render <unknown-id>` and `tm task get <unknown-id>` exit 1 with a one-line error. `tm root` prints the project root `tm` resolved (a task's `target_repo` is `<root>/<target_repo>`).
 

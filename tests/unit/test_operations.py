@@ -1,3 +1,4 @@
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -383,6 +384,61 @@ def test_run_verifications_empty_set_refuses(ops_setup: tuple) -> None:
         ops.run_verifications(task_id)
     assert exc.value.status_code == 400
     assert len(ledger_repo.list_events(limit=1000)) == before
+
+
+def test_run_verifications_resolves_the_task_target_repo(
+    ops_setup: tuple[NodeRepository, RuntimeRepository, LedgerRepository, Operations],
+    tmp_path: Path,
+) -> None:
+    node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    _spec_id, _plan_id, task_id = _seed_task(ops)
+
+    origin = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "init", "-q", "--bare", str(origin)], capture_output=True, text=True, check=True
+    )
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    subprocess.run(
+        ["git", "-C", str(repo), "init", "-q", "-b", "main"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(origin)], check=True)
+    (repo / "out.txt").write_text("ok", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "out.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "add out.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "push", "-q", "-u", "origin", "main"], check=True)
+
+    ops.update_node(task_id, repo="myrepo")
+    ops.add_verification(task_id, VerificationType.FILE_EXISTS, "out.txt")
+
+    all_passed, results = ops.run_verifications(task_id)
+    assert all_passed is True
+    assert "origin/main" in results[0].message
+    assert node_repo.get_node(task_id) is not None
+
+
+def test_run_verifications_ref_without_task_id_refuses(
+    ops_setup: tuple[NodeRepository, RuntimeRepository, LedgerRepository, Operations],
+) -> None:
+    _node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    _seed_task(ops)
+    with pytest.raises(OperationError) as exc:
+        ops.run_verifications(None, ref="tm/some-task")
+    assert exc.value.status_code == 400
+
+
+def test_run_verifications_unknown_task_raises_not_found(
+    ops_setup: tuple[NodeRepository, RuntimeRepository, LedgerRepository, Operations],
+) -> None:
+    _node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    with pytest.raises(OperationError) as exc:
+        ops.run_verifications("NO-SUCH-TASK")
+    assert exc.value.status_code == 404
 
 
 # -- actor ----------------------------------------------------------------------------------
