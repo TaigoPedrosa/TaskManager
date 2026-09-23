@@ -192,6 +192,25 @@ class NodeRepository:
                 content=row[4],
             )
 
+    def remove_section(self, node_id: str, section_key: str) -> bool:
+        with self.db.get_spec_connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM node_sections WHERE node_id = ? AND section_key = ?",
+                (node_id, section_key),
+            )
+            if cursor.rowcount:
+                conn.execute(
+                    """
+                    UPDATE nodes_fts SET content_text = (
+                        SELECT COALESCE(GROUP_CONCAT(content, ' '), '')
+                        FROM (SELECT content FROM node_sections WHERE node_id = ? ORDER BY ordinal ASC)
+                    ) WHERE node_id = ?;
+                    """,
+                    (node_id, node_id),
+                )
+            conn.commit()
+            return cursor.rowcount > 0
+
     def get_all_sections(self, node_id: str) -> list[NodeSection]:
         with self.db.get_spec_connection() as conn:
             rows = conn.execute(

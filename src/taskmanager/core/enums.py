@@ -94,6 +94,13 @@ class LedgerCommand(StrEnum):
     TASK_STOP = "task_stop"
     LEASE_SWEEP = "lease_sweep"
     IMPORT = "import"
+    # Free-text strings before Operations existed ("task depends", "task update"); kept
+    # identical so a ledger written by an older build still reads the same command.
+    TASK_DEPENDS = "task depends"
+    TASK_UPDATE = "task update"
+    TASK_MOVE = "task_move"
+    SECTION_REMOVE = "section_remove"
+    LEASE_RELEASE = "lease_release"
 
 
 class SearchTargetType(StrEnum):
