@@ -124,6 +124,32 @@ check, `dependency_details`, export and the graph view, with no new relation typ
 `BLOCKED_BY_LEASE`. `tm next` offers only `READY`, so a waiting task is never recommended.
 Decisions are never contained in plans, never leased and never scored.
 
+### 3.2a Plan and spec rollups, and progress
+
+A plan's and a spec's status is always derived from their children, everywhere it is shown (web
+tree, detail, graph, `tm plan list`, `tm spec list`, `tm plan get`, `tm spec get`). The stored
+`status` of a plan or spec is never displayed as if it were its state.
+
+**Set-aside children don't count.** A child whose status is `SUPERSEDED`, `ABANDONED` or
+`DEFERRED` cannot reach completion, so it is left out of both the rollup and the progress
+denominator. It counts again the moment its status changes back.
+
+Rollup over the counted children (tasks for a plan, plans for a spec):
+
+- no counted children, and at least one set-aside child: `DEFERRED` if any child is deferred,
+  else `ABANDONED` if any is abandoned, else `COMPLETED` (all superseded);
+- no children at all: the node's own stored status (unchanged);
+- all counted children `COMPLETED` → `COMPLETED`;
+- all counted children blocked (`BLOCKED`, `BLOCKED_BY_LEASE`, `AWAITING_DECISION`) → `BLOCKED`;
+- all counted children `NOT_STARTED` and none in flight → `NOT_STARTED`;
+- otherwise `IMPLEMENTING`.
+
+**Progress** (`progress` on every tree node) is `{done, total, set_aside, counts}`: `total` counts
+tasks not set aside, `done` counts those `COMPLETED`, `set_aside` counts the rest, and `counts`
+keeps every status for the bar. The page shows `done/total` (reaching x/x when everything that can
+finish has finished), and `set_aside` as a muted "+N set aside" when non-zero. Bar segments are
+widths over `total` and omit set-aside statuses.
+
 ### 3.3 CLI
 
 ```
