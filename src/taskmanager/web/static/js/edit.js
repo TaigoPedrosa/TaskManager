@@ -711,21 +711,50 @@ function renderNewMenu() {
     // into the viewport the same way the filter popovers do.
     if (open) clampToViewport(pop);
   }
-  btn.addEventListener('click', (e) => { e.stopPropagation(); setOpen(!open); });
+  // Live, not captured once: a sibling script appends a fourth menu entry to this same pop
+  // after this function returns, and a snapshot taken here would never include it.
+  const menuItems = () => Array.from(pop.querySelectorAll('[data-new-kind]'));
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setOpen(!open);
+    if (open) menuItems()[0].focus();
+  });
   btn.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') setOpen(false);
+    else if (e.key === 'ArrowDown' && !open) {
+      e.preventDefault();
+      setOpen(true);
+      menuItems()[0].focus();
+    }
   });
   document.addEventListener('click', (e) => {
     if (open && !btn.parentElement.contains(e.target)) setOpen(false);
   });
-  pop.querySelectorAll('[data-new-kind]').forEach(item => {
-    item.addEventListener('click', () => {
+  // role=menu's own keyboard grammar: Esc used to be handled only on the trigger button, so
+  // it closed a menu whose focus had already moved onto one of its items. Arrow keys move
+  // focus among items the way a native <select> or the tri-state popover's rows do.
+  pop.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
       setOpen(false);
-      const kind = item.getAttribute('data-new-kind');
-      if (kind === 'spec') openNewSpecDialog();
-      else if (kind === 'plan') openNewPlanDialog();
-      else if (kind === 'task') openNewTaskDialog();
-    });
+      btn.focus();
+      return;
+    }
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    e.preventDefault();
+    const items = menuItems();
+    const i = items.indexOf(document.activeElement);
+    const next = e.key === 'ArrowDown' ? (i + 1) % items.length : (i - 1 + items.length) % items.length;
+    items[next].focus();
+  });
+  pop.addEventListener('click', (e) => {
+    const item = e.target.closest('[data-new-kind]');
+    if (!item) return;
+    setOpen(false);
+    const kind = item.getAttribute('data-new-kind');
+    if (kind === 'spec') openNewSpecDialog();
+    else if (kind === 'plan') openNewPlanDialog();
+    else if (kind === 'task') openNewTaskDialog();
   });
 }
 

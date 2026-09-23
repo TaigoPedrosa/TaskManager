@@ -660,6 +660,38 @@ def test_dialog_refusal_also_shows_a_toast() -> None:
     assert "toast(message, 'error')" in catch_block
 
 
+def test_decision_option_row_inputs_are_named_by_aria_label_not_placeholder() -> None:
+    body = _function_body(get_web_html(), "decisionOptionRowHtml")
+    assert 'aria-label="Option key"' in body
+    assert 'aria-label="Option label"' in body
+    assert 'aria-label="Option description"' in body
+    assert ">Recommended" in body
+    assert ">rec." not in body
+
+
+def test_new_decision_blocked_tasks_field_offers_a_picker() -> None:
+    body = _function_body(get_web_html(), "openNewDecisionDialog")
+    assert 'list="nd-blocks-list"' in body
+    assert '<datalist id="nd-blocks-list">' in body
+
+
+def test_decisions_tabs_are_a_real_tablist_with_arrow_navigation() -> None:
+    html = get_web_html()
+    body = _function_body(html, "renderDecisionsTabs")
+    assert 'aria-controls="decisions-list"' in body
+    assert "e.key === 'ArrowRight'" in body
+    assert "decisionsListEl.setAttribute('role', 'tabpanel')" in body
+
+
+def test_new_menu_supports_arrow_key_navigation_and_escape_from_an_item() -> None:
+    # Esc used to be handled only on the trigger button, so it did nothing once focus had
+    # moved onto a menu item; ArrowDown/ArrowUp had no handler at all.
+    body = _function_body(get_web_html(), "renderNewMenu")
+    assert "pop.addEventListener('keydown'" in body
+    assert "e.key !== 'ArrowDown' && e.key !== 'ArrowUp'" in body
+    assert "btn.focus()" in body
+
+
 def test_api_helper_surfaces_the_servers_own_refusal_message() -> None:
     body = _function_body(get_web_html(), "api")
     assert "data && data.detail" in body

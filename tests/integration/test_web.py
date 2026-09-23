@@ -1,5 +1,6 @@
 """Integration tests for the TaskManager web visualizer and CLI commands."""
 
+import base64
 import json
 import re
 from datetime import UTC, datetime
@@ -32,6 +33,10 @@ from taskmanager.web.app import create_app
 from taskmanager.web.static_export import export_static_html
 
 runner = CliRunner()
+
+_PNG_1PX = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 def test_web_api_endpoints_and_ui(tmp_path: Path) -> None:
@@ -134,6 +139,41 @@ def test_static_html_export(tmp_path: Path) -> None:
     content = result_path.read_text(encoding="utf-8")
     assert "window.STATIC_DATA" in content
     assert "AUTH" in content
+
+
+def test_static_export_embeds_a_sections_own_markdown_image(tmp_path: Path) -> None:
+    # ![capture](evidence/x.png) renders client-side from the raw markdown (marked.parse), so
+    # a relative path resolves against nothing once the file is opened from anywhere but the
+    # exact export location -- the static export has no server left to serve it either.
+    db_mgr = DatabaseManager(tmp_path / ".taskmanager")
+    db_mgr.init_all()
+    node_repo = NodeRepository(db_mgr)
+    node_repo.save_node(Node(id="AUTH", kind=NodeKind.SPEC, title="Auth Spec"))
+    (tmp_path / "evidence").mkdir()
+    (tmp_path / "evidence" / "x.png").write_bytes(_PNG_1PX)
+    node_repo.save_section(
+        NodeSection(
+            node_id="AUTH",
+            section_key="evidence",
+            ordinal=1,
+            header="## Evidence",
+            content="![capture](evidence/x.png)",
+        )
+    )
+
+    out_file = tmp_path / "dashboard.html"
+    content = export_static_html(tmp_path, out_file).read_text(encoding="utf-8")
+
+    # The section's own content is what tree.js/detail.js actually render as markdown client
+    # side; `rendered_markdown` is a separate, unused-by-the-page field this does not touch.
+    static_match = re.search(r"window.STATIC_DATA = (\{.*?\});</script>", content)
+    assert static_match
+    static_data = json.loads(static_match.group(1))
+    section = static_data["tree"][0]["sections"][0]
+    assert (
+        section["content"]
+        == "![capture](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=)"
+    )
 
 
 def test_find_available_port() -> None:

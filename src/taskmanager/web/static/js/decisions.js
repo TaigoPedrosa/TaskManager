@@ -139,14 +139,29 @@ function renderDecisionsTabs() {
     const cls = active
       ? 'bg-zinc-800 text-white'
       : 'text-zinc-400 hover:text-white hover:bg-zinc-900';
-    return `<button type="button" role="tab" aria-selected="${active}" data-tab="${t.key}" class="dec-tab-btn h-7 px-2.5 rounded-md text-xs font-medium transition ${cls}">${t.label} (${count})</button>`;
+    return `<button type="button" id="dec-tab-${t.key}" role="tab" aria-selected="${active}" aria-controls="decisions-list" tabindex="${active ? '0' : '-1'}" data-tab="${t.key}" class="dec-tab-btn h-7 px-2.5 rounded-md text-xs font-medium transition ${cls}">${t.label} (${count})</button>`;
   }).join('');
-  decisionsTabsEl.querySelectorAll('.dec-tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      decisionsTab = btn.getAttribute('data-tab');
-      renderDecisionsView();
+  const tabs = Array.from(decisionsTabsEl.querySelectorAll('.dec-tab-btn'));
+  function activate(key, focusIt) {
+    decisionsTab = key;
+    renderDecisionsView();
+    if (focusIt) {
+      const btn = decisionsTabsEl.querySelector(`[data-tab="${key}"]`);
+      if (btn) btn.focus();
+    }
+  }
+  tabs.forEach((btn, i) => {
+    btn.addEventListener('click', () => activate(btn.getAttribute('data-tab'), false));
+    // Standard ARIA tabs pattern: arrow keys move focus and selection together.
+    btn.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+      e.preventDefault();
+      const next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+      activate(next.getAttribute('data-tab'), true);
     });
   });
+  decisionsListEl.setAttribute('role', 'tabpanel');
+  decisionsListEl.setAttribute('aria-labelledby', `dec-tab-${decisionsTab}`);
 }
 
 function decisionAgeText(iso) {
@@ -510,17 +525,20 @@ function renderDecisionsView() {
 // New decision dialog -----------------------------------------------------------------------
 
 function decisionOptionRowHtml(index, key = '', label = '', description = '', recommended = false) {
+  // The key/label/description inputs were named only by their placeholder, which is not an
+  // accessible name (axe aria-input-field-name); a placeholder disappears the moment there is
+  // a value, an aria-label never does.
   return `
     <div class="dec-opt-row space-y-1.5 p-2 rounded-lg border border-zinc-800" data-opt-index="${index}">
       <div class="flex items-center gap-2">
-        <input type="text" class="dec-opt-key ${INPUT_CLS} font-mono" style="max-width:6rem" placeholder="key" value="${esc(key)}">
-        <input type="text" class="dec-opt-label ${INPUT_CLS}" placeholder="Label" value="${esc(label)}">
+        <input type="text" class="dec-opt-key ${INPUT_CLS} font-mono" style="max-width:6rem" placeholder="key" aria-label="Option key" value="${esc(key)}">
+        <input type="text" class="dec-opt-label ${INPUT_CLS}" placeholder="Label" aria-label="Option label" value="${esc(label)}">
         <label class="flex items-center gap-1 text-[10px] text-zinc-400 flex-shrink-0">
-          <input type="radio" name="dec-opt-recommend" class="dec-opt-recommend" ${recommended ? 'checked' : ''}>rec.
+          <input type="radio" name="dec-opt-recommend" class="dec-opt-recommend" ${recommended ? 'checked' : ''}>Recommended
         </label>
         <button type="button" class="dec-opt-remove p-1 rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-800 flex-shrink-0" aria-label="Remove option">${renderIcon('x', 'w-3 h-3')}</button>
       </div>
-      <input type="text" class="dec-opt-desc ${INPUT_CLS}" placeholder="Description (optional)" value="${esc(description)}">
+      <input type="text" class="dec-opt-desc ${INPUT_CLS}" placeholder="Description (optional)" aria-label="Option description" value="${esc(description)}">
     </div>
   `;
 }
@@ -541,7 +559,7 @@ function openNewDecisionDialog() {
         <div class="nd-opt-rows space-y-2"></div>
       </div>
       <label class="flex items-center gap-2 text-xs text-zinc-300"><input type="checkbox" class="nd-allow-custom rounded border-zinc-600 bg-zinc-950 text-emerald-500 focus:ring-emerald-500" checked>Allow a custom answer</label>
-      ${fieldRow('Blocks tasks (comma separated ids)', `<input type="text" class="nd-blocks ${INPUT_CLS} font-mono" placeholder="(optional)">`)}
+      ${fieldRow('Blocks tasks (comma separated ids)', `<input type="text" class="nd-blocks ${INPUT_CLS} font-mono" list="nd-blocks-list" placeholder="(optional)"><datalist id="nd-blocks-list">${collectTasks(treeData).map(t => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join('')}</datalist>`)}
     `,
     onMount: (panel) => {
       const rows = panel.querySelector('.nd-opt-rows');
