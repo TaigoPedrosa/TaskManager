@@ -131,6 +131,10 @@ Build the wave against the trees, not against the last wave's reports. A pin, a 
 - **Abandon.** `tm run stop <id> --status ABANDONED`, and only where nothing depends on it: `ABANDONED` never satisfies a dependency, so every dependent stays blocked forever.
 - **Close a plan.** When its tasks are `COMPLETED` or `SUPERSEDED`, `tm run stop <plan-id> --status COMPLETED`. Check with `tm task list --plan <plan-id> --yaml` first; nothing closes it for you. `tm plan list --yaml` shows the stored `status` and a `state` worked out from the plan's tasks: a plan whose tasks are all done reads `state: COMPLETED` while its `status` stays until you stop it.
 
+## Decisions are the owner's queue, not yours
+
+`tm decision list --status open` is what is waiting on the owner, not on you: a task an agent released with an open decision reads `AWAITING_DECISION` and stays out of `tm next` on its own, so there is nothing to dispatch around. Do not answer a decision on the owner's behalf, and do not chase an agent to un-ask one — `tm decision answer <id> --option <key>` or `tm decision withdraw <id>` is the owner's call, and the blocked task clears to `READY` the moment either lands.
+
 ## 9. Write rulings down where the work is
 
 A decision, a constraint, a hazard or an answer the next agent will need goes on the node it applies to, not into a document and not into your own notes:

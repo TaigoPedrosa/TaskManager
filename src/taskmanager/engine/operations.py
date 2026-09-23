@@ -1,6 +1,8 @@
+import hashlib
 import logging
 import sqlite3
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from taskmanager.core.enums import (
@@ -21,6 +23,19 @@ from taskmanager.core.models import (
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
+from taskmanager.engine.assets import (
+    AssetError,
+    AttachmentSource,
+    is_project_relative,
+    store_asset,
+)
+from taskmanager.engine.decisions import (
+    DecisionAnswer,
+    DecisionData,
+    DecisionOption,
+    read_decision,
+    write_decision,
+)
 from taskmanager.engine.graph import GraphEngine
 from taskmanager.engine.runtime import ExecutionCoordinator
 from taskmanager.engine.verification import VerificationEngine, VerificationResult
@@ -348,7 +363,11 @@ class Operations:
         task_id: str,
         status: NodeStatus = NodeStatus.WAITING_REVIEW,
         remove_worktree: bool = False,
+        section: tuple[str, str, str | None] | None = None,
     ) -> None:
+        # `stop_task` raises before touching the node on every refusal it has (missing task,
+        # nothing else today), so a failed status write never reaches the section write below --
+        # a ruling can never land without its status.
         self.coordinator.stop_task(
             task_id=task_id, new_status=status, remove_worktree=remove_worktree
         )
@@ -357,6 +376,9 @@ class Operations:
             target_id=task_id,
             payload={"status": status.value, "remove_worktree": remove_worktree},
         )
+        if section is not None:
+            key, content, header = section
+            self.set_section(task_id, key, content, header)
 
     def release_lease(self, task_id: str) -> None:
         self.runtime_repo.release_lease(task_id)
@@ -461,3 +483,310 @@ class Operations:
             payload={"passed": all_passed, "count": len(results)},
         )
         return all_passed, results
+
+    # -- decisions ------------------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_option(raw: str) -> DecisionOption:
+        parts = raw.split("|")
+        key = parts[0].strip() if parts else ""
+        label = parts[1].strip() if len(parts) > 1 else ""
+        if not key or not label:
+            raise OperationError(f"--option takes 'key|Label|description', got '{raw}'", 400)
+        description = parts[2].strip() if len(parts) > 2 else ""
+        return DecisionOption(key=key, label=label, description=description)
+
+    def _get_decision(self, decision_id: str) -> Node:
+        node = self.node_repo.get_node(decision_id)
+        if node is None or node.kind != NodeKind.DECISION:
+            raise OperationError(f"decision '{decision_id}' not found", 404)
+        return node
+
+    def add_decision(
+        self,
+        question: str,
+        slug: str | None = None,
+        priority: int = 50,
+        context: str | None = None,
+        options: list[str] | None = None,
+        recommend: str | None = None,
+        allow_custom: bool = True,
+        raised_by: str | None = None,
+        blocks: list[str] | None = None,
+    ) -> str:
+        if slug:
+            decision_id = f"decision-{slug}"
+            if self.node_repo.get_node(decision_id) is not None:
+                raise OperationError(f"'{decision_id}' already exists", 409)
+        else:
+            existing = {n.id for n in self.node_repo.list_nodes(kind=NodeKind.DECISION)}
+            counter = 1
+            while f"decision-D{counter}" in existing:
+                counter += 1
+            decision_id = f"decision-D{counter}"
+
+        parsed_options = [self._parse_option(o) for o in options or []]
+        keys = [o.key for o in parsed_options]
+        if len(keys) != len(set(keys)):
+            raise OperationError("option keys must be unique", 400)
+        if recommend is not None and recommend not in keys:
+            raise OperationError(f"'{recommend}' is not one of the option keys", 400)
+        for opt in parsed_options:
+            opt.recommended = opt.key == recommend
+
+        blocked_tasks = blocks or []
+        for task_id in blocked_tasks:
+            if self.node_repo.get_node(task_id) is None:
+                raise OperationError(f"task '{task_id}' not found", 404)
+        if raised_by is not None and self.node_repo.get_node(raised_by) is None:
+            raise OperationError(f"'{raised_by}' not found", 404)
+
+        data = DecisionData(options=parsed_options, allow_custom=allow_custom, raised_by=raised_by)
+        node = Node(
+            id=decision_id,
+            kind=NodeKind.DECISION,
+            title=question,
+            priority=priority,
+            frontmatter={"decision": data.model_dump(mode="json")},
+        )
+        self.node_repo.save_node(node)
+        if context:
+            self.node_repo.save_section(
+                NodeSection(
+                    node_id=decision_id,
+                    section_key="context",
+                    ordinal=1,
+                    header="## Context",
+                    content=context,
+                )
+            )
+        for task_id in blocked_tasks:
+            self.node_repo.add_relation(
+                NodeRelation(
+                    source_id=task_id,
+                    target_id=decision_id,
+                    relation_type=RelationType.DEPENDS_ON,
+                )
+            )
+        self._ledger(
+            LedgerCommand.DECISION_ADD, target_id=decision_id, payload={"question": question}
+        )
+        return decision_id
+
+    def answer_decision(
+        self,
+        decision_id: str,
+        option: str | None = None,
+        text: str = "",
+        rationale: str = "",
+        by: str = "cli",
+    ) -> None:
+        node = self._get_decision(decision_id)
+        if node.status != NodeStatus.NOT_STARTED:
+            raise OperationError(f"decision '{decision_id}' is not open; reopen it first", 409)
+        data = read_decision(node)
+        if option is not None:
+            if option not in {o.key for o in data.options}:
+                raise OperationError(f"'{option}' is not an option of '{decision_id}'", 400)
+        elif not data.allow_custom:
+            raise OperationError(f"decision '{decision_id}' does not allow a custom answer", 400)
+        elif not text:
+            raise OperationError("give --option or --custom", 400)
+
+        data.answer = DecisionAnswer(
+            option=option,
+            text=text,
+            rationale=rationale,
+            answered_by=by,
+            answered_at=datetime.now(tz=UTC),
+        )
+        write_decision(node, data)
+        node.status = NodeStatus.COMPLETED
+        node.updated_at = datetime.now(tz=UTC)
+        self.node_repo.save_node(node)
+        self._ledger(
+            LedgerCommand.DECISION_ANSWER, target_id=decision_id, payload={"option": option}
+        )
+
+    def reopen_decision(self, decision_id: str) -> None:
+        node = self._get_decision(decision_id)
+        data = read_decision(node)
+        data.answer = None
+        data.withdrawn_reason = ""
+        write_decision(node, data)
+        node.status = NodeStatus.NOT_STARTED
+        node.updated_at = datetime.now(tz=UTC)
+        self.node_repo.save_node(node)
+        self._ledger(LedgerCommand.DECISION_REOPEN, target_id=decision_id)
+
+    def withdraw_decision(self, decision_id: str, reason: str = "") -> None:
+        node = self._get_decision(decision_id)
+        data = read_decision(node)
+        data.withdrawn_reason = reason
+        write_decision(node, data)
+        node.status = NodeStatus.ABANDONED
+        node.updated_at = datetime.now(tz=UTC)
+        self.node_repo.save_node(node)
+        self._ledger(
+            LedgerCommand.DECISION_WITHDRAW, target_id=decision_id, payload={"reason": reason}
+        )
+
+    def link_decision(
+        self, decision_id: str, add: list[str] | None = None, remove: list[str] | None = None
+    ) -> None:
+        self._get_decision(decision_id)
+        add_ids = add or []
+        remove_ids = remove or []
+        for task_id in add_ids:
+            if self.node_repo.get_node(task_id) is None:
+                raise OperationError(f"task '{task_id}' not found", 404)
+        for task_id in remove_ids:
+            if decision_id not in self.node_repo.get_dependencies(task_id):
+                raise OperationError(f"'{task_id}' does not wait on '{decision_id}'", 409)
+        for task_id in add_ids:
+            self.node_repo.add_relation(
+                NodeRelation(
+                    source_id=task_id,
+                    target_id=decision_id,
+                    relation_type=RelationType.DEPENDS_ON,
+                )
+            )
+        for task_id in remove_ids:
+            self.node_repo.remove_relation(task_id, decision_id, RelationType.DEPENDS_ON)
+        self._ledger(
+            LedgerCommand.DECISION_LINK,
+            target_id=decision_id,
+            payload={"add": add_ids, "remove": remove_ids},
+        )
+
+    # -- attachments ------------------------------------------------------------------------
+
+    def _assets_dir(self) -> Path:
+        return self.node_repo.db.taskmanager_dir / "assets"
+
+    def _project_root(self) -> Path:
+        return self.node_repo.db.taskmanager_dir.parent
+
+    def attach(
+        self,
+        node_id: str,
+        file_path: Path,
+        caption: str = "",
+        source: str | None = None,
+        replace: str | None = None,
+    ) -> dict[str, Any]:
+        node = self.node_repo.get_node(node_id)
+        if node is None:
+            raise OperationError(f"node '{node_id}' not found", 404)
+        if not file_path.is_file():
+            raise OperationError(f"'{file_path}' does not exist", 400)
+
+        attachments = list(node.frontmatter.get("attachments") or [])
+        replace_idx: int | None = None
+        if replace is not None:
+            replace_idx = next(
+                (i for i, a in enumerate(attachments) if a.get("asset") == replace), None
+            )
+            if replace_idx is None:
+                raise OperationError(f"no attachment '{replace}' on '{node_id}'", 404)
+
+        try:
+            asset_name, mime = store_asset(self._assets_dir(), file_path)
+        except AssetError as exc:
+            raise OperationError(str(exc), 400) from exc
+
+        prior = attachments[replace_idx] if replace_idx is not None else {}
+        effective_caption = caption or prior.get("caption", "")
+        effective_source = source or (prior.get("source") or {}).get("uri")
+        if effective_source is None:
+            try:
+                effective_source = str(file_path.resolve().relative_to(self._project_root()))
+            except ValueError:
+                effective_source = None
+
+        source_sha: str | None = None
+        source_state = "unverifiable"
+        if effective_source is not None and is_project_relative(effective_source):
+            src_path = self._project_root() / effective_source
+            if src_path.is_file():
+                source_sha = hashlib.sha256(src_path.read_bytes()).hexdigest()
+                source_state = "fresh"
+            else:
+                source_state = "missing"
+
+        entry = {
+            "asset": asset_name,
+            "name": file_path.name,
+            "caption": effective_caption,
+            "mime": mime,
+            "source": AttachmentSource(
+                uri=effective_source,
+                sha256=source_sha,
+                captured_at=datetime.now(tz=UTC),
+                state=source_state,  # type: ignore[arg-type]
+            ).model_dump(mode="json"),
+        }
+        if replace_idx is not None:
+            attachments[replace_idx] = entry
+        else:
+            attachments.append(entry)
+        node.frontmatter["attachments"] = attachments
+        node.updated_at = datetime.now(tz=UTC)
+        self.node_repo.save_node(node)
+        self._ledger(LedgerCommand.ATTACH, target_id=node_id, payload={"asset": asset_name})
+        return entry
+
+    def _asset_referenced(self, asset: str, except_node: str | None = None) -> bool:
+        for n in self.node_repo.list_nodes():
+            if n.id == except_node:
+                continue
+            if any(a.get("asset") == asset for a in n.frontmatter.get("attachments") or []):
+                return True
+        return False
+
+    def detach(self, node_id: str, asset: str) -> None:
+        node = self.node_repo.get_node(node_id)
+        if node is None:
+            raise OperationError(f"node '{node_id}' not found", 404)
+        attachments = list(node.frontmatter.get("attachments") or [])
+        idx = next((i for i, a in enumerate(attachments) if a.get("asset") == asset), None)
+        if idx is None:
+            raise OperationError(f"no attachment '{asset}' on '{node_id}'", 404)
+        del attachments[idx]
+        node.frontmatter["attachments"] = attachments
+        node.updated_at = datetime.now(tz=UTC)
+        self.node_repo.save_node(node)
+        self._ledger(LedgerCommand.DETACH, target_id=node_id, payload={"asset": asset})
+        if not self._asset_referenced(asset, except_node=node_id):
+            (self._assets_dir() / asset).unlink(missing_ok=True)
+
+    def list_attachments(self, node_id: str, check: bool = False) -> list[dict[str, Any]]:
+        node = self.node_repo.get_node(node_id)
+        if node is None:
+            raise OperationError(f"node '{node_id}' not found", 404)
+        attachments = list(node.frontmatter.get("attachments") or [])
+        if not check:
+            return attachments
+
+        changed = False
+        for entry in attachments:
+            source = dict(entry.get("source") or {})
+            uri = source.get("uri")
+            if not uri or not is_project_relative(uri):
+                continue
+            path = self._project_root() / uri
+            if not path.is_file():
+                state = "missing"
+            else:
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                state = "fresh" if digest == source.get("sha256") else "stale"
+            source["state"] = state
+            source["checked_at"] = datetime.now(tz=UTC).isoformat()
+            entry["source"] = source
+            changed = True
+
+        if changed:
+            node.frontmatter["attachments"] = attachments
+            node.updated_at = datetime.now(tz=UTC)
+            self.node_repo.save_node(node)
+        return attachments

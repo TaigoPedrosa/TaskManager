@@ -384,6 +384,80 @@ def test_a_directory_without_a_config_file_restores_with_defaults(tmp_path: Path
     assert {row["source"] for row in listed} == {"default"}
 
 
+def test_decision_and_attachment_export_restore_round_trip(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    runner.invoke(app, ["init", "-C", str(source)])
+    runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "-C", str(source)])
+    runner.invoke(app, ["plan", "add", "P", "--spec", "S1", "--slug", "P1", "-C", str(source)])
+    runner.invoke(app, ["task", "add", "T", "--plan", "S1-P1", "--slug", "t1", "-C", str(source)])
+    runner.invoke(
+        app,
+        [
+            "decision",
+            "add",
+            "Which way?",
+            "--slug",
+            "way",
+            "--option",
+            "a|Do X",
+            "--recommend",
+            "a",
+            "--blocks",
+            "S1-P1-t1",
+            "-C",
+            str(source),
+        ],
+    )
+    asset_src = source / "shot.png"
+    asset_src.write_bytes(b"png-content")
+    runner.invoke(app, ["attach", "S1-P1-t1", str(asset_src), "-C", str(source)])
+
+    e1 = tmp_path / "e1"
+    assert runner.invoke(app, ["export", str(e1), "-C", str(source)]).exit_code == 0
+    assert (e1 / "_decisions.json").exists()
+    assert list((e1 / "assets").iterdir())
+
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    res = runner.invoke(app, ["restore", str(e1), "-C", str(fresh)])
+    assert res.exit_code == 0, res.output
+    assert (fresh / ".taskmanager" / "assets").is_dir()
+    assert sorted(p.name for p in (fresh / ".taskmanager" / "assets").iterdir()) == sorted(
+        p.name for p in (e1 / "assets").iterdir()
+    )
+
+    task = json.loads(
+        runner.invoke(app, ["task", "get", "S1-P1-t1", "--json", "-C", str(fresh)]).stdout
+    )
+    assert task["awaiting_decisions"] == ["decision-way"]
+
+    e2 = tmp_path / "e2"
+    assert runner.invoke(app, ["export", str(e2), "-C", str(fresh)]).exit_code == 0
+    for f in sorted(e1.glob("*.json")):
+        assert f.read_bytes() == (e2 / f.name).read_bytes(), f.name
+    for f in sorted((e1 / "assets").iterdir()):
+        assert f.read_bytes() == (e2 / "assets" / f.name).read_bytes(), f.name
+
+
+def test_a_decision_does_not_crash_task_list_next_or_plan_rollups(tmp_path: Path) -> None:
+    runner.invoke(app, ["init", "-C", str(tmp_path)])
+    runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "-C", str(tmp_path)])
+    runner.invoke(app, ["plan", "add", "P", "--spec", "S1", "--slug", "P1", "-C", str(tmp_path)])
+    runner.invoke(app, ["task", "add", "T", "--plan", "S1-P1", "--slug", "t1", "-C", str(tmp_path)])
+    runner.invoke(app, ["decision", "add", "Q", "--slug", "q1", "-C", str(tmp_path)])
+
+    for args in (
+        ["task", "list", "--json", "-C", str(tmp_path)],
+        ["next", "--json", "-C", str(tmp_path)],
+        ["plan", "list", "--json", "-C", str(tmp_path)],
+        ["spec", "list", "--json", "-C", str(tmp_path)],
+    ):
+        res = runner.invoke(app, args)
+        assert res.exit_code == 0, (args, res.output)
+        assert "decision-q1" not in res.output
+
+
 def _seed_estate(tmp_path: Path) -> None:
     runner.invoke(app, ["init", "-C", str(tmp_path)])
     runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "-C", str(tmp_path)])

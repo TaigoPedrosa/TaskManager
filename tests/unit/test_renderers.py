@@ -243,6 +243,51 @@ def test_bulk_importer_json(tmp_path: Path) -> None:
     assert repo.get_dependency_edges("AUTH-T2") == [("AUTH-T1", NodeStatus.COMPLETED)]
 
 
+def test_markdown_renderer_renders_a_decision(tmp_path: Path) -> None:
+    from taskmanager.engine.decisions import DecisionAnswer, DecisionData, DecisionOption
+
+    db = DatabaseManager(tmp_path)
+    db.init_all()
+    repo = NodeRepository(db)
+
+    data = DecisionData(
+        options=[
+            DecisionOption(key="a", label="Option A", recommended=True),
+            DecisionOption(key="b", label="Option B"),
+        ],
+        answer=DecisionAnswer(
+            option="a", rationale="because", answered_by="owner", answered_at="2026-01-01T00:00:00"
+        ),
+    )
+    node = Node(
+        id="decision-D1",
+        kind=NodeKind.DECISION,
+        title="Which way?",
+        status=NodeStatus.COMPLETED,
+        frontmatter={"decision": data.model_dump(mode="json")},
+    )
+    repo.save_node(node)
+    repo.save_section(
+        NodeSection(
+            node_id="decision-D1",
+            section_key="context",
+            ordinal=1,
+            header="## Context",
+            content="some context",
+        )
+    )
+
+    rendered = MarkdownRenderer(repo).render("decision-D1")
+    assert "Which way?" in rendered
+    assert "some context" in rendered
+    assert "Option A" in rendered
+    assert "**(recommended)**" in rendered
+    assert "Option B" in rendered
+    assert "Chosen: a" in rendered
+    assert "Rationale: because" in rendered
+    assert "owner" in rendered
+
+
 def test_bulk_importer_gated_dependency(tmp_path: Path) -> None:
     db = DatabaseManager(tmp_path)
     db.init_all()
@@ -263,3 +308,37 @@ def test_bulk_importer_gated_dependency(tmp_path: Path) -> None:
     )
 
     assert repo.get_dependency_edges("AUTH-T2") == [("AUTH-T1", NodeStatus.WAITING_REVIEW)]
+
+
+def test_bulk_importer_top_level_decisions_key(tmp_path: Path) -> None:
+    db = DatabaseManager(tmp_path)
+    db.init_all()
+    repo = NodeRepository(db)
+    importer = BulkImporter(repo)
+
+    importer.import_dict(
+        {
+            "tasks": [{"id": "T1", "title": "Task"}],
+            "decisions": [
+                {
+                    "id": "decision-D1",
+                    "title": "Which way?",
+                    "frontmatter": {"decision": {"options": [], "allow_custom": True}},
+                }
+            ],
+        }
+    )
+
+    node = repo.get_node("decision-D1")
+    assert node is not None
+    assert node.kind == NodeKind.DECISION
+    assert node.title == "Which way?"
+
+
+def test_bulk_importer_refuses_unknown_key_on_a_decision(tmp_path: Path) -> None:
+    db = DatabaseManager(tmp_path)
+    db.init_all()
+    importer = BulkImporter(NodeRepository(db))
+
+    with pytest.raises(ValueError, match="unknown keys"):
+        importer.import_dict({"decisions": [{"id": "decision-D1", "title": "Q", "bogus": 1}]})

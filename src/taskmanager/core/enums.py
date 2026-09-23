@@ -6,6 +6,7 @@ class NodeKind(StrEnum):
     PLAN = "plan"
     TASK = "task"
     REVIEW_GATE = "review_gate"
+    DECISION = "decision"
 
 
 class NodeStatus(StrEnum):
@@ -29,6 +30,9 @@ class VirtualStatus(StrEnum):
     # task's active lease -- ready by the dependency graph, not claimable right now. Distinct
     # from BLOCKED so a reader isn't sent to check dependencies that are, in fact, all clear.
     BLOCKED_BY_LEASE = "BLOCKED_BY_LEASE"
+    # Every non-decision dependency is satisfied, but at least one depends_on edge points at an
+    # open decision -- ready by the graph once it is answered or withdrawn, not before.
+    AWAITING_DECISION = "AWAITING_DECISION"
     READY = "READY"
     IN_FLIGHT = "IN_FLIGHT"
 
@@ -101,6 +105,13 @@ class LedgerCommand(StrEnum):
     TASK_MOVE = "task_move"
     SECTION_REMOVE = "section_remove"
     LEASE_RELEASE = "lease_release"
+    DECISION_ADD = "decision_add"
+    DECISION_ANSWER = "decision_answer"
+    DECISION_REOPEN = "decision_reopen"
+    DECISION_WITHDRAW = "decision_withdraw"
+    DECISION_LINK = "decision_link"
+    ATTACH = "attach"
+    DETACH = "detach"
 
 
 class SearchTargetType(StrEnum):
