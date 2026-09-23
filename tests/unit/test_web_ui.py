@@ -576,3 +576,36 @@ def test_api_helper_surfaces_the_servers_own_refusal_message() -> None:
     body = _function_body(get_web_html(), "api")
     assert "data && data.detail" in body
     assert "!res.ok" in body
+
+
+def test_attach_file_button_is_in_the_tab_order() -> None:
+    # The file input is display:none (out of the tab order by construction); the wrapping
+    # <label> is the reachable control, but a <label> has no native keyboard activation the
+    # way a <button> does, so it needs both a tab stop and its own Enter/Space handler.
+    html = get_web_html()
+    render = _function_body(html, "renderAttachments")
+    assert 'tabindex="0" class="att-add-btn' in render
+    assert 'tabindex="-1">' in render
+    wire = _function_body(html, "wireAttachmentControls")
+    assert "addBtn.addEventListener('keydown'" in wire
+    assert "fileInput.click()" in wire
+
+
+def test_lightbox_is_a_modal_dialog_with_a_focus_trap() -> None:
+    body = _function_body(get_web_html(), "openLightbox")
+    assert "role', 'dialog'" in body
+    assert "aria-modal', 'true'" in body
+    assert "e.key === 'Tab'" in body
+    assert "closeBtn.focus()" in body
+
+
+def test_load_indicator_shows_while_tree_and_graph_are_loading() -> None:
+    # /api/tree and /api/graph each take ~12s on the estate's own 541-task tree; the pane
+    # stayed blank with nothing to tell a slow load from a broken one, on first load and
+    # again after every write.
+    html = get_web_html()
+    assert 'id="load-indicator"' in html
+    body = _function_body(html, "loadAllData")
+    assert "loadIndicator.classList.remove('hidden')" in body
+    assert "loadIndicator.classList.add('hidden')" in body
+    assert "finally" in body

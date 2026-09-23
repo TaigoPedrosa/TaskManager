@@ -324,9 +324,9 @@ function renderAttachments(node, attachments, editable) {
 
   const controls = editable ? `
     <div class="flex items-center gap-2 pt-1.5">
-      <label class="att-add-btn h-7 px-2 flex items-center rounded-md text-[11px] font-medium text-emerald-400 hover:text-emerald-300 hover:bg-zinc-800 border border-dashed border-zinc-700 transition cursor-pointer">
+      <label tabindex="0" class="att-add-btn h-7 px-2 flex items-center rounded-md text-[11px] font-medium text-emerald-400 hover:text-emerald-300 hover:bg-zinc-800 border border-dashed border-zinc-700 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">
         <span>+ Attach file</span>
-        <input type="file" class="att-file-input hidden" aria-label="Attach a file">
+        <input type="file" class="att-file-input hidden" aria-label="Attach a file" tabindex="-1">
       </label>
       ${list.length > 0 ? `<button type="button" class="att-recheck-btn h-7 px-2 rounded-md text-[11px] font-medium text-zinc-300 hover:text-white hover:bg-zinc-800 border border-zinc-700 transition">${renderIcon('rotate-cw', 'w-3 h-3 inline -mt-0.5 mr-1')}Re-check</button>` : ''}
     </div>
@@ -347,6 +347,9 @@ function openLightbox(url, alt) {
   const trigger = document.activeElement;
   const overlay = document.createElement('div');
   overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4';
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-label', alt || 'Image');
   overlay.innerHTML = `
     <button type="button" class="lb-close absolute top-4 right-4 p-2 rounded text-zinc-300 hover:text-white hover:bg-zinc-800" aria-label="Close image">${renderIcon('x', 'w-5 h-5')}</button>
     <img src="${esc(url)}" alt="${esc(alt || '')}" class="max-w-full max-h-full rounded-lg shadow-2xl">
@@ -356,8 +359,17 @@ function openLightbox(url, alt) {
     overlay.remove();
     if (trigger && typeof trigger.focus === 'function' && trigger.isConnected) trigger.focus();
   }
+  // The close button is the lightbox's only focusable element, so trapping focus is just
+  // keeping it there -- Tab used to fall through to the toolbar buttons behind the overlay.
   function onKeydown(e) {
-    if (e.key === 'Escape') close();
+    if (e.key === 'Escape') {
+      close();
+      return;
+    }
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      closeBtn.focus();
+    }
   }
   document.addEventListener('keydown', onKeydown);
   overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
@@ -431,6 +443,18 @@ function wireAttachmentControls(root, node, attachments, editable, afterChange) 
       if (file) await attachFile(node, file, afterChange);
       fileInput.value = '';
     });
+    // The input itself is display:none (tabindex="-1", out of the tab order), so its
+    // wrapping <label> is the tab stop -- but a <label> has no native keyboard activation
+    // the way a <button> or the mouse's own click-through-label behaviour does.
+    const addBtn = root.querySelector('.att-add-btn');
+    if (addBtn) {
+      addBtn.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          fileInput.click();
+        }
+      });
+    }
   }
   root.querySelectorAll('.att-detach-btn').forEach(btn => {
     btn.addEventListener('click', () => detachAttachment(node, btn.getAttribute('data-asset'), afterChange));

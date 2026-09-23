@@ -91,6 +91,15 @@
     <div id="stats-digest" class="flex items-center justify-center gap-1 flex-wrap text-xs"></div>
   </header>
 
+  <!-- On the estate's own 541-task tree, /api/tree and /api/graph each take ~12s; with
+       nothing here the document/graph pane just stayed blank for that whole stretch, on
+       first load and again after every write, with no way to tell a slow load from a
+       broken one. -->
+  <div id="load-indicator" role="status" aria-live="polite" class="hidden fixed top-0 inset-x-0 z-50">
+    <div class="h-0.5 bg-emerald-500 animate-pulse"></div>
+    <span class="sr-only">Loading…</span>
+  </div>
+
   <!-- Status legend -->
   <div id="legend-panel" role="dialog" aria-label="Status legend" class="hidden fixed top-16 right-4 w-[26rem] max-w-[calc(100vw-2rem)] max-h-[75vh] overflow-y-auto z-40 rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl p-4 space-y-2">
     <div class="flex items-start justify-between gap-3">

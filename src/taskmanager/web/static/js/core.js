@@ -48,6 +48,7 @@ const legendPanel = document.getElementById('legend-panel');
 const legendBody = document.getElementById('legend-body');
 const legendCloseBtn = document.getElementById('legend-close-btn');
 const toolbarActions = document.getElementById('toolbar-actions');
+const loadIndicator = document.getElementById('load-indicator');
 const dialogRoot = document.getElementById('dialog-root');
 const toastRoot = document.getElementById('toast-root');
 toastRoot.className = 'fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2 pointer-events-none';
@@ -327,6 +328,7 @@ async function loadAllData() {
     return;
   }
 
+  loadIndicator.classList.remove('hidden');
   try {
     const [treeRes, graphRes, statsRes] = await Promise.all([
       fetch('/api/tree'),
@@ -342,6 +344,8 @@ async function loadAllData() {
     renderGraph(graphData);
   } catch (err) {
     console.error('Failed to load data:', err);
+  } finally {
+    loadIndicator.classList.add('hidden');
   }
 }
 
