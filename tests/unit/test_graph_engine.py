@@ -587,6 +587,37 @@ def test_blocked_dependency_outranks_awaiting_decision(
     assert engine.resolve_task_state("T01") == VirtualStatus.AWAITING_DECISION
 
 
+def test_a_claimed_task_reads_awaiting_decision_and_falls_back_when_answered(
+    repos: tuple[NodeRepository, RuntimeRepository, GraphEngine],
+) -> None:
+    """A fixer claiming a WAITING_FIXES task blocked on an open decision has nothing to fix --
+    the state has to say AWAITING_DECISION, not the stored status, or `tm run start` claims it
+    into an empty fix round (repro: align-fix-profiles-api-replan-preview, two empty rounds)."""
+    node_repo, _, engine = repos
+
+    task = Node(id="T01", kind=NodeKind.TASK, title="Task", status=NodeStatus.WAITING_FIXES)
+    decision = Node(
+        id="decision-D1", kind=NodeKind.DECISION, title="Which way?", status=NodeStatus.NOT_STARTED
+    )
+    node_repo.save_node(task)
+    node_repo.save_node(decision)
+    node_repo.add_relation(
+        NodeRelation(
+            source_id="T01", target_id="decision-D1", relation_type=RelationType.DEPENDS_ON
+        )
+    )
+
+    assert engine.resolve_task_state("T01") == VirtualStatus.AWAITING_DECISION
+
+    decision.status = NodeStatus.COMPLETED
+    node_repo.save_node(decision)
+    assert engine.resolve_task_state("T01") == NodeStatus.WAITING_FIXES
+
+    decision.status = NodeStatus.ABANDONED
+    node_repo.save_node(decision)
+    assert engine.resolve_task_state("T01") == NodeStatus.WAITING_FIXES
+
+
 def test_plan_status_rollup_counts_awaiting_decision_as_blocked(
     repos: tuple[NodeRepository, RuntimeRepository, GraphEngine],
 ) -> None:

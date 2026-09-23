@@ -57,6 +57,19 @@ class GraphEngine:
         lease = self.runtime_repo.get_lease(task_id)
         return lease is not None and self._is_lease_active(lease)
 
+    def _has_open_decision(self, deps: list[tuple[str, NodeStatus]]) -> bool:
+        # A decision's own status is Open=NOT_STARTED, Answered=COMPLETED,
+        # Withdrawn=ABANDONED -- met by either terminal state, never by the edge's gate.
+        for dep_id, _gate in deps:
+            dep_node = self.node_repo.get_node(dep_id)
+            if (
+                dep_node is not None
+                and dep_node.kind == NodeKind.DECISION
+                and dep_node.status not in (NodeStatus.COMPLETED, NodeStatus.ABANDONED)
+            ):
+                return True
+        return False
+
     def resolve_task_state(self, task_id: str) -> VirtualStatus | NodeStatus:
         node = self.node_repo.get_node(task_id)
         if node is None:
@@ -66,22 +79,22 @@ class GraphEngine:
         if lease is not None and self._is_lease_active(lease):
             return VirtualStatus.IN_FLIGHT
 
-        if node.status != NodeStatus.NOT_STARTED:
-            return node.status
-
         deps = self.node_repo.get_dependency_edges(task_id)
-        awaiting_decision = False
+
+        # An open decision reads as AWAITING_DECISION whatever the stored status -- a task
+        # already claimed past NOT_STARTED (WAITING_REVIEW, WAITING_FIXES, WAITING_MERGE) still
+        # has nothing to do while the owner hasn't ruled, and falls back to the stored status
+        # the moment the decision is answered or withdrawn.
+        if node.status != NodeStatus.NOT_STARTED:
+            return VirtualStatus.AWAITING_DECISION if self._has_open_decision(deps) else node.status
+
         for dep_id, gate in deps:
             dep_node = self.node_repo.get_node(dep_id)
             if dep_node is not None and dep_node.kind == NodeKind.DECISION:
-                # A decision's own status is Open=NOT_STARTED, Answered=COMPLETED,
-                # Withdrawn=ABANDONED -- met by either terminal state, never by the edge's gate.
-                if dep_node.status not in (NodeStatus.COMPLETED, NodeStatus.ABANDONED):
-                    awaiting_decision = True
                 continue
             if dep_node is None or not gate_satisfied(dep_node.status, gate):
                 return VirtualStatus.BLOCKED
-        if awaiting_decision:
+        if self._has_open_decision(deps):
             return VirtualStatus.AWAITING_DECISION
 
         declared_files = self.node_repo.declared_files(task_id)
