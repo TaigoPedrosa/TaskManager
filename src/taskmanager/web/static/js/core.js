@@ -48,6 +48,7 @@ const legendPanel = document.getElementById('legend-panel');
 const legendBody = document.getElementById('legend-body');
 const legendCloseBtn = document.getElementById('legend-close-btn');
 const toolbarActions = document.getElementById('toolbar-actions');
+const loadIndicator = document.getElementById('load-indicator');
 const dialogRoot = document.getElementById('dialog-root');
 const toastRoot = document.getElementById('toast-root');
 toastRoot.className = 'fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2 pointer-events-none';
@@ -113,18 +114,26 @@ function getTheme(status) {
 
 // Mode Switching. The sidebar is a graph-view tool for jumping to a node; it takes
 // no space in Document view so the document pane reads at its own full width.
+// The base shape (h-full aspect-square, matching index.html's own markup) stays fixed;
+// only the active/inactive colour classes toggle. Reassigning the whole className to a
+// differently-shaped string (px-3 py-1.5, no aspect-square) on the first switch was what
+// changed the button's size -- every call after the first kept perpetuating that wrong shape.
+const VIEW_BTN_BASE = 'h-full aspect-square flex items-center justify-center rounded-md font-medium transition';
+const VIEW_BTN_ACTIVE = `${VIEW_BTN_BASE} bg-zinc-800 text-white shadow-sm`;
+const VIEW_BTN_INACTIVE = `${VIEW_BTN_BASE} text-zinc-400 hover:text-white`;
+
 function setViewMode(mode) {
   currentMode = mode;
   if (mode === window.VIEW_MODES.DOCUMENT) {
-    viewDocBtn.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium bg-zinc-800 text-white shadow-sm transition';
-    viewGraphBtn.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium text-zinc-400 hover:text-white transition';
+    viewDocBtn.className = VIEW_BTN_ACTIVE;
+    viewGraphBtn.className = VIEW_BTN_INACTIVE;
     documentPane.classList.remove('hidden');
     graphPane.classList.add('hidden');
     sidebarPane.classList.add('hidden');
     toggleSectionsBtn.classList.remove('hidden');
   } else {
-    viewGraphBtn.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium bg-zinc-800 text-white shadow-sm transition';
-    viewDocBtn.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium text-zinc-400 hover:text-white transition';
+    viewGraphBtn.className = VIEW_BTN_ACTIVE;
+    viewDocBtn.className = VIEW_BTN_INACTIVE;
     documentPane.classList.add('hidden');
     graphPane.classList.remove('hidden');
     sidebarPane.classList.remove('hidden');
@@ -182,6 +191,26 @@ expandAllBtn.addEventListener('click', () => {
 
 function esc(text) {
   return String(text ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
+// Shared by every small absolutely-positioned popover (the tri-state filter popovers, the +
+// New menu): a right-0-anchored popup overflows off-screen when its trigger sits near the
+// left edge of a narrow viewport, and a left-0-anchored one does the same near the right
+// edge. Called after the popup is shown (so getBoundingClientRect reads real geometry), it
+// flips the anchor only when the popup actually overflows either edge.
+function clampToViewport(el, margin = 8) {
+  el.style.left = '';
+  el.style.right = '';
+  let rect = el.getBoundingClientRect();
+  if (rect.right > window.innerWidth - margin) {
+    el.style.left = 'auto';
+    el.style.right = '0px';
+    rect = el.getBoundingClientRect();
+  }
+  if (rect.left < margin) {
+    el.style.left = `${margin}px`;
+    el.style.right = 'auto';
+  }
 }
 
 function statusChip(code, size = 'text-[10px]') {
@@ -307,6 +336,7 @@ async function loadAllData() {
     return;
   }
 
+  loadIndicator.classList.remove('hidden');
   try {
     const [treeRes, graphRes, statsRes] = await Promise.all([
       fetch('/api/tree'),
@@ -322,6 +352,8 @@ async function loadAllData() {
     renderGraph(graphData);
   } catch (err) {
     console.error('Failed to load data:', err);
+  } finally {
+    loadIndicator.classList.add('hidden');
   }
 }
 

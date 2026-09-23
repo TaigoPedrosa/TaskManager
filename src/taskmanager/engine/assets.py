@@ -1,12 +1,18 @@
 import hashlib
 import mimetypes
+import re
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
 MAX_ASSET_BYTES = 20 * 1024 * 1024
+
+# Content-addressed asset names are always 16 hex chars plus the source file's own extension
+# (`store_asset` below); anything else cannot be one of ours, so both the name a caller joins
+# onto `assets_dir` and the name `/assets/{name}` serves are checked against this one pattern.
+ASSET_NAME_RE = re.compile(r"^[0-9a-f]{16}\.[A-Za-z0-9]{1,8}$")
 
 
 class AssetError(ValueError):
@@ -25,8 +31,13 @@ class AttachmentSource(BaseModel):
 
 def is_project_relative(uri: str) -> bool:
     """A source counts as a project file (hashable, checkable) rather than a Figma node or a
-    URL: no scheme separator and not the `figma:<fileKey>:<nodeId>` convention."""
-    return "://" not in uri and not uri.startswith("figma:")
+    URL: no scheme separator, not the `figma:<fileKey>:<nodeId>` convention, and confined to the
+    project root -- an absolute path or a `..` segment would otherwise let `--source` read (and
+    report the hash of) any file on disk, not just one inside the project."""
+    if "://" in uri or uri.startswith("figma:"):
+        return False
+    p = PurePosixPath(uri)
+    return not p.is_absolute() and ".." not in p.parts
 
 
 def store_asset(assets_dir: Path, source: Path) -> tuple[str, str]:

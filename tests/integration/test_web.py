@@ -1,5 +1,6 @@
 """Integration tests for the TaskManager web visualizer and CLI commands."""
 
+import base64
 import json
 import re
 from datetime import UTC, datetime
@@ -32,6 +33,10 @@ from taskmanager.web.app import create_app
 from taskmanager.web.static_export import export_static_html
 
 runner = CliRunner()
+
+_PNG_1PX = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 def test_web_api_endpoints_and_ui(tmp_path: Path) -> None:
@@ -134,6 +139,41 @@ def test_static_html_export(tmp_path: Path) -> None:
     content = result_path.read_text(encoding="utf-8")
     assert "window.STATIC_DATA" in content
     assert "AUTH" in content
+
+
+def test_static_export_embeds_a_sections_own_markdown_image(tmp_path: Path) -> None:
+    # ![capture](evidence/x.png) renders client-side from the raw markdown (marked.parse), so
+    # a relative path resolves against nothing once the file is opened from anywhere but the
+    # exact export location -- the static export has no server left to serve it either.
+    db_mgr = DatabaseManager(tmp_path / ".taskmanager")
+    db_mgr.init_all()
+    node_repo = NodeRepository(db_mgr)
+    node_repo.save_node(Node(id="AUTH", kind=NodeKind.SPEC, title="Auth Spec"))
+    (tmp_path / "evidence").mkdir()
+    (tmp_path / "evidence" / "x.png").write_bytes(_PNG_1PX)
+    node_repo.save_section(
+        NodeSection(
+            node_id="AUTH",
+            section_key="evidence",
+            ordinal=1,
+            header="## Evidence",
+            content="![capture](evidence/x.png)",
+        )
+    )
+
+    out_file = tmp_path / "dashboard.html"
+    content = export_static_html(tmp_path, out_file).read_text(encoding="utf-8")
+
+    # The section's own content is what tree.js/detail.js actually render as markdown client
+    # side; `rendered_markdown` is a separate, unused-by-the-page field this does not touch.
+    static_match = re.search(r"window.STATIC_DATA = (\{.*?\});</script>", content)
+    assert static_match
+    static_data = json.loads(static_match.group(1))
+    section = static_data["tree"][0]["sections"][0]
+    assert (
+        section["content"]
+        == "![capture](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=)"
+    )
 
 
 def test_find_available_port() -> None:
@@ -272,9 +312,37 @@ def test_tree_progress_counts_each_status_separately(every_status_project: Path)
     plan = spec["children"][0]
 
     expected = {code: 1 for code in ALL_STATUS_CODES if code != NodeStatus.NOT_STARTED.value}
-    assert plan["progress"] == {"total": 16, "counts": expected}
+    # SUPERSEDED, ABANDONED and DEFERRED (3 of the 16 tasks) are set aside: they can never
+    # finish, so they leave both `total` and its `done` count rather than diluting them.
+    assert plan["progress"] == {"done": 1, "total": 13, "set_aside": 3, "counts": expected}
     assert spec["progress"] == plan["progress"]
     assert plan["progress"]["counts"]["COMPLETED"] == 1
+
+
+def test_spec_status_in_tree_is_a_rollup_not_its_stored_status(tmp_path: Path) -> None:
+    db_mgr = DatabaseManager(tmp_path / ".taskmanager")
+    db_mgr.init_all()
+    node_repo = NodeRepository(db_mgr)
+    node_repo.save_node(
+        Node(id="S", kind=NodeKind.SPEC, title="Spec", status=NodeStatus.NOT_STARTED)
+    )
+    node_repo.save_node(Node(id="S-P1", kind=NodeKind.PLAN, title="Plan"))
+    node_repo.add_relation(
+        NodeRelation(source_id="S", target_id="S-P1", relation_type=RelationType.CONTAINS)
+    )
+    node_repo.save_node(
+        Node(id="S-P1-T1", kind=NodeKind.TASK, title="Task", status=NodeStatus.COMPLETED)
+    )
+    node_repo.add_relation(
+        NodeRelation(source_id="S-P1", target_id="S-P1-T1", relation_type=RelationType.CONTAINS)
+    )
+
+    tree = TestClient(create_app(tmp_path)).get("/api/tree").json()
+    spec = next(n for n in tree if n["id"] == "S")
+
+    # The stored field never moves; the page reads the live rollup instead (§3.2a).
+    assert spec["status"] == "NOT_STARTED"
+    assert spec["virtual_status"] == "COMPLETED"
 
 
 def test_tree_includes_standalone_plans_alongside_a_spec(tmp_path: Path) -> None:
@@ -332,15 +400,45 @@ def test_tree_task_lists_dependencies_with_their_own_status(every_status_project
         {
             "id": "T-IMPLEMENTING",
             "title": "Task T-IMPLEMENTING",
+            "kind": "task",
             "status": "IMPLEMENTING",
             "finished": False,
         },
         {
             "id": "T-SUPERSEDED",
             "title": "Task T-SUPERSEDED",
+            "kind": "task",
             "status": "SUPERSEDED",
             "finished": True,
         },
+    ]
+
+
+def test_dependency_details_carry_kind_so_the_page_can_tell_a_decision_apart(
+    tmp_path: Path,
+) -> None:
+    # The page shows Open/Answered/Withdrawn for a decision dependency rather than the
+    # NOT_STARTED/COMPLETED/ABANDONED it reuses in storage; it needs the node's own kind to
+    # tell a decision dependency apart from a task one to do that.
+    db_mgr = DatabaseManager(tmp_path / ".taskmanager")
+    db_mgr.init_all()
+    node_repo = NodeRepository(db_mgr)
+    node_repo.save_node(Node(id="T1", kind=NodeKind.TASK, title="Task"))
+    node_repo.save_node(Node(id="decision-D1", kind=NodeKind.DECISION, title="Which way?"))
+    node_repo.add_relation(
+        NodeRelation(source_id="T1", target_id="decision-D1", relation_type=RelationType.DEPENDS_ON)
+    )
+
+    detail = TestClient(create_app(tmp_path)).get("/api/nodes/T1").json()
+
+    assert detail["dependency_details"] == [
+        {
+            "id": "decision-D1",
+            "title": "Which way?",
+            "kind": "decision",
+            "status": "NOT_STARTED",
+            "finished": False,
+        }
     ]
 
 
@@ -381,7 +479,7 @@ def test_static_export_embeds_every_status_and_the_filter_ui(
     static = json.loads(static_match.group(1))
     assert set(themes) == ALL_STATUS_CODES
     assert ALL_STATUS_CODES <= static["stats"].keys()
-    assert static["tree"][0]["progress"]["total"] == 16
+    assert static["tree"][0]["progress"]["total"] == 13
     for element_id in (
         "stats-digest",
         "repo-filter",

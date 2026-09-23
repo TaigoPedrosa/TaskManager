@@ -16,8 +16,10 @@ if (typeof DOMPurify !== 'undefined' && typeof renderSectionBody === 'function')
 
 // Only the statuses a node can actually be set to (NodeStatus). window.STATUS_THEMES also
 // carries the virtual ones (READY, BLOCKED, BLOCKED_BY_LEASE, IN_FLIGHT) a write would 422 on.
+// NOT_STARTED is left out (§3.2a: the web never displays it) -- Reopen is that transition's
+// own button, and a dependency gated on it would be satisfied by every node immediately.
 const REAL_NODE_STATUSES = [
-  'NOT_STARTED', 'IMPLEMENTING', 'WAITING_REVIEW', 'REVIEWING', 'WAITING_FIXES', 'FIXING',
+  'IMPLEMENTING', 'WAITING_REVIEW', 'REVIEWING', 'WAITING_FIXES', 'FIXING',
   'WAITING_MERGE', 'MERGING', 'COMPLETED', 'SUPERSEDED', 'ABANDONED', 'DEFERRED'
 ];
 
@@ -72,6 +74,19 @@ function openDialog({ title, bodyHtml, onMount, onSubmit, submitLabel = 'Save', 
       .filter(el => !el.disabled && el.getClientRects().length > 0);
   }
 
+  // The header's own close (x) button is the first focusable in DOM order, ahead of every
+  // field the form actually asks for -- initial focus prefers a field inside .dlg-form when
+  // one exists, falling back to the panel's first focusable (the close button) only when a
+  // dialog has none (a bare confirm).
+  function firstFieldOrFallback() {
+    const form = panel.querySelector('.dlg-form');
+    const inForm = form
+      ? Array.from(form.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+        .filter(el => !el.disabled && el.getClientRects().length > 0)
+      : [];
+    return inForm[0] || focusables()[0] || panel;
+  }
+
   function close() {
     document.removeEventListener('keydown', onKeydown);
     overlay.remove();
@@ -116,18 +131,25 @@ function openDialog({ title, bodyHtml, onMount, onSubmit, submitLabel = 'Save', 
     try {
       await onSubmit(panel, close);
     } catch (err) {
-      errorEl.textContent = err && err.message ? err.message : 'Request failed.';
+      const message = err && err.message ? err.message : 'Request failed.';
+      errorEl.textContent = message;
       errorEl.classList.remove('hidden');
+      toast(message, 'error');
     } finally {
       submitBtn.disabled = false;
     }
   });
 
-  (focusables()[0] || panel).focus();
+  firstFieldOrFallback().focus();
   return { panel, close };
 }
 
-// A confirm is just a dialog whose only field is the warning text.
+// A confirm is just a dialog whose only field is the warning text -- and, unlike an editable
+// form, there is nothing in it left to correct on a refusal, so it closes as soon as the
+// button is pressed rather than staying open for the write plus the reload that follows it.
+// `onConfirm` routinely ends in `await afterWrite(...)`, which reloads the whole tree/graph
+// (seconds on a large estate); leaving the dialog open for that made a Withdraw or a Remove
+// look hung for as long as the reload took, disabled button and all.
 function confirmDialog({ title, message, confirmLabel = 'Confirm', destructive = true, onConfirm }) {
   return openDialog({
     title,
@@ -135,8 +157,12 @@ function confirmDialog({ title, message, confirmLabel = 'Confirm', destructive =
     destructive,
     bodyHtml: `<p class="text-xs text-zinc-300 leading-relaxed">${esc(message)}</p>`,
     onSubmit: async (panel, close) => {
-      await onConfirm();
       close();
+      try {
+        await onConfirm();
+      } catch (err) {
+        toast(err && err.message ? err.message : 'Request failed.', 'error');
+      }
     }
   });
 }
@@ -152,18 +178,31 @@ async function afterWrite(nodeId) {
 
 
 // Frontmatter editor -----------------------------------------------------------------------
-// declared_files (and any array value) edits as one path per line; everything else edits as
-// a single field, parsed back through JSON.parse so a number/bool/object round-trips, and
-// falls back to the raw string when it doesn't parse as JSON.
+// declared_files (and any array-of-strings value) edits as one path per line. A value that is
+// an object, or an array holding anything but strings (attachments, decision, ...), edits as
+// pretty-printed JSON instead -- `[value].join('\n')` on an array of objects stringifies each
+// element to the literal text "[object Object]", so treating every array as a path list lost
+// that data on save. Anything else edits as a single field, parsed back through JSON.parse so
+// a number/bool round-trips, and falls back to the raw string when it doesn't parse as JSON.
+
+function frontmatterValueKind(key, value) {
+  if (key === 'declared_files' || (Array.isArray(value) && value.every(v => typeof v === 'string'))) {
+    return 'list';
+  }
+  if (Array.isArray(value) || (value !== null && typeof value === 'object')) return 'json';
+  return 'scalar';
+}
 
 function frontmatterRowHtml(key, value) {
-  const isList = key === 'declared_files' || Array.isArray(value);
-  const valueText = isList
+  const kind = frontmatterValueKind(key, value);
+  const valueText = kind === 'list'
     ? (Array.isArray(value) ? value.join('\n') : String(value ?? ''))
-    : (typeof value === 'string' ? value : JSON.stringify(value ?? ''));
-  const valueField = isList
-    ? `<textarea rows="3" class="fm-value ${TEXTAREA_CLS}" placeholder="one path per line">${esc(valueText)}</textarea>`
-    : `<input type="text" class="fm-value ${INPUT_CLS} font-mono" value="${esc(valueText)}">`;
+    : kind === 'json'
+      ? JSON.stringify(value, null, 2)
+      : (typeof value === 'string' ? value : JSON.stringify(value ?? ''));
+  const valueField = kind === 'scalar'
+    ? `<input type="text" class="fm-value ${INPUT_CLS} font-mono" value="${esc(valueText)}">`
+    : `<textarea rows="${kind === 'json' ? 6 : 3}" class="fm-value ${TEXTAREA_CLS}" data-fm-kind="${kind}" placeholder="${kind === 'json' ? 'JSON' : 'one path per line'}">${esc(valueText)}</textarea>`;
   return `
     <div class="fm-row flex items-start gap-2">
       <div class="flex-1 space-y-1 min-w-0">
@@ -201,8 +240,15 @@ function readFrontmatterEditor(panel) {
       return;
     }
     const valueEl = row.querySelector('.fm-value');
-    if (valueEl.tagName === 'TEXTAREA') {
+    const kind = valueEl.tagName === 'TEXTAREA' ? valueEl.dataset.fmKind : 'scalar';
+    if (kind === 'list') {
       set[key] = valueEl.value.split('\n').map(s => s.trim()).filter(Boolean);
+    } else if (kind === 'json') {
+      try {
+        set[key] = JSON.parse(valueEl.value);
+      } catch (e) {
+        throw new Error(`"${key}" is not valid JSON.`);
+      }
     } else {
       const raw = valueEl.value;
       try {
@@ -478,18 +524,32 @@ async function openMoveDialog(node) {
 
 // Dependencies -----------------------------------------------------------------------------
 
-function openAddDependencyDialog(node) {
+// A search picker over ids and titles (§6.3): a native <datalist> is the whole
+// implementation, so typing "which auth" resolves the same as typing "decision-which".
+// `decisionsOnly` is "Wait on decision" -- the same picker, filtered to decisions, and the
+// same POST (a decision dependency is an ordinary depends_on edge, per §3.2).
+function openAddDependencyDialog(node, decisionsOnly = false) {
+  const candidates = decisionsOnly
+    ? decisionsData.filter(d => d.id !== node.id)
+    : collectAllNodes(treeData).filter(n => n.kind !== 'decision' && n.id !== node.id);
+  const listId = 'dep-picker-list';
+  const optionsHtml = candidates.map(n => `<option value="${esc(n.id)}">${esc(n.title)}</option>`).join('');
   openDialog({
-    title: `Add dependency to ${node.id}`,
+    title: decisionsOnly ? `Wait on decision (${node.id})` : `Add dependency to ${node.id}`,
     submitLabel: 'Add',
     bodyHtml: `
-      ${fieldRow('Depends on (task id)', `<input type="text" required class="dep-id ${INPUT_CLS} font-mono" placeholder="task-id">`)}
-      ${fieldRow('Gate status', `<select class="dep-gate ${SELECT_CLS}">${REAL_NODE_STATUSES.map(s => `<option value="${s}" ${s === 'COMPLETED' ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select>`)}
+      ${fieldRow(decisionsOnly ? 'Decision (id or title)' : 'Depends on (id or title)', `<input type="text" required list="${listId}" class="dep-id ${INPUT_CLS} font-mono" placeholder="${decisionsOnly ? 'decision-id' : 'task-id'}"><datalist id="${listId}">${optionsHtml}</datalist>`)}
+      ${decisionsOnly ? '' : fieldRow('Gate status', `<select class="dep-gate ${SELECT_CLS}">${REAL_NODE_STATUSES.map(s => `<option value="${s}" ${s === 'COMPLETED' ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select>`)}
     `,
     onSubmit: async (panel, close) => {
-      const id = panel.querySelector('.dep-id').value.trim();
-      if (!id) throw new Error('Dependency id is required.');
-      const gate = panel.querySelector('.dep-gate').value;
+      const typed = panel.querySelector('.dep-id').value.trim();
+      if (!typed) throw new Error('Dependency id is required.');
+      // The datalist's <option value> is the id; a typed title resolves back to its id so
+      // picking "Which auth flow?" from the list works the same as typing the id directly.
+      const match = candidates.find(n => n.id === typed || n.title === typed);
+      const id = match ? match.id : typed;
+      const gateEl = panel.querySelector('.dep-gate');
+      const gate = gateEl ? gateEl.value : undefined;
       await api('POST', `/api/nodes/${node.id}/dependencies`, { add: [{ id, gate }] });
       toast(`${id} added as a dependency of ${node.id}.`, 'success');
       close();
@@ -606,10 +666,10 @@ function openAddVerificationDialog(node) {
   });
 }
 
-function removeVerification(node, verificationId) {
+function removeVerification(node, verificationId, target) {
   confirmDialog({
     title: `Remove verification?`,
-    message: `Verification #${verificationId} on ${node.id} will be removed.`,
+    message: `The ${target ? `"${target}" ` : ''}verification on ${node.id} will be removed.`,
     confirmLabel: 'Remove',
     onConfirm: async () => {
       await api('DELETE', `/api/nodes/${node.id}/verifications/${verificationId}`);
@@ -659,22 +719,62 @@ function renderNewMenu() {
     open = v;
     pop.classList.toggle('hidden', !open);
     btn.setAttribute('aria-expanded', String(open));
+    // The button sits near the right edge of the toolbar, so a right-0 anchor at 375px
+    // overflowed the popup off-screen to the left (x as low as -66 measured); clamp it back
+    // into the viewport the same way the filter popovers do.
+    if (open) clampToViewport(pop);
   }
-  btn.addEventListener('click', (e) => { e.stopPropagation(); setOpen(!open); });
+  // Live, not captured once: a sibling script appends a fourth menu entry to this same pop
+  // after this function returns, and a snapshot taken here would never include it.
+  const menuItems = () => Array.from(pop.querySelectorAll('[data-new-kind]'));
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setOpen(!open);
+    if (open) menuItems()[0].focus();
+  });
   btn.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') setOpen(false);
+    else if (e.key === 'ArrowDown' && !open) {
+      e.preventDefault();
+      setOpen(true);
+      menuItems()[0].focus();
+    }
   });
   document.addEventListener('click', (e) => {
     if (open && !btn.parentElement.contains(e.target)) setOpen(false);
   });
-  pop.querySelectorAll('[data-new-kind]').forEach(item => {
-    item.addEventListener('click', () => {
+  // role=menu's own keyboard grammar: Esc used to be handled only on the trigger button, so
+  // it closed a menu whose focus had already moved onto one of its items. Arrow keys move
+  // focus among items the way a native <select> or the tri-state popover's rows do.
+  pop.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
       setOpen(false);
-      const kind = item.getAttribute('data-new-kind');
-      if (kind === 'spec') openNewSpecDialog();
-      else if (kind === 'plan') openNewPlanDialog();
-      else if (kind === 'task') openNewTaskDialog();
-    });
+      btn.focus();
+      return;
+    }
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    e.preventDefault();
+    const items = menuItems();
+    const i = items.indexOf(document.activeElement);
+    const next = e.key === 'ArrowDown' ? (i + 1) % items.length : (i - 1 + items.length) % items.length;
+    items[next].focus();
+  });
+  pop.addEventListener('click', (e) => {
+    const item = e.target.closest('[data-new-kind]');
+    if (!item) return;
+    setOpen(false);
+    // openDialog captures document.activeElement as the element to return focus to on close;
+    // the item that was just clicked is already hidden by setOpen(false) above (and, for
+    // Plan/Task, openDialog does not even run until an /api/meta fetch resolves), so by the
+    // time it captures anything the real click target has long since lost focus and the
+    // browser has fallen back to BODY. The trigger button is still in the DOM and is a
+    // reasonable place to return to either way.
+    btn.focus();
+    const kind = item.getAttribute('data-new-kind');
+    if (kind === 'spec') openNewSpecDialog();
+    else if (kind === 'plan') openNewPlanDialog();
+    else if (kind === 'task') openNewTaskDialog();
   });
 }
 

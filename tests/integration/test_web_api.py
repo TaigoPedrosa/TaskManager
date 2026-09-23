@@ -606,6 +606,19 @@ def test_post_attachment_bad_base64_refused(
     assert res.status_code == 400
 
 
+def test_post_attachment_dotdot_filename_refuses_400_not_500(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    # `Path("..").name` is "..", not "" -- joining that onto the temp dir resolves to the
+    # dir itself, and write_bytes there raised an uncaught IsADirectoryError.
+    client, _node_repo, _ledger_repo = api
+    res = client.post(
+        "/api/nodes/SPEC-P1-T1/attachments",
+        json={"filename": "..", "content_base64": "aGk="},
+    )
+    assert res.status_code == 400
+
+
 def test_attachment_check_marks_stale_and_missing(
     api: tuple[TestClient, NodeRepository, LedgerRepository], tmp_path: Path
 ) -> None:
@@ -732,3 +745,136 @@ def test_get_file_refuses_non_image(
     (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
     res = client.get("/api/file", params={"path": "notes.txt"})
     assert res.status_code == 404
+
+
+# -- served files carry headers that stop them running as same-origin documents -------------
+
+
+def test_get_asset_html_attachment_downloads_rather_than_renders(
+    api: tuple[TestClient, NodeRepository, LedgerRepository], tmp_path: Path
+) -> None:
+    client, _node_repo, _ledger_repo = api
+    assets_dir = tmp_path / ".taskmanager" / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    name = "0123456789abcdef.html"
+    (assets_dir / name).write_text("<script>window.__x=1</script>", encoding="utf-8")
+
+    res = client.get(f"/assets/{name}")
+
+    assert res.status_code == 200
+    assert res.headers["x-content-type-options"] == "nosniff"
+    assert res.headers["content-security-policy"] == "sandbox"
+    assert res.headers["content-disposition"].startswith("attachment")
+
+
+def test_get_asset_image_is_inline_but_still_sandboxed(
+    api: tuple[TestClient, NodeRepository, LedgerRepository], tmp_path: Path
+) -> None:
+    client, _node_repo, _ledger_repo = api
+    assets_dir = tmp_path / ".taskmanager" / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    name = "fedcba9876543210.png"
+    (assets_dir / name).write_bytes(_PNG_1PX)
+
+    res = client.get(f"/assets/{name}")
+
+    assert res.status_code == 200
+    assert res.headers["x-content-type-options"] == "nosniff"
+    assert res.headers["content-security-policy"] == "sandbox"
+    assert res.headers["content-disposition"].startswith("inline")
+
+
+def test_get_file_svg_is_still_sandboxed_against_a_direct_open(
+    api: tuple[TestClient, NodeRepository, LedgerRepository], tmp_path: Path
+) -> None:
+    client, _node_repo, _ledger_repo = api
+    (tmp_path / "icon.svg").write_text(
+        "<svg xmlns='http://www.w3.org/2000/svg'><script>window.__x=1</script></svg>",
+        encoding="utf-8",
+    )
+    res = client.get("/api/file", params={"path": "icon.svg"})
+    assert res.status_code == 200
+    assert res.headers["x-content-type-options"] == "nosniff"
+    assert res.headers["content-security-policy"] == "sandbox"
+
+
+# -- Host pinning: DNS rebinding sends a matching Origin and Host, neither the real one -------
+
+
+def test_write_guard_pins_host_against_dns_rebinding(tmp_path: Path) -> None:
+    db_mgr = DatabaseManager(tmp_path / ".taskmanager")
+    db_mgr.init_all()
+    # The real server: bound to 127.0.0.1:6701, as `tm web run` would call it.
+    app = create_app(tmp_path, host="127.0.0.1", port=6701)
+    client = TestClient(app)
+
+    # A rebinding attacker's page resolves its own domain to 127.0.0.1, so the browser sends
+    # that domain in *both* Host and Origin -- comparing them to each other (the old guard)
+    # cannot tell this apart from a legitimate same-origin request.
+    rebind = "rebind.attacker.example:6701"
+    res = client.post(
+        "/api/specs",
+        json={"title": "pwned"},
+        headers={"host": rebind, "origin": f"http://{rebind}"},
+    )
+    assert res.status_code == 403
+
+    ok = client.post(
+        "/api/specs",
+        json={"title": "legit"},
+        headers={"host": "127.0.0.1:6701", "origin": "http://127.0.0.1:6701"},
+    )
+    assert ok.status_code == 201
+
+
+def test_write_guard_accepts_localhost_alias_for_a_loopback_bind(tmp_path: Path) -> None:
+    db_mgr = DatabaseManager(tmp_path / ".taskmanager")
+    db_mgr.init_all()
+    app = create_app(tmp_path, host="127.0.0.1", port=6701)
+    client = TestClient(app)
+    res = client.post(
+        "/api/specs",
+        json={"title": "via localhost"},
+        headers={"host": "localhost:6701", "origin": "http://localhost:6701"},
+    )
+    assert res.status_code == 201
+
+
+# -- static_export.py: an attacker-writable attachment name cannot escape assets_dir ---------
+
+
+def test_static_export_ignores_a_traversal_asset_name(tmp_path: Path) -> None:
+    from taskmanager.core.models import Node
+    from taskmanager.web.static_export import export_static_html
+
+    db_mgr = DatabaseManager(tmp_path / ".taskmanager")
+    db_mgr.init_all()
+    node_repo = NodeRepository(db_mgr)
+    secret_dir = tmp_path.parent / "outside-secret"
+    secret_dir.mkdir(exist_ok=True)
+    (secret_dir / "secret.png").write_bytes(b"PNG-SECRET-BYTES")
+    node_repo.save_node(
+        Node(
+            id="T1",
+            kind=NodeKind.TASK,
+            title="Task",
+            frontmatter={
+                "attachments": [
+                    {
+                        "asset": "../outside-secret/secret.png",
+                        "name": "secret.png",
+                        "caption": "",
+                        "mime": "image/png",
+                    }
+                ]
+            },
+        )
+    )
+    try:
+        out = export_static_html(tmp_path, tmp_path / "out.html")
+        html = out.read_text(encoding="utf-8")
+        assert b"PNG-SECRET-BYTES".decode() not in html
+        assert "SECRET" not in html
+    finally:
+        (secret_dir / "secret.png").unlink()
+        secret_dir.rmdir()

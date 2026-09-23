@@ -187,6 +187,14 @@ function computeDimensionCounts(dimension, valuesOf) {
 }
 
 function updateStatsDigest() {
+  // A rebuild replaces every chip with a new DOM node, so the one that had focus (Enter on a
+  // status chip is a normal way to apply a filter) would otherwise drop to BODY and a
+  // following Shift+Enter would land on nothing. Re-find and refocus its replacement by the
+  // status code it carries, __all__ standing in for the "All tasks" chip.
+  const focusedCode = statsDigest.contains(document.activeElement)
+    ? document.activeElement.dataset.statusCode
+    : null;
+
   statsDigest.innerHTML = '';
   const counts = computeDimensionCounts('status', t => [t.virtual_status || t.status]);
   const total = collectTasks(treeData).filter(t => passesOtherDimensions(t, 'status')).length;
@@ -194,6 +202,7 @@ function updateStatsDigest() {
   const totalChip = document.createElement('button');
   totalChip.className = `flex items-center gap-1 px-2 py-1 rounded-md border text-xs transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${allActive ? 'bg-zinc-800 text-white border-zinc-700' : 'bg-zinc-900/60 text-zinc-400 border-zinc-800 hover:bg-zinc-800'}`;
   totalChip.title = 'All tasks';
+  totalChip.dataset.statusCode = '__all__';
   totalChip.setAttribute('aria-label', `All tasks: ${total}`);
   totalChip.setAttribute('aria-pressed', String(allActive));
   totalChip.innerHTML = `${renderIcon('layers', 'w-3.5 h-3.5')}<strong>${total}</strong>`;
@@ -209,14 +218,19 @@ function updateStatsDigest() {
       divider.className = 'w-px h-4 bg-zinc-800 mx-0.5 flex-shrink-0';
       statsDigest.appendChild(divider);
     }
-    Object.keys(window.STATUS_THEMES).filter(code => window.STATUS_THEMES[code].group === group.code).forEach(code => {
+    // §3.2a: the web never displays NOT_STARTED -- it is a stored status, not a live state,
+    // and a task's own virtual_status is never literally that value (resolve_task_state
+    // always translates it into READY/BLOCKED/... instead), so the chip could only ever
+    // read a count of zero.
+    Object.keys(window.STATUS_THEMES).filter(code => code !== 'NOT_STARTED' && window.STATUS_THEMES[code].group === group.code).forEach(code => {
       const theme = getTheme(code);
       const count = counts[code] || 0;
       const mode = filters.statusMode.get(code);
       const chip = document.createElement('button');
       const modeClass = mode === 'include' ? 'st-mode-include' : mode === 'exclude' ? 'st-mode-exclude' : '';
       chip.className = `st-toggle st-${code} ${modeClass} flex items-center gap-1 px-1.5 py-1 rounded-md text-xs transition hover:brightness-125 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${count === 0 && !mode ? 'opacity-50' : ''}`;
-      chip.title = 'Click: include · Double-click: exclude · Click again: clear';
+      chip.title = `${theme.label} · ${triModeLabel(mode)}`;
+      chip.dataset.statusCode = code;
       chip.setAttribute('aria-label', `Status ${theme.label}: ${triModeLabel(mode)}`);
       chip.innerHTML = `${renderIcon(theme.icon, 'w-3.5 h-3.5')}<strong>${count}</strong>`;
       triStateHandlers(chip, () => filters.statusMode.get(code), (mode) => {
@@ -226,6 +240,11 @@ function updateStatsDigest() {
       statsDigest.appendChild(chip);
     });
   });
+
+  if (focusedCode) {
+    const toFocus = statsDigest.querySelector(`[data-status-code="${CSS.escape(focusedCode)}"]`);
+    if (toFocus) toFocus.focus();
+  }
 }
 
 
@@ -244,9 +263,18 @@ function collectTasks(nodes, specCtx = null, out = []) {
   return out;
 }
 
+// Every non-task node too (a dependency can target a spec, plan or task) -- used by the
+// dependency picker's <datalist>, never by the task-only filters above.
+function collectAllNodes(nodes, out = []) {
+  nodes.forEach(n => {
+    out.push(n);
+    collectAllNodes(n.children || [], out);
+  });
+  return out;
+}
+
 const TRI_ICON_PLUS = '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>';
 const TRI_ICON_MINUS = '<line x1="5" y1="12" x2="19" y2="12"/>';
-const TRI_ICON_CIRCLE = '<circle cx="12" cy="12" r="10"/>';
 
 // Not from the page's own icon sprite (that registry is a different task's file): three
 // small inline glyphs in the same stroke style, used only inside a tri-state segmented
@@ -279,10 +307,13 @@ function createTriStatePopover(container, { label, dimension, getOptions, modeMa
     onChange();
   }
 
-  function triBtn(mode, iconInner, activeClasses, title) {
+  // §6.2: exactly two toggle buttons, no third neutral one -- clicking the already-selected
+  // one is how a value returns to neutral. Plus is green only when included, minus is red
+  // only when excluded; unselected is always the same gray, never the other's colour.
+  function triBtn(mode, iconInner, isActive, activeClasses, title) {
     return `
-      <button type="button" data-mode="${mode}" title="${title}" aria-label="${title}"
-        class="w-5 h-5 flex items-center justify-center rounded transition text-zinc-500 hover:bg-zinc-700 hover:text-zinc-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${activeClasses}">
+      <button type="button" data-mode="${mode}" title="${title}" aria-label="${title}" aria-pressed="${isActive}"
+        class="w-5 h-5 flex items-center justify-center rounded transition hover:bg-zinc-700 hover:text-zinc-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${isActive ? activeClasses : 'text-zinc-500'}">
         ${triIcon(iconInner)}
       </button>`;
   }
@@ -295,15 +326,14 @@ function createTriStatePopover(container, { label, dimension, getOptions, modeMa
       : options.map(o => {
         const mode = modeMap.get(o.value);
         return `
-          <div class="tri-row flex items-center justify-between gap-2 px-2 py-1 rounded hover:bg-zinc-800 cursor-pointer text-xs text-zinc-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-inset"
-            data-value="${esc(o.value)}" tabindex="0" role="button"
-            title="Click: include · Double-click: exclude · Click again: clear"
-            aria-label="${esc(dimension)} ${esc(o.label)}: ${triModeLabel(mode)}">
-            <span class="truncate flex-1">${esc(o.label)} <span class="text-zinc-500">(${o.count})</span></span>
+          <div class="tri-row flex items-center justify-between gap-2 px-2 py-1 rounded hover:bg-zinc-800 cursor-pointer text-xs text-zinc-200"
+            data-value="${esc(o.value)}"
+            title="${esc(dimension)} ${esc(o.label)} · ${triModeLabel(mode)}">
+            <span class="truncate min-w-0 flex-1">${esc(o.label)}</span>
+            <span class="text-zinc-400 flex-shrink-0">(${o.count})</span>
             <span class="flex items-center gap-0.5 flex-shrink-0">
-              ${triBtn('include', TRI_ICON_PLUS, mode === 'include' ? 'bg-emerald-600 text-white hover:bg-emerald-500' : '', 'Include ' + o.label)}
-              ${triBtn('exclude', TRI_ICON_MINUS, mode === 'exclude' ? 'bg-zinc-500 text-white hover:bg-zinc-400' : '', 'Exclude ' + o.label)}
-              ${triBtn('neutral', TRI_ICON_CIRCLE, !mode ? 'bg-zinc-700 text-zinc-200' : '', 'Clear ' + o.label)}
+              ${triBtn('include', TRI_ICON_PLUS, mode === 'include', 'bg-emerald-600 text-white hover:bg-emerald-500', 'Include ' + o.label)}
+              ${triBtn('exclude', TRI_ICON_MINUS, mode === 'exclude', 'bg-red-600 text-white hover:bg-red-500', 'Exclude ' + o.label)}
             </span>
           </div>
         `;
@@ -312,13 +342,28 @@ function createTriStatePopover(container, { label, dimension, getOptions, modeMa
       const value = row.getAttribute('data-value');
       row.querySelectorAll('button[data-mode]').forEach(btn => {
         btn.addEventListener('click', (e) => {
+          // Stopped so the row's own click/dblclick gesture (below) never fires a second,
+          // conflicting toggle underneath a button click.
           e.stopPropagation();
-          setValueMode(value, btn.dataset.mode === 'neutral' ? null : btn.dataset.mode);
+          // Clicking the selected one clears it; clicking the other one selects it and
+          // deselects whichever was selected before (there is only ever one mode per value).
+          const current = modeMap.get(value);
+          setValueMode(value, current === btn.dataset.mode ? null : btn.dataset.mode);
         });
         btn.addEventListener('dblclick', (e) => e.stopPropagation());
       });
+      // The row's own label area follows the same click/double-click gesture as a status
+      // chip; the two buttons are its keyboard path, since a row that were itself a focusable
+      // button-role widget wrapping real buttons would be a nested-interactive axe violation.
       triStateHandlers(row, () => modeMap.get(value), (mode) => setValueMode(value, mode));
     });
+  }
+
+  function close(returnFocus) {
+    if (!open) return;
+    open = false;
+    render();
+    if (returnFocus) container.querySelector('.tri-btn-main').focus();
   }
 
   function render() {
@@ -327,16 +372,18 @@ function createTriStatePopover(container, { label, dimension, getOptions, modeMa
     btn.querySelector('.tri-label').textContent = summary();
     btn.className = `tri-btn-main h-8 min-w-[6.5rem] flex items-center justify-between gap-1 px-2.5 rounded-lg border text-xs transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${active ? 'bg-zinc-800 text-white border-emerald-600' : 'bg-zinc-950 text-zinc-300 border-zinc-800 hover:bg-zinc-900'}`;
     btn.setAttribute('aria-expanded', String(open));
-    container.querySelector('.tri-pop').classList.toggle('hidden', !open);
+    const pop = container.querySelector('.tri-pop');
+    pop.classList.toggle('hidden', !open);
     renderOptions();
+    if (open) clampToViewport(pop);
   }
 
   container.innerHTML = `
-    <button type="button" class="tri-btn-main" aria-haspopup="listbox">
+    <button type="button" class="tri-btn-main" aria-haspopup="true">
       <span class="tri-label">${esc(label)}</span>
       ${renderIcon('chevron-down', 'w-3 h-3')}
     </button>
-    <div class="tri-pop absolute z-30 mt-1 w-56 max-h-64 overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl p-1 hidden" role="listbox"></div>
+    <div class="tri-pop absolute z-30 mt-1 w-56 max-w-[calc(100vw-1rem)] max-h-64 overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl p-1 hidden" role="group" aria-label="${esc(dimension)} values"></div>
   `;
   container.querySelector('.tri-btn-main').addEventListener('click', (e) => {
     e.stopPropagation();
@@ -344,9 +391,12 @@ function createTriStatePopover(container, { label, dimension, getOptions, modeMa
     render();
   });
   document.addEventListener('click', (e) => {
-    if (open && !container.contains(e.target)) {
-      open = false;
-      render();
+    if (open && !container.contains(e.target)) close(false);
+  });
+  container.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && open) {
+      e.preventDefault();
+      close(true);
     }
   });
 
@@ -499,7 +549,7 @@ clearFiltersBtn.addEventListener('click', () => {
 // Legend
 function renderLegend() {
   legendBody.innerHTML = window.STATUS_GROUPS.map(group => {
-    const rows = Object.values(window.STATUS_THEMES).filter(t => t.group === group.code).map(t => `
+    const rows = Object.values(window.STATUS_THEMES).filter(t => t.code !== 'NOT_STARTED' && t.group === group.code).map(t => `
       <div class="flex items-start gap-2 py-1">
         <div class="w-36 flex-shrink-0">${statusChip(t.code)}</div>
         <p class="text-xs text-zinc-300">${esc(t.description)}</p>

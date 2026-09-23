@@ -31,8 +31,19 @@ function decisionStatusLabel(status) {
   return tab ? tab.label : status;
 }
 
+// A decision dependency row (blockers/dependencies/dependents) used to fall through to
+// statusIcon(), which reads NodeStatus/VirtualStatus themes and has no entry that reads
+// "Open" -- an open decision showed the dashed "Not Started" icon instead.
+const DECISION_STATUS_ICON = { NOT_STARTED: 'help-circle', COMPLETED: 'check-circle-2', ABANDONED: 'x-circle' };
+function decisionStatusIcon(status, size = 'w-3.5 h-3.5') {
+  const icon = DECISION_STATUS_ICON[status] || 'help-circle';
+  return `<span class="flex-shrink-0" title="${esc(decisionStatusLabel(status))}">${renderIcon(icon, size)}</span>`;
+}
+
 
 // Data ---------------------------------------------------------------------------------------
+
+let decisionsLoadFailed = false;
 
 async function refreshDecisionsData() {
   if (isStaticMode) {
@@ -40,9 +51,15 @@ async function refreshDecisionsData() {
   } else {
     try {
       decisionsData = await api('GET', '/api/decisions');
+      decisionsLoadFailed = false;
     } catch (e) {
+      // A load failure used to read as "No open decisions." -- an empty queue, not a broken
+      // one -- with the badge hiding too, which is the one case that most looks like nothing
+      // is wrong.
       console.error('Failed to load decisions:', e);
       decisionsData = [];
+      decisionsLoadFailed = true;
+      toast(`Could not load decisions: ${e.message}`, 'error');
     }
   }
   updateDecisionsBadge();
@@ -97,8 +114,8 @@ if (typeof setViewMode === 'function') {
       sidebarPane.classList.add('hidden');
       decisionsPane.classList.remove('hidden');
       toggleSectionsBtn.classList.add('hidden');
-      viewDocBtn.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium text-zinc-400 hover:text-white transition';
-      viewGraphBtn.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium text-zinc-400 hover:text-white transition';
+      viewDocBtn.className = VIEW_BTN_INACTIVE;
+      viewGraphBtn.className = VIEW_BTN_INACTIVE;
       if (decisionsBtn) decisionsBtn.className = decisionsBtn.className.replace('bg-zinc-900', 'bg-zinc-800').replace('text-zinc-400', 'text-white');
       renderDecisionsView();
       return;
@@ -130,14 +147,29 @@ function renderDecisionsTabs() {
     const cls = active
       ? 'bg-zinc-800 text-white'
       : 'text-zinc-400 hover:text-white hover:bg-zinc-900';
-    return `<button type="button" role="tab" aria-selected="${active}" data-tab="${t.key}" class="dec-tab-btn h-7 px-2.5 rounded-md text-xs font-medium transition ${cls}">${t.label} (${count})</button>`;
+    return `<button type="button" id="dec-tab-${t.key}" role="tab" aria-selected="${active}" aria-controls="decisions-list" tabindex="${active ? '0' : '-1'}" data-tab="${t.key}" class="dec-tab-btn h-7 px-2.5 rounded-md text-xs font-medium transition ${cls}">${t.label} (${count})</button>`;
   }).join('');
-  decisionsTabsEl.querySelectorAll('.dec-tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      decisionsTab = btn.getAttribute('data-tab');
-      renderDecisionsView();
+  const tabs = Array.from(decisionsTabsEl.querySelectorAll('.dec-tab-btn'));
+  function activate(key, focusIt) {
+    decisionsTab = key;
+    renderDecisionsView();
+    if (focusIt) {
+      const btn = decisionsTabsEl.querySelector(`[data-tab="${key}"]`);
+      if (btn) btn.focus();
+    }
+  }
+  tabs.forEach((btn, i) => {
+    btn.addEventListener('click', () => activate(btn.getAttribute('data-tab'), false));
+    // Standard ARIA tabs pattern: arrow keys move focus and selection together.
+    btn.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+      e.preventDefault();
+      const next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+      activate(next.getAttribute('data-tab'), true);
     });
   });
+  decisionsListEl.setAttribute('role', 'tabpanel');
+  decisionsListEl.setAttribute('aria-labelledby', `dec-tab-${decisionsTab}`);
 }
 
 function decisionAgeText(iso) {
@@ -151,6 +183,12 @@ function renderDecisionsList() {
       ? (b.priority - a.priority) || (new Date(a.created_at) - new Date(b.created_at))
       : (new Date(b.created_at) - new Date(a.created_at)));
 
+  if (decisionsLoadFailed) {
+    decisionsListEl.innerHTML = `<div role="alert" class="text-xs text-red-400 px-2 py-6 text-center">Could not load decisions. <button type="button" class="dec-retry-btn underline">Retry</button></div>`;
+    const retryBtn = decisionsListEl.querySelector('.dec-retry-btn');
+    if (retryBtn) retryBtn.addEventListener('click', refreshDecisionsData);
+    return;
+  }
   if (rows.length === 0) {
     decisionsListEl.innerHTML = `<div class="text-xs text-zinc-500 italic px-2 py-6 text-center">No ${decisionsTab} decisions.</div>`;
     return;
@@ -197,15 +235,17 @@ function optionCardHtml(opt, isChosen, selectable) {
     ? `${base} bg-emerald-950/40 border-emerald-600`
     : `${base} bg-zinc-900/60 border-zinc-800 ${selectable ? 'hover:border-zinc-600 cursor-pointer' : ''}`;
   const tag = selectable ? 'button' : 'div';
-  const typeAttr = selectable ? 'type="button"' : '';
+  // At most one option is ever chosen at a time, so a selectable card is a radio, not a
+  // plain toggle button -- a screen reader otherwise never announces which one is selected.
+  const roleAttrs = selectable ? `type="button" role="radio" aria-checked="${isChosen}"` : '';
   return `
-    <${tag} ${typeAttr} class="dec-option-card ${cls}" data-option-key="${esc(opt.key)}">
+    <${tag} ${roleAttrs} class="dec-option-card ${cls}" data-option-key="${esc(opt.key)}">
       <div class="flex items-center gap-2">
         <span class="text-sm font-medium text-zinc-100">${esc(opt.label)}</span>
         ${opt.recommended ? '<span class="px-1.5 py-0.5 rounded-full bg-emerald-950/60 text-emerald-300 border border-emerald-800/60 text-[10px] font-medium">Recommended</span>' : ''}
         ${isChosen ? `<span class="ml-auto">${renderIcon('check-circle-2', 'w-4 h-4 text-emerald-400')}</span>` : ''}
       </div>
-      ${opt.description ? `<div class="text-xs text-zinc-400">${esc(opt.description)}</div>` : ''}
+      ${opt.description ? `<div class="prose prose-invert prose-sm max-w-none text-xs text-zinc-400">${renderSectionBody(opt.description)}</div>` : ''}
     </${tag}>
   `;
 }
@@ -230,12 +270,22 @@ function renderDecisionDetail(id) {
         Raised by ${esc(data.raised_by)}
       </button>` : '';
 
+    // §6.4: open decisions offer editing of blocked tasks. A withdrawn/answered decision only
+    // ever shows the read-only chip list -- removing a block from one that already resolved
+    // wouldn't change anything downstream, since the tasks it unblocked have already moved on.
+    const canEditBlocks = isOpen && editable;
     const waiting = detail.dependent_details || [];
-    const waitingHtml = waiting.length ? `
+    const waitingHtml = (waiting.length || canEditBlocks) ? `
       <div class="space-y-1.5">
         <div class="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Waiting on this (${waiting.length})</div>
-        <div class="flex flex-wrap gap-1.5">
-          ${waiting.map(t => `<button type="button" class="dec-task-link flex items-center gap-1.5 px-2 py-1 rounded-lg bg-zinc-900/60 border border-zinc-800 hover:border-zinc-600 transition" data-task-id="${esc(t.id)}">${statusIcon(t.status, 'w-3.5 h-3.5')}<span class="font-mono text-[11px] text-zinc-300">${esc(t.id)}</span></button>`).join('')}
+        <div class="flex flex-wrap gap-1.5 items-center">
+          ${waiting.map(t => `
+            <span class="dec-waiting-chip flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-lg bg-zinc-900/60 border border-zinc-800">
+              <button type="button" class="dec-task-link flex items-center gap-1.5" data-task-id="${esc(t.id)}">${statusIcon(t.status, 'w-3.5 h-3.5')}<span class="font-mono text-[11px] text-zinc-300">${esc(t.id)}</span></button>
+              ${canEditBlocks ? `<button type="button" class="dec-block-remove p-0.5 rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-800" data-task-id="${esc(t.id)}" aria-label="Stop ${esc(t.id)} waiting on this decision">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
+            </span>
+          `).join('')}
+          ${canEditBlocks ? `<button type="button" class="dec-block-add h-7 px-2 rounded-md text-[11px] font-medium text-emerald-400 hover:text-emerald-300 hover:bg-zinc-800 border border-dashed border-zinc-700 transition">+ Add task</button>` : ''}
         </div>
       </div>` : '';
 
@@ -253,7 +303,7 @@ function renderDecisionDetail(id) {
           <div class="text-sm text-zinc-100">${esc(chosenLabel || data.answer.text || '(no answer text)')}</div>
           ${chosenLabel && data.answer.text ? `<div class="text-xs text-zinc-400">${esc(data.answer.text)}</div>` : ''}
           ${data.answer.rationale ? `<div class="text-xs text-zinc-400"><span class="font-semibold text-zinc-300">Rationale:</span> ${esc(data.answer.rationale)}</div>` : ''}
-          <div class="text-[11px] text-zinc-500">by ${esc(data.answer.answered_by)} &middot; ${esc(new Date(data.answer.answered_at).toLocaleString())}</div>
+          <div class="text-[11px] text-zinc-400">by ${esc(data.answer.answered_by)} &middot; ${esc(new Date(data.answer.answered_at).toLocaleString())}</div>
         </div>
       `;
     } else if (node.status === 'ABANDONED') {
@@ -265,7 +315,7 @@ function renderDecisionDetail(id) {
       const options = data.options || [];
       answerFormHtml = `
         <form class="dec-answer-form space-y-3">
-          ${options.length ? `<div class="grid gap-2">${options.map(o => optionCardHtml(o, false, true)).join('')}</div>` : ''}
+          ${options.length ? `<div class="grid gap-2" role="radiogroup" aria-label="Options">${options.map(o => optionCardHtml(o, false, true)).join('')}</div>` : ''}
           ${data.allow_custom !== false ? `
             <div class="dec-custom-card p-3 rounded-lg border border-zinc-800 bg-zinc-900/60 space-y-1.5">
               <div class="text-xs font-medium text-zinc-300">Custom answer</div>
@@ -313,6 +363,7 @@ function renderDecisionDetail(id) {
     `;
 
     attachSectionToggleHandlers(decisionsDetailEl);
+    attachGroupHeaderHandlers(decisionsDetailEl, () => renderDecisionDetail(id));
     wireAttachmentControls(decisionsDetailEl, node, attachments, editable, () => renderDecisionDetail(id));
 
     decisionsDetailEl.querySelectorAll('.dec-task-link, .dec-raised-by-link').forEach(btn => {
@@ -321,6 +372,46 @@ function renderDecisionDetail(id) {
         selectNode(btn.getAttribute('data-task-id'));
       });
     });
+
+    decisionsDetailEl.querySelectorAll('.dec-block-remove').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const taskId = btn.getAttribute('data-task-id');
+        confirmDialog({
+          title: `Stop ${taskId} waiting on ${node.id}?`,
+          message: `${taskId} will no longer depend on this decision.`,
+          confirmLabel: 'Remove',
+          onConfirm: async () => {
+            await api('POST', `/api/decisions/${node.id}/blocks`, { remove: [taskId] });
+            toast(`${taskId} no longer waits on ${node.id}.`, 'success');
+            await afterDecisionWrite(node.id);
+          }
+        });
+      });
+    });
+    const addBlockBtn = decisionsDetailEl.querySelector('.dec-block-add');
+    if (addBlockBtn) {
+      addBlockBtn.addEventListener('click', () => {
+        const taskOptions = collectTasks(treeData);
+        const listId = 'dec-block-picker-list';
+        openDialog({
+          title: `Block a task on ${node.id}`,
+          submitLabel: 'Add',
+          bodyHtml: `
+            ${fieldRow('Task (id or title)', `<input type="text" required list="${listId}" class="dbk-task ${INPUT_CLS} font-mono" placeholder="task-id"><datalist id="${listId}">${taskOptions.map(t => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join('')}</datalist>`)}
+          `,
+          onSubmit: async (panel, close) => {
+            const typed = panel.querySelector('.dbk-task').value.trim();
+            if (!typed) throw new Error('Task id is required.');
+            const match = taskOptions.find(t => t.id === typed || t.title === typed);
+            const taskId = match ? match.id : typed;
+            await api('POST', `/api/decisions/${node.id}/blocks`, { add: [taskId] });
+            toast(`${taskId} now waits on ${node.id}.`, 'success');
+            close();
+            await afterDecisionWrite(node.id);
+          }
+        });
+      });
+    }
 
     wireDecisionAnswerForm(decisionsDetailEl, node.id);
 
@@ -351,21 +442,34 @@ function wireDecisionAnswerForm(root, decisionId) {
     submitBtn.disabled = !chosenOption && !hasCustom;
   }
 
+  // Shared by an option click and a custom-text edit, so the two can never disagree about
+  // which card (if any) is actually highlighted -- typing a custom answer used to leave the
+  // previously picked card's highlight in place even though it no longer had chosenOption.
+  function paintChosen(chosenCard) {
+    form.querySelectorAll('.dec-option-card').forEach(c => {
+      const isChosen = c === chosenCard;
+      c.classList.toggle('border-emerald-600', isChosen);
+      c.classList.toggle('bg-emerald-950/40', isChosen);
+      c.classList.toggle('bg-zinc-900/60', !isChosen);
+      c.classList.toggle('border-zinc-800', !isChosen);
+      c.setAttribute('aria-checked', String(isChosen));
+    });
+  }
+
   form.querySelectorAll('.dec-option-card').forEach(card => {
     card.addEventListener('click', () => {
       chosenOption = card.getAttribute('data-option-key');
-      form.querySelectorAll('.dec-option-card').forEach(c => {
-        c.classList.toggle('border-emerald-600', c === card);
-        c.classList.toggle('bg-emerald-950/40', c === card);
-        c.classList.toggle('bg-zinc-900/60', c !== card);
-        c.classList.toggle('border-zinc-800', c !== card);
-      });
+      if (customText) customText.value = '';
+      paintChosen(card);
       updateSubmitEnabled();
     });
   });
   if (customText) {
     customText.addEventListener('input', () => {
-      if (customText.value.trim()) chosenOption = null;
+      if (customText.value.trim()) {
+        chosenOption = null;
+        paintChosen(null);
+      }
       updateSubmitEnabled();
     });
   }
@@ -390,13 +494,21 @@ function wireDecisionAnswerForm(root, decisionId) {
   const withdrawBtn = root.querySelector('.dec-withdraw-btn');
   if (withdrawBtn) {
     withdrawBtn.addEventListener('click', () => {
-      confirmDialog({
+      // §6.4: a decision is withdrawn with a reason, so this is a full dialog (a text field)
+      // rather than confirmDialog's plain message-only shape.
+      openDialog({
         title: `Withdraw ${decisionId}?`,
-        message: 'The decision is dropped; tasks waiting on it unblock immediately.',
-        confirmLabel: 'Withdraw',
-        onConfirm: async () => {
-          await api('POST', `/api/decisions/${decisionId}/withdraw`, { reason: '' });
+        submitLabel: 'Withdraw',
+        destructive: true,
+        bodyHtml: `
+          <p class="text-xs text-zinc-300 leading-relaxed">The decision is dropped; tasks waiting on it unblock immediately.</p>
+          ${fieldRow('Reason', `<textarea class="wd-reason ${TEXTAREA_CLS}" rows="2" placeholder="(optional)"></textarea>`)}
+        `,
+        onSubmit: async (panel, close) => {
+          const reason = panel.querySelector('.wd-reason').value.trim();
+          await api('POST', `/api/decisions/${decisionId}/withdraw`, { reason });
           toast(`${decisionId} withdrawn.`, 'success');
+          close();
           await afterDecisionWrite(decisionId);
         }
       });
@@ -427,17 +539,20 @@ function renderDecisionsView() {
 // New decision dialog -----------------------------------------------------------------------
 
 function decisionOptionRowHtml(index, key = '', label = '', description = '', recommended = false) {
+  // The key/label/description inputs were named only by their placeholder, which is not an
+  // accessible name (axe aria-input-field-name); a placeholder disappears the moment there is
+  // a value, an aria-label never does.
   return `
     <div class="dec-opt-row space-y-1.5 p-2 rounded-lg border border-zinc-800" data-opt-index="${index}">
       <div class="flex items-center gap-2">
-        <input type="text" class="dec-opt-key ${INPUT_CLS} font-mono" style="max-width:6rem" placeholder="key" value="${esc(key)}">
-        <input type="text" class="dec-opt-label ${INPUT_CLS}" placeholder="Label" value="${esc(label)}">
+        <input type="text" class="dec-opt-key ${INPUT_CLS} font-mono" style="max-width:6rem" placeholder="key" aria-label="Option key" value="${esc(key)}">
+        <input type="text" class="dec-opt-label ${INPUT_CLS}" placeholder="Label" aria-label="Option label" value="${esc(label)}">
         <label class="flex items-center gap-1 text-[10px] text-zinc-400 flex-shrink-0">
-          <input type="radio" name="dec-opt-recommend" class="dec-opt-recommend" ${recommended ? 'checked' : ''}>rec.
+          <input type="radio" name="dec-opt-recommend" class="dec-opt-recommend" ${recommended ? 'checked' : ''}>Recommended
         </label>
         <button type="button" class="dec-opt-remove p-1 rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-800 flex-shrink-0" aria-label="Remove option">${renderIcon('x', 'w-3 h-3')}</button>
       </div>
-      <input type="text" class="dec-opt-desc ${INPUT_CLS}" placeholder="Description (optional)" value="${esc(description)}">
+      <input type="text" class="dec-opt-desc ${INPUT_CLS}" placeholder="Description (optional)" aria-label="Option description" value="${esc(description)}">
     </div>
   `;
 }
@@ -458,7 +573,7 @@ function openNewDecisionDialog() {
         <div class="nd-opt-rows space-y-2"></div>
       </div>
       <label class="flex items-center gap-2 text-xs text-zinc-300"><input type="checkbox" class="nd-allow-custom rounded border-zinc-600 bg-zinc-950 text-emerald-500 focus:ring-emerald-500" checked>Allow a custom answer</label>
-      ${fieldRow('Blocks tasks (comma separated ids)', `<input type="text" class="nd-blocks ${INPUT_CLS} font-mono" placeholder="(optional)">`)}
+      ${fieldRow('Blocks tasks (comma separated ids)', `<input type="text" class="nd-blocks ${INPUT_CLS} font-mono" list="nd-blocks-list" placeholder="(optional)"><datalist id="nd-blocks-list">${collectTasks(treeData).map(t => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join('')}</datalist>`)}
     `,
     onMount: (panel) => {
       const rows = panel.querySelector('.nd-opt-rows');

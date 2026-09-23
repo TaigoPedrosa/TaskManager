@@ -62,7 +62,7 @@
         <input id="search-box" type="text" placeholder="Filter specs, plans, tasks..." class="h-8 w-full bg-zinc-950 border border-zinc-800 rounded-lg pl-8 pr-3 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
       </div>
 
-      <div class="w-px h-6 bg-zinc-800 flex-shrink-0"></div>
+      <div class="hidden sm:block w-px h-6 bg-zinc-800 flex-shrink-0"></div>
 
       <div class="flex flex-wrap items-center gap-1.5 text-xs">
         <div id="repo-filter" class="relative"></div>
@@ -73,7 +73,7 @@
       </div>
       <div id="toolbar-actions"></div>
 
-      <div class="w-px h-6 bg-zinc-800 flex-shrink-0"></div>
+      <div class="hidden sm:block w-px h-6 bg-zinc-800 flex-shrink-0"></div>
 
       <div class="flex items-center gap-1.5 flex-shrink-0 lg:ml-auto">
         <button id="toggle-sections-btn" title="Expand all sections" aria-label="Expand all sections" class="h-8 aspect-square flex items-center justify-center rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition">
@@ -90,6 +90,15 @@
 
     <div id="stats-digest" class="flex items-center justify-center gap-1 flex-wrap text-xs"></div>
   </header>
+
+  <!-- On the estate's own 541-task tree, /api/tree and /api/graph each take ~12s; with
+       nothing here the document/graph pane just stayed blank for that whole stretch, on
+       first load and again after every write, with no way to tell a slow load from a
+       broken one. -->
+  <div id="load-indicator" role="status" aria-live="polite" class="hidden fixed top-0 inset-x-0 z-50">
+    <div class="h-0.5 bg-emerald-500 animate-pulse"></div>
+    <span class="sr-only">Loading…</span>
+  </div>
 
   <!-- Status legend -->
   <div id="legend-panel" role="dialog" aria-label="Status legend" class="hidden fixed top-16 right-4 w-[26rem] max-w-[calc(100vw-2rem)] max-h-[75vh] overflow-y-auto z-40 rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl p-4 space-y-2">
@@ -113,7 +122,7 @@
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-chevrons-up-down"/></svg>
         </button>
       </div>
-      <div id="tree-list" class="flex-1 overflow-y-auto p-2 space-y-1">
+      <div id="tree-list" role="tree" aria-label="Nodes" class="flex-1 overflow-y-auto p-2 space-y-1">
         <!-- Dynamically Populated Tree -->
       </div>
       <div id="sidebar-resize-handle" title="Drag to resize" class="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-emerald-500/40"></div>
@@ -136,8 +145,10 @@
       </div>
       <div id="network-canvas" class="w-full h-full"></div>
 
-      <!-- Graph Slide-over Node Inspector Drawer -->
-      <div id="graph-inspector" class="hidden absolute top-0 right-0 w-96 h-full bg-zinc-900/95 border-l border-zinc-800 backdrop-blur z-20 flex flex-col shadow-2xl transition-transform duration-200">
+      <!-- Graph Slide-over Node Inspector Drawer. Full width below lg: at 375/768 a fixed
+           384px (w-96) panel next to a 320px sidebar left no usable canvas and, since the
+           sidebar's own width did not yield first, overlapped its action bar outright. -->
+      <div id="graph-inspector" class="hidden absolute top-0 right-0 w-full lg:w-96 h-full bg-zinc-900/95 border-l border-zinc-800 backdrop-blur z-20 flex flex-col shadow-2xl transition-transform duration-200">
         <div class="p-4 border-b border-zinc-800 flex items-start justify-between">
           <div class="space-y-1">
             <div class="flex items-center gap-2">

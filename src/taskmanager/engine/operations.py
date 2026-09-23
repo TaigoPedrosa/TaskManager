@@ -113,11 +113,19 @@ class Operations:
 
     # -- spec / plan / task creation -------------------------------------------------------
 
+    @staticmethod
+    def _validate_priority(priority: int) -> None:
+        if not 1 <= priority <= 100:
+            raise OperationError("priority is 1-100", 400)
+
     def add_spec(
         self, title: str, slug: str | None = None, priority: int = 50, order: int = 0
     ) -> str:
+        self._validate_priority(priority)
         if slug:
             spec_id = slug
+            if self.node_repo.get_node(spec_id) is not None:
+                raise OperationError(f"'{spec_id}' already exists", 409)
         else:
             existing = {n.id for n in self.node_repo.list_nodes(kind=NodeKind.SPEC)}
             counter = 1
@@ -143,8 +151,13 @@ class Operations:
         order: int = 0,
         require_review: bool = False,
     ) -> tuple[str, str | None]:
+        self._validate_priority(priority)
+        if self.node_repo.get_node(spec) is None:
+            raise OperationError(f"spec '{spec}' not found", 404)
         if slug:
             plan_id = f"{spec}-{slug}"
+            if self.node_repo.get_node(plan_id) is not None:
+                raise OperationError(f"'{plan_id}' already exists", 409)
         else:
             children = set(self.node_repo.get_children(spec))
             counter = 1
@@ -186,8 +199,16 @@ class Operations:
         depends_on: list[str] | None = None,
         models: list[str] | None = None,
     ) -> str:
+        self._validate_priority(priority)
+        if self.node_repo.get_node(plan) is None:
+            raise OperationError(f"plan '{plan}' not found", 404)
+        missing_deps = [d for d in (depends_on or []) if self.node_repo.get_node(d) is None]
+        if missing_deps:
+            raise OperationError(f"dependency not found: {', '.join(missing_deps)}", 404)
         if slug:
             task_id = f"{plan}-{slug}"
+            if self.node_repo.get_node(task_id) is not None:
+                raise OperationError(f"'{task_id}' already exists", 409)
         else:
             children = set(self.node_repo.get_children(plan))
             counter = 1
@@ -337,10 +358,16 @@ class Operations:
         )
 
     def move_task(self, task_id: str, plan_id: str) -> None:
-        if self.node_repo.get_node(task_id) is None:
+        task_node = self.node_repo.get_node(task_id)
+        if task_node is None:
             raise OperationError(f"Task '{task_id}' not found", 404)
-        if self.node_repo.get_node(plan_id) is None:
+        if task_node.kind != NodeKind.TASK:
+            raise OperationError(f"'{task_id}' is not a task", 400)
+        plan_node = self.node_repo.get_node(plan_id)
+        if plan_node is None:
             raise OperationError(f"Plan '{plan_id}' not found", 404)
+        if plan_node.kind != NodeKind.PLAN:
+            raise OperationError(f"'{plan_id}' is not a plan", 400)
         with self.node_repo.db.get_spec_connection() as conn:
             row = conn.execute(
                 "SELECT source_id FROM node_relations WHERE target_id = ? AND relation_type = ?",
@@ -365,6 +392,11 @@ class Operations:
         remove_worktree: bool = False,
         section: tuple[str, str, str | None] | None = None,
     ) -> None:
+        node = self.node_repo.get_node(task_id)
+        if node is not None and node.kind == NodeKind.DECISION:
+            raise OperationError(
+                f"'{task_id}' is a decision; use `tm decision answer/withdraw/reopen`", 409
+            )
         # `stop_task` raises before touching the node on every refusal it has (missing task,
         # nothing else today), so a failed status write never reaches the section write below --
         # a ruling can never land without its status.
@@ -381,6 +413,8 @@ class Operations:
             self.set_section(task_id, key, content, header)
 
     def release_lease(self, task_id: str) -> None:
+        if self.node_repo.get_node(task_id) is None:
+            raise OperationError(f"node '{task_id}' not found", 404)
         self.runtime_repo.release_lease(task_id)
         self._ledger(LedgerCommand.LEASE_RELEASE, target_id=task_id)
 
@@ -439,6 +473,8 @@ class Operations:
         target: str,
         pattern: str | None = None,
     ) -> NodeVerification:
+        if self.node_repo.get_node(task_id) is None:
+            raise OperationError(f"task '{task_id}' not found", 404)
         ver = NodeVerification(
             node_id=task_id,
             verification_type=verification_type,
@@ -536,8 +572,17 @@ class Operations:
 
         blocked_tasks = blocks or []
         for task_id in blocked_tasks:
-            if self.node_repo.get_node(task_id) is None:
+            blocked_node = self.node_repo.get_node(task_id)
+            if blocked_node is None:
                 raise OperationError(f"task '{task_id}' not found", 404)
+            if blocked_node.kind != NodeKind.TASK:
+                raise OperationError(f"'{task_id}' is not a task", 400)
+            # The edge is task_id -> decision_id (DEPENDS_ON); would_cause_cycle walks from the
+            # target back toward the source, so it sees the decision-to-be as already existing
+            # were it not brand new -- checked anyway, since a `blocks` list can name a decision
+            # that already depends on `task_id` through some other chain.
+            if self.graph.would_cause_cycle(task_id, decision_id):
+                raise OperationError(f"'{task_id}' -> '{decision_id}' would make a cycle", 409)
         if raised_by is not None and self.node_repo.get_node(raised_by) is None:
             raise OperationError(f"'{raised_by}' not found", 404)
 
@@ -610,6 +655,8 @@ class Operations:
 
     def reopen_decision(self, decision_id: str) -> None:
         node = self._get_decision(decision_id)
+        if node.status == NodeStatus.NOT_STARTED:
+            raise OperationError(f"decision '{decision_id}' is already open", 409)
         data = read_decision(node)
         data.answer = None
         data.withdrawn_reason = ""
@@ -638,8 +685,13 @@ class Operations:
         add_ids = add or []
         remove_ids = remove or []
         for task_id in add_ids:
-            if self.node_repo.get_node(task_id) is None:
+            node = self.node_repo.get_node(task_id)
+            if node is None:
                 raise OperationError(f"task '{task_id}' not found", 404)
+            if node.kind != NodeKind.TASK:
+                raise OperationError(f"'{task_id}' is not a task", 400)
+            if self.graph.would_cause_cycle(task_id, decision_id):
+                raise OperationError(f"'{task_id}' -> '{decision_id}' would make a cycle", 409)
         for task_id in remove_ids:
             if decision_id not in self.node_repo.get_dependencies(task_id):
                 raise OperationError(f"'{task_id}' does not wait on '{decision_id}'", 409)
@@ -736,13 +788,12 @@ class Operations:
         self._ledger(LedgerCommand.ATTACH, target_id=node_id, payload={"asset": asset_name})
         return entry
 
-    def _asset_referenced(self, asset: str, except_node: str | None = None) -> bool:
-        for n in self.node_repo.list_nodes():
-            if n.id == except_node:
-                continue
-            if any(a.get("asset") == asset for a in n.frontmatter.get("attachments") or []):
-                return True
-        return False
+    def _asset_referenced(self, asset: str) -> bool:
+        return any(
+            a.get("asset") == asset
+            for n in self.node_repo.list_nodes()
+            for a in n.frontmatter.get("attachments") or []
+        )
 
     def detach(self, node_id: str, asset: str) -> None:
         node = self.node_repo.get_node(node_id)
@@ -757,7 +808,11 @@ class Operations:
         node.updated_at = datetime.now(tz=UTC)
         self.node_repo.save_node(node)
         self._ledger(LedgerCommand.DETACH, target_id=node_id, payload={"asset": asset})
-        if not self._asset_referenced(asset, except_node=node_id):
+        # `save_node` above already persisted `node_id`'s attachments with the entry removed,
+        # so checking every node (this one included) is correct: a second entry on `node_id`
+        # itself pointing at the same content-addressed asset is exactly the case a per-node
+        # exclusion used to miss, deleting the file while that second entry still referenced it.
+        if not self._asset_referenced(asset):
             (self._assets_dir() / asset).unlink(missing_ok=True)
 
     def list_attachments(self, node_id: str, check: bool = False) -> list[dict[str, Any]]:
@@ -789,4 +844,5 @@ class Operations:
             node.frontmatter["attachments"] = attachments
             node.updated_at = datetime.now(tz=UTC)
             self.node_repo.save_node(node)
+            self._ledger(LedgerCommand.ATTACHMENT_CHECK, target_id=node_id)
         return attachments

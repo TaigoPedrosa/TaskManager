@@ -33,7 +33,11 @@ def _read_static(*parts: str) -> str:
 def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
     embedded_script = ""
     if initial_data is not None:
-        raw_json = json.dumps(initial_data)
+        # A section's own content is user-writable (`PUT /api/nodes/{id}/sections/{key}`) and
+        # ends up inside `initial_data` verbatim; a `</script>` in it would otherwise close this
+        # tag early and run whatever text follows as markup, in the one output (the static
+        # export) that has no server left to sanitise on the way out.
+        raw_json = json.dumps(initial_data).replace("</", "<\\/")
         embedded_script = f"<script>window.STATIC_DATA = {raw_json};</script>"
 
     runtime_data = (
