@@ -197,9 +197,11 @@ function optionCardHtml(opt, isChosen, selectable) {
     ? `${base} bg-emerald-950/40 border-emerald-600`
     : `${base} bg-zinc-900/60 border-zinc-800 ${selectable ? 'hover:border-zinc-600 cursor-pointer' : ''}`;
   const tag = selectable ? 'button' : 'div';
-  const typeAttr = selectable ? 'type="button"' : '';
+  // At most one option is ever chosen at a time, so a selectable card is a radio, not a
+  // plain toggle button -- a screen reader otherwise never announces which one is selected.
+  const roleAttrs = selectable ? `type="button" role="radio" aria-checked="${isChosen}"` : '';
   return `
-    <${tag} ${typeAttr} class="dec-option-card ${cls}" data-option-key="${esc(opt.key)}">
+    <${tag} ${roleAttrs} class="dec-option-card ${cls}" data-option-key="${esc(opt.key)}">
       <div class="flex items-center gap-2">
         <span class="text-sm font-medium text-zinc-100">${esc(opt.label)}</span>
         ${opt.recommended ? '<span class="px-1.5 py-0.5 rounded-full bg-emerald-950/60 text-emerald-300 border border-emerald-800/60 text-[10px] font-medium">Recommended</span>' : ''}
@@ -230,12 +232,22 @@ function renderDecisionDetail(id) {
         Raised by ${esc(data.raised_by)}
       </button>` : '';
 
+    // §6.4: open decisions offer editing of blocked tasks. A withdrawn/answered decision only
+    // ever shows the read-only chip list -- removing a block from one that already resolved
+    // wouldn't change anything downstream, since the tasks it unblocked have already moved on.
+    const canEditBlocks = isOpen && editable;
     const waiting = detail.dependent_details || [];
-    const waitingHtml = waiting.length ? `
+    const waitingHtml = (waiting.length || canEditBlocks) ? `
       <div class="space-y-1.5">
         <div class="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Waiting on this (${waiting.length})</div>
-        <div class="flex flex-wrap gap-1.5">
-          ${waiting.map(t => `<button type="button" class="dec-task-link flex items-center gap-1.5 px-2 py-1 rounded-lg bg-zinc-900/60 border border-zinc-800 hover:border-zinc-600 transition" data-task-id="${esc(t.id)}">${statusIcon(t.status, 'w-3.5 h-3.5')}<span class="font-mono text-[11px] text-zinc-300">${esc(t.id)}</span></button>`).join('')}
+        <div class="flex flex-wrap gap-1.5 items-center">
+          ${waiting.map(t => `
+            <span class="dec-waiting-chip flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-lg bg-zinc-900/60 border border-zinc-800">
+              <button type="button" class="dec-task-link flex items-center gap-1.5" data-task-id="${esc(t.id)}">${statusIcon(t.status, 'w-3.5 h-3.5')}<span class="font-mono text-[11px] text-zinc-300">${esc(t.id)}</span></button>
+              ${canEditBlocks ? `<button type="button" class="dec-block-remove p-0.5 rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-800" data-task-id="${esc(t.id)}" aria-label="Stop ${esc(t.id)} waiting on this decision">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
+            </span>
+          `).join('')}
+          ${canEditBlocks ? `<button type="button" class="dec-block-add h-7 px-2 rounded-md text-[11px] font-medium text-emerald-400 hover:text-emerald-300 hover:bg-zinc-800 border border-dashed border-zinc-700 transition">+ Add task</button>` : ''}
         </div>
       </div>` : '';
 
@@ -265,7 +277,7 @@ function renderDecisionDetail(id) {
       const options = data.options || [];
       answerFormHtml = `
         <form class="dec-answer-form space-y-3">
-          ${options.length ? `<div class="grid gap-2">${options.map(o => optionCardHtml(o, false, true)).join('')}</div>` : ''}
+          ${options.length ? `<div class="grid gap-2" role="radiogroup" aria-label="Options">${options.map(o => optionCardHtml(o, false, true)).join('')}</div>` : ''}
           ${data.allow_custom !== false ? `
             <div class="dec-custom-card p-3 rounded-lg border border-zinc-800 bg-zinc-900/60 space-y-1.5">
               <div class="text-xs font-medium text-zinc-300">Custom answer</div>
@@ -323,6 +335,46 @@ function renderDecisionDetail(id) {
       });
     });
 
+    decisionsDetailEl.querySelectorAll('.dec-block-remove').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const taskId = btn.getAttribute('data-task-id');
+        confirmDialog({
+          title: `Stop ${taskId} waiting on ${node.id}?`,
+          message: `${taskId} will no longer depend on this decision.`,
+          confirmLabel: 'Remove',
+          onConfirm: async () => {
+            await api('POST', `/api/decisions/${node.id}/blocks`, { remove: [taskId] });
+            toast(`${taskId} no longer waits on ${node.id}.`, 'success');
+            await afterDecisionWrite(node.id);
+          }
+        });
+      });
+    });
+    const addBlockBtn = decisionsDetailEl.querySelector('.dec-block-add');
+    if (addBlockBtn) {
+      addBlockBtn.addEventListener('click', () => {
+        const taskOptions = collectTasks(treeData);
+        const listId = 'dec-block-picker-list';
+        openDialog({
+          title: `Block a task on ${node.id}`,
+          submitLabel: 'Add',
+          bodyHtml: `
+            ${fieldRow('Task (id or title)', `<input type="text" required list="${listId}" class="dbk-task ${INPUT_CLS} font-mono" placeholder="task-id"><datalist id="${listId}">${taskOptions.map(t => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join('')}</datalist>`)}
+          `,
+          onSubmit: async (panel, close) => {
+            const typed = panel.querySelector('.dbk-task').value.trim();
+            if (!typed) throw new Error('Task id is required.');
+            const match = taskOptions.find(t => t.id === typed || t.title === typed);
+            const taskId = match ? match.id : typed;
+            await api('POST', `/api/decisions/${node.id}/blocks`, { add: [taskId] });
+            toast(`${taskId} now waits on ${node.id}.`, 'success');
+            close();
+            await afterDecisionWrite(node.id);
+          }
+        });
+      });
+    }
+
     wireDecisionAnswerForm(decisionsDetailEl, node.id);
 
     const reopenBtn = decisionsDetailEl.querySelector('.dec-reopen-btn');
@@ -352,21 +404,34 @@ function wireDecisionAnswerForm(root, decisionId) {
     submitBtn.disabled = !chosenOption && !hasCustom;
   }
 
+  // Shared by an option click and a custom-text edit, so the two can never disagree about
+  // which card (if any) is actually highlighted -- typing a custom answer used to leave the
+  // previously picked card's highlight in place even though it no longer had chosenOption.
+  function paintChosen(chosenCard) {
+    form.querySelectorAll('.dec-option-card').forEach(c => {
+      const isChosen = c === chosenCard;
+      c.classList.toggle('border-emerald-600', isChosen);
+      c.classList.toggle('bg-emerald-950/40', isChosen);
+      c.classList.toggle('bg-zinc-900/60', !isChosen);
+      c.classList.toggle('border-zinc-800', !isChosen);
+      c.setAttribute('aria-checked', String(isChosen));
+    });
+  }
+
   form.querySelectorAll('.dec-option-card').forEach(card => {
     card.addEventListener('click', () => {
       chosenOption = card.getAttribute('data-option-key');
-      form.querySelectorAll('.dec-option-card').forEach(c => {
-        c.classList.toggle('border-emerald-600', c === card);
-        c.classList.toggle('bg-emerald-950/40', c === card);
-        c.classList.toggle('bg-zinc-900/60', c !== card);
-        c.classList.toggle('border-zinc-800', c !== card);
-      });
+      if (customText) customText.value = '';
+      paintChosen(card);
       updateSubmitEnabled();
     });
   });
   if (customText) {
     customText.addEventListener('input', () => {
-      if (customText.value.trim()) chosenOption = null;
+      if (customText.value.trim()) {
+        chosenOption = null;
+        paintChosen(null);
+      }
       updateSubmitEnabled();
     });
   }
@@ -391,13 +456,21 @@ function wireDecisionAnswerForm(root, decisionId) {
   const withdrawBtn = root.querySelector('.dec-withdraw-btn');
   if (withdrawBtn) {
     withdrawBtn.addEventListener('click', () => {
-      confirmDialog({
+      // §6.4: a decision is withdrawn with a reason, so this is a full dialog (a text field)
+      // rather than confirmDialog's plain message-only shape.
+      openDialog({
         title: `Withdraw ${decisionId}?`,
-        message: 'The decision is dropped; tasks waiting on it unblock immediately.',
-        confirmLabel: 'Withdraw',
-        onConfirm: async () => {
-          await api('POST', `/api/decisions/${decisionId}/withdraw`, { reason: '' });
+        submitLabel: 'Withdraw',
+        destructive: true,
+        bodyHtml: `
+          <p class="text-xs text-zinc-300 leading-relaxed">The decision is dropped; tasks waiting on it unblock immediately.</p>
+          ${fieldRow('Reason', `<textarea class="wd-reason ${TEXTAREA_CLS}" rows="2" placeholder="(optional)"></textarea>`)}
+        `,
+        onSubmit: async (panel, close) => {
+          const reason = panel.querySelector('.wd-reason').value.trim();
+          await api('POST', `/api/decisions/${decisionId}/withdraw`, { reason });
           toast(`${decisionId} withdrawn.`, 'success');
+          close();
           await afterDecisionWrite(decisionId);
         }
       });

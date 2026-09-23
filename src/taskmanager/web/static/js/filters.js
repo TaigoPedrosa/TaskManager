@@ -259,6 +259,16 @@ function collectTasks(nodes, specCtx = null, out = []) {
   return out;
 }
 
+// Every non-task node too (a dependency can target a spec, plan or task) -- used by the
+// dependency picker's <datalist>, never by the task-only filters above.
+function collectAllNodes(nodes, out = []) {
+  nodes.forEach(n => {
+    out.push(n);
+    collectAllNodes(n.children || [], out);
+  });
+  return out;
+}
+
 const TRI_ICON_PLUS = '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>';
 const TRI_ICON_MINUS = '<line x1="5" y1="12" x2="19" y2="12"/>';
 

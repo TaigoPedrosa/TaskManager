@@ -498,18 +498,32 @@ async function openMoveDialog(node) {
 
 // Dependencies -----------------------------------------------------------------------------
 
-function openAddDependencyDialog(node) {
+// A search picker over ids and titles (§6.3): a native <datalist> is the whole
+// implementation, so typing "which auth" resolves the same as typing "decision-which".
+// `decisionsOnly` is "Wait on decision" -- the same picker, filtered to decisions, and the
+// same POST (a decision dependency is an ordinary depends_on edge, per §3.2).
+function openAddDependencyDialog(node, decisionsOnly = false) {
+  const candidates = decisionsOnly
+    ? decisionsData.filter(d => d.id !== node.id)
+    : collectAllNodes(treeData).filter(n => n.kind !== 'decision' && n.id !== node.id);
+  const listId = 'dep-picker-list';
+  const optionsHtml = candidates.map(n => `<option value="${esc(n.id)}">${esc(n.title)}</option>`).join('');
   openDialog({
-    title: `Add dependency to ${node.id}`,
+    title: decisionsOnly ? `Wait on decision (${node.id})` : `Add dependency to ${node.id}`,
     submitLabel: 'Add',
     bodyHtml: `
-      ${fieldRow('Depends on (task id)', `<input type="text" required class="dep-id ${INPUT_CLS} font-mono" placeholder="task-id">`)}
-      ${fieldRow('Gate status', `<select class="dep-gate ${SELECT_CLS}">${REAL_NODE_STATUSES.map(s => `<option value="${s}" ${s === 'COMPLETED' ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select>`)}
+      ${fieldRow(decisionsOnly ? 'Decision (id or title)' : 'Depends on (id or title)', `<input type="text" required list="${listId}" class="dep-id ${INPUT_CLS} font-mono" placeholder="${decisionsOnly ? 'decision-id' : 'task-id'}"><datalist id="${listId}">${optionsHtml}</datalist>`)}
+      ${decisionsOnly ? '' : fieldRow('Gate status', `<select class="dep-gate ${SELECT_CLS}">${REAL_NODE_STATUSES.map(s => `<option value="${s}" ${s === 'COMPLETED' ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select>`)}
     `,
     onSubmit: async (panel, close) => {
-      const id = panel.querySelector('.dep-id').value.trim();
-      if (!id) throw new Error('Dependency id is required.');
-      const gate = panel.querySelector('.dep-gate').value;
+      const typed = panel.querySelector('.dep-id').value.trim();
+      if (!typed) throw new Error('Dependency id is required.');
+      // The datalist's <option value> is the id; a typed title resolves back to its id so
+      // picking "Which auth flow?" from the list works the same as typing the id directly.
+      const match = candidates.find(n => n.id === typed || n.title === typed);
+      const id = match ? match.id : typed;
+      const gateEl = panel.querySelector('.dep-gate');
+      const gate = gateEl ? gateEl.value : undefined;
       await api('POST', `/api/nodes/${node.id}/dependencies`, { add: [{ id, gate }] });
       toast(`${id} added as a dependency of ${node.id}.`, 'success');
       close();

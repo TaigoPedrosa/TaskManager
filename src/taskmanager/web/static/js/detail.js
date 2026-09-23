@@ -3,7 +3,11 @@
 // remove button, since nothing in the schema actually forbids one.
 function renderDependencies(details, status, node, editable) {
   const addControl = editable && node.kind === 'task'
-    ? `<button type="button" class="add-dep-btn mt-1 h-7 px-2 rounded-md text-[11px] font-medium text-emerald-400 hover:text-emerald-300 hover:bg-zinc-800 border border-dashed border-zinc-700 transition">+ Add dependency</button>`
+    ? `
+      <div class="flex items-center gap-2 mt-1">
+        <button type="button" class="add-dep-btn h-7 px-2 rounded-md text-[11px] font-medium text-emerald-400 hover:text-emerald-300 hover:bg-zinc-800 border border-dashed border-zinc-700 transition">+ Add dependency</button>
+        <button type="button" class="add-decision-dep-btn h-7 px-2 rounded-md text-[11px] font-medium text-amber-400 hover:text-amber-300 hover:bg-zinc-800 border border-dashed border-zinc-700 transition">+ Wait on decision</button>
+      </div>`
     : '';
   if (!details || details.length === 0) {
     return addControl ? `<div class="pt-2">${addControl}</div>` : '';
@@ -36,6 +40,8 @@ function wireDependencyControls(root, node) {
   });
   const addBtn = root.querySelector('.add-dep-btn');
   if (addBtn) addBtn.addEventListener('click', () => openAddDependencyDialog(node));
+  const addDecisionBtn = root.querySelector('.add-decision-dep-btn');
+  if (addDecisionBtn) addDecisionBtn.addEventListener('click', () => openAddDependencyDialog(node, true));
 }
 
 

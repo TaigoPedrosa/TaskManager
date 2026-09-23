@@ -408,6 +408,44 @@ def test_status_chip_rebuild_preserves_keyboard_focus() -> None:
     assert "toFocus.focus()" in body
 
 
+def test_add_dependency_is_a_picker_not_free_text() -> None:
+    # §6.3: a search picker over ids and titles, and "Wait on decision" is the same picker
+    # filtered to decisions -- both used to be missing, the field a bare free-text input.
+    body = _function_body(get_web_html(), "openAddDependencyDialog")
+    assert "decisionsOnly" in body
+    assert "list=\"${listId}\"" in body
+    assert "<datalist" in body
+    detail = _function_body(get_web_html(), "renderDependencies")
+    assert "+ Wait on decision" in detail
+    wire = _function_body(get_web_html(), "wireDependencyControls")
+    assert "openAddDependencyDialog(node, true)" in wire
+
+
+def test_decision_answer_form_custom_text_clears_the_chosen_cards_highlight() -> None:
+    # Typing a custom answer used to clear chosenOption while the previously picked card kept
+    # its emerald highlight, showing a choice the form would not actually send.
+    body = _function_body(get_web_html(), "wireDecisionAnswerForm")
+    assert "paintChosen(null)" in body
+    assert "aria-checked" in body
+    assert 'role="radio"' in _function_body(get_web_html(), "optionCardHtml")
+
+
+def test_decision_withdraw_collects_a_reason() -> None:
+    body = _function_body(get_web_html(), "wireDecisionAnswerForm")
+    assert "wd-reason" in body
+    assert "reason: ''" not in body
+
+
+def test_open_decision_offers_editing_its_blocked_tasks() -> None:
+    # §6.4: an open decision offers editing of blocked tasks; POST .../blocks was never
+    # called from the page at all before this.
+    detail = _function_body(get_web_html(), "renderDecisionDetail")
+    assert "dec-block-add" in detail
+    assert "dec-block-remove" in detail
+    assert "/blocks`, { add:" in detail
+    assert "/blocks`, { remove:" in detail
+
+
 def test_new_menu_renders_nothing_in_a_read_only_static_export() -> None:
     body = _function_body(get_web_html(), "renderNewMenu")
     assert "if (!canEdit()) return;" in body
