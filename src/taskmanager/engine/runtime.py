@@ -78,12 +78,12 @@ class ExecutionCoordinator:
             worktree_dir = Path(worktree_base) / (
                 f"{repo_name}-{task_id}" if repo_name else task_id
             )
-            repo_git.create_worktree(
+            actual_worktree = repo_git.create_worktree(
                 branch_name=branch_name,
                 worktree_path=worktree_dir,
                 base_ref=repo_git.default_base_ref(),
             )
-            worktree_path_str = str(worktree_dir)
+            worktree_path_str = str(actual_worktree)
 
         lease = Lease(
             task_id=task_id,

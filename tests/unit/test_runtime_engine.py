@@ -71,6 +71,23 @@ def test_git_manager_create_and_remove_worktree(test_git_repo: Path, tmp_path: P
     assert not wt_path.exists()
 
 
+def test_create_worktree_hands_back_a_branch_already_checked_out_elsewhere(
+    test_git_repo: Path, tmp_path: Path
+) -> None:
+    """A fix round claims the same `tm/<id>` branch a review round already cut a worktree
+    for, at a different `--worktree-dir`; `git worktree add` on a checked-out branch exits
+    128, so the existing worktree is handed back instead."""
+    git_mgr = GitManager(test_git_repo)
+    first_path = tmp_path / "round-1" / "TASK-01"
+    git_mgr.create_worktree("tm/TASK-01", first_path)
+
+    second_path = tmp_path / "round-2" / "TASK-01"
+    returned = git_mgr.create_worktree("tm/TASK-01", second_path)
+
+    assert returned == first_path
+    assert not second_path.exists()
+
+
 def test_start_ready_task_acquires_lease_and_locks(
     coordinator_setup: tuple[NodeRepository, RuntimeRepository, GraphEngine, ExecutionCoordinator],
 ) -> None:
@@ -261,3 +278,53 @@ def test_start_task_and_stop_task_with_worktree(
     updated = node_repo.get_node("WT-01")
     assert updated is not None
     assert updated.status == NodeStatus.COMPLETED
+
+
+def test_start_task_reclaims_the_existing_worktree_at_a_different_worktree_dir(
+    test_git_repo: Path,
+    tmp_path: Path,
+) -> None:
+    """WAITING_FIXES re-claimed with `--worktree-dir` pointed somewhere new: the review round's
+    worktree for `tm/<id>` is still checked out, so it is handed back as it was rather than
+    failing on `git worktree add`'s exit 128 for a branch checked out elsewhere."""
+    db = DatabaseManager(tmp_path / "db")
+    db.init_all()
+    node_repo = NodeRepository(db)
+    runtime_repo = RuntimeRepository(db)
+    graph = GraphEngine(node_repo=node_repo, runtime_repo=runtime_repo)
+    git_mgr = GitManager(test_git_repo)
+    coordinator = ExecutionCoordinator(
+        node_repo=node_repo,
+        runtime_repo=runtime_repo,
+        graph_engine=graph,
+        git_mgr=git_mgr,
+    )
+
+    node = Node(id="WT-02", kind=NodeKind.TASK, title="WT Task", status=NodeStatus.WAITING_FIXES)
+    node_repo.save_node(node)
+
+    first_base = tmp_path / "round-1"
+    first_lease = coordinator.start_task(
+        task_id="WT-02",
+        agent_id="agent-1",
+        session_id="sess-1",
+        create_worktree=True,
+        worktree_base=first_base,
+    )
+    coordinator.stop_task(task_id="WT-02", new_status=NodeStatus.WAITING_FIXES)
+    node = node_repo.get_node("WT-02")
+    assert node is not None
+    node.status = NodeStatus.WAITING_FIXES
+    node_repo.save_node(node)
+
+    second_base = tmp_path / "round-2"
+    second_lease = coordinator.start_task(
+        task_id="WT-02",
+        agent_id="agent-2",
+        session_id="sess-2",
+        create_worktree=True,
+        worktree_base=second_base,
+    )
+
+    assert second_lease.worktree_path == first_lease.worktree_path
+    assert not (second_base / "WT-02").exists()

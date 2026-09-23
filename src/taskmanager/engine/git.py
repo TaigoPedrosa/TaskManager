@@ -33,8 +33,14 @@ class GitManager:
 
     def create_worktree(
         self, branch_name: str, worktree_path: Path, base_ref: str = "HEAD"
-    ) -> None:
-        """`--no-track`: a branch cut from `origin/main` would otherwise push to `main`."""
+    ) -> Path:
+        """`--no-track`: a branch cut from `origin/main` would otherwise push to `main`.
+
+        Returns the worktree actually in use, which is `worktree_path` on a fresh checkout but
+        the branch's existing worktree when one is already checked out elsewhere: `git worktree
+        add` on a branch checked out elsewhere exits 128, and a later stage reclaiming the same
+        `tm/<id>` branch at a different `--worktree-dir` is handed its worktree back as it was.
+        """
         target = Path(worktree_path)
         if target.exists():
             head = subprocess.run(
@@ -46,7 +52,12 @@ class GitManager:
             ).stdout.strip()
             if head != branch_name:
                 raise ValueError(f"{target} exists and is not the worktree of {branch_name}")
-            return
+            return target
+
+        existing = self.find_worktree(branch_name)
+        if existing is not None:
+            return existing
+
         target.parent.mkdir(parents=True, exist_ok=True)
         branch_exists = (
             subprocess.run(
@@ -64,6 +75,7 @@ class GitManager:
             else ["git", "worktree", "add", "--no-track", "-b", branch_name, str(target), base_ref]
         )
         subprocess.run(cmd, cwd=self.root, capture_output=True, text=True, check=True)
+        return target
 
     def find_worktree(self, branch_name: str) -> Path | None:
         """The worktree that has `branch_name` checked out, in this repository, if any."""
