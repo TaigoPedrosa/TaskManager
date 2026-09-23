@@ -1,8 +1,9 @@
 import json
 from typing import Any
 
-from taskmanager.core.enums import RelationType, RenderView
+from taskmanager.core.enums import NodeKind, NodeStatus, RelationType, RenderView
 from taskmanager.db.node_repo import NodeRepository
+from taskmanager.engine.decisions import read_decision
 
 
 class MarkdownRenderer:
@@ -21,6 +22,9 @@ class MarkdownRenderer:
                 f"Unknown view '{view}'. Supported views: {', '.join(s.value for s in RenderView)}"
             ) from None
         sections = self.node_repo.get_all_sections(node_id)
+
+        if node.kind == NodeKind.DECISION:
+            return self._render_decision(node, sections)
 
         frontmatter_dict: dict[str, Any] = {
             "id": node.id,
@@ -109,6 +113,35 @@ class MarkdownRenderer:
         for child_id in self.node_repo.get_children(node_id):
             parts.append(self.render_recursive(child_id, view, seen))
         return "\n\n---\n\n".join(parts)
+
+    def _render_decision(self, node: Any, sections: list[Any]) -> str:
+        data = read_decision(node)
+        parts = [f"# Decision: {node.title}", f"Status: {node.status.value}"]
+        for sec in sections:
+            header = sec.header or f"## {sec.section_key.capitalize()}"
+            parts.append(f"{header}\n\n{sec.content}")
+        if data.options:
+            opt_lines = ["## Options"]
+            for opt in data.options:
+                mark = " **(recommended)**" if opt.recommended else ""
+                desc = f" -- {opt.description}" if opt.description else ""
+                opt_lines.append(f"- `{opt.key}`: {opt.label}{mark}{desc}")
+            parts.append("\n".join(opt_lines))
+        if not data.allow_custom:
+            parts.append("## Custom answers\n\nNot allowed; pick one of the options above.")
+        if data.answer is not None:
+            answer = data.answer
+            lines = ["## Answer", f"Chosen: {answer.option or '(custom)'}"]
+            if answer.text:
+                lines.append(answer.text)
+            if answer.rationale:
+                lines.append(f"Rationale: {answer.rationale}")
+            lines.append(f"Answered by {answer.answered_by} at {answer.answered_at.isoformat()}")
+            parts.append("\n".join(lines))
+        elif node.status == NodeStatus.ABANDONED:
+            body = f"\n\n{data.withdrawn_reason}" if data.withdrawn_reason else ""
+            parts.append(f"## Withdrawn{body}")
+        return "\n\n".join(parts) + "\n"
 
     def _get_parent_ids(self, node_id: str) -> list[str]:
         with self.node_repo.db.get_spec_connection() as conn:

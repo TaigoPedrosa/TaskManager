@@ -337,3 +337,36 @@ def test_plan_id_filter_and_limit(
 
     limited = engine.get_next_tasks(limit=2)
     assert len(limited) == 2
+
+
+def test_get_next_tasks_never_offers_a_task_awaiting_decision(
+    env: tuple[NodeRepository, RuntimeRepository, GraphEngine, RecommendationEngine],
+) -> None:
+    node_repo, _runtime_repo, _graph, engine = env
+    waiting = Node(id="T-WAIT", kind=NodeKind.TASK, title="Waiting")
+    ready = Node(id="T-READY", kind=NodeKind.TASK, title="Ready")
+    decision = Node(id="decision-D1", kind=NodeKind.DECISION, title="Which way?")
+    node_repo.save_node(waiting)
+    node_repo.save_node(ready)
+    node_repo.save_node(decision)
+    node_repo.add_relation(
+        NodeRelation(
+            source_id="T-WAIT", target_id="decision-D1", relation_type=RelationType.DEPENDS_ON
+        )
+    )
+
+    ranked = engine.get_next_tasks(limit=10)
+    assert {t.task_id for t in ranked} == {"T-READY"}
+
+
+def test_score_every_task_ignores_a_decision_node(
+    env: tuple[NodeRepository, RuntimeRepository, GraphEngine, RecommendationEngine],
+) -> None:
+    from taskmanager.engine.heuristics import score_every_task
+
+    node_repo, _runtime_repo, _graph, _engine = env
+    node_repo.save_node(Node(id="T1", kind=NodeKind.TASK, title="Task"))
+    node_repo.save_node(Node(id="decision-D1", kind=NodeKind.DECISION, title="Which way?"))
+
+    scores = score_every_task(node_repo)
+    assert set(scores) == {"T1"}

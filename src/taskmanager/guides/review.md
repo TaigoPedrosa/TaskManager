@@ -47,6 +47,8 @@ One line per defect: the file, the symbol or line, and what breaks. No summary, 
 
 Nothing to say is a valid review. Say it in one line.
 
+A judgement call the brief itself cannot settle — not a defect, a genuine open question — is raised as a decision rather than left unresolved in prose: `tm decision add "<question>" --option "a|Do X" --recommend a --blocks <task-id>`. Say so in the review and release the task to `WAITING_FIXES` as usual; it reads `AWAITING_DECISION` once the fix round releases it back.
+
 ## 6. Release it
 
 ```

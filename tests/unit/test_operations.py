@@ -3,12 +3,13 @@ from pathlib import Path
 
 import pytest
 
-from taskmanager.core.enums import NodeStatus, VerificationType
+from taskmanager.core.enums import NodeKind, NodeStatus, VerificationType
 from taskmanager.core.models import Lease
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
+from taskmanager.engine.decisions import read_decision
 from taskmanager.engine.graph import GraphEngine
 from taskmanager.engine.operations import OperationError, Operations
 from taskmanager.engine.runtime import ExecutionCoordinator
@@ -393,3 +394,346 @@ def test_with_actor_returns_a_new_operations_carrying_the_actor(ops_setup: tuple
     assert web_ops is not ops
     web_ops.add_spec("S", slug="WEBS")
     assert _last_event_actor(ledger_repo) == "web"
+
+
+# -- set_status with an atomic section -------------------------------------------------------
+
+
+def test_set_status_with_section_writes_status_and_section_together(ops_setup: tuple) -> None:
+    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    _spec_id, _plan_id, task_id = _seed_task(ops)
+    ops.set_status(
+        task_id, NodeStatus.COMPLETED, section=("ruling", "the ruling text", "## Ruling")
+    )
+    assert node_repo.get_node(task_id).status == NodeStatus.COMPLETED
+    sec = node_repo.get_section(task_id, "ruling")
+    assert sec is not None
+    assert sec.content == "the ruling text"
+    assert _last_event_actor(ledger_repo) == "tester"
+
+
+def test_set_status_failure_leaves_the_section_unwritten(ops_setup: tuple) -> None:
+    node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    _spec_id, _plan_id, task_id = _seed_task(ops)
+
+    def boom(**_kwargs: object) -> None:
+        raise ValueError("stop_task refused")
+
+    ops.coordinator.stop_task = boom  # type: ignore[method-assign]
+    with pytest.raises(ValueError):
+        ops.set_status(task_id, NodeStatus.COMPLETED, section=("ruling", "text", None))
+    assert node_repo.get_section(task_id, "ruling") is None
+
+
+# -- decisions --------------------------------------------------------------------------------
+
+
+def test_add_decision_creates_node_with_options_and_context(ops_setup: tuple) -> None:
+    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    decision_id = ops.add_decision(
+        "Which auth flow?",
+        slug="auth-flow",
+        context="some context",
+        options=["a|Option A|first", "b|Option B|second"],
+        recommend="a",
+    )
+    assert decision_id == "decision-auth-flow"
+    node = node_repo.get_node(decision_id)
+    assert node is not None
+    assert node.kind == NodeKind.DECISION
+    assert node.status == NodeStatus.NOT_STARTED
+    data = read_decision(node)
+    assert [o.key for o in data.options] == ["a", "b"]
+    assert data.options[0].recommended is True
+    assert data.options[1].recommended is False
+    assert node_repo.get_section(decision_id, "context").content == "some context"
+    assert _last_event_actor(ledger_repo) == "tester"
+
+
+def test_add_decision_without_slug_numbers_itself(ops_setup: tuple) -> None:
+    _node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    first = ops.add_decision("Q1")
+    second = ops.add_decision("Q2")
+    assert first == "decision-D1"
+    assert second == "decision-D2"
+
+
+def test_add_decision_bad_recommend_refuses_and_writes_nothing(ops_setup: tuple) -> None:
+    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    before = len(ledger_repo.list_events(limit=1000))
+    with pytest.raises(OperationError) as exc:
+        ops.add_decision("Q", slug="q1", options=["a|A"], recommend="nope")
+    assert exc.value.status_code == 400
+    assert node_repo.get_node("decision-q1") is None
+    assert len(ledger_repo.list_events(limit=1000)) == before
+
+
+def test_add_decision_blocks_wires_depends_on_from_each_task(ops_setup: tuple) -> None:
+    node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    _spec_id, _plan_id, task_id = _seed_task(ops)
+    decision_id = ops.add_decision("Q", slug="q1", blocks=[task_id])
+    assert decision_id in node_repo.get_dependencies(task_id)
+
+
+def test_add_decision_unknown_blocked_task_refuses_and_writes_nothing(ops_setup: tuple) -> None:
+    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    before = len(ledger_repo.list_events(limit=1000))
+    with pytest.raises(OperationError) as exc:
+        ops.add_decision("Q", slug="q1", blocks=["NOPE"])
+    assert exc.value.status_code == 404
+    assert node_repo.get_node("decision-q1") is None
+    assert len(ledger_repo.list_events(limit=1000)) == before
+
+
+def test_answer_decision_with_option_completes_it(ops_setup: tuple) -> None:
+    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    decision_id = ops.add_decision("Q", slug="q1", options=["a|A", "b|B"])
+    ops.answer_decision(decision_id, option="a", rationale="because", by="owner")
+    node = node_repo.get_node(decision_id)
+    assert node.status == NodeStatus.COMPLETED
+    data = read_decision(node)
+    assert data.answer is not None
+    assert data.answer.option == "a"
+    assert data.answer.rationale == "because"
+    assert data.answer.answered_by == "owner"
+    assert _last_event_actor(ledger_repo) == "tester"
+
+
+def test_answer_decision_unknown_option_refuses(ops_setup: tuple) -> None:
+    _node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    decision_id = ops.add_decision("Q", slug="q1", options=["a|A"])
+    with pytest.raises(OperationError) as exc:
+        ops.answer_decision(decision_id, option="nope")
+    assert exc.value.status_code == 400
+
+
+def test_answer_decision_custom_refused_when_not_allowed(ops_setup: tuple) -> None:
+    _node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    decision_id = ops.add_decision("Q", slug="q1", options=["a|A"], allow_custom=False)
+    with pytest.raises(OperationError) as exc:
+        ops.answer_decision(decision_id, text="custom answer")
+    assert exc.value.status_code == 400
+
+
+def test_answer_decision_custom_answer_when_allowed(ops_setup: tuple) -> None:
+    node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    decision_id = ops.add_decision("Q", slug="q1")
+    ops.answer_decision(decision_id, text="do the custom thing")
+    data = read_decision(node_repo.get_node(decision_id))
+    assert data.answer.option is None
+    assert data.answer.text == "do the custom thing"
+
+
+def test_answer_decision_not_open_refuses(ops_setup: tuple) -> None:
+    _node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    decision_id = ops.add_decision("Q", slug="q1", options=["a|A"])
+    ops.answer_decision(decision_id, option="a")
+    with pytest.raises(OperationError) as exc:
+        ops.answer_decision(decision_id, option="a")
+    assert exc.value.status_code == 409
+
+
+def test_reopen_decision_clears_answer_and_returns_to_open(ops_setup: tuple) -> None:
+    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    decision_id = ops.add_decision("Q", slug="q1", options=["a|A"])
+    ops.answer_decision(decision_id, option="a")
+    ops.reopen_decision(decision_id)
+    node = node_repo.get_node(decision_id)
+    assert node.status == NodeStatus.NOT_STARTED
+    assert read_decision(node).answer is None
+    assert _last_event_actor(ledger_repo) == "tester"
+
+
+def test_withdraw_decision_sets_abandoned_with_reason(ops_setup: tuple) -> None:
+    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    decision_id = ops.add_decision("Q", slug="q1")
+    ops.withdraw_decision(decision_id, reason="no longer relevant")
+    node = node_repo.get_node(decision_id)
+    assert node.status == NodeStatus.ABANDONED
+    assert read_decision(node).withdrawn_reason == "no longer relevant"
+    assert _last_event_actor(ledger_repo) == "tester"
+
+
+def test_link_decision_add_and_remove(ops_setup: tuple) -> None:
+    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    _spec_id, _plan_id, task_id = _seed_task(ops)
+    decision_id = ops.add_decision("Q", slug="q1")
+    ops.link_decision(decision_id, add=[task_id])
+    assert decision_id in node_repo.get_dependencies(task_id)
+    ops.link_decision(decision_id, remove=[task_id])
+    assert decision_id not in node_repo.get_dependencies(task_id)
+    assert _last_event_actor(ledger_repo) == "tester"
+
+
+def test_link_decision_remove_not_linked_refuses(ops_setup: tuple) -> None:
+    _node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    _spec_id, _plan_id, task_id = _seed_task(ops)
+    decision_id = ops.add_decision("Q", slug="q1")
+    with pytest.raises(OperationError) as exc:
+        ops.link_decision(decision_id, remove=[task_id])
+    assert exc.value.status_code == 409
+
+
+def test_get_decision_missing_refuses(ops_setup: tuple) -> None:
+    _node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    with pytest.raises(OperationError) as exc:
+        ops.answer_decision("NOPE", option="a")
+    assert exc.value.status_code == 404
+
+
+# -- attachments --------------------------------------------------------------------------------
+
+
+def test_attach_copies_file_content_addressed_and_records_entry(
+    ops_setup: tuple, tmp_path: Path
+) -> None:
+    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    _spec_id, _plan_id, task_id = _seed_task(ops)
+    src = tmp_path / "shot.png"
+    src.write_bytes(b"fake-png-bytes")
+    entry = ops.attach(task_id, src, caption="a screenshot")
+    node = node_repo.get_node(task_id)
+    assert node.frontmatter["attachments"] == [entry]
+    assert entry["caption"] == "a screenshot"
+    assert entry["name"] == "shot.png"
+    assert (ops._assets_dir() / entry["asset"]).read_bytes() == b"fake-png-bytes"
+    assert _last_event_actor(ledger_repo) == "tester"
+
+
+def test_attach_same_content_twice_is_idempotent_on_disk(ops_setup: tuple, tmp_path: Path) -> None:
+    node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    _spec_id, _plan_id, task_id = _seed_task(ops)
+    src = tmp_path / "shot.png"
+    src.write_bytes(b"same-bytes")
+    first = ops.attach(task_id, src)
+    second = ops.attach(task_id, src)
+    assert first["asset"] == second["asset"]
+    assert len(node_repo.get_node(task_id).frontmatter["attachments"]) == 2
+
+
+def test_attach_over_size_limit_refuses(
+    ops_setup: tuple, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    _spec_id, _plan_id, task_id = _seed_task(ops)
+    monkeypatch.setattr("taskmanager.engine.assets.MAX_ASSET_BYTES", 4)
+    src = tmp_path / "big.bin"
+    src.write_bytes(b"way too big")
+    before = len(ledger_repo.list_events(limit=1000))
+    with pytest.raises(OperationError) as exc:
+        ops.attach(task_id, src)
+    assert exc.value.status_code == 400
+    assert len(ledger_repo.list_events(limit=1000)) == before
+
+
+def test_attach_defaults_source_to_project_relative_path(ops_setup: tuple, tmp_path: Path) -> None:
+    _node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    _spec_id, _plan_id, task_id = _seed_task(ops)
+    src = tmp_path / "project-file.png"
+    src.write_bytes(b"content")
+    entry = ops.attach(task_id, src)
+    assert entry["source"]["uri"] == "project-file.png"
+    assert entry["source"]["sha256"] is not None
+    assert entry["source"]["state"] == "fresh"
+
+
+def test_attach_explicit_non_project_source_is_unverifiable(
+    ops_setup: tuple, tmp_path: Path
+) -> None:
+    _node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    _spec_id, _plan_id, task_id = _seed_task(ops)
+    src = tmp_path / "shot.png"
+    src.write_bytes(b"content")
+    entry = ops.attach(task_id, src, source="figma:abc:123")
+    assert entry["source"]["uri"] == "figma:abc:123"
+    assert entry["source"]["state"] == "unverifiable"
+    assert entry["source"]["sha256"] is None
+
+
+def test_detach_keeps_file_while_another_node_still_references_it(
+    ops_setup: tuple, tmp_path: Path
+) -> None:
+    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    _spec_id, plan_id, task_id = _seed_task(ops)
+    other_task = ops.add_task("Other", plan_id, slug="T2")
+    src = tmp_path / "shared.png"
+    src.write_bytes(b"shared-bytes")
+    entry_a = ops.attach(task_id, src)
+    ops.attach(other_task, src)
+    ops.detach(task_id, entry_a["asset"])
+    assert node_repo.get_node(task_id).frontmatter["attachments"] == []
+    assert (ops._assets_dir() / entry_a["asset"]).exists()
+    assert _last_event_actor(ledger_repo) == "tester"
+
+
+def test_detach_removes_file_once_no_node_references_it(ops_setup: tuple, tmp_path: Path) -> None:
+    _node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    _spec_id, _plan_id, task_id = _seed_task(ops)
+    src = tmp_path / "solo.png"
+    src.write_bytes(b"solo-bytes")
+    entry = ops.attach(task_id, src)
+    ops.detach(task_id, entry["asset"])
+    assert not (ops._assets_dir() / entry["asset"]).exists()
+
+
+def test_detach_missing_asset_refuses(ops_setup: tuple) -> None:
+    _node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    _spec_id, _plan_id, task_id = _seed_task(ops)
+    before = len(ledger_repo.list_events(limit=1000))
+    with pytest.raises(OperationError) as exc:
+        ops.detach(task_id, "nope.png")
+    assert exc.value.status_code == 404
+    assert len(ledger_repo.list_events(limit=1000)) == before
+
+
+def test_attach_replace_recaptures_keeping_caption_and_source(
+    ops_setup: tuple, tmp_path: Path
+) -> None:
+    node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    _spec_id, _plan_id, task_id = _seed_task(ops)
+    original = tmp_path / "v1.png"
+    original.write_bytes(b"v1-bytes")
+    first = ops.attach(task_id, original, caption="a screenshot")
+
+    updated = tmp_path / "v2.png"
+    updated.write_bytes(b"v2-bytes-different")
+    second = ops.attach(task_id, updated, replace=first["asset"])
+
+    attachments = node_repo.get_node(task_id).frontmatter["attachments"]
+    assert len(attachments) == 1
+    assert attachments[0]["asset"] == second["asset"]
+    assert attachments[0]["asset"] != first["asset"]
+    assert attachments[0]["caption"] == "a screenshot"
+
+
+def test_attach_replace_unknown_asset_refuses(ops_setup: tuple, tmp_path: Path) -> None:
+    _node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    _spec_id, _plan_id, task_id = _seed_task(ops)
+    src = tmp_path / "shot.png"
+    src.write_bytes(b"content")
+    with pytest.raises(OperationError) as exc:
+        ops.attach(task_id, src, replace="nope.png")
+    assert exc.value.status_code == 404
+
+
+def test_list_attachments_check_marks_fresh_stale_and_missing(
+    ops_setup: tuple, tmp_path: Path
+) -> None:
+    _node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    _spec_id, _plan_id, task_id = _seed_task(ops)
+    src = tmp_path / "checked.png"
+    src.write_bytes(b"v1")
+    entry = ops.attach(task_id, src)
+    assert entry["source"]["state"] == "fresh"
+
+    checked = ops.list_attachments(task_id, check=True)
+    assert checked[0]["source"]["state"] == "fresh"
+    assert checked[0]["source"]["checked_at"] is not None
+
+    src.write_bytes(b"v2-changed")
+    checked = ops.list_attachments(task_id, check=True)
+    assert checked[0]["source"]["state"] == "stale"
+
+    src.unlink()
+    checked = ops.list_attachments(task_id, check=True)
+    assert checked[0]["source"]["state"] == "missing"

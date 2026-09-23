@@ -26,6 +26,7 @@ One commit per finding, or one commit naming them all — either way, every comm
 - A finding you can close, close.
 - A finding you judge wrong is answered in the report with the evidence that refutes it, and the code is left alone. It is never silently skipped.
 - Anything else you notice goes in the report, not in the diff. Widening the scope is what forces a third round.
+- A finding whose fix needs a call only the owner can make is raised as a decision rather than guessed: `tm decision add "<question>" --option "a|Do X" --recommend a --blocks <task-id>`, then answered in the report as "raised as `<id>`, not closed."
 
 ## 3. Verify and keep the lease alive
 

@@ -178,6 +178,10 @@ class AppIcon(Enum):
         "hourglass",
         '<path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/>',
     )
+    HELP_CIRCLE = IconData(
+        "help-circle",
+        '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
+    )
 
     def as_symbol(self) -> str:
         return (
@@ -259,6 +263,18 @@ class StatusVisual(Enum):
         "#881337",
         "#be123c",
         "#ffe4e6",
+    )
+    AWAITING_DECISION = StatusTheme(
+        "AWAITING_DECISION",
+        "Awaiting Decision",
+        AppIcon.HELP_CIRCLE,
+        StatusGroup.NOT_STARTED,
+        "Not started and blocked on an open decision; answering or withdrawing it unblocks the "
+        "task.",
+        "#fbbf24",
+        "#451a03",
+        "#b45309",
+        "#fffbeb",
     )
     IMPLEMENTING = StatusTheme(
         "IMPLEMENTING",

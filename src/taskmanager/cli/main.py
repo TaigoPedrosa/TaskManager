@@ -34,6 +34,7 @@ from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.di.container import TaskManagerProvider
 from taskmanager.engine.config import ConfigError, ConfigStore
+from taskmanager.engine.decisions import read_decision
 from taskmanager.engine.graph import GraphEngine, gate_satisfied
 from taskmanager.engine.heuristics import RecommendationEngine
 from taskmanager.engine.operations import GUIDE_NODE, OperationError, Operations
@@ -56,6 +57,7 @@ audit_app = typer.Typer(name="audit", help="Audit ledger event logs")
 web_app = typer.Typer(name="web", help="Interactive web visualizer and exporter")
 plugin_app = typer.Typer(name="plugin", help="Install and manage harness plugins")
 config_app = typer.Typer(name="config", help="Project configuration (.taskmanager/config.yaml)")
+decision_app = typer.Typer(name="decision", help="Raise and answer decisions")
 
 app.add_typer(spec_app)
 app.add_typer(plan_app)
@@ -67,6 +69,7 @@ app.add_typer(audit_app)
 app.add_typer(web_app)
 app.add_typer(plugin_app)
 app.add_typer(config_app)
+app.add_typer(decision_app)
 
 
 def _emit(data: Any, as_yaml: bool = False) -> None:
@@ -628,6 +631,13 @@ def task_get(
             for dep_id, gate in dep_edges
             if (dn := node_repo.get_node(dep_id)) is None or not gate_satisfied(dn.status, gate)
         ]
+        doc["awaiting_decisions"] = [
+            dep_id
+            for dep_id, _gate in dep_edges
+            if (dn := node_repo.get_node(dep_id)) is not None
+            and dn.kind == NodeKind.DECISION
+            and dn.status not in (NodeStatus.COMPLETED, NodeStatus.ABANDONED)
+        ]
         doc["declared_files"] = node_repo.declared_files(task_id)
         doc["sections"] = [s.section_key for s in node_repo.get_all_sections(task_id)]
         doc["verifications"] = [
@@ -849,6 +859,17 @@ def run_stop(
     remove_worktree: Annotated[
         bool, typer.Option("--remove-worktree", help="Remove worktree if created")
     ] = False,
+    section: Annotated[
+        str | None,
+        typer.Option("--section", help="Section key to write in the same transaction"),
+    ] = None,
+    section_file: Annotated[
+        Path | None,
+        typer.Option("--section-file", help="File holding the --section content"),
+    ] = None,
+    section_header: Annotated[
+        str | None, typer.Option("--section-header", help="Section markdown header")
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
@@ -856,8 +877,16 @@ def run_stop(
     runtime_repo = container.get(RuntimeRepository)
     ops = container.get(Operations)
 
+    if (section is None) != (section_file is None):
+        raise typer.BadParameter("--section and --section-file are given together")
+    section_write = (
+        (section, section_file.read_text(encoding="utf-8"), section_header)
+        if section is not None and section_file is not None
+        else None
+    )
+
     tid = _resolve_task_id(runtime_repo, task_id)
-    ops.set_status(tid, status, remove_worktree)
+    ops.set_status(tid, status, remove_worktree, section=section_write)
     print(f"[green]Stopped task {tid} with status {status.value}[/green]")
 
 
@@ -1062,6 +1091,271 @@ def verify_run(
 
     if not all_passed:
         raise typer.Exit(code=1)
+
+
+@decision_app.command("add")
+def decision_add(
+    question: str,
+    slug: Annotated[str | None, typer.Option("--slug", "-s")] = None,
+    priority: Annotated[int, typer.Option("--priority", "-p")] = 50,
+    context: Annotated[str | None, typer.Option("--context")] = None,
+    context_file: Annotated[Path | None, typer.Option("--context-file")] = None,
+    option: Annotated[
+        list[str] | None,
+        typer.Option("--option", help="'key|Label|description', repeatable"),
+    ] = None,
+    recommend: Annotated[str | None, typer.Option("--recommend")] = None,
+    no_custom: Annotated[bool, typer.Option("--no-custom")] = False,
+    raised_by: Annotated[str | None, typer.Option("--raised-by")] = None,
+    blocks: Annotated[str | None, typer.Option("--blocks", help="Comma-separated task ids")] = None,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    ops = container.get(Operations)
+    ctx = context_file.read_text(encoding="utf-8") if context_file else context
+    blocked = [t.strip() for t in blocks.split(",") if t.strip()] if blocks else []
+    try:
+        decision_id = ops.add_decision(
+            question, slug, priority, ctx, option, recommend, not no_custom, raised_by, blocked
+        )
+    except OperationError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    print(f"[green]Raised decision {decision_id}[/green]")
+
+
+@decision_app.command("list")
+def decision_list(
+    status: Annotated[
+        str | None, typer.Option("--status", help="open, answered or withdrawn")
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    yaml_output: Annotated[bool, typer.Option("--yaml")] = False,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    node_repo = container.get(NodeRepository)
+    decisions = node_repo.list_nodes(kind=NodeKind.DECISION)
+    status_map = {
+        "open": NodeStatus.NOT_STARTED,
+        "answered": NodeStatus.COMPLETED,
+        "withdrawn": NodeStatus.ABANDONED,
+    }
+    if status:
+        wanted = status_map.get(status.lower())
+        if wanted is None:
+            raise typer.BadParameter("--status is one of: open, answered, withdrawn")
+        decisions = [d for d in decisions if d.status == wanted]
+    if json_output or yaml_output:
+        _emit([_node_row(d) for d in decisions], yaml_output)
+        return
+    table = Table(title="Decisions")
+    table.add_column("ID", style="cyan")
+    table.add_column("Question")
+    table.add_column("Status", style="yellow")
+    table.add_column("Priority", justify="right")
+    for d in decisions:
+        table.add_row(escape(d.id), escape(d.title), d.status.value, str(d.priority))
+    print(table)
+
+
+@decision_app.command("get")
+def decision_get(
+    decision_id: str,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    yaml_output: Annotated[bool, typer.Option("--yaml")] = False,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    node_repo = container.get(NodeRepository)
+    node = node_repo.get_node(decision_id)
+    if node is None or node.kind != NodeKind.DECISION:
+        print(f"[red]Decision '{decision_id}' not found[/red]")
+        raise typer.Exit(code=1)
+    data = read_decision(node)
+    if json_output or yaml_output:
+        doc = _node_row(node)
+        doc["decision"] = json.loads(data.model_dump_json())
+        doc["blocked_tasks"] = node_repo.get_blocked_by(decision_id)
+        _emit(doc, yaml_output)
+        return
+    print(f"[bold cyan]Decision:[/] {node.id}")
+    print(f"[bold]Question:[/] {escape(node.title)}")
+    print(f"[bold]Status:[/] {node.status.value}")
+    for opt in data.options:
+        mark = " (recommended)" if opt.recommended else ""
+        print(f"  - {opt.key}: {escape(opt.label)}{mark}")
+    if data.answer:
+        print(f"[bold]Answer:[/] {escape(data.answer.option or data.answer.text)}")
+
+
+@decision_app.command("answer")
+def decision_answer(
+    decision_id: str,
+    option: Annotated[str | None, typer.Option("--option")] = None,
+    note: Annotated[str | None, typer.Option("--note")] = None,
+    custom: Annotated[str | None, typer.Option("--custom")] = None,
+    rationale: Annotated[str, typer.Option("--rationale")] = "",
+    by: Annotated[str, typer.Option("--by")] = "cli",
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    ops = container.get(Operations)
+    if (option is None) == (custom is None):
+        raise typer.BadParameter("give --option <key> or --custom <text>, not both or neither")
+    text = custom if custom is not None else (note or "")
+    try:
+        ops.answer_decision(decision_id, option, text, rationale, by)
+    except OperationError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    print(f"[green]Answered {decision_id}[/green]")
+
+
+@decision_app.command("reopen")
+def decision_reopen(
+    decision_id: str,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    ops = container.get(Operations)
+    try:
+        ops.reopen_decision(decision_id)
+    except OperationError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    print(f"[green]Reopened {decision_id}[/green]")
+
+
+@decision_app.command("withdraw")
+def decision_withdraw(
+    decision_id: str,
+    reason: Annotated[str, typer.Option("--reason")] = "",
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    ops = container.get(Operations)
+    try:
+        ops.withdraw_decision(decision_id, reason)
+    except OperationError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    print(f"[green]Withdrew {decision_id}[/green]")
+
+
+@decision_app.command("block")
+def decision_block(
+    decision_id: str,
+    tasks: Annotated[str, typer.Option("--tasks", help="Comma-separated task ids")],
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    ops = container.get(Operations)
+    ids = [t.strip() for t in tasks.split(",") if t.strip()]
+    try:
+        ops.link_decision(decision_id, add=ids)
+    except OperationError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    print(f"[green]{', '.join(ids)} now wait on {decision_id}[/green]")
+
+
+@decision_app.command("unblock")
+def decision_unblock(
+    decision_id: str,
+    tasks: Annotated[str, typer.Option("--tasks", help="Comma-separated task ids")],
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    ops = container.get(Operations)
+    ids = [t.strip() for t in tasks.split(",") if t.strip()]
+    try:
+        ops.link_decision(decision_id, remove=ids)
+    except OperationError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    print(f"[green]{', '.join(ids)} no longer wait on {decision_id}[/green]")
+
+
+@app.command("attach")
+def attach_cmd(
+    node_id: str,
+    file: Path,
+    caption: Annotated[str, typer.Option("--caption")] = "",
+    source: Annotated[str | None, typer.Option("--source")] = None,
+    replace: Annotated[
+        str | None, typer.Option("--replace", help="Asset name to re-capture")
+    ] = None,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    ops = container.get(Operations)
+    try:
+        entry = ops.attach(node_id, file, caption, source, replace)
+    except OperationError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    print(f"[green]Attached {entry['asset']} to {node_id}[/green]")
+
+
+@app.command("detach")
+def detach_cmd(
+    node_id: str,
+    asset: str,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    ops = container.get(Operations)
+    try:
+        ops.detach(node_id, asset)
+    except OperationError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    print(f"[green]Detached {asset} from {node_id}[/green]")
+
+
+@app.command("attachments")
+def attachments_cmd(
+    node_id: str,
+    check: Annotated[bool, typer.Option("--check", help="Re-hash project-file sources")] = False,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    yaml_output: Annotated[bool, typer.Option("--yaml")] = False,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    ops = container.get(Operations)
+    try:
+        entries = ops.list_attachments(node_id, check)
+    except OperationError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    if json_output or yaml_output:
+        _emit(entries, yaml_output)
+        return
+    table = Table(title=f"Attachments of {escape(node_id)}")
+    for column in ("Asset", "Name", "Caption", "Source", "State"):
+        table.add_column(column)
+    for e in entries:
+        source = e.get("source") or {}
+        table.add_row(
+            escape(str(e.get("asset"))),
+            escape(str(e.get("name"))),
+            escape(str(e.get("caption") or "")),
+            escape(str(source.get("uri") or "-")),
+            escape(str(source.get("state") or "-")),
+        )
+    print(table)
 
 
 @app.command("next")
@@ -1287,6 +1581,16 @@ def export_cmd(
     specs = {n.id: n for n in node_repo.list_nodes(kind=NodeKind.SPEC)}
     tasks = node_repo.list_nodes(kind=NodeKind.TASK)
     plans = node_repo.list_nodes(kind=NodeKind.PLAN)
+    decisions = sorted(node_repo.list_nodes(kind=NodeKind.DECISION), key=lambda n: n.id)
+    if decisions:
+        dump("_decisions.json", {"decisions": [_export_node(node_repo, d) for d in decisions]})
+    assets_src = root / ".taskmanager" / "assets"
+    if assets_src.is_dir():
+        assets_dst = directory / "assets"
+        assets_dst.mkdir(parents=True, exist_ok=True)
+        for f in sorted(assets_src.iterdir()):
+            if f.is_file():
+                (assets_dst / f.name).write_bytes(f.read_bytes())
     for plan in plans:
         children = set(node_repo.get_children(plan.id))
         plan_doc = _export_node(node_repo, plan)
@@ -1321,13 +1625,30 @@ def restore_cmd(
     container.get(DatabaseManager).init_all()
     importer = _RefusingImporter(container.get(BulkImporter))
 
-    files = [f for f in sorted(directory.glob("*.json")) if f.name != "_config.json"]
+    assets_dir = directory / "assets"
+    if assets_dir.is_dir():
+        assets_dest = root / ".taskmanager" / "assets"
+        assets_dest.mkdir(parents=True, exist_ok=True)
+        for f in sorted(assets_dir.iterdir()):
+            if f.is_file():
+                (assets_dest / f.name).write_bytes(f.read_bytes())
+
+    files = [
+        f
+        for f in sorted(directory.glob("*.json"))
+        if f.name not in ("_config.json", "_decisions.json")
+    ]
     docs = [json.loads(f.read_text(encoding="utf-8")) for f in files]
-    if not docs:
+    decisions_file = directory / "_decisions.json"
+    decisions_doc = (
+        json.loads(decisions_file.read_text(encoding="utf-8")) if decisions_file.exists() else None
+    )
+    if not docs and decisions_doc is None:
         print(f"[red]No export files in {directory}[/red]")
         raise typer.Exit(code=1)
     # Plans depend on each other, so the first pass keeps only the edges a document can satisfy
-    # by itself and the second adds the rest; specs go last so their full data wins.
+    # by itself and the second adds the rest; decisions go in between so a task's depends_on edge
+    # onto one resolves in the second pass, then specs go last so their full data wins.
     plan_docs = [d for d in docs if d.get("plans")]
     spec_docs = [d for d in docs if not d.get("plans")]
     for doc in plan_docs:
@@ -1337,6 +1658,8 @@ def restore_cmd(
             for n in [p, *p.get("tasks", [])]:
                 n["depends_on"] = [d for d in n.get("depends_on", []) if d in own]
         importer.import_dict(first)
+    if decisions_doc is not None:
+        importer.import_dict(decisions_doc)
     for doc in [*plan_docs, *spec_docs]:
         importer.import_dict(doc)
     settings_file = directory / "_config.json"

@@ -202,6 +202,15 @@ def every_status_project(tmp_path: Path) -> Path:
     add_task("T-BLOCKED", NodeStatus.NOT_STARTED)
     add_task("T-INFLIGHT", NodeStatus.NOT_STARTED)
     add_task("T-BLOCKED-BY-LEASE", NodeStatus.NOT_STARTED)
+    add_task("T-AWAITING-DECISION", NodeStatus.NOT_STARTED)
+    node_repo.save_node(Node(id="DECISION", kind=NodeKind.DECISION, title="Which way?"))
+    node_repo.add_relation(
+        NodeRelation(
+            source_id="T-AWAITING-DECISION",
+            target_id="DECISION",
+            relation_type=RelationType.DEPENDS_ON,
+        )
+    )
     node_repo.add_relation(
         NodeRelation(
             source_id="T-BLOCKED", target_id="T-IMPLEMENTING", relation_type=RelationType.DEPENDS_ON
@@ -250,7 +259,7 @@ def test_stats_reports_every_status_including_zeros(every_status_project: Path) 
     stats = TestClient(create_app(every_status_project)).get("/api/stats").json()
 
     assert ALL_STATUS_CODES <= stats.keys()
-    assert stats["total"] == 15
+    assert stats["total"] == 16
     assert {code: stats[code] for code in ALL_STATUS_CODES} == {
         **{code: 1 for code in ALL_STATUS_CODES},
         NodeStatus.NOT_STARTED.value: 0,
@@ -263,7 +272,7 @@ def test_tree_progress_counts_each_status_separately(every_status_project: Path)
     plan = spec["children"][0]
 
     expected = {code: 1 for code in ALL_STATUS_CODES if code != NodeStatus.NOT_STARTED.value}
-    assert plan["progress"] == {"total": 15, "counts": expected}
+    assert plan["progress"] == {"total": 16, "counts": expected}
     assert spec["progress"] == plan["progress"]
     assert plan["progress"]["counts"]["COMPLETED"] == 1
 
@@ -372,7 +381,7 @@ def test_static_export_embeds_every_status_and_the_filter_ui(
     static = json.loads(static_match.group(1))
     assert set(themes) == ALL_STATUS_CODES
     assert ALL_STATUS_CODES <= static["stats"].keys()
-    assert static["tree"][0]["progress"]["total"] == 15
+    assert static["tree"][0]["progress"]["total"] == 16
     for element_id in (
         "stats-digest",
         "repo-filter",

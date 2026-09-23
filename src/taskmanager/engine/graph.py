@@ -61,10 +61,19 @@ class GraphEngine:
             return node.status
 
         deps = self.node_repo.get_dependency_edges(task_id)
+        awaiting_decision = False
         for dep_id, gate in deps:
             dep_node = self.node_repo.get_node(dep_id)
+            if dep_node is not None and dep_node.kind == NodeKind.DECISION:
+                # A decision's own status is Open=NOT_STARTED, Answered=COMPLETED,
+                # Withdrawn=ABANDONED -- met by either terminal state, never by the edge's gate.
+                if dep_node.status not in (NodeStatus.COMPLETED, NodeStatus.ABANDONED):
+                    awaiting_decision = True
+                continue
             if dep_node is None or not gate_satisfied(dep_node.status, gate):
                 return VirtualStatus.BLOCKED
+        if awaiting_decision:
+            return VirtualStatus.AWAITING_DECISION
 
         declared_files = self.node_repo.declared_files(task_id)
         if declared_files and self.runtime_repo.get_conflicting_tasks(declared_files):
@@ -103,7 +112,13 @@ class GraphEngine:
         # per-task claimability signal, and collapsing it into one rollup value keeps a plan's
         # status meaning "nothing under it can proceed right now" either way.
         if uncompleted and all(
-            s in (VirtualStatus.BLOCKED, VirtualStatus.BLOCKED_BY_LEASE) for s in uncompleted
+            s
+            in (
+                VirtualStatus.BLOCKED,
+                VirtualStatus.BLOCKED_BY_LEASE,
+                VirtualStatus.AWAITING_DECISION,
+            )
+            for s in uncompleted
         ):
             return VirtualStatus.BLOCKED
 
