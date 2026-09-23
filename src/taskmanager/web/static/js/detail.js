@@ -227,6 +227,8 @@ async function showGraphInspector(nodeId) {
     `;
   }
 
+  const attachments = (n.frontmatter && n.frontmatter.attachments) || [];
+
   body.innerHTML = `
     ${editable ? renderActionBar(n, !!detail.lease) : ''}
     <div class="flex items-center gap-2">
@@ -236,16 +238,266 @@ async function showGraphInspector(nodeId) {
     ${leaseBanner}
     ${renderVerifications(n, detail.verifications, editable)}
     ${renderDependencies(detail.dependency_details, status, n, editable)}
+    ${renderAttachments(n, attachments, editable)}
     ${renderSections(detail.sections, n.id)}
   `;
   attachSectionToggleHandlers(body);
   attachInspectorGroupToggleHandlers(body, nodeId);
+  wireAttachmentControls(body, n, attachments, editable, () => showGraphInspector(nodeId));
   if (editable) {
     wireActionBar(body, n);
     wireVerificationControls(body, n);
     wireDependencyControls(body, n);
     attachSectionEditControls(body, n, detail.sections);
   }
+}
+
+
+// Attachments (§4): a gallery with lightbox, source/age/staleness badges and Re-check, plus
+// the Attach-file action and detach -- shared by the graph inspector above and the decisions
+// view (decisions.js calls renderAttachments/wireAttachmentControls the same way).
+
+function attachmentAssetUrl(entry) {
+  // Live mode always has a server to ask; a static export only has what static_export.py
+  // chose to embed (images <=2MB), so anything else stays a name-only, unopenable entry.
+  return isStaticMode ? (entry.data_uri || null) : `/assets/${entry.asset}`;
+}
+
+function ageFromNow(iso) {
+  if (!iso) return 'unknown age';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return 'unknown age';
+  if (ms < 0) return 'just now';
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return mins === 1 ? '1 min ago' : `${mins} min ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return hours === 1 ? '1 hour ago' : `${hours} hours ago`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? '1 day ago' : `${days} days ago`;
+}
+
+const SOURCE_BADGE = {
+  fresh: { cls: 'text-emerald-300 bg-emerald-950/60 border-emerald-800/80', label: 'Fresh' },
+  stale: { cls: 'text-amber-300 bg-amber-950/60 border-amber-800/80', label: 'Stale' },
+  missing: { cls: 'text-red-300 bg-red-950/60 border-red-800/80', label: 'Missing' },
+  unverifiable: { cls: 'text-zinc-400 bg-zinc-900 border-zinc-700', label: 'Unverified' },
+};
+
+function sourceBadgeHtml(source) {
+  const s = source || {};
+  const state = s.state || 'unverifiable';
+  const badge = SOURCE_BADGE[state] || SOURCE_BADGE.unverifiable;
+  const age = ageFromNow(s.checked_at || s.captured_at);
+  const label = state === 'unverifiable' ? `Unverified since ${age}` : `${badge.label} · ${age}`;
+  return `<span class="att-source-badge px-1.5 py-0.5 rounded border text-[10px] font-medium ${badge.cls}" title="${esc(s.uri || 'no recorded source')}">${esc(label)}</span>`;
+}
+
+function renderAttachments(node, attachments, editable) {
+  const list = attachments || [];
+  const cards = list.map(entry => {
+    const url = attachmentAssetUrl(entry);
+    const isImage = (entry.mime || '').startsWith('image/');
+    const thumb = isImage && url
+      ? `<button type="button" class="att-open-btn block w-full aspect-video rounded-md overflow-hidden bg-zinc-900 border border-zinc-800 hover:border-zinc-600 transition" data-asset="${esc(entry.asset)}" aria-label="Open ${esc(entry.name)} full size"><img src="${esc(url)}" alt="${esc(entry.caption || entry.name)}" class="w-full h-full object-cover"></button>`
+      : `<div class="flex items-center justify-center aspect-video rounded-md bg-zinc-900 border border-zinc-800 text-zinc-500">${renderIcon(isImage ? 'file-x' : 'file-text', 'w-6 h-6')}</div>`;
+    const nameEl = !isImage && url
+      ? `<a href="${esc(url)}" download="${esc(entry.name)}" class="text-emerald-400 hover:text-emerald-300 underline decoration-dotted">${esc(entry.name)}</a>`
+      : `<span>${esc(entry.caption || entry.name)}</span>`;
+    return `
+      <div class="att-card space-y-1.5" data-asset="${esc(entry.asset)}">
+        ${thumb}
+        <div class="flex items-center justify-between gap-1.5 text-[11px] text-zinc-300">
+          <span class="truncate" title="${esc(entry.name)}">${nameEl}</span>
+          ${editable ? `<button type="button" class="att-detach-btn p-1 rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-800 flex-shrink-0" data-asset="${esc(entry.asset)}" aria-label="Detach ${esc(entry.name)}">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
+        </div>
+        <div class="flex items-center flex-wrap gap-1">${sourceBadgeHtml(entry.source)}</div>
+      </div>
+    `;
+  }).join('');
+
+  const controls = editable ? `
+    <div class="flex items-center gap-2 pt-1.5">
+      <label class="att-add-btn h-7 px-2 flex items-center rounded-md text-[11px] font-medium text-emerald-400 hover:text-emerald-300 hover:bg-zinc-800 border border-dashed border-zinc-700 transition cursor-pointer">
+        <span>+ Attach file</span>
+        <input type="file" class="att-file-input hidden" aria-label="Attach a file">
+      </label>
+      ${list.length > 0 ? `<button type="button" class="att-recheck-btn h-7 px-2 rounded-md text-[11px] font-medium text-zinc-300 hover:text-white hover:bg-zinc-800 border border-zinc-700 transition">${renderIcon('rotate-cw', 'w-3 h-3 inline -mt-0.5 mr-1')}Re-check</button>` : ''}
+    </div>
+  ` : '';
+
+  if (list.length === 0 && !controls) return '';
+
+  return `
+    <div class="space-y-1.5 pt-2 border-t border-zinc-800/60">
+      <div class="font-semibold text-zinc-400 uppercase tracking-wider text-[10px]">Attachments${list.length ? ` (${list.length})` : ''}</div>
+      ${list.length ? `<div class="grid grid-cols-2 gap-2">${cards}</div>` : ''}
+      ${controls}
+    </div>
+  `;
+}
+
+function openLightbox(url, alt) {
+  const trigger = document.activeElement;
+  const overlay = document.createElement('div');
+  overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4';
+  overlay.innerHTML = `
+    <button type="button" class="lb-close absolute top-4 right-4 p-2 rounded text-zinc-300 hover:text-white hover:bg-zinc-800" aria-label="Close image">${renderIcon('x', 'w-5 h-5')}</button>
+    <img src="${esc(url)}" alt="${esc(alt || '')}" class="max-w-full max-h-full rounded-lg shadow-2xl">
+  `;
+  function close() {
+    document.removeEventListener('keydown', onKeydown);
+    overlay.remove();
+    if (trigger && typeof trigger.focus === 'function' && trigger.isConnected) trigger.focus();
+  }
+  function onKeydown(e) {
+    if (e.key === 'Escape') close();
+  }
+  document.addEventListener('keydown', onKeydown);
+  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+  const closeBtn = overlay.querySelector('.lb-close');
+  closeBtn.addEventListener('click', close);
+  dialogRoot.appendChild(overlay);
+  closeBtn.focus();
+}
+
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(new Error('Could not read the file.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function attachFile(node, file, afterChange) {
+  try {
+    const content_base64 = await readFileAsBase64(file);
+    await api('POST', `/api/nodes/${node.id}/attachments`, { filename: file.name, content_base64 });
+    toast(`Attached ${file.name}.`, 'success');
+    if (afterChange) await afterChange();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+function detachAttachment(node, asset, afterChange) {
+  confirmDialog({
+    title: `Detach ${asset}?`,
+    message: `The attachment will be removed from ${node.id}.`,
+    confirmLabel: 'Detach',
+    onConfirm: async () => {
+      await api('DELETE', `/api/nodes/${node.id}/attachments/${encodeURIComponent(asset)}`);
+      toast('Attachment detached.', 'success');
+      if (afterChange) await afterChange();
+    }
+  });
+}
+
+async function recheckAttachments(node, afterChange) {
+  try {
+    await api('POST', `/api/nodes/${node.id}/attachments/check`);
+    toast('Attachment sources re-checked.', 'success');
+    if (afterChange) await afterChange();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+function wireAttachmentControls(root, node, attachments, editable, afterChange) {
+  root.querySelectorAll('.att-open-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const asset = btn.getAttribute('data-asset');
+      const entry = (attachments || []).find(a => a.asset === asset);
+      const url = entry && attachmentAssetUrl(entry);
+      if (url) openLightbox(url, entry.caption || entry.name);
+    });
+  });
+  if (!editable) return;
+  const fileInput = root.querySelector('.att-file-input');
+  if (fileInput) {
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (file) await attachFile(node, file, afterChange);
+      fileInput.value = '';
+    });
+  }
+  root.querySelectorAll('.att-detach-btn').forEach(btn => {
+    btn.addEventListener('click', () => detachAttachment(node, btn.getAttribute('data-asset'), afterChange));
+  });
+  const recheckBtn = root.querySelector('.att-recheck-btn');
+  if (recheckBtn) recheckBtn.addEventListener('click', () => recheckAttachments(node, afterChange));
+}
+
+
+// Markdown image rewriting (§4): a section's own `<img>` sources should not expose the
+// project's filesystem layout, so anything not already http(s)/data/assets is served
+// through /api/file, which only serves an image whose resolved real path sits under the
+// project root. Wrapping the global tree.js/edit.js function is the same pattern edit.js
+// itself uses for DOMPurify (see the top of edit.js) -- reassigning it here runs both.
+// A static export has no server to rewrite toward, so it is left exactly as authored.
+if (typeof renderSectionBody === 'function') {
+  const previousRenderSectionBody = renderSectionBody;
+  renderSectionBody = function (content) {
+    const html = previousRenderSectionBody(content);
+    if (isStaticMode || typeof DOMParser === 'undefined') return html;
+    // DOMParser output is inert: no image request fires and no script runs while we walk it.
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    doc.querySelectorAll('img[src]').forEach(img => {
+      const src = img.getAttribute('src');
+      if (src && !/^(https?:|data:)/i.test(src) && !src.startsWith('/assets/')) {
+        img.setAttribute('src', `/api/file?path=${encodeURIComponent(src)}`);
+      }
+    });
+    return doc.body.innerHTML;
+  };
+}
+
+
+// AWAITING_DECISION banner (§6.4) in the document view: renderUnifiedDocument is tree.js's
+// own function, wrapped rather than edited there -- same reassignment pattern as above, so
+// the document view's own markup never has to know decisions exist.
+
+function decorateAwaitingDecisionBanners() {
+  function walk(nodes) {
+    (nodes || []).forEach(task => {
+      if (task.kind === 'task' && (task.virtual_status || task.status) === 'AWAITING_DECISION') {
+        const el = document.getElementById(`doc-node-${task.id}`);
+        const cardBody = el && el.querySelector('.task-body');
+        if (cardBody && !cardBody.querySelector('.awaiting-decision-banner')) {
+          const waitingOn = (task.dependency_details || []).filter(d => !d.finished);
+          const links = waitingOn.map(d =>
+            `<button type="button" class="awaiting-decision-link underline decoration-dotted text-amber-200 hover:text-amber-100" data-decision-id="${esc(d.id)}">${esc(d.id)}${d.title ? `: ${esc(d.title)}` : ''}</button>`
+          ).join(', ');
+          const banner = document.createElement('div');
+          banner.className = 'awaiting-decision-banner p-2.5 bg-amber-950/40 border border-amber-800/80 rounded-lg flex items-center gap-2 text-xs mb-3';
+          banner.innerHTML = `${renderIcon('help-circle', 'w-3.5 h-3.5 text-amber-400 flex-shrink-0')}<span class="text-amber-200">Awaiting decision: ${links || 'unknown'}</span>`;
+          cardBody.insertBefore(banner, cardBody.firstChild);
+        }
+      }
+      walk(task.children);
+    });
+  }
+  walk(treeData);
+}
+
+document.addEventListener('click', (e) => {
+  const link = e.target.closest('.awaiting-decision-link');
+  if (!link) return;
+  e.preventDefault();
+  if (typeof goToDecision === 'function') goToDecision(link.getAttribute('data-decision-id'));
+});
+
+if (typeof renderUnifiedDocument === 'function') {
+  const previousRenderUnifiedDocument = renderUnifiedDocument;
+  renderUnifiedDocument = function () {
+    previousRenderUnifiedDocument();
+    decorateAwaitingDecisionBanners();
+  };
 }
 
 // tree.js's attachCollapsibleHandlers() wires .group-header clicks only for the document

@@ -156,6 +156,18 @@
       </div>
     </section>
 
+    <!-- Decisions View Pane (§6.4): list of open/answered/withdrawn decisions and a detail
+         panel, toggled on by decisions.js -- hidden by default like the graph pane. -->
+    <section id="decisions-pane" class="hidden flex-1 flex flex-col sm:flex-row overflow-hidden bg-zinc-950">
+      <aside class="w-full sm:w-80 md:w-96 max-h-[38vh] sm:max-h-none flex-shrink-0 border-b sm:border-b-0 sm:border-r border-zinc-800 flex flex-col overflow-hidden">
+        <div id="decisions-tabs" role="tablist" aria-label="Decision status" class="flex items-center gap-1 p-2 border-b border-zinc-800 flex-shrink-0"></div>
+        <div id="decisions-list" class="flex-1 overflow-y-auto p-2 space-y-1.5"></div>
+      </aside>
+      <div id="decisions-detail" class="flex-1 min-w-0 overflow-y-auto p-6">
+        <div class="max-w-2xl mx-auto text-sm text-zinc-500 italic pt-12 text-center">Select a decision to view it.</div>
+      </div>
+    </section>
+
   </div>
 
   <!-- Ahead of every script block below: core.js reads these by id while it runs, and a
@@ -181,6 +193,9 @@
   </script>
   <script>
 <!--slot:js-detail-->
+  </script>
+  <script>
+<!--slot:js-decisions-->
   </script>
   <script>
 <!--slot:js-main-->
