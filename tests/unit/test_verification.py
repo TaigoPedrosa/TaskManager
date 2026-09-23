@@ -262,9 +262,7 @@ def test_verify_all(tmp_path: Path) -> None:
 
 def test_ast_symbol_verification_annotated_field(tmp_path: Path) -> None:
     source_file = tmp_path / "schemas.py"
-    source_file.write_text(
-        "class OpsTenantDetailOut(BaseModel):\n    campaigns_in_use: int\n"
-    )
+    source_file.write_text("class OpsTenantDetailOut(BaseModel):\n    campaigns_in_use: int\n")
 
     ver = NodeVerification(
         node_id="AUTH-T01",
