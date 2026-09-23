@@ -446,3 +446,121 @@ def test_cli_install_command(tmp_path: Path) -> None:
 
     res_status = runner.invoke(app, ["install", "--status", "--path", str(tmp_path)])
     assert res_status.exit_code == 0
+
+
+def test_cli_task_update_unset_removes_a_frontmatter_key(tmp_path: Path) -> None:
+    runner.invoke(app, ["init", "--path", str(tmp_path)])
+    runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "--path", str(tmp_path)])
+    runner.invoke(
+        app, ["plan", "add", "P", "--spec", "S1", "--slug", "P1", "--path", str(tmp_path)]
+    )
+    runner.invoke(
+        app, ["task", "add", "T", "--plan", "S1-P1", "--slug", "t1", "--path", str(tmp_path)]
+    )
+    runner.invoke(
+        app,
+        ["task", "update", "S1-P1-t1", "--set", 'declared_files=["a"]', "--path", str(tmp_path)],
+    )
+
+    res = runner.invoke(
+        app,
+        ["task", "update", "S1-P1-t1", "--unset", "declared_files", "--path", str(tmp_path)],
+    )
+    assert res.exit_code == 0
+    assert "Updated S1-P1-t1" in res.stdout
+
+    doc = json.loads(
+        runner.invoke(app, ["task", "get", "S1-P1-t1", "--json", "--path", str(tmp_path)]).stdout
+    )
+    assert "declared_files" not in doc["frontmatter"]
+
+
+def test_cli_task_move_reparents_to_another_plan(tmp_path: Path) -> None:
+    runner.invoke(app, ["init", "--path", str(tmp_path)])
+    runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "--path", str(tmp_path)])
+    runner.invoke(
+        app, ["plan", "add", "P1", "--spec", "S1", "--slug", "P1", "--path", str(tmp_path)]
+    )
+    runner.invoke(
+        app, ["plan", "add", "P2", "--spec", "S1", "--slug", "P2", "--path", str(tmp_path)]
+    )
+    runner.invoke(
+        app, ["task", "add", "T", "--plan", "S1-P1", "--slug", "t1", "--path", str(tmp_path)]
+    )
+
+    res = runner.invoke(
+        app, ["task", "move", "S1-P1-t1", "--plan", "S1-P2", "--path", str(tmp_path)]
+    )
+    assert res.exit_code == 0
+    assert "Moved S1-P1-t1 to S1-P2" in res.stdout
+
+    res = runner.invoke(app, ["plan", "get", "S1-P1", "--path", str(tmp_path)])
+    assert "S1-P1-t1" not in res.stdout
+    res = runner.invoke(app, ["plan", "get", "S1-P2", "--path", str(tmp_path)])
+    assert "S1-P1-t1" in res.stdout
+
+    res = runner.invoke(
+        app, ["task", "move", "S1-P1-t1", "--plan", "NOPE", "--path", str(tmp_path)]
+    )
+    assert res.exit_code == 1
+    assert "not found" in res.stdout
+
+
+def test_cli_section_remove_deletes_a_section(tmp_path: Path) -> None:
+    runner.invoke(app, ["init", "--path", str(tmp_path)])
+    runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "--path", str(tmp_path)])
+    runner.invoke(
+        app, ["plan", "add", "P", "--spec", "S1", "--slug", "P1", "--path", str(tmp_path)]
+    )
+    runner.invoke(
+        app, ["task", "add", "T", "--plan", "S1-P1", "--slug", "t1", "--path", str(tmp_path)]
+    )
+    runner.invoke(app, ["section", "set", "S1-P1-t1:steps", "content", "--path", str(tmp_path)])
+
+    res = runner.invoke(app, ["section", "remove", "S1-P1-t1:steps", "--path", str(tmp_path)])
+    assert res.exit_code == 0
+    assert "Removed section S1-P1-t1:steps" in res.stdout
+
+    res = runner.invoke(app, ["section", "get", "S1-P1-t1:steps", "--path", str(tmp_path)])
+    assert res.exit_code == 1
+
+    res = runner.invoke(app, ["section", "remove", "S1-P1-t1:steps", "--path", str(tmp_path)])
+    assert res.exit_code == 1
+    assert "No section" in res.stdout
+
+
+def test_cli_run_release_drops_the_lease_without_changing_status(tmp_path: Path) -> None:
+    runner.invoke(app, ["init", "--path", str(tmp_path)])
+    runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "--path", str(tmp_path)])
+    runner.invoke(
+        app, ["plan", "add", "P", "--spec", "S1", "--slug", "P1", "--path", str(tmp_path)]
+    )
+    runner.invoke(
+        app, ["task", "add", "T", "--plan", "S1-P1", "--slug", "t1", "--path", str(tmp_path)]
+    )
+    runner.invoke(
+        app,
+        [
+            "run",
+            "start",
+            "S1-P1-t1",
+            "--agent",
+            "agent-a",
+            "--session",
+            "sess-a",
+            "--path",
+            str(tmp_path),
+        ],
+    )
+
+    res = runner.invoke(app, ["run", "release", "S1-P1-t1", "--path", str(tmp_path)])
+    assert res.exit_code == 0
+    assert "Released lease for S1-P1-t1" in res.stdout
+
+    res = runner.invoke(app, ["run", "list", "--path", str(tmp_path)])
+    assert "S1-P1-t1" not in res.stdout
+
+    doc = json.loads(
+        runner.invoke(app, ["task", "get", "S1-P1-t1", "--json", "--path", str(tmp_path)]).stdout
+    )
+    assert doc["status"] == "IMPLEMENTING"

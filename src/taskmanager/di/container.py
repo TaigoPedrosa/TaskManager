@@ -10,6 +10,7 @@ from taskmanager.engine.config import ConfigStore
 from taskmanager.engine.git import GitManager
 from taskmanager.engine.graph import GraphEngine
 from taskmanager.engine.heuristics import RecommendationEngine
+from taskmanager.engine.operations import Operations
 from taskmanager.engine.runtime import ExecutionCoordinator
 from taskmanager.engine.search import EmbeddingProvider, SearchEngine, build_provider
 from taskmanager.engine.verification import VerificationEngine
@@ -86,6 +87,20 @@ class TaskManagerProvider(Provider):
         settings = ConfigStore(self.root).embeddings()
         return SearchEngine(db_mgr, self.embedding_provider or build_provider(settings), settings)
 
+    @provide(scope=Scope.APP)
+    def operations(
+        self,
+        node_repo: NodeRepository,
+        runtime_repo: RuntimeRepository,
+        graph_engine: GraphEngine,
+        coordinator: ExecutionCoordinator,
+        ledger_repo: LedgerRepository,
+        verification_engine: VerificationEngine,
+    ) -> Operations:
+        return Operations(
+            node_repo, runtime_repo, graph_engine, coordinator, ledger_repo, verification_engine
+        )
+
     get_db_mgr = db_mgr
     get_node_repo = node_repo
     get_runtime_repo = runtime_repo
@@ -98,6 +113,7 @@ class TaskManagerProvider(Provider):
     get_renderer = renderer
     get_importer = importer
     get_search_engine = search_engine
+    get_operations = operations
 
 
 def create_container(root: Path | None = None) -> Container:

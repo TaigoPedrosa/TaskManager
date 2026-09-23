@@ -20,17 +20,20 @@ While a lease is live the task reads `IN_FLIGHT`, whatever status it holds under
 
 A `NOT_STARTED` task whose dependencies are all satisfied but whose own `declared_files` collide with a file another task's active lease already holds reads `BLOCKED_BY_LEASE`, not `READY`: the dependency graph has nothing left to say, but claiming it would collide. It clears back to `READY` on its own once the holding lease is released or swept, no action needed on the task itself.
 
+A `depends_on` edge onto a **decision** (a question raised with `tm decision add`) reads `AWAITING_DECISION`, not `BLOCKED`, once every other dependency is clear: an open decision is `NOT_STARTED`, an answered one `COMPLETED`, a withdrawn one `ABANDONED` — either terminal state clears the edge, so answering or withdrawing it moves the task straight to `READY`. `tm decision list --status open` is the owner's queue of what is waiting on them.
+
 A lease lasts 300 seconds unless `--ttl` or `TM_LEASE_TTL` says otherwise, and `tm run heartbeat` renews it. An expired lease does not free the task by itself: `tm run sweep` names it, drops the lease and its locks, and returns the task to the state before the claim (`NOT_STARTED`, `WAITING_REVIEW`, `WAITING_FIXES` or `WAITING_MERGE`), so it can be claimed again.
 
 ## Reading
 
-- `tm next -n 5` lists what can start now. `tm next --model <id>` filters by an acceptable model.
-- `tm task list --yaml` and `tm task get <task-id> --yaml` are the compact reads (`--json` is the same data); `tm plan list`, `tm spec list` and `tm run list` take the same flags. `--status <S>` filters a list.
-- `tm render <task-id> --view subagent` is a task's full brief. `tm section get <task-id>:<key>` reads one section. `--recursive` (`-r`) also renders every child depth-first — a spec's plans and their tasks, or a plan's tasks — separated by `---`; a leaf task ignores it and a `:section` path refuses it.
+- What can be worked on now, scored, is `tm next -n <N> --yaml`, optionally filtered with `--model <id>`; the owner's own queue of open questions is `tm decision list --status open`, a separate command.
+- `tm task list --yaml` and `tm task get <task-id> --yaml` are the compact reads (`--json` is the same data); `tm plan list`, `tm spec list` and `tm run list` take the same flags. `--status <S>` filters a list. `tm task list --render <view>` renders every listed task in that view instead of a table.
+- `tm render <task-id> --view subagent` is a task's full brief; render several nodes in one call, `tm render <id-1> <id-2> ...`, separated by `---`. `tm section get <task-id>:<key>` reads one section. `--recursive` (`-r`) also renders every child depth-first — a spec's plans and their tasks, or a plan's tasks — separated by `---`; a leaf task ignores it and a `:section` path refuses it.
 - `tm verify run <task-id>` runs the task's checks and exits 1 if one fails.
 - `tm audit list --target <task-id>` is the event log of everything done to a node.
 - `tm search <words>` finds tasks, plans and specs by text, or by meaning once `tm index` has run; `--kind`, `--status` and `--plan` narrow it.
 - `tm config list` shows every setting with its effective value and where it came from; `tm config set <key> <value>` changes one.
+- `tm decision list --status open` and `tm decision get <id> --yaml` read the queue of open questions and one decision's options and answer.
 
 ## Files and worktrees
 
@@ -47,6 +50,8 @@ A claim locks the paths the task declares — its path-bearing verifications plu
 ## Writing
 
 Add new work with `tm import` (a document of specs, plans and tasks; an import that names an unknown dependency writes nothing and exits 1). Change an existing task with `tm task update`, `tm section set` and `tm verify add`. `tm export <dir>` writes the whole database as sorted text for version control.
+
+A question nobody in the loop can answer is not a reason to stop and ask: raise it with `tm decision add "<question>" --option "a|Label" --option "b|Label" --recommend a --blocks <task-id>`, naming the options you considered and the one you recommend, then release the blocked task normally. `tm decision answer <id> --option a` or `tm decision withdraw <id>` unblocks it; `tm decision reopen <id>` re-blocks it.
 
 ## Messages you will meet
 

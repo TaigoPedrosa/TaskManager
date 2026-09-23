@@ -59,7 +59,7 @@ import refused, nothing written: unknown ids ['DOES-NOT-EXIST']
 
 Where the dependency is only about ordering an agent can work around, it is `soft_depends_on`, not an edge.
 
-A cross-cutting hold — a decision that gates several unrelated tasks at once — is a node, and every task it holds `depends_on` it, never a transcript of its terms. A transcript cannot lift when the decision does, and every agent already dispatched under it is still carrying the stale copy; a `depends_on` edge lifts the moment the decision node completes, with no message to anybody.
+A cross-cutting hold — a question that gates several unrelated tasks at once, not a missing dependency — is a decision (`tm decision add "<question>" --option "a|Do X" --recommend a --blocks t1,t2`), and every task it holds `depends_on` it, never a transcript of its terms in a section. A transcript cannot lift when the decision does, and every agent already dispatched under it is still carrying the stale copy; a `depends_on` edge onto a decision lifts the moment it is answered or withdrawn, with no message to anybody, and the waiting tasks read `AWAITING_DECISION` in the meantime rather than a plain `BLOCKED` that gives no hint who moves it.
 
 ## 5. Verifications
 

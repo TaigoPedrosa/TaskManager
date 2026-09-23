@@ -74,6 +74,16 @@ A gate, a build, an external state change — pick by duration, because duration
 
 Never end your turn to wait on a background run "until notified." A background command's completion notification reaches you only while you are still working — ending your turn is what loses it, and nothing resumes you afterward. The output is already on disk; `tail` it instead of waiting for word of it.
 
+## Something only the owner can answer
+
+Not a missing dependency and not a bug in the brief — a genuine judgement call the task cannot proceed without. Raise it instead of stopping to ask:
+
+```
+tm decision add "<question>" --option "a|Do X" --option "b|Do Y" --recommend a --blocks <task-id>
+```
+
+Name the options you considered and the one you recommend. Then release the task normally (`--status NOT_STARTED`); it reads `AWAITING_DECISION` until the owner answers or withdraws it, and returns to `READY` the moment they do.
+
 ## 6. Hand it off — on every exit path
 
 ```

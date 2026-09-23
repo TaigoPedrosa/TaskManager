@@ -31,7 +31,7 @@ class BulkImporter:
             "tasks",
         }
     )
-    DOCUMENT_KEYS = frozenset({"spec", "plans", "tasks"})
+    DOCUMENT_KEYS = frozenset({"spec", "plans", "tasks", "decisions"})
     VERIFICATION_KEYS = frozenset(
         {"type", "verification_type", "target_path", "expected_pattern", "codegraph_query_json"}
     )
@@ -53,6 +53,7 @@ class BulkImporter:
             nodes.append((f"plan {plan.get('id')}", plan))
             nodes.extend((f"task {t.get('id')}", t) for t in plan.get("tasks") or [])
         nodes.extend((f"task {t.get('id')}", t) for t in data.get("tasks") or [])
+        nodes.extend((f"decision {d.get('id')}", d) for d in data.get("decisions") or [])
         for where, node in nodes:
             check(where, node, self.NODE_KEYS)
             for v in node.get("verifications") or []:
@@ -195,6 +196,23 @@ class BulkImporter:
                         target_path=ver_data["target_path"],
                         expected_pattern=ver_data.get("expected_pattern"),
                         codegraph_query_json=ver_data.get("codegraph_query_json"),
+                    )
+                )
+
+        for dec_data in data.get("decisions", []):
+            dec_node = self._parse_node(
+                dec_data, NodeKind.DECISION, self.node_repo.get_node(dec_data["id"])
+            )
+            nodes.append(dec_node)
+            sections.extend(self._parse_sections(dec_node.id, dec_data.get("sections")))
+            for dep in dec_data.get("depends_on", []):
+                dep_id, metadata = self._parse_dep(dep)
+                relations.append(
+                    NodeRelation(
+                        source_id=dec_node.id,
+                        target_id=dep_id,
+                        relation_type=RelationType.DEPENDS_ON,
+                        metadata=metadata,
                     )
                 )
 

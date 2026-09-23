@@ -19,6 +19,15 @@ LIFECYCLE_ORDER: dict[NodeStatus, int] = {
     NodeStatus.COMPLETED: 8,
 }
 
+# A child in one of these statuses cannot reach completion, so a rollup leaves it out of both
+# the count and the denominator (§3.2a) -- it counts again the moment its status changes back.
+_SET_ASIDE = {NodeStatus.SUPERSEDED, NodeStatus.ABANDONED, NodeStatus.DEFERRED}
+_BLOCKED_STATES = {
+    VirtualStatus.BLOCKED,
+    VirtualStatus.BLOCKED_BY_LEASE,
+    VirtualStatus.AWAITING_DECISION,
+}
+
 
 def gate_satisfied(status: NodeStatus, gate: NodeStatus) -> bool:
     """Whether a dependency's current status clears a `depends_on` edge's gate: at or past
@@ -61,16 +70,53 @@ class GraphEngine:
             return node.status
 
         deps = self.node_repo.get_dependency_edges(task_id)
+        awaiting_decision = False
         for dep_id, gate in deps:
             dep_node = self.node_repo.get_node(dep_id)
+            if dep_node is not None and dep_node.kind == NodeKind.DECISION:
+                # A decision's own status is Open=NOT_STARTED, Answered=COMPLETED,
+                # Withdrawn=ABANDONED -- met by either terminal state, never by the edge's gate.
+                if dep_node.status not in (NodeStatus.COMPLETED, NodeStatus.ABANDONED):
+                    awaiting_decision = True
+                continue
             if dep_node is None or not gate_satisfied(dep_node.status, gate):
                 return VirtualStatus.BLOCKED
+        if awaiting_decision:
+            return VirtualStatus.AWAITING_DECISION
 
         declared_files = self.node_repo.declared_files(task_id)
         if declared_files and self.runtime_repo.get_conflicting_tasks(declared_files):
             return VirtualStatus.BLOCKED_BY_LEASE
 
         return VirtualStatus.READY
+
+    def _rollup(
+        self,
+        counted_states: list[NodeStatus | VirtualStatus],
+        set_aside_statuses: list[NodeStatus],
+        all_not_started: bool,
+    ) -> NodeStatus | VirtualStatus:
+        """§3.2a, shared by the plan-over-tasks and spec-over-plans rollups: `counted_states` is
+        each non-set-aside child's resolved state, `set_aside_statuses` is each set-aside
+        child's own stored status, and `all_not_started` says whether every counted child is
+        still at its stored NOT_STARTED with nothing in flight under it."""
+        if not counted_states:
+            if NodeStatus.DEFERRED in set_aside_statuses:
+                return NodeStatus.DEFERRED
+            if NodeStatus.ABANDONED in set_aside_statuses:
+                return NodeStatus.ABANDONED
+            return NodeStatus.COMPLETED  # every counted-out child is SUPERSEDED
+
+        if all(s == NodeStatus.COMPLETED for s in counted_states):
+            return NodeStatus.COMPLETED
+        # A plan is only ever reported BLOCKED, never BLOCKED_BY_LEASE -- that distinction is a
+        # per-task claimability signal, and collapsing it into one rollup value keeps a plan's
+        # status meaning "nothing under it can proceed right now" either way.
+        if all(s in _BLOCKED_STATES for s in counted_states):
+            return VirtualStatus.BLOCKED
+        if all_not_started:
+            return VirtualStatus.READY
+        return NodeStatus.IMPLEMENTING
 
     def resolve_plan_status(self, plan_id: str) -> NodeStatus | VirtualStatus:
         plan_node = self.node_repo.get_node(plan_id)
@@ -91,31 +137,19 @@ class GraphEngine:
             return plan_node.status
 
         child_nodes = [self.node_repo.get_node(cid) for cid in children]
-        child_states = [self.resolve_task_state(cid) for cid in children]
-
-        if all(s in (NodeStatus.COMPLETED, NodeStatus.SUPERSEDED) for s in child_states):
-            return NodeStatus.COMPLETED
-
-        uncompleted = [
-            s for s in child_states if s not in (NodeStatus.COMPLETED, NodeStatus.SUPERSEDED)
+        counted = [cn for cn in child_nodes if cn is not None and cn.status not in _SET_ASIDE]
+        set_aside_statuses = [
+            cn.status for cn in child_nodes if cn is not None and cn.status in _SET_ASIDE
         ]
-        # A plan is only ever reported BLOCKED, never BLOCKED_BY_LEASE -- that distinction is a
-        # per-task claimability signal, and collapsing it into one rollup value keeps a plan's
-        # status meaning "nothing under it can proceed right now" either way.
-        if uncompleted and all(
-            s in (VirtualStatus.BLOCKED, VirtualStatus.BLOCKED_BY_LEASE) for s in uncompleted
-        ):
-            return VirtualStatus.BLOCKED
 
-        if all(
-            cn is not None
-            and cn.status == NodeStatus.NOT_STARTED
-            and not self._is_task_in_flight(cn.id)
-            for cn in child_nodes
-        ):
-            return NodeStatus.NOT_STARTED
-
-        return NodeStatus.IMPLEMENTING
+        return self._rollup(
+            [self.resolve_task_state(cn.id) for cn in counted],
+            set_aside_statuses,
+            all(
+                cn.status == NodeStatus.NOT_STARTED and not self._is_task_in_flight(cn.id)
+                for cn in counted
+            ),
+        )
 
     def resolve_spec_status(self, spec_id: str) -> NodeStatus | VirtualStatus:
         """A spec's status the same way a plan's is: rolled up from its children, here plans
@@ -125,29 +159,23 @@ class GraphEngine:
             raise ValueError(f"Spec '{spec_id}' not found")
 
         children = self.node_repo.get_children(spec_id)
-        plan_ids = [
-            cid
+        plan_nodes = [
+            child
             for cid in children
             if (child := self.node_repo.get_node(cid)) is not None and child.kind == NodeKind.PLAN
         ]
-        if not plan_ids:
+        if not plan_nodes:
             return spec_node.status
 
-        plan_states = [self.resolve_plan_status(pid) for pid in plan_ids]
+        counted = [pn for pn in plan_nodes if pn.status not in _SET_ASIDE]
+        set_aside_statuses = [pn.status for pn in plan_nodes if pn.status in _SET_ASIDE]
+        plan_states = [self.resolve_plan_status(pn.id) for pn in counted]
 
-        if all(s in (NodeStatus.COMPLETED, NodeStatus.SUPERSEDED) for s in plan_states):
-            return NodeStatus.COMPLETED
-
-        uncompleted = [
-            s for s in plan_states if s not in (NodeStatus.COMPLETED, NodeStatus.SUPERSEDED)
-        ]
-        if uncompleted and all(s == VirtualStatus.BLOCKED for s in uncompleted):
-            return VirtualStatus.BLOCKED
-
-        if all(s == NodeStatus.NOT_STARTED for s in plan_states):
-            return NodeStatus.NOT_STARTED
-
-        return NodeStatus.IMPLEMENTING
+        return self._rollup(
+            plan_states,
+            set_aside_statuses,
+            all(s in (NodeStatus.NOT_STARTED, VirtualStatus.READY) for s in plan_states),
+        )
 
     def would_cause_cycle(self, source_id: str, target_id: str) -> bool:
         if source_id == target_id:

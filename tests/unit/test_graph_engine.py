@@ -305,14 +305,14 @@ def test_plan_status_rollup(
         )
     )
 
-    assert engine.resolve_plan_status("AUTH-P01") == NodeStatus.NOT_STARTED
+    assert engine.resolve_plan_status("AUTH-P01") == VirtualStatus.READY
 
     node_repo.add_relation(
         NodeRelation(
             source_id="AUTH-T02", target_id="AUTH-T01", relation_type=RelationType.DEPENDS_ON
         )
     )
-    assert engine.resolve_plan_status("AUTH-P01") == NodeStatus.NOT_STARTED
+    assert engine.resolve_plan_status("AUTH-P01") == VirtualStatus.READY
 
     ext = Node(
         id="EXT-T00", kind=NodeKind.TASK, title="External Task", status=NodeStatus.NOT_STARTED
@@ -327,7 +327,7 @@ def test_plan_status_rollup(
 
     ext.status = NodeStatus.COMPLETED
     node_repo.save_node(ext)
-    assert engine.resolve_plan_status("AUTH-P01") == NodeStatus.NOT_STARTED
+    assert engine.resolve_plan_status("AUTH-P01") == VirtualStatus.READY
 
     t1.status = NodeStatus.IMPLEMENTING
     node_repo.save_node(t1)
@@ -344,7 +344,9 @@ def test_plan_status_rollup(
     )
     ext.status = NodeStatus.IMPLEMENTING
     node_repo.save_node(ext)
-    assert engine.resolve_plan_status("AUTH-P01") == VirtualStatus.BLOCKED
+    # T1 is COMPLETED and T2 is BLOCKED: not *all* counted children are blocked, so this is
+    # the "otherwise" branch, not the all-blocked one (§3.2a's BLOCKED rule requires unanimity).
+    assert engine.resolve_plan_status("AUTH-P01") == NodeStatus.IMPLEMENTING
 
     ext.status = NodeStatus.COMPLETED
     node_repo.save_node(ext)
@@ -369,6 +371,169 @@ def test_plan_status_rollup(
 
     with pytest.raises(ValueError, match="not found"):
         engine.resolve_plan_status("NONEXISTENT")
+
+
+def test_plan_status_rollup_excludes_set_aside_children(
+    repos: tuple[NodeRepository, RuntimeRepository, GraphEngine],
+) -> None:
+    node_repo, _, engine = repos
+    plan = Node(id="P01", kind=NodeKind.PLAN, title="Plan", status=NodeStatus.NOT_STARTED)
+    done = Node(id="P01-T1", kind=NodeKind.TASK, title="Done", status=NodeStatus.COMPLETED)
+    gone = Node(id="P01-T2", kind=NodeKind.TASK, title="Gone", status=NodeStatus.ABANDONED)
+    node_repo.save_node(plan)
+    node_repo.save_node(done)
+    node_repo.save_node(gone)
+    node_repo.add_relation(
+        NodeRelation(source_id="P01", target_id="P01-T1", relation_type=RelationType.CONTAINS)
+    )
+    node_repo.add_relation(
+        NodeRelation(source_id="P01", target_id="P01-T2", relation_type=RelationType.CONTAINS)
+    )
+
+    # An abandoned sibling must not drag the rollup down to IMPLEMENTING once every task that
+    # can still finish has finished.
+    assert engine.resolve_plan_status("P01") == NodeStatus.COMPLETED
+
+
+def test_plan_status_rollup_all_set_aside_prefers_deferred_then_abandoned(
+    repos: tuple[NodeRepository, RuntimeRepository, GraphEngine],
+) -> None:
+    node_repo, _, engine = repos
+    plan = Node(id="P02", kind=NodeKind.PLAN, title="Plan", status=NodeStatus.NOT_STARTED)
+    superseded = Node(id="P02-T1", kind=NodeKind.TASK, title="Old", status=NodeStatus.SUPERSEDED)
+    node_repo.save_node(plan)
+    node_repo.save_node(superseded)
+    node_repo.add_relation(
+        NodeRelation(source_id="P02", target_id="P02-T1", relation_type=RelationType.CONTAINS)
+    )
+    assert engine.resolve_plan_status("P02") == NodeStatus.COMPLETED
+
+    abandoned = Node(
+        id="P02-T2", kind=NodeKind.TASK, title="Abandoned", status=NodeStatus.ABANDONED
+    )
+    node_repo.save_node(abandoned)
+    node_repo.add_relation(
+        NodeRelation(source_id="P02", target_id="P02-T2", relation_type=RelationType.CONTAINS)
+    )
+    assert engine.resolve_plan_status("P02") == NodeStatus.ABANDONED
+
+    deferred = Node(id="P02-T3", kind=NodeKind.TASK, title="Deferred", status=NodeStatus.DEFERRED)
+    node_repo.save_node(deferred)
+    node_repo.add_relation(
+        NodeRelation(source_id="P02", target_id="P02-T3", relation_type=RelationType.CONTAINS)
+    )
+    assert engine.resolve_plan_status("P02") == NodeStatus.DEFERRED
+
+
+def test_spec_status_rollup_excludes_set_aside_plans(
+    repos: tuple[NodeRepository, RuntimeRepository, GraphEngine],
+) -> None:
+    node_repo, _, engine = repos
+    spec = Node(id="S1", kind=NodeKind.SPEC, title="Spec", status=NodeStatus.NOT_STARTED)
+    plan_done = Node(id="S1-P1", kind=NodeKind.PLAN, title="Plan", status=NodeStatus.NOT_STARTED)
+    plan_gone = Node(id="S1-P2", kind=NodeKind.PLAN, title="Plan gone", status=NodeStatus.ABANDONED)
+    task = Node(id="S1-P1-T1", kind=NodeKind.TASK, title="Task", status=NodeStatus.COMPLETED)
+    node_repo.save_node(spec)
+    node_repo.save_node(plan_done)
+    node_repo.save_node(plan_gone)
+    node_repo.save_node(task)
+    node_repo.add_relation(
+        NodeRelation(source_id="S1", target_id="S1-P1", relation_type=RelationType.CONTAINS)
+    )
+    node_repo.add_relation(
+        NodeRelation(source_id="S1", target_id="S1-P2", relation_type=RelationType.CONTAINS)
+    )
+    node_repo.add_relation(
+        NodeRelation(source_id="S1-P1", target_id="S1-P1-T1", relation_type=RelationType.CONTAINS)
+    )
+
+    assert engine.resolve_spec_status("S1") == NodeStatus.COMPLETED
+
+
+def test_awaiting_decision_clears_on_answer_or_withdraw_and_reopen_reblocks(
+    repos: tuple[NodeRepository, RuntimeRepository, GraphEngine],
+) -> None:
+    node_repo, _, engine = repos
+
+    task = Node(id="T01", kind=NodeKind.TASK, title="Task", status=NodeStatus.NOT_STARTED)
+    decision = Node(
+        id="decision-D1", kind=NodeKind.DECISION, title="Which way?", status=NodeStatus.NOT_STARTED
+    )
+    node_repo.save_node(task)
+    node_repo.save_node(decision)
+    node_repo.add_relation(
+        NodeRelation(
+            source_id="T01", target_id="decision-D1", relation_type=RelationType.DEPENDS_ON
+        )
+    )
+
+    assert engine.resolve_task_state("T01") == VirtualStatus.AWAITING_DECISION
+
+    decision.status = NodeStatus.COMPLETED
+    node_repo.save_node(decision)
+    assert engine.resolve_task_state("T01") == VirtualStatus.READY
+
+    decision.status = NodeStatus.NOT_STARTED
+    node_repo.save_node(decision)
+    assert engine.resolve_task_state("T01") == VirtualStatus.AWAITING_DECISION
+
+    decision.status = NodeStatus.ABANDONED
+    node_repo.save_node(decision)
+    assert engine.resolve_task_state("T01") == VirtualStatus.READY
+
+
+def test_blocked_dependency_outranks_awaiting_decision(
+    repos: tuple[NodeRepository, RuntimeRepository, GraphEngine],
+) -> None:
+    node_repo, _, engine = repos
+
+    task = Node(id="T01", kind=NodeKind.TASK, title="Task", status=NodeStatus.NOT_STARTED)
+    other = Node(id="T02", kind=NodeKind.TASK, title="Other", status=NodeStatus.NOT_STARTED)
+    decision = Node(
+        id="decision-D1", kind=NodeKind.DECISION, title="Which way?", status=NodeStatus.NOT_STARTED
+    )
+    node_repo.save_node(task)
+    node_repo.save_node(other)
+    node_repo.save_node(decision)
+    node_repo.add_relation(
+        NodeRelation(
+            source_id="T01", target_id="decision-D1", relation_type=RelationType.DEPENDS_ON
+        )
+    )
+    node_repo.add_relation(
+        NodeRelation(source_id="T01", target_id="T02", relation_type=RelationType.DEPENDS_ON)
+    )
+
+    assert engine.resolve_task_state("T01") == VirtualStatus.BLOCKED
+
+    other.status = NodeStatus.COMPLETED
+    node_repo.save_node(other)
+    assert engine.resolve_task_state("T01") == VirtualStatus.AWAITING_DECISION
+
+
+def test_plan_status_rollup_counts_awaiting_decision_as_blocked(
+    repos: tuple[NodeRepository, RuntimeRepository, GraphEngine],
+) -> None:
+    node_repo, _, engine = repos
+
+    plan = Node(id="P01", kind=NodeKind.PLAN, title="Plan", status=NodeStatus.NOT_STARTED)
+    task = Node(id="T01", kind=NodeKind.TASK, title="Task", status=NodeStatus.NOT_STARTED)
+    decision = Node(
+        id="decision-D1", kind=NodeKind.DECISION, title="Which way?", status=NodeStatus.NOT_STARTED
+    )
+    node_repo.save_node(plan)
+    node_repo.save_node(task)
+    node_repo.save_node(decision)
+    node_repo.add_relation(
+        NodeRelation(source_id="P01", target_id="T01", relation_type=RelationType.CONTAINS)
+    )
+    node_repo.add_relation(
+        NodeRelation(
+            source_id="T01", target_id="decision-D1", relation_type=RelationType.DEPENDS_ON
+        )
+    )
+
+    assert engine.resolve_plan_status("P01") == VirtualStatus.BLOCKED
 
 
 def test_inject_plan_review_gate(

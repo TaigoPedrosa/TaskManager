@@ -368,6 +368,33 @@ def test_an_export_restores_into_a_fresh_root_and_exports_identically(tmp_path: 
     ).read_bytes()
 
 
+def test_restore_handles_a_gated_dependency_without_crashing(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    runner.invoke(app, ["init", "-C", str(source)])
+    runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "-C", str(source)])
+    runner.invoke(app, ["plan", "add", "P1", "--spec", "S1", "--slug", "P1", "-C", str(source)])
+    runner.invoke(app, ["task", "add", "a", "--plan", "S1-P1", "--slug", "a", "-C", str(source)])
+    runner.invoke(app, ["task", "add", "b", "--plan", "S1-P1", "--slug", "b", "-C", str(source)])
+    # A gated dependency exports as {"id": ..., "gate": ...}, not a bare id string, so `restore`
+    # cannot put it in a plain `set` of ids without crashing on the unhashable dict.
+    add = runner.invoke(
+        app, ["task", "depends", "S1-P1-b", "--add", "S1-P1-a:WAITING_REVIEW", "-C", str(source)]
+    )
+    assert add.exit_code == 0, add.output
+    assert runner.invoke(app, ["export", str(tmp_path / "e1"), "-C", str(source)]).exit_code == 0
+
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    res = runner.invoke(app, ["restore", str(tmp_path / "e1"), "-C", str(fresh)])
+    assert res.exit_code == 0, res.output
+    restored = json.loads(
+        runner.invoke(app, ["task", "get", "S1-P1-b", "--json", "-C", str(fresh)]).stdout
+    )
+    assert [d["id"] for d in restored["depends_on"]] == ["S1-P1-a"]
+    assert [d["gate"] for d in restored["depends_on"]] == ["WAITING_REVIEW"]
+
+
 def test_a_directory_without_a_config_file_restores_with_defaults(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
@@ -382,6 +409,80 @@ def test_a_directory_without_a_config_file_restores_with_defaults(tmp_path: Path
     assert not (fresh / ".taskmanager" / "config.yaml").exists()
     listed = json.loads(runner.invoke(app, ["config", "list", "--json", "-C", str(fresh)]).stdout)
     assert {row["source"] for row in listed} == {"default"}
+
+
+def test_decision_and_attachment_export_restore_round_trip(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    runner.invoke(app, ["init", "-C", str(source)])
+    runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "-C", str(source)])
+    runner.invoke(app, ["plan", "add", "P", "--spec", "S1", "--slug", "P1", "-C", str(source)])
+    runner.invoke(app, ["task", "add", "T", "--plan", "S1-P1", "--slug", "t1", "-C", str(source)])
+    runner.invoke(
+        app,
+        [
+            "decision",
+            "add",
+            "Which way?",
+            "--slug",
+            "way",
+            "--option",
+            "a|Do X",
+            "--recommend",
+            "a",
+            "--blocks",
+            "S1-P1-t1",
+            "-C",
+            str(source),
+        ],
+    )
+    asset_src = source / "shot.png"
+    asset_src.write_bytes(b"png-content")
+    runner.invoke(app, ["attach", "S1-P1-t1", str(asset_src), "-C", str(source)])
+
+    e1 = tmp_path / "e1"
+    assert runner.invoke(app, ["export", str(e1), "-C", str(source)]).exit_code == 0
+    assert (e1 / "_decisions.json").exists()
+    assert list((e1 / "assets").iterdir())
+
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    res = runner.invoke(app, ["restore", str(e1), "-C", str(fresh)])
+    assert res.exit_code == 0, res.output
+    assert (fresh / ".taskmanager" / "assets").is_dir()
+    assert sorted(p.name for p in (fresh / ".taskmanager" / "assets").iterdir()) == sorted(
+        p.name for p in (e1 / "assets").iterdir()
+    )
+
+    task = json.loads(
+        runner.invoke(app, ["task", "get", "S1-P1-t1", "--json", "-C", str(fresh)]).stdout
+    )
+    assert task["awaiting_decisions"] == ["decision-way"]
+
+    e2 = tmp_path / "e2"
+    assert runner.invoke(app, ["export", str(e2), "-C", str(fresh)]).exit_code == 0
+    for f in sorted(e1.glob("*.json")):
+        assert f.read_bytes() == (e2 / f.name).read_bytes(), f.name
+    for f in sorted((e1 / "assets").iterdir()):
+        assert f.read_bytes() == (e2 / "assets" / f.name).read_bytes(), f.name
+
+
+def test_a_decision_does_not_crash_task_list_next_or_plan_rollups(tmp_path: Path) -> None:
+    runner.invoke(app, ["init", "-C", str(tmp_path)])
+    runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "-C", str(tmp_path)])
+    runner.invoke(app, ["plan", "add", "P", "--spec", "S1", "--slug", "P1", "-C", str(tmp_path)])
+    runner.invoke(app, ["task", "add", "T", "--plan", "S1-P1", "--slug", "t1", "-C", str(tmp_path)])
+    runner.invoke(app, ["decision", "add", "Q", "--slug", "q1", "-C", str(tmp_path)])
+
+    for args in (
+        ["task", "list", "--json", "-C", str(tmp_path)],
+        ["next", "--json", "-C", str(tmp_path)],
+        ["plan", "list", "--json", "-C", str(tmp_path)],
+        ["spec", "list", "--json", "-C", str(tmp_path)],
+    ):
+        res = runner.invoke(app, args)
+        assert res.exit_code == 0, (args, res.output)
+        assert "decision-q1" not in res.output
 
 
 def _seed_estate(tmp_path: Path) -> None:
@@ -727,7 +828,9 @@ def test_next_returns_a_batch_whose_tasks_share_no_file(tmp_path: Path) -> None:
 def test_plan_list_reports_the_state_its_tasks_add_up_to(tmp_path: Path) -> None:
     _seed_estate(tmp_path)
     rows = json.loads(runner.invoke(app, ["plan", "list", "--json", "-C", str(tmp_path)]).stdout)
-    assert rows[0]["status"] == "NOT_STARTED" and rows[0]["state"] == "NOT_STARTED"
+    # `status` is the plan's own stored field, untouched; `state` is the live rollup (§3.2a),
+    # which reads READY rather than NOT_STARTED once nothing has left its own starting status.
+    assert rows[0]["status"] == "NOT_STARTED" and rows[0]["state"] == "READY"
     for t in ("S1-P1-a", "S1-P1-b"):
         runner.invoke(app, ["run", "stop", t, "--status", "COMPLETED", "-C", str(tmp_path)])
     rows = json.loads(runner.invoke(app, ["plan", "list", "--json", "-C", str(tmp_path)]).stdout)
@@ -934,7 +1037,8 @@ def test_a_specs_state_rolls_up_from_its_plans_the_way_a_plans_does_from_its_tas
         return next(r for r in rows if r["id"] == "S1")
 
     row = spec_row()
-    assert row["status"] == "NOT_STARTED" and row["state"] == "NOT_STARTED"
+    # `status` is the spec's own stored field, untouched; `state` is the live rollup (§3.2a).
+    assert row["status"] == "NOT_STARTED" and row["state"] == "READY"
 
     runner.invoke(app, ["run", "start", "S1-P1-a", "--agent", "x", "--session", "y", "-C", root])
     row = spec_row()
@@ -1006,3 +1110,49 @@ def test_render_recursive_survives_a_relation_cycle(tmp_path: Path) -> None:
     )
     res = runner.invoke(app, ["render", "S1", "--recursive", "-C", root])
     assert res.exit_code == 0 and "relation cycle" in res.output
+
+
+def test_render_takes_several_ids_and_joins_them_in_the_order_given(tmp_path: Path) -> None:
+    root = str(tmp_path)
+    _seed_estate(tmp_path)
+    one = runner.invoke(app, ["render", "S1-P1-b", "-C", root])
+    two = runner.invoke(app, ["render", "S1-P1-a", "-C", root])
+    both = runner.invoke(app, ["render", "S1-P1-b", "S1-P1-a", "-C", root])
+    assert both.exit_code == 0
+    assert both.stdout == one.stdout[:-1] + "\n\n---\n\n" + two.stdout
+    assert both.stdout.index("id: S1-P1-b") < both.stdout.index("id: S1-P1-a")
+
+
+def test_render_with_several_ids_refuses_at_the_first_unknown_one(tmp_path: Path) -> None:
+    root = str(tmp_path)
+    _seed_estate(tmp_path)
+    res = runner.invoke(app, ["render", "S1-P1-a", "NOPE", "-C", root])
+    assert res.exit_code == 1 and "Traceback" not in res.output
+
+
+def test_task_list_render_renders_every_listed_task_instead_of_a_table(tmp_path: Path) -> None:
+    root = str(tmp_path)
+    _seed_estate(tmp_path)
+    rendered = runner.invoke(app, ["task", "list", "--render", "summary", "-C", root])
+    assert rendered.exit_code == 0
+    assert "id: S1-P1-a" in rendered.stdout and "id: S1-P1-b" in rendered.stdout
+    assert "Tasks" not in rendered.stdout  # not the table title
+    assert rendered.stdout.count("\n\n---\n\n") == 1  # two tasks, one join
+
+    scoped = runner.invoke(
+        app,
+        [
+            "task",
+            "list",
+            "--plan",
+            "S1-P1",
+            "--status",
+            "NOT_STARTED",
+            "--render",
+            "full",
+            "-C",
+            root,
+        ],
+    )
+    assert scoped.exit_code == 0
+    assert "id: S1-P1-a" in scoped.stdout and "id: S1-P1-b" in scoped.stdout

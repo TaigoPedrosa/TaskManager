@@ -21,19 +21,12 @@ from taskmanager.core.enums import (
     NodeKind,
     NodeStatus,
     RecommendationStrategy,
-    RelationType,
     RenderView,
     SearchMode,
     TransferMode,
     VerificationType,
 )
-from taskmanager.core.models import (
-    LedgerEvent,
-    Node,
-    NodeRelation,
-    NodeSection,
-    NodeVerification,
-)
+from taskmanager.core.models import LedgerEvent
 from taskmanager.core.naming import QualifiedPath
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.ledger_repo import LedgerRepository
@@ -41,11 +34,12 @@ from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.di.container import TaskManagerProvider
 from taskmanager.engine.config import ConfigError, ConfigStore
+from taskmanager.engine.decisions import DECISION_STATUS_LABELS, read_decision
 from taskmanager.engine.graph import GraphEngine, gate_satisfied
 from taskmanager.engine.heuristics import RecommendationEngine
+from taskmanager.engine.operations import GUIDE_NODE, OperationError, Operations
 from taskmanager.engine.runtime import ExecutionCoordinator
 from taskmanager.engine.search import SearchEngine, SearchError
-from taskmanager.engine.verification import VerificationEngine
 from taskmanager.renderers.importers import BulkImporter
 from taskmanager.renderers.markdown import MarkdownRenderer
 
@@ -63,6 +57,7 @@ audit_app = typer.Typer(name="audit", help="Audit ledger event logs")
 web_app = typer.Typer(name="web", help="Interactive web visualizer and exporter")
 plugin_app = typer.Typer(name="plugin", help="Install and manage harness plugins")
 config_app = typer.Typer(name="config", help="Project configuration (.taskmanager/config.yaml)")
+decision_app = typer.Typer(name="decision", help="Raise and answer decisions")
 
 app.add_typer(spec_app)
 app.add_typer(plan_app)
@@ -74,6 +69,7 @@ app.add_typer(audit_app)
 app.add_typer(web_app)
 app.add_typer(plugin_app)
 app.add_typer(config_app)
+app.add_typer(decision_app)
 
 
 def _emit(data: Any, as_yaml: bool = False) -> None:
@@ -250,25 +246,8 @@ def spec_add(
 ) -> None:
     root = _get_root(path)
     container = _get_container(root)
-    node_repo = container.get(NodeRepository)
-
-    if slug:
-        spec_id = slug
-    else:
-        existing = {n.id for n in node_repo.list_nodes(kind=NodeKind.SPEC)}
-        counter = 1
-        while f"S{counter}" in existing:
-            counter += 1
-        spec_id = f"S{counter}"
-
-    node = Node(id=spec_id, kind=NodeKind.SPEC, title=title, priority=priority, ordinal=order)
-    node_repo.save_node(node)
-    _record_ledger(
-        container,
-        command=LedgerCommand.SPEC_ADD,
-        target_id=spec_id,
-        payload={"title": title, "priority": priority, "ordinal": order},
-    )
+    ops = container.get(Operations)
+    spec_id = ops.add_spec(title, slug, priority, order)
     print(f"[green]Added spec {spec_id}[/green]")
 
 
@@ -338,40 +317,11 @@ def plan_add(
 ) -> None:
     root = _get_root(path)
     container = _get_container(root)
-    node_repo = container.get(NodeRepository)
-    graph_engine = container.get(GraphEngine)
-
-    if slug:
-        plan_id = f"{spec}-{slug}"
-    else:
-        children = set(node_repo.get_children(spec))
-        counter = 1
-        while f"{spec}-P{counter}" in children:
-            counter += 1
-        plan_id = f"{spec}-P{counter}"
-
-    plan_node = Node(id=plan_id, kind=NodeKind.PLAN, title=title, priority=priority, ordinal=order)
-    node_repo.save_node(plan_node)
-    node_repo.add_relation(
-        NodeRelation(source_id=spec, target_id=plan_id, relation_type=RelationType.CONTAINS)
-    )
-
-    if require_review:
-        gate_id = graph_engine.inject_plan_review_gate(plan_id)
-        _record_ledger(
-            container,
-            command=LedgerCommand.PLAN_REVIEW_GATE,
-            target_id=plan_id,
-            payload={"title": title, "spec": spec, "review_gate": gate_id, "ordinal": order},
-        )
+    ops = container.get(Operations)
+    plan_id, gate_id = ops.add_plan(title, spec, slug, priority, order, require_review)
+    if gate_id:
         print(f"[green]Added plan {plan_id} with review gate {gate_id}[/green]")
     else:
-        _record_ledger(
-            container,
-            command=LedgerCommand.PLAN_ADD,
-            target_id=plan_id,
-            payload={"title": title, "spec": spec, "ordinal": order},
-        )
         print(f"[green]Added plan {plan_id}[/green]")
 
 
@@ -446,46 +396,10 @@ def task_add(
 ) -> None:
     root = _get_root(path)
     container = _get_container(root)
-    node_repo = container.get(NodeRepository)
-
-    if slug:
-        task_id = f"{plan}-{slug}"
-    else:
-        children = set(node_repo.get_children(plan))
-        counter = 1
-        while f"{plan}-T{counter}" in children:
-            counter += 1
-        task_id = f"{plan}-T{counter}"
-
+    ops = container.get(Operations)
     acceptable_models = [m.strip() for m in models.split(",") if m.strip()] if models else []
-    task_node = Node(
-        id=task_id,
-        kind=NodeKind.TASK,
-        title=title,
-        priority=priority,
-        ordinal=order,
-        acceptable_models=acceptable_models,
-    )
-    node_repo.save_node(task_node)
-    node_repo.add_relation(
-        NodeRelation(source_id=plan, target_id=task_id, relation_type=RelationType.CONTAINS)
-    )
-
-    if depends_on:
-        deps = [d.strip() for d in depends_on.split(",") if d.strip()]
-        for dep in deps:
-            node_repo.add_relation(
-                NodeRelation(
-                    source_id=task_id, target_id=dep, relation_type=RelationType.DEPENDS_ON
-                )
-            )
-
-    _record_ledger(
-        container,
-        command=LedgerCommand.TASK_ADD,
-        target_id=task_id,
-        payload={"title": title, "plan": plan},
-    )
+    deps = [d.strip() for d in depends_on.split(",") if d.strip()] if depends_on else []
+    task_id = ops.add_task(title, plan, slug, priority, order, deps, acceptable_models)
     print(f"[green]Added task {task_id}[/green]")
 
 
@@ -503,41 +417,12 @@ def task_supersede(
 ) -> None:
     root = _get_root(path)
     container = _get_container(root)
-    node_repo = container.get(NodeRepository)
-
-    old_node = node_repo.get_node(old_id)
-    if not old_node:
-        print(f"[red]Task '{old_id}' not found[/red]")
-        raise typer.Exit(code=1)
-
-    if new_id == old_id or node_repo.get_node(new_id) is None:
-        print(f"[red]Replacement task '{new_id}' not found; nothing was changed[/red]")
-        raise typer.Exit(code=1)
-
-    # A replaced task is not being worked on: its lease and file locks go with it.
-    container.get(RuntimeRepository).release_lease(old_id)
-    old_node.status = NodeStatus.SUPERSEDED
-    node_repo.save_node(old_node)
-
-    node_repo.add_relation(
-        NodeRelation(source_id=new_id, target_id=old_id, relation_type=RelationType.SUPERSEDES)
-    )
-
-    tb_val = transfer_blocks.strip().lower()
-    if tb_val == TransferMode.ALL.value:
-        node_repo.transfer_blocks(old_id, new_id, TransferMode.ALL)
-    elif tb_val == TransferMode.NONE.value:
-        node_repo.transfer_blocks(old_id, new_id, TransferMode.NONE)
-    else:
-        custom_ids = [x.strip() for x in transfer_blocks.split(",") if x.strip()]
-        node_repo.transfer_blocks(old_id, new_id, TransferMode.CUSTOM, custom_ids=custom_ids)
-
-    _record_ledger(
-        container,
-        command=LedgerCommand.TASK_SUPERSEDE,
-        target_id=old_id,
-        payload={"superseded_by": new_id, "transfer_blocks": transfer_blocks},
-    )
+    ops = container.get(Operations)
+    try:
+        ops.supersede(old_id, new_id, transfer_blocks)
+    except OperationError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
     print(f"[green]Task {old_id} superseded by {new_id}[/green]")
 
 
@@ -549,6 +434,10 @@ def task_list(
     yaml_output: Annotated[
         bool, typer.Option("--yaml", help="Output as YAML (fewer tokens than JSON)")
     ] = False,
+    render_view: Annotated[
+        RenderView | None,
+        typer.Option("--render", help="Render every listed task in this view instead of a table"),
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
@@ -558,6 +447,12 @@ def task_list(
     if plan:
         children = set(node_repo.get_children(plan))
         tasks = [t for t in tasks if t.id in children or t.id.startswith(f"{plan}-")]
+    if render_view is not None:
+        renderer = container.get(MarkdownRenderer)
+        sys.stdout.write(
+            "\n\n---\n\n".join(renderer.render(t.id, view=render_view) for t in tasks) + "\n"
+        )
+        return
     if json_output or yaml_output:
         graph = container.get(GraphEngine)
         _emit([_node_row(t, graph.resolve_task_state(t.id).value) for t in tasks], yaml_output)
@@ -603,11 +498,7 @@ def task_depends(
     """Add or remove dependency edges on an existing task; nothing is written if any is refused."""
     root = _get_root(path)
     container = _get_container(root)
-    node_repo = container.get(NodeRepository)
-    graph = container.get(GraphEngine)
-    if node_repo.get_node(task_id) is None:
-        print(f"[red]Task '{task_id}' not found[/red]")
-        raise typer.Exit(code=1)
+    ops = container.get(Operations)
 
     def ids(raw: str | None) -> list[str]:
         return [x.strip() for x in (raw or "").split(",") if x.strip()]
@@ -629,37 +520,11 @@ def task_depends(
     to_add, to_remove = parse_add(add), ids(remove)
     if not to_add and not to_remove:
         raise typer.BadParameter("give --add and/or --remove")
-    current = set(node_repo.get_dependencies(task_id))
-    problems: list[str] = []
-    for dep, _gate in to_add:
-        if node_repo.get_node(dep) is None:
-            problems.append(f"'{dep}' does not exist")
-        elif dep not in current and graph.would_cause_cycle(task_id, dep):
-            problems.append(f"'{dep}' would make a cycle")
-    for dep in to_remove:
-        if dep not in current:
-            problems.append(f"'{dep}' is not a dependency")
-    if problems:
-        print(f"[red]Nothing changed: {'; '.join(problems)}[/red]")
-        raise typer.Exit(code=1)
-    for dep, gate in to_add:
-        node_repo.add_relation(
-            NodeRelation(
-                source_id=task_id,
-                target_id=dep,
-                relation_type=RelationType.DEPENDS_ON,
-                metadata={"gate": gate.value} if gate is not None else {},
-            )
-        )
-    for dep in to_remove:
-        node_repo.remove_relation(task_id, dep, RelationType.DEPENDS_ON)
-    _record_ledger(
-        container,
-        command="task depends",
-        target_id=task_id,
-        payload={"add": [d for d, _ in to_add], "remove": to_remove},
-    )
-    edges = node_repo.get_dependency_edges(task_id)
+    try:
+        edges = ops.set_dependencies(task_id, to_add, to_remove)
+    except OperationError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
     shown = [
         f"{dep_id}:{gate.value}" if gate != NodeStatus.COMPLETED else dep_id
         for dep_id, gate in edges
@@ -684,46 +549,56 @@ def task_update(
             '(declared_files=\'["a","b"]\'), else text',
         ),
     ] = None,
+    unset_frontmatter: Annotated[
+        list[str] | None,
+        typer.Option("--unset", help="Frontmatter key to remove, repeatable"),
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
-    from datetime import UTC, datetime
-
     root = _get_root(path)
     container = _get_container(root)
-    node_repo = container.get(NodeRepository)
-    node = node_repo.get_node(task_id)
-    if node is None:
-        raise typer.BadParameter(f"task '{task_id}' not found")
-    changed: dict[str, Any] = {}
-    if title is not None:
-        node.title = title
-        changed["title"] = title
-    if priority is not None:
-        if not 1 <= priority <= 100:
-            raise typer.BadParameter("priority is 1-100")
-        node.priority = priority
-        changed["priority"] = priority
-    if models is not None:
-        node.acceptable_models = [m.strip() for m in models.split(",") if m.strip()]
-        changed["acceptable_models"] = node.acceptable_models
-    if repo is not None:
-        node.target_repo = repo
-        changed["target_repo"] = repo
+    ops = container.get(Operations)
+    frontmatter_set: dict[str, Any] = {}
     for pair in set_frontmatter or []:
         key, sep, raw = pair.partition("=")
         if not sep or not key:
             raise typer.BadParameter(f"--set takes key=value, got '{pair}'")
         try:
-            node.frontmatter[key] = json.loads(raw)
+            frontmatter_set[key] = json.loads(raw)
         except ValueError:
-            node.frontmatter[key] = raw
-        changed[f"frontmatter.{key}"] = node.frontmatter[key]
-    if not changed:
-        raise typer.BadParameter("nothing to update")
-    node.updated_at = datetime.now(tz=UTC)
-    node_repo.save_node(node)
-    _record_ledger(container, command="task update", target_id=task_id, payload=changed)
+            frontmatter_set[key] = raw
+    model_list = [m.strip() for m in models.split(",") if m.strip()] if models is not None else None
+    try:
+        changed = ops.update_node(
+            task_id,
+            title=title,
+            priority=priority,
+            models=model_list,
+            repo=repo,
+            frontmatter_set=frontmatter_set or None,
+            frontmatter_unset=unset_frontmatter,
+        )
+    except OperationError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     print(f"[green]Updated {task_id}: {', '.join(changed)}[/green]")
+
+
+@task_app.command("move")
+def task_move(
+    task_id: str,
+    plan: Annotated[str, typer.Option("--plan", help="New parent plan ID")],
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Re-parent a task: drop its old plan's `contains` edge and add the new one."""
+    root = _get_root(path)
+    container = _get_container(root)
+    ops = container.get(Operations)
+    try:
+        ops.move_task(task_id, plan)
+    except OperationError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    print(f"[green]Moved {task_id} to {plan}[/green]")
 
 
 @task_app.command("get")
@@ -765,6 +640,13 @@ def task_get(
             dep_id
             for dep_id, gate in dep_edges
             if (dn := node_repo.get_node(dep_id)) is None or not gate_satisfied(dn.status, gate)
+        ]
+        doc["awaiting_decisions"] = [
+            dep_id
+            for dep_id, _gate in dep_edges
+            if (dn := node_repo.get_node(dep_id)) is not None
+            and dn.kind == NodeKind.DECISION
+            and dn.status not in (NodeStatus.COMPLETED, NodeStatus.ABANDONED)
         ]
         doc["declared_files"] = node_repo.declared_files(task_id)
         doc["sections"] = [s.section_key for s in node_repo.get_all_sections(task_id)]
@@ -846,19 +728,11 @@ def section_set(
 ) -> None:
     root = _get_root(path)
     container = _get_container(root)
-    node_repo = container.get(NodeRepository)
+    ops = container.get(Operations)
     qp = QualifiedPath.parse(qualified_path)
 
     if not qp.section_key:
         print(f"[red]Qualified path must include section key (e.g. {qp.node_id}:steps)[/red]")
-        raise typer.Exit(code=1)
-    if node_repo.get_node(qp.node_id) is None:
-        hint = (
-            " Create it once with `tm spec add 'Project guide' --slug guide`."
-            if qp.node_id == GUIDE_NODE
-            else ""
-        )
-        print(f"[red]No node '{qp.node_id}' to hold the section.{hint}[/red]")
         raise typer.Exit(code=1)
 
     text_content = ""
@@ -869,21 +743,33 @@ def section_set(
     elif content is not None:
         text_content = content
 
-    sec_header = header or f"## {qp.section_key.capitalize()}"
-    existing_secs = node_repo.get_all_sections(qp.node_id)
-    existing = next((s for s in existing_secs if s.section_key == qp.section_key), None)
-    ordinal = existing.ordinal if existing else len(existing_secs) + 1
-
-    node_section = NodeSection(
-        node_id=qp.node_id,
-        section_key=qp.section_key,
-        ordinal=ordinal,
-        header=sec_header,
-        content=text_content,
-    )
-    node_repo.save_section(node_section)
-    _record_ledger(container, command=LedgerCommand.SECTION_SET, target_id=qualified_path)
+    try:
+        ops.set_section(qp.node_id, qp.section_key, text_content, header)
+    except OperationError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
     print(f"[green]Saved section {qualified_path}[/green]")
+
+
+@section_app.command("remove")
+def section_remove(
+    qualified_path: str,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    ops = container.get(Operations)
+    qp = QualifiedPath.parse(qualified_path)
+
+    if not qp.section_key:
+        print(f"[red]Qualified path must include section key (e.g. {qp.node_id}:steps)[/red]")
+        raise typer.Exit(code=1)
+    try:
+        ops.remove_section(qp.node_id, qp.section_key)
+    except OperationError as exc:
+        print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(code=1) from exc
+    print(f"[green]Removed section {qualified_path}[/green]")
 
 
 @run_app.command("start")
@@ -983,22 +869,48 @@ def run_stop(
     remove_worktree: Annotated[
         bool, typer.Option("--remove-worktree", help="Remove worktree if created")
     ] = False,
+    section: Annotated[
+        str | None,
+        typer.Option("--section", help="Section key to write in the same transaction"),
+    ] = None,
+    section_file: Annotated[
+        Path | None,
+        typer.Option("--section-file", help="File holding the --section content"),
+    ] = None,
+    section_header: Annotated[
+        str | None, typer.Option("--section-header", help="Section markdown header")
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
     container = _get_container(root)
     runtime_repo = container.get(RuntimeRepository)
-    coordinator = container.get(ExecutionCoordinator)
+    ops = container.get(Operations)
+
+    if (section is None) != (section_file is None):
+        raise typer.BadParameter("--section and --section-file are given together")
+    section_write = (
+        (section, section_file.read_text(encoding="utf-8"), section_header)
+        if section is not None and section_file is not None
+        else None
+    )
 
     tid = _resolve_task_id(runtime_repo, task_id)
-    coordinator.stop_task(task_id=tid, new_status=status, remove_worktree=remove_worktree)
-    _record_ledger(
-        container,
-        command=LedgerCommand.TASK_STOP,
-        target_id=tid,
-        payload={"status": status.value, "remove_worktree": remove_worktree},
-    )
+    ops.set_status(tid, status, remove_worktree, section=section_write)
     print(f"[green]Stopped task {tid} with status {status.value}[/green]")
+
+
+@run_app.command("release")
+def run_release(
+    task_id: str,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Drop a task's lease and file locks without touching its status."""
+    root = _get_root(path)
+    container = _get_container(root)
+    ops = container.get(Operations)
+    ops.release_lease(task_id)
+    print(f"[green]Released lease for {task_id}[/green]")
 
 
 @run_app.command("list")
@@ -1065,23 +977,9 @@ def run_sweep(
 ) -> None:
     root = _get_root(path)
     container = _get_container(root)
-    runtime_repo = container.get(RuntimeRepository)
-    swept = runtime_repo.sweep_expired_leases()
+    ops = container.get(Operations)
+    swept = ops.sweep_leases()
     if swept:
-        # An abandoned claim returns the task to the state before it, or nobody could claim it.
-        node_repo = container.get(NodeRepository)
-        back = {
-            NodeStatus.IMPLEMENTING: NodeStatus.NOT_STARTED,
-            NodeStatus.REVIEWING: NodeStatus.WAITING_REVIEW,
-            NodeStatus.FIXING: NodeStatus.WAITING_FIXES,
-            NodeStatus.MERGING: NodeStatus.WAITING_MERGE,
-        }
-        for task_id in swept:
-            node = node_repo.get_node(task_id)
-            if node is not None and node.status in back:
-                node.status = back[node.status]
-                node_repo.save_node(node)
-        _record_ledger(container, command=LedgerCommand.LEASE_SWEEP, payload={"swept_tasks": swept})
         print(f"[yellow]Swept {len(swept)} expired lease(s): {', '.join(swept)}[/yellow]")
     else:
         print("[green]No expired leases found.[/green]")
@@ -1102,20 +1000,8 @@ def verify_add(
 ) -> None:
     root = _get_root(path)
     container = _get_container(root)
-    node_repo = container.get(NodeRepository)
-    ver = NodeVerification(
-        node_id=task_id,
-        verification_type=type,
-        target_path=target,
-        expected_pattern=pattern,
-    )
-    node_repo.add_verification(ver)
-    _record_ledger(
-        container,
-        command=LedgerCommand.VERIFICATION_ADD,
-        target_id=task_id,
-        payload={"type": type.value, "target": target},
-    )
+    ops = container.get(Operations)
+    ops.add_verification(task_id, type, target, pattern)
     print(f"[green]Added {type.value} verification to task {task_id}[/green]")
 
 
@@ -1168,16 +1054,12 @@ def verify_remove(
     """Remove one verification by the id `tm verify list` shows."""
     root = _get_root(path)
     container = _get_container(root)
-    node_repo = container.get(NodeRepository)
-    if not node_repo.remove_verification(task_id, verification_id):
-        print(f"[red]Task '{escape(task_id)}' has no verification {verification_id}[/red]")
-        raise typer.Exit(code=1)
-    _record_ledger(
-        container,
-        command="verify remove",
-        target_id=task_id,
-        payload={"verification_id": verification_id},
-    )
+    ops = container.get(Operations)
+    try:
+        ops.remove_verification(task_id, verification_id)
+    except OperationError as exc:
+        print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(code=1) from exc
     print(f"[green]Removed verification {verification_id} from {escape(task_id)}[/green]")
 
 
@@ -1188,8 +1070,7 @@ def verify_run(
 ) -> None:
     root = _get_root(path)
     container = _get_container(root)
-    node_repo = container.get(NodeRepository)
-    verification_engine = container.get(VerificationEngine)
+    ops = container.get(Operations)
     runtime_repo = container.get(RuntimeRepository)
 
     target_tid = task_id
@@ -1199,46 +1080,303 @@ def verify_run(
         except typer.BadParameter:
             target_tid = None
 
-    if target_tid:
-        vers = node_repo.get_verifications(target_tid)
-    else:
-        all_tasks = node_repo.list_nodes(kind=NodeKind.TASK)
-        vers = []
-        for t in all_tasks:
-            vers.extend(node_repo.get_verifications(t.id))
+    try:
+        all_passed, results = ops.run_verifications(target_tid)
+    except OperationError as exc:
+        print(f"[yellow]{exc}[/yellow]")
+        raise typer.Exit(code=2) from exc
 
-    if not vers:
-        print(
-            "[yellow]No verifications to run: an empty check set proves nothing. Add one with "
-            "`tm verify add`, or attest the task.[/yellow]"
-        )
-        raise typer.Exit(code=2)
-
-    results = verification_engine.verify_all(vers)
     table = Table(title="Verification Results")
     table.add_column("Target", style="cyan")
     table.add_column("Type")
     table.add_column("Status")
     table.add_column("Message")
 
-    all_passed = True
     for r in results:
         status_str = "[green]PASSED[/green]" if r.passed else "[red]FAILED[/red]"
-        if not r.passed:
-            all_passed = False
         table.add_row(
             escape(r.target_path), r.verification_type.value, status_str, escape(r.message)
         )
     print(table)
 
-    _record_ledger(
-        container,
-        command=LedgerCommand.VERIFICATION_RUN,
-        target_id=target_tid,
-        payload={"passed": all_passed, "count": len(results)},
-    )
     if not all_passed:
         raise typer.Exit(code=1)
+
+
+@decision_app.command("add")
+def decision_add(
+    question: str,
+    slug: Annotated[str | None, typer.Option("--slug", "-s")] = None,
+    priority: Annotated[int, typer.Option("--priority", "-p")] = 50,
+    context: Annotated[str | None, typer.Option("--context")] = None,
+    context_file: Annotated[Path | None, typer.Option("--context-file")] = None,
+    option: Annotated[
+        list[str] | None,
+        typer.Option("--option", help="'key|Label|description', repeatable"),
+    ] = None,
+    recommend: Annotated[str | None, typer.Option("--recommend")] = None,
+    no_custom: Annotated[bool, typer.Option("--no-custom")] = False,
+    raised_by: Annotated[str | None, typer.Option("--raised-by")] = None,
+    blocks: Annotated[str | None, typer.Option("--blocks", help="Comma-separated task ids")] = None,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    ops = container.get(Operations)
+    ctx = context_file.read_text(encoding="utf-8") if context_file else context
+    blocked = [t.strip() for t in blocks.split(",") if t.strip()] if blocks else []
+    try:
+        decision_id = ops.add_decision(
+            question, slug, priority, ctx, option, recommend, not no_custom, raised_by, blocked
+        )
+    except OperationError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    print(f"[green]Raised decision {decision_id}[/green]")
+
+
+@decision_app.command("list")
+def decision_list(
+    status: Annotated[
+        str | None, typer.Option("--status", help="open, answered or withdrawn")
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    yaml_output: Annotated[bool, typer.Option("--yaml")] = False,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    node_repo = container.get(NodeRepository)
+    decisions = node_repo.list_nodes(kind=NodeKind.DECISION)
+    status_map = {
+        "open": NodeStatus.NOT_STARTED,
+        "answered": NodeStatus.COMPLETED,
+        "withdrawn": NodeStatus.ABANDONED,
+    }
+    if status:
+        wanted = status_map.get(status.lower())
+        if wanted is None:
+            raise typer.BadParameter("--status is one of: open, answered, withdrawn")
+        decisions = [d for d in decisions if d.status == wanted]
+    if json_output or yaml_output:
+        rows = []
+        for d in decisions:
+            row = _node_row(d)
+            label = DECISION_STATUS_LABELS.get(d.status, d.status.value)
+            row["status"] = label
+            row["state"] = label
+            rows.append(row)
+        _emit(rows, yaml_output)
+        return
+    table = Table(title="Decisions")
+    table.add_column("ID", style="cyan")
+    table.add_column("Question")
+    table.add_column("Status", style="yellow")
+    table.add_column("Priority", justify="right")
+    for d in decisions:
+        label = DECISION_STATUS_LABELS.get(d.status, d.status.value)
+        table.add_row(escape(d.id), escape(d.title), label, str(d.priority))
+    print(table)
+
+
+@decision_app.command("get")
+def decision_get(
+    decision_id: str,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    yaml_output: Annotated[bool, typer.Option("--yaml")] = False,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    node_repo = container.get(NodeRepository)
+    node = node_repo.get_node(decision_id)
+    if node is None or node.kind != NodeKind.DECISION:
+        print(f"[red]Decision '{decision_id}' not found[/red]")
+        raise typer.Exit(code=1)
+    data = read_decision(node)
+    label = DECISION_STATUS_LABELS.get(node.status, node.status.value)
+    if json_output or yaml_output:
+        doc = _node_row(node)
+        doc["status"] = label
+        doc["state"] = label
+        doc["decision"] = json.loads(data.model_dump_json())
+        doc["blocked_tasks"] = node_repo.get_blocked_by(decision_id)
+        _emit(doc, yaml_output)
+        return
+    print(f"[bold cyan]Decision:[/] {node.id}")
+    print(f"[bold]Question:[/] {escape(node.title)}")
+    print(f"[bold]Status:[/] {label}")
+    for opt in data.options:
+        mark = " (recommended)" if opt.recommended else ""
+        print(f"  - {opt.key}: {escape(opt.label)}{mark}")
+    if data.answer:
+        print(f"[bold]Answer:[/] {escape(data.answer.option or data.answer.text)}")
+
+
+@decision_app.command("answer")
+def decision_answer(
+    decision_id: str,
+    option: Annotated[str | None, typer.Option("--option")] = None,
+    note: Annotated[str | None, typer.Option("--note")] = None,
+    custom: Annotated[str | None, typer.Option("--custom")] = None,
+    rationale: Annotated[str, typer.Option("--rationale")] = "",
+    by: Annotated[str, typer.Option("--by")] = "cli",
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    ops = container.get(Operations)
+    if (option is None) == (custom is None):
+        raise typer.BadParameter("give --option <key> or --custom <text>, not both or neither")
+    text = custom if custom is not None else (note or "")
+    try:
+        ops.answer_decision(decision_id, option, text, rationale, by)
+    except OperationError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    print(f"[green]Answered {decision_id}[/green]")
+
+
+@decision_app.command("reopen")
+def decision_reopen(
+    decision_id: str,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    ops = container.get(Operations)
+    try:
+        ops.reopen_decision(decision_id)
+    except OperationError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    print(f"[green]Reopened {decision_id}[/green]")
+
+
+@decision_app.command("withdraw")
+def decision_withdraw(
+    decision_id: str,
+    reason: Annotated[str, typer.Option("--reason")] = "",
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    ops = container.get(Operations)
+    try:
+        ops.withdraw_decision(decision_id, reason)
+    except OperationError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    print(f"[green]Withdrew {decision_id}[/green]")
+
+
+@decision_app.command("block")
+def decision_block(
+    decision_id: str,
+    tasks: Annotated[str, typer.Option("--tasks", help="Comma-separated task ids")],
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    ops = container.get(Operations)
+    ids = [t.strip() for t in tasks.split(",") if t.strip()]
+    try:
+        ops.link_decision(decision_id, add=ids)
+    except OperationError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    print(f"[green]{', '.join(ids)} now wait on {decision_id}[/green]")
+
+
+@decision_app.command("unblock")
+def decision_unblock(
+    decision_id: str,
+    tasks: Annotated[str, typer.Option("--tasks", help="Comma-separated task ids")],
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    ops = container.get(Operations)
+    ids = [t.strip() for t in tasks.split(",") if t.strip()]
+    try:
+        ops.link_decision(decision_id, remove=ids)
+    except OperationError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    print(f"[green]{', '.join(ids)} no longer wait on {decision_id}[/green]")
+
+
+@app.command("attach")
+def attach_cmd(
+    node_id: str,
+    file: Path,
+    caption: Annotated[str, typer.Option("--caption")] = "",
+    source: Annotated[str | None, typer.Option("--source")] = None,
+    replace: Annotated[
+        str | None, typer.Option("--replace", help="Asset name to re-capture")
+    ] = None,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    ops = container.get(Operations)
+    try:
+        entry = ops.attach(node_id, file, caption, source, replace)
+    except OperationError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    print(f"[green]Attached {entry['asset']} to {node_id}[/green]")
+
+
+@app.command("detach")
+def detach_cmd(
+    node_id: str,
+    asset: str,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    ops = container.get(Operations)
+    try:
+        ops.detach(node_id, asset)
+    except OperationError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    print(f"[green]Detached {asset} from {node_id}[/green]")
+
+
+@app.command("attachments")
+def attachments_cmd(
+    node_id: str,
+    check: Annotated[bool, typer.Option("--check", help="Re-hash project-file sources")] = False,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    yaml_output: Annotated[bool, typer.Option("--yaml")] = False,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    container = _get_container(root)
+    ops = container.get(Operations)
+    try:
+        entries = ops.list_attachments(node_id, check)
+    except OperationError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    if json_output or yaml_output:
+        _emit(entries, yaml_output)
+        return
+    table = Table(title=f"Attachments of {escape(node_id)}")
+    for column in ("Asset", "Name", "Caption", "Source", "State"):
+        table.add_column(column)
+    for e in entries:
+        source = e.get("source") or {}
+        table.add_row(
+            escape(str(e.get("asset"))),
+            escape(str(e.get("name"))),
+            escape(str(e.get("caption") or "")),
+            escape(str(source.get("uri") or "-")),
+            escape(str(source.get("state") or "-")),
+        )
+    print(table)
 
 
 @app.command("next")
@@ -1255,6 +1393,8 @@ def next_tasks(
     ] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """What can be worked on now, scored. The owner's own queue is `tm decision list --status open`,
+    not this command: an open decision blocks its task out of `next` until it is answered."""
     root = _get_root(path)
     container = _get_container(root)
     heuristics = container.get(RecommendationEngine)
@@ -1301,7 +1441,9 @@ def next_tasks(
 
 @app.command("render")
 def render(
-    qualified_id: Annotated[str, typer.Argument(help="Qualified node path (e.g. AUTH-USER-LOGIN)")],
+    qualified_ids: Annotated[
+        list[str], typer.Argument(help="Qualified node path(s) (e.g. AUTH-USER-LOGIN)")
+    ],
     view: Annotated[
         RenderView, typer.Option("--view", "-v", help="View projection: summary, subagent, or full")
     ] = RenderView.FULL,
@@ -1318,22 +1460,25 @@ def render(
     root = _get_root(path)
     container = _get_container(root)
     renderer = container.get(MarkdownRenderer)
-    qp = QualifiedPath.parse(qualified_id)
-    if recursive and qp.section_key:
-        print(
-            "[red]--recursive renders a node, not one of its sections; drop the `:section` part[/red]"
-        )
-        raise typer.Exit(code=1)
-    try:
-        output = (
-            renderer.render_recursive(qp.node_id, view=view)
-            if recursive
-            else renderer.render(qp.node_id, view=view)
-        )
-    except ValueError as exc:
-        print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1) from exc
-    sys.stdout.write(output + "\n")
+    outputs = []
+    for qualified_id in qualified_ids:
+        qp = QualifiedPath.parse(qualified_id)
+        if recursive and qp.section_key:
+            print(
+                "[red]--recursive renders a node, not one of its sections; "
+                "drop the `:section` part[/red]"
+            )
+            raise typer.Exit(code=1)
+        try:
+            outputs.append(
+                renderer.render_recursive(qp.node_id, view=view)
+                if recursive
+                else renderer.render(qp.node_id, view=view)
+            )
+        except ValueError as exc:
+            print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1) from exc
+    sys.stdout.write("\n\n---\n\n".join(outputs) + "\n")
 
 
 class _RefusingImporter:
@@ -1348,9 +1493,6 @@ class _RefusingImporter:
         except ValueError as exc:
             print(f"[red]{exc}[/red]")
             raise typer.Exit(code=1) from exc
-
-
-GUIDE_NODE = "guide"
 
 
 def _guide_topics() -> dict[str, str]:
@@ -1467,6 +1609,16 @@ def export_cmd(
     specs = {n.id: n for n in node_repo.list_nodes(kind=NodeKind.SPEC)}
     tasks = node_repo.list_nodes(kind=NodeKind.TASK)
     plans = node_repo.list_nodes(kind=NodeKind.PLAN)
+    decisions = sorted(node_repo.list_nodes(kind=NodeKind.DECISION), key=lambda n: n.id)
+    if decisions:
+        dump("_decisions.json", {"decisions": [_export_node(node_repo, d) for d in decisions]})
+    assets_src = root / ".taskmanager" / "assets"
+    if assets_src.is_dir():
+        assets_dst = directory / "assets"
+        assets_dst.mkdir(parents=True, exist_ok=True)
+        for f in sorted(assets_src.iterdir()):
+            if f.is_file():
+                (assets_dst / f.name).write_bytes(f.read_bytes())
     for plan in plans:
         children = set(node_repo.get_children(plan.id))
         plan_doc = _export_node(node_repo, plan)
@@ -1501,22 +1653,46 @@ def restore_cmd(
     container.get(DatabaseManager).init_all()
     importer = _RefusingImporter(container.get(BulkImporter))
 
-    files = [f for f in sorted(directory.glob("*.json")) if f.name != "_config.json"]
+    assets_dir = directory / "assets"
+    if assets_dir.is_dir():
+        assets_dest = root / ".taskmanager" / "assets"
+        assets_dest.mkdir(parents=True, exist_ok=True)
+        for f in sorted(assets_dir.iterdir()):
+            if f.is_file():
+                (assets_dest / f.name).write_bytes(f.read_bytes())
+
+    files = [
+        f
+        for f in sorted(directory.glob("*.json"))
+        if f.name not in ("_config.json", "_decisions.json")
+    ]
     docs = [json.loads(f.read_text(encoding="utf-8")) for f in files]
-    if not docs:
+    decisions_file = directory / "_decisions.json"
+    decisions_doc = (
+        json.loads(decisions_file.read_text(encoding="utf-8")) if decisions_file.exists() else None
+    )
+    if not docs and decisions_doc is None:
         print(f"[red]No export files in {directory}[/red]")
         raise typer.Exit(code=1)
     # Plans depend on each other, so the first pass keeps only the edges a document can satisfy
-    # by itself and the second adds the rest; specs go last so their full data wins.
+    # by itself and the second adds the rest; decisions go in between so a task's depends_on edge
+    # onto one resolves in the second pass, then specs go last so their full data wins.
     plan_docs = [d for d in docs if d.get("plans")]
     spec_docs = [d for d in docs if not d.get("plans")]
+
+    def _dep_id(dep: Any) -> str:
+        # A gated dependency exports as {"id": ..., "gate": ...}, not a bare id string.
+        return str(dep["id"]) if isinstance(dep, dict) else str(dep)
+
     for doc in plan_docs:
         first = copy.deepcopy(doc)
         own = {n["id"] for p in first["plans"] for n in [p, *p.get("tasks", [])]}
         for p in first["plans"]:
             for n in [p, *p.get("tasks", [])]:
-                n["depends_on"] = [d for d in n.get("depends_on", []) if d in own]
+                n["depends_on"] = [d for d in n.get("depends_on", []) if _dep_id(d) in own]
         importer.import_dict(first)
+    if decisions_doc is not None:
+        importer.import_dict(decisions_doc)
     for doc in [*plan_docs, *spec_docs]:
         importer.import_dict(doc)
     settings_file = directory / "_config.json"
@@ -1787,7 +1963,7 @@ def _run_web_server(host: str, port: int, open_browser: bool, path: Path | None)
 
         threading.Thread(target=_open, daemon=True).start()
 
-    fastapi_app = create_app(root)
+    fastapi_app = create_app(root, host=host, port=actual_port)
     uvicorn.run(fastapi_app, host=host, port=actual_port, log_level="warning")
 
 
