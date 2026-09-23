@@ -54,7 +54,7 @@ Generic methods (all existing CLI behaviour, plus four additions marked *new*):
 | `set_dependencies(id, add: list[(dep, gate)], remove)` | `task depends` | cycle and existence checks unchanged |
 | `supersede(old, new, transfer_blocks)` | `task supersede` | |
 | `move_task(id, plan)` *new* | `task move <id> --plan <plan>` | re-parents: removes the old `contains` edge, adds the new one |
-| `set_status(id, status, remove_worktree)` | `run stop` | same semantics: releases any lease |
+| `set_status(id, status, remove_worktree, section)` | `run stop` | same semantics: releases any lease. `section=(key, content, header)` *new* writes a section in the same transaction (`tm run stop <id> --status COMPLETED --section ruling --section-file F`), so a ruling can never land without its status or the reverse |
 | `set_section(id, key, content, header)` | `section set` | |
 | `remove_section(id, key)` *new* | `section remove <id>:<key>` | 404 when absent |
 | `add_verification(...)`, `remove_verification(id, vid)` | `verify add/remove` | |
@@ -143,6 +143,8 @@ tm decision unblock <id> --tasks t1,t2
 decision that is not Open (409, "reopen it first"). `reopen` clears `answer` and returns the node to
 `NOT_STARTED`, which re-blocks its dependents. `tm task get` gains `awaiting_decisions: [ids]`.
 `tm render` of a decision prints the question, context, options (recommended marked) and the answer.
+`answer` writes the answer and moves the status in one transaction, removing the two-call gap where
+a ruling section could be written while the task stayed `NOT_STARTED`.
 
 ### 3.4 Guides
 
@@ -161,6 +163,26 @@ appends `{"asset": name, "name": original filename, "caption": ..., "mime": ...}
 only when no node references it any more. Limit 20 MB per file; `mime` comes from `mimetypes`.
 Evidence survives the scratch directory it came from, because the file is copied.
 
+**Provenance.** An attachment is usually a capture of something live (a Figma frame, a page, a
+file another agent keeps editing), and a capture silently goes stale when its source changes. Each
+attachment entry therefore also carries:
+
+```python
+class AttachmentSource(BaseModel):
+    uri: str | None          # "path/in/project.png", "figma:<fileKey>:<nodeId>", "https://..."
+    sha256: str | None       # of the source file at capture, for project-file sources only
+    captured_at: datetime
+    checked_at: datetime | None = None
+    state: Literal["fresh", "stale", "missing", "unverifiable"] = "unverifiable"
+```
+
+`tm attach --source <uri>` records it; when the attached file itself lies inside the project root
+and no `--source` is given, the source defaults to that project-relative path. `tm attachments
+<node-id> [--check]` lists attachments. `--check` re-hashes every project-file source and sets
+`fresh`, `stale` or `missing` plus `checked_at`. Figma and URL sources stay `unverifiable` and
+report their capture age. `tm attach <node-id> <file> --replace <asset>` re-captures an attachment
+from its source, keeping its caption and source.
+
 `tm export` also copies every referenced asset into `<dir>/assets/` and writes every decision into
 `<dir>/_decisions.json` (sorted by id, same byte-identical guarantee). `tm restore` copies
 `assets/` back and imports decisions after plans and specs, so their `depends_on` edges from tasks
@@ -178,6 +200,16 @@ In the page, a section's rendered markdown has every `<img src>` that is not `ht
 click to open full size in a lightbox; other types as download links with name and size). All
 markdown is sanitised with DOMPurify before insertion, because the page now writes as well as reads.
 The static export embeds image attachments up to 2 MB as `data:` URIs and shows the rest as names.
+Every attachment in the page shows its source and capture age, with a badge for `stale` (amber),
+`missing` (red) or `unverifiable` ("unverified since <age>"), plus a **Re-check** action
+(`POST /api/nodes/{id}/attachments/check`).
+
+## 4a. CLI ergonomics
+
+- `tm render <id> [<id>...] [--view v] [-r]` renders several nodes in one call, separated by a rule.
+- `tm task list [filters] --render <view>` renders every listed task instead of the table.
+- `tm next --help` and `overview.md` say plainly: what can be worked on now, scored, is
+  `tm next [--model <id>] -n <N> --yaml`, and the owner's queue is `tm decision list --status open`.
 
 ## 5. Web write API
 
@@ -209,7 +241,8 @@ DELETE /api/nodes/{id}/verifications/{vid}
 POST   /api/nodes/{id}/verify            -> [{id, type, target, passed, detail}]
 DELETE /api/nodes/{id}/lease
 POST   /api/leases/sweep
-POST   /api/nodes/{id}/attachments       {filename, content_base64, caption?}
+POST   /api/nodes/{id}/attachments       {filename, content_base64, caption?, source?}
+POST   /api/nodes/{id}/attachments/check
 DELETE /api/nodes/{id}/attachments/{asset}
 GET    /api/decisions?status=open|answered|withdrawn
 POST   /api/decisions                    {question, slug?, priority?, context?, options?,

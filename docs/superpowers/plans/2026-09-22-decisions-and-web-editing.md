@@ -17,6 +17,7 @@ before the next wave starts, and the whole branch merges to `main` after review.
 | 2 | T5 Tri-state filters | `dw/t5-filters` | T2 | `web/static/js/filters.js`, the toolbar filter markup in `web/static/index.html`, `web/static/app.css` |
 | 3 | T6 Editing UI | `dw/t6-edit-ui` | T2, T4 | `web/static/js/edit.js` (new), `web/static/js/detail.js`, `web/static/js/core.js`, the `toolbar-actions` and `dialog-root` slots in `index.html` |
 | 4 | T7 Decisions UI, decision/asset API, images | `dw/t7-decisions-ui` | T3, T4, T6 | `web/app.py` (decision, attachment, `/assets`, `/api/file` routes), `web/static_export.py`, `web/static/js/decisions.js` (new), `detail.js`, `index.html` (view switcher), tests |
+| 3 | T8 CLI ergonomics | `dw/t8-cli-ergonomics` | T3 | `cli/main.py` (`render`, `task list`, `next` help), `guides/overview.md`, tests |
 | 5 | Review | — | all | branch review (Opus) and design review (Opus, Playwright), one fix round (Sonnet) |
 
 T3 and T4 both read `Operations` and never edit the same file. T5 and T6 edit different regions of
@@ -120,9 +121,20 @@ Model: Sonnet (general-purpose). Stop ponytail: this is frontend.
    including assets.
 7. `web/enums.py`: the `AWAITING_DECISION` theme (§6.4) and `help-circle` in the sprite, so the page
    renders the new status.
-8. Guides and skills (§3.4). `tests/unit/test_guides.py` must stay green, which proves every
+8. The atomic `set_status(..., section=)` and its `tm run stop --section/--section-file` flags (§2),
+   tested by forcing the status write to fail and asserting the section was not written either.
+9. Attachment provenance (§4): `AttachmentSource`, `--source`, `--replace`, and `tm attachments
+   [--check]` with the fresh/stale/missing/unverifiable states. Test each state: edit the source
+   file and see `stale`, delete it and see `missing`.
+10. Guides and skills (§3.4). `tests/unit/test_guides.py` must stay green, which proves every
    `tm decision ...` line the guides print resolves to a real command and flag.
 
+Model: Sonnet (`python-dev` agent). Ponytail full.
+
+## T8 — CLI ergonomics (§4a)
+
+`tm render` with several ids, `tm task list --render`, and `tm next` discoverability in its
+`--help` text and in `overview.md`. Tests pin multi-id output order and the `--render` view.
 Model: Sonnet (`python-dev` agent). Ponytail full.
 
 ## T4 — Web write API (§5, generic routes only)
@@ -178,10 +190,11 @@ Model: Sonnet (general-purpose). Stop ponytail.
    `GET /api/file` (§4), with tests for path traversal (`../`, absolute paths outside the root,
    symlinks that escape), non-images, malformed asset names, and every decision route's success and
    refusal.
+1a. `POST /api/nodes/{id}/attachments/check`, and the attachment `source` on upload (§4).
 2. `decisions.js`: the view, list, detail, answer flow, reopen, withdraw, the new-decision dialog
    with its options editor, and blocked-task linking. Wire the open-count badge button into
    `#view-extra-buttons`.
-3. `detail.js`: the attachment gallery with lightbox, the "Attach file" action, `<img>` src
+3. `detail.js`: the attachment gallery with lightbox, source/age/staleness badges and Re-check, the "Attach file" action, `<img>` src
    rewriting (§4), and the `AWAITING_DECISION` banner on tasks.
 4. `web/static_export.py`: embed image attachments of 2 MB or less as `data:` URIs.
 5. Prove it in the browser against a scratch root (as in T6): raise a decision by CLI with three
