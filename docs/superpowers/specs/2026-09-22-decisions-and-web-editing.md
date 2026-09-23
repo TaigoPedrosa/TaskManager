@@ -285,11 +285,14 @@ Where it applies:
 
 - **Status chips** (row 2). Same rule, replacing today's click-to-cycle.
 - **Model, spec and repo filters** (repo becomes multi-valued). Each is a toolbar button opening a
-  popover list. Each row shows the value, its task count, and a three-icon segmented control:
-  `plus` (include), `minus` (exclude), `circle` (neutral), with the active one filled. Clicking an
-  icon sets that mode directly; clicking or double-clicking the row's label follows the gesture
-  grammar. The button reads `Model` when neutral, and `Model +2 −1` when two values are included
-  and one excluded.
+  popover list. Each row shows the value, its task count, and **exactly two icon toggle buttons,
+  `plus` and `minus`, with no neutral button**. `plus` is green when that value is included and
+  gray otherwise; `minus` is red when it is excluded and gray otherwise. Clicking the unselected
+  one selects it and deselects the other, and clicking the selected one returns the value to
+  neutral (both gray). The icons never change shape; only their colour shows the state. Each
+  button is `aria-pressed`, named "Include <value>" / "Exclude <value>". Clicking the row's label
+  follows the gesture grammar above. The button reads `Model` when neutral, and `Model +2 −1` when
+  two values are included and one excluded.
 
 Semantics per dimension: a task passes if (no includes, or it matches at least one include) and it
 matches no exclude. For multi-valued `acceptable_models`, matching means any overlap. Tasks with no
