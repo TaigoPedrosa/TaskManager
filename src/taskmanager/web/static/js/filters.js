@@ -1,27 +1,37 @@
 // Filters (mirrored into the URL hash so a view is shareable)
 const NO_REPO = '(none)';
 const NO_SPEC = '(none)';
-// statusMode: code -> 'include' | 'exclude'. Absent = no opinion (neutral).
+// Every dimension below is tri-state: absent from the Map = no opinion (neutral),
+// 'include' or 'exclude' otherwise. Maps are mutated in place, never reassigned (except
+// statusMode, read fresh every time and never captured by reference elsewhere) -- the
+// popover controls below capture repoMode/modelMode/specMode by reference at init, so a
+// fresh Map here would silently desync from them.
 const filters = {
-  statusMode: new Map(), repo: '', models: new Set(), specs: new Set(),
+  statusMode: new Map(), repoMode: new Map(), modelMode: new Map(), specMode: new Map(),
   scoreMin: null, scoreMax: null, q: ''
 };
 let scoreBounds = { min: 0, max: 100 };
 
+// A task passes a dimension if (no includes, or it matches at least one include) and it
+// matches no exclude. `values` holds every value the task carries for that dimension --
+// one for status/repo/spec, several for acceptable_models -- so "matching" means any overlap.
+function dimensionPasses(modeMap, values) {
+  if (values.some(v => modeMap.get(v) === 'exclude')) return false;
+  const anyIncludes = [...modeMap.values()].some(m => m === 'include');
+  return !anyIncludes || values.some(v => modeMap.get(v) === 'include');
+}
+
 function structuralFilterActive() {
-  return filters.statusMode.size > 0 || filters.repo !== '' || filters.models.size > 0 ||
-    filters.specs.size > 0 || filters.scoreMin !== null || filters.scoreMax !== null;
+  return filters.statusMode.size > 0 || filters.repoMode.size > 0 || filters.modelMode.size > 0 ||
+    filters.specMode.size > 0 || filters.scoreMin !== null || filters.scoreMax !== null;
 }
 
 function taskPasses(t) {
   const status = t.virtual_status || t.status;
-  const mode = filters.statusMode.get(status);
-  if (mode === 'exclude') return false;
-  const anyIncludes = [...filters.statusMode.values()].some(m => m === 'include');
-  if (anyIncludes && mode !== 'include') return false;
-  if (filters.repo !== '' && (t.target_repo || NO_REPO) !== filters.repo) return false;
-  if (filters.models.size > 0 && !(t.acceptable_models || []).some(m => filters.models.has(m))) return false;
-  if (filters.specs.size > 0 && !filters.specs.has(t._specId)) return false;
+  if (!dimensionPasses(filters.statusMode, [status])) return false;
+  if (!dimensionPasses(filters.repoMode, [t.target_repo || NO_REPO])) return false;
+  if (!dimensionPasses(filters.modelMode, t.acceptable_models || [])) return false;
+  if (!dimensionPasses(filters.specMode, [t._specId])) return false;
   if (filters.scoreMin !== null && typeof t.score === 'number' && t.score < filters.scoreMin) return false;
   if (filters.scoreMax !== null && typeof t.score === 'number' && t.score > filters.scoreMax) return false;
   return true;
@@ -46,13 +56,15 @@ function readHash() {
   filters.statusMode = new Map();
   (p.get('status') || '').split(',').filter(c => window.STATUS_THEMES[c]).forEach(c => filters.statusMode.set(c, 'include'));
   (p.get('xstatus') || '').split(',').filter(c => window.STATUS_THEMES[c]).forEach(c => filters.statusMode.set(c, 'exclude'));
-  filters.repo = p.get('repo') || '';
-  // Mutated in place, never reassigned: the multiselect controls captured these Sets
-  // by reference at init, so a fresh Set here would silently desync from them.
-  filters.models.clear();
-  (p.get('model') || '').split(',').filter(Boolean).forEach(v => filters.models.add(v));
-  filters.specs.clear();
-  (p.get('spec') || '').split(',').filter(Boolean).forEach(v => filters.specs.add(v));
+  filters.repoMode.clear();
+  (p.get('repo') || '').split(',').filter(Boolean).forEach(v => filters.repoMode.set(v, 'include'));
+  (p.get('xrepo') || '').split(',').filter(Boolean).forEach(v => filters.repoMode.set(v, 'exclude'));
+  filters.modelMode.clear();
+  (p.get('model') || '').split(',').filter(Boolean).forEach(v => filters.modelMode.set(v, 'include'));
+  (p.get('xmodel') || '').split(',').filter(Boolean).forEach(v => filters.modelMode.set(v, 'exclude'));
+  filters.specMode.clear();
+  (p.get('spec') || '').split(',').filter(Boolean).forEach(v => filters.specMode.set(v, 'include'));
+  (p.get('xspec') || '').split(',').filter(Boolean).forEach(v => filters.specMode.set(v, 'exclude'));
   const smin = p.get('smin');
   const smax = p.get('smax');
   filters.scoreMin = smin !== null && smin !== '' ? Number(smin) : null;
@@ -61,15 +73,26 @@ function readHash() {
   searchBox.value = filters.q;
 }
 
+function modeEntries(modeMap) {
+  const inc = [...modeMap.entries()].filter(([, m]) => m === 'include').map(([v]) => v);
+  const exc = [...modeMap.entries()].filter(([, m]) => m === 'exclude').map(([v]) => v);
+  return { inc, exc };
+}
+
 function writeHash() {
   const p = new URLSearchParams();
-  const inc = [...filters.statusMode.entries()].filter(([, m]) => m === 'include').map(([c]) => c);
-  const exc = [...filters.statusMode.entries()].filter(([, m]) => m === 'exclude').map(([c]) => c);
-  if (inc.length) p.set('status', inc.join(','));
-  if (exc.length) p.set('xstatus', exc.join(','));
-  if (filters.repo) p.set('repo', filters.repo);
-  if (filters.models.size) p.set('model', [...filters.models].join(','));
-  if (filters.specs.size) p.set('spec', [...filters.specs].join(','));
+  const status = modeEntries(filters.statusMode);
+  if (status.inc.length) p.set('status', status.inc.join(','));
+  if (status.exc.length) p.set('xstatus', status.exc.join(','));
+  const repo = modeEntries(filters.repoMode);
+  if (repo.inc.length) p.set('repo', repo.inc.join(','));
+  if (repo.exc.length) p.set('xrepo', repo.exc.join(','));
+  const model = modeEntries(filters.modelMode);
+  if (model.inc.length) p.set('model', model.inc.join(','));
+  if (model.exc.length) p.set('xmodel', model.exc.join(','));
+  const spec = modeEntries(filters.specMode);
+  if (spec.inc.length) p.set('spec', spec.inc.join(','));
+  if (spec.exc.length) p.set('xspec', spec.exc.join(','));
   if (filters.scoreMin !== null) p.set('smin', String(filters.scoreMin));
   if (filters.scoreMax !== null) p.set('smax', String(filters.scoreMax));
   if (filters.q) p.set('q', filters.q);
@@ -90,42 +113,86 @@ function renderAll() {
 }
 
 
-// Status Digest Bar
-// Three-state toggle per status: neutral (colour fill, no border) -> include (colour fill,
-// coloured border) -> exclude (no colour, dim border) -> back to neutral. Counts reflect
-// every OTHER active filter (repo/model/spec/score/text) so they read as "how many of this
-// status would show", not a frozen snapshot.
-function computeFilteredStatusCounts() {
-  const tasks = collectTasks(treeData);
-  const counts = {};
-  let total = 0;
-  tasks.forEach(t => {
-    if (filters.repo !== '' && (t.target_repo || NO_REPO) !== filters.repo) return;
-    if (filters.models.size > 0 && !(t.acceptable_models || []).some(m => filters.models.has(m))) return;
-    if (filters.specs.size > 0 && !filters.specs.has(t._specId)) return;
-    if (filters.scoreMin !== null && typeof t.score === 'number' && t.score < filters.scoreMin) return;
-    if (filters.scoreMax !== null && typeof t.score === 'number' && t.score > filters.scoreMax) return;
-    if (filters.q !== '' && !textMatches(t)) return;
-    const status = t.virtual_status || t.status;
-    counts[status] = (counts[status] || 0) + 1;
-    total += 1;
-  });
-  return { total, counts };
+// One gesture grammar for every tri-state control (status chips, and each row of the
+// model/spec/repo popovers): click toggles neutral <-> include; double-click sets exclude
+// directly. A double-click still fires two click events first, so a click is held for
+// TRI_STATE_DBLCLICK_MS waiting for a second one before it commits. Keyboard: Enter/Space
+// acts as a click, Shift+Enter excludes -- preventDefault always, so a real <button>'s own
+// native Enter/Space-to-click synthesis never fires a second, duplicate toggle underneath.
+const TRI_STATE_DBLCLICK_MS = 220;
+
+function triModeLabel(mode) {
+  return mode === 'include' ? 'included' : mode === 'exclude' ? 'excluded' : 'not filtered';
 }
 
-function cycleStatusMode(code) {
-  const mode = filters.statusMode.get(code);
-  if (mode === undefined) filters.statusMode.set(code, 'include');
-  else if (mode === 'include') filters.statusMode.set(code, 'exclude');
-  else filters.statusMode.delete(code);
+function triStateHandlers(el, getMode, setMode) {
+  let pendingClick = null;
+
+  function commitClick() {
+    setMode(getMode() ? null : 'include');
+  }
+
+  el.addEventListener('click', () => {
+    if (pendingClick) {
+      clearTimeout(pendingClick);
+      pendingClick = null;
+      return;
+    }
+    pendingClick = setTimeout(() => {
+      pendingClick = null;
+      commitClick();
+    }, TRI_STATE_DBLCLICK_MS);
+  });
+
+  el.addEventListener('dblclick', () => {
+    if (pendingClick) {
+      clearTimeout(pendingClick);
+      pendingClick = null;
+    }
+    setMode('exclude');
+  });
+
+  el.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    if (e.key === 'Enter' && e.shiftKey) setMode('exclude');
+    else commitClick();
+  });
+}
+
+
+// Status Digest Bar
+function passesOtherDimensions(t, exclude) {
+  const status = t.virtual_status || t.status;
+  if (exclude !== 'status' && !dimensionPasses(filters.statusMode, [status])) return false;
+  if (exclude !== 'repo' && !dimensionPasses(filters.repoMode, [t.target_repo || NO_REPO])) return false;
+  if (exclude !== 'model' && !dimensionPasses(filters.modelMode, t.acceptable_models || [])) return false;
+  if (exclude !== 'spec' && !dimensionPasses(filters.specMode, [t._specId])) return false;
+  if (filters.scoreMin !== null && typeof t.score === 'number' && t.score < filters.scoreMin) return false;
+  if (filters.scoreMax !== null && typeof t.score === 'number' && t.score > filters.scoreMax) return false;
+  if (filters.q !== '' && !textMatches(t)) return false;
+  return true;
+}
+
+// Counts reflect every OTHER active filter (the dimension's own is excluded) so they read
+// as "how many tasks would show", not a frozen snapshot. `valuesOf` returns the task's own
+// value(s) for that dimension -- several for acceptable_models, one otherwise.
+function computeDimensionCounts(dimension, valuesOf) {
+  const counts = {};
+  collectTasks(treeData).forEach(t => {
+    if (!passesOtherDimensions(t, dimension)) return;
+    valuesOf(t).forEach(v => { counts[v] = (counts[v] || 0) + 1; });
+  });
+  return counts;
 }
 
 function updateStatsDigest() {
   statsDigest.innerHTML = '';
-  const { total, counts } = computeFilteredStatusCounts();
+  const counts = computeDimensionCounts('status', t => [t.virtual_status || t.status]);
+  const total = collectTasks(treeData).filter(t => passesOtherDimensions(t, 'status')).length;
   const allActive = filters.statusMode.size === 0;
   const totalChip = document.createElement('button');
-  totalChip.className = `flex items-center gap-1 px-2 py-1 rounded-md border text-xs transition ${allActive ? 'bg-zinc-800 text-white border-zinc-700' : 'bg-zinc-900/60 text-zinc-400 border-zinc-800 hover:bg-zinc-800'}`;
+  totalChip.className = `flex items-center gap-1 px-2 py-1 rounded-md border text-xs transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${allActive ? 'bg-zinc-800 text-white border-zinc-700' : 'bg-zinc-900/60 text-zinc-400 border-zinc-800 hover:bg-zinc-800'}`;
   totalChip.title = 'All tasks';
   totalChip.setAttribute('aria-label', `All tasks: ${total}`);
   totalChip.setAttribute('aria-pressed', String(allActive));
@@ -148,26 +215,19 @@ function updateStatsDigest() {
       const mode = filters.statusMode.get(code);
       const chip = document.createElement('button');
       const modeClass = mode === 'include' ? 'st-mode-include' : mode === 'exclude' ? 'st-mode-exclude' : '';
-      chip.className = `st-toggle st-${code} ${modeClass} flex items-center gap-1 px-1.5 py-1 rounded-md text-xs transition hover:brightness-125 ${count === 0 && !mode ? 'opacity-50' : ''}`;
-      chip.title = `${theme.label} -- click to include, click again to exclude`;
-      chip.setAttribute('aria-label', `${theme.label}: ${count}`);
-      chip.setAttribute('aria-pressed', String(mode === 'include'));
+      chip.className = `st-toggle st-${code} ${modeClass} flex items-center gap-1 px-1.5 py-1 rounded-md text-xs transition hover:brightness-125 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${count === 0 && !mode ? 'opacity-50' : ''}`;
+      chip.title = 'Click: include · Double-click: exclude · Click again: clear';
+      chip.setAttribute('aria-label', `Status ${theme.label}: ${triModeLabel(mode)}`);
       chip.innerHTML = `${renderIcon(theme.icon, 'w-3.5 h-3.5')}<strong>${count}</strong>`;
-      chip.onclick = () => {
-        cycleStatusMode(code);
+      triStateHandlers(chip, () => filters.statusMode.get(code), (mode) => {
+        if (mode === null) filters.statusMode.delete(code); else filters.statusMode.set(code, mode);
         renderAll();
-      };
+      });
       statsDigest.appendChild(chip);
     });
   });
 }
 
-
-function fillSelect(select, values, current, allLabel) {
-  const options = [...new Set([...values, ...(current ? [current] : [])])].sort();
-  select.innerHTML = `<option value="">${allLabel}</option>` + options.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
-  select.value = current;
-}
 
 // Also stamps each task with the id/title of the spec it descends from (NO_SPEC when it
 // hangs off a standalone plan), so the spec filter needs no server round trip.
@@ -184,51 +244,101 @@ function collectTasks(nodes, specCtx = null, out = []) {
   return out;
 }
 
-// Generic multiselect: a button ("Label (n)") opening a checkbox popover. `getOptions`
-// is re-read on every render so it always reflects the live tree, never a stale snapshot.
+const TRI_ICON_PLUS = '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>';
+const TRI_ICON_MINUS = '<line x1="5" y1="12" x2="19" y2="12"/>';
+const TRI_ICON_CIRCLE = '<circle cx="12" cy="12" r="10"/>';
 
-function createMultiSelect(container, { label, getOptions, selected, onChange }) {
+// Not from the page's own icon sprite (that registry is a different task's file): three
+// small inline glyphs in the same stroke style, used only inside a tri-state segmented
+// control.
+function triIcon(inner) {
+  return `<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;
+}
+
+// Generic tri-state popover: a button ("Label" or "Label +2 −1") opening a list of
+// value rows. Each row follows the same click/double-click gesture as a status chip on its
+// own label, plus a three-icon segmented control (plus/minus/circle) that sets a mode
+// directly; whichever icon matches the row's current mode is shown filled.
+// `getOptions` is re-read on every render so it always reflects the live tree, never a
+// stale snapshot.
+function createTriStatePopover(container, { label, dimension, getOptions, modeMap, onChange }) {
   let open = false;
+
+  function summary() {
+    const inc = [...modeMap.values()].filter(m => m === 'include').length;
+    const exc = [...modeMap.values()].filter(m => m === 'exclude').length;
+    if (!inc && !exc) return label;
+    const parts = [];
+    if (inc) parts.push(`+${inc}`);
+    if (exc) parts.push(`−${exc}`);
+    return `${label} ${parts.join(' ')}`;
+  }
+
+  function setValueMode(value, mode) {
+    if (mode === null) modeMap.delete(value); else modeMap.set(value, mode);
+    onChange();
+  }
+
+  function triBtn(mode, iconInner, activeClasses, title) {
+    return `
+      <button type="button" data-mode="${mode}" title="${title}" aria-label="${title}"
+        class="w-5 h-5 flex items-center justify-center rounded transition text-zinc-500 hover:bg-zinc-700 hover:text-zinc-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${activeClasses}">
+        ${triIcon(iconInner)}
+      </button>`;
+  }
 
   function renderOptions() {
     const options = getOptions();
-    const pop = container.querySelector('.ms-pop');
+    const pop = container.querySelector('.tri-pop');
     pop.innerHTML = options.length === 0
       ? '<div class="px-2 py-1.5 text-zinc-500 text-xs">No options</div>'
-      : options.map(o => `
-        <label class="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-zinc-800 cursor-pointer text-xs text-zinc-200">
-          <input type="checkbox" data-value="${esc(o.value)}" ${selected.has(o.value) ? 'checked' : ''} class="rounded border-zinc-600 bg-zinc-950 text-emerald-500 focus:ring-emerald-500">
-          <span class="truncate">${esc(o.label)}</span>
-        </label>
-      `).join('');
-    pop.querySelectorAll('input[type=checkbox]').forEach(cb => {
-      cb.onchange = () => {
-        const v = cb.getAttribute('data-value');
-        if (cb.checked) selected.add(v); else selected.delete(v);
-        onChange();
-      };
+      : options.map(o => {
+        const mode = modeMap.get(o.value);
+        return `
+          <div class="tri-row flex items-center justify-between gap-2 px-2 py-1 rounded hover:bg-zinc-800 cursor-pointer text-xs text-zinc-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-inset"
+            data-value="${esc(o.value)}" tabindex="0" role="button"
+            title="Click: include · Double-click: exclude · Click again: clear"
+            aria-label="${esc(dimension)} ${esc(o.label)}: ${triModeLabel(mode)}">
+            <span class="truncate flex-1">${esc(o.label)} <span class="text-zinc-500">(${o.count})</span></span>
+            <span class="flex items-center gap-0.5 flex-shrink-0">
+              ${triBtn('include', TRI_ICON_PLUS, mode === 'include' ? 'bg-emerald-600 text-white hover:bg-emerald-500' : '', 'Include ' + o.label)}
+              ${triBtn('exclude', TRI_ICON_MINUS, mode === 'exclude' ? 'bg-zinc-500 text-white hover:bg-zinc-400' : '', 'Exclude ' + o.label)}
+              ${triBtn('neutral', TRI_ICON_CIRCLE, !mode ? 'bg-zinc-700 text-zinc-200' : '', 'Clear ' + o.label)}
+            </span>
+          </div>
+        `;
+      }).join('');
+    pop.querySelectorAll('.tri-row').forEach(row => {
+      const value = row.getAttribute('data-value');
+      row.querySelectorAll('button[data-mode]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          setValueMode(value, btn.dataset.mode === 'neutral' ? null : btn.dataset.mode);
+        });
+        btn.addEventListener('dblclick', (e) => e.stopPropagation());
+      });
+      triStateHandlers(row, () => modeMap.get(value), (mode) => setValueMode(value, mode));
     });
   }
 
   function render() {
-    const n = selected.size;
-    const btn = container.querySelector('.ms-btn');
-    const active = n > 0;
-    btn.querySelector('.ms-label').textContent = n > 0 ? `${label} (${n})` : label;
-    btn.className = `ms-btn h-8 min-w-[6.5rem] flex items-center justify-between gap-1 px-2.5 rounded-lg border text-xs transition ${active ? 'bg-zinc-800 text-white border-emerald-600' : 'bg-zinc-950 text-zinc-300 border-zinc-800 hover:bg-zinc-900'}`;
+    const active = modeMap.size > 0;
+    const btn = container.querySelector('.tri-btn-main');
+    btn.querySelector('.tri-label').textContent = summary();
+    btn.className = `tri-btn-main h-8 min-w-[6.5rem] flex items-center justify-between gap-1 px-2.5 rounded-lg border text-xs transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${active ? 'bg-zinc-800 text-white border-emerald-600' : 'bg-zinc-950 text-zinc-300 border-zinc-800 hover:bg-zinc-900'}`;
     btn.setAttribute('aria-expanded', String(open));
-    container.querySelector('.ms-pop').classList.toggle('hidden', !open);
+    container.querySelector('.tri-pop').classList.toggle('hidden', !open);
     renderOptions();
   }
 
   container.innerHTML = `
-    <button type="button" class="ms-btn" aria-haspopup="listbox">
-      <span class="ms-label">${esc(label)}</span>
+    <button type="button" class="tri-btn-main" aria-haspopup="listbox">
+      <span class="tri-label">${esc(label)}</span>
       ${renderIcon('chevron-down', 'w-3 h-3')}
     </button>
-    <div class="ms-pop absolute z-30 mt-1 w-56 max-h-64 overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl p-1 hidden" role="listbox"></div>
+    <div class="tri-pop absolute z-30 mt-1 w-56 max-h-64 overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl p-1 hidden" role="listbox"></div>
   `;
-  container.querySelector('.ms-btn').addEventListener('click', (e) => {
+  container.querySelector('.tri-btn-main').addEventListener('click', (e) => {
     e.stopPropagation();
     open = !open;
     render();
@@ -322,21 +432,38 @@ function createScoreFilter(container) {
 }
 
 
-const modelMultiSelect = createMultiSelect(modelFilterEl, {
-  label: 'Model',
-  selected: filters.models,
-  onChange: renderAll,
-  getOptions: () => [...new Set(collectTasks(treeData).flatMap(t => t.acceptable_models || []))]
-    .sort().map(v => ({ value: v, label: v })),
-});
-const specMultiSelect = createMultiSelect(specFilterEl, {
-  label: 'Spec',
-  selected: filters.specs,
+const repoTriState = createTriStatePopover(repoFilter, {
+  label: 'Repo',
+  dimension: 'Repo',
+  modeMap: filters.repoMode,
   onChange: renderAll,
   getOptions: () => {
+    const counts = computeDimensionCounts('repo', t => [t.target_repo || NO_REPO]);
+    return [...new Set(collectTasks(treeData).map(t => t.target_repo || NO_REPO))]
+      .sort().map(v => ({ value: v, label: v, count: counts[v] || 0 }));
+  },
+});
+const modelTriState = createTriStatePopover(modelFilterEl, {
+  label: 'Model',
+  dimension: 'Model',
+  modeMap: filters.modelMode,
+  onChange: renderAll,
+  getOptions: () => {
+    const counts = computeDimensionCounts('model', t => (t.acceptable_models && t.acceptable_models.length ? t.acceptable_models : []));
+    return [...new Set(collectTasks(treeData).flatMap(t => t.acceptable_models || []))]
+      .sort().map(v => ({ value: v, label: v, count: counts[v] || 0 }));
+  },
+});
+const specTriState = createTriStatePopover(specFilterEl, {
+  label: 'Spec',
+  dimension: 'Spec',
+  modeMap: filters.specMode,
+  onChange: renderAll,
+  getOptions: () => {
+    const counts = computeDimensionCounts('spec', t => [t._specId]);
     const byId = new Map();
     collectTasks(treeData).forEach(t => byId.set(t._specId, t._specTitle));
-    return [...byId.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([value, label]) => ({ value, label }));
+    return [...byId.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([value, label]) => ({ value, label, count: counts[value] || 0 }));
   },
 });
 const scoreFilter = createScoreFilter(scoreFilterEl);
@@ -344,28 +471,23 @@ const scoreFilter = createScoreFilter(scoreFilterEl);
 
 function populateFilterOptions() {
   const tasks = collectTasks(treeData);
-  fillSelect(repoFilter, tasks.map(t => t.target_repo || NO_REPO), filters.repo, 'All repos');
   const scores = tasks.map(t => t.score).filter(s => typeof s === 'number');
   scoreBounds = scores.length ? { min: Math.min(...scores), max: Math.max(...scores) } : { min: 0, max: 100 };
 }
 
 function renderFilterControls() {
-  repoFilter.value = filters.repo;
-  modelMultiSelect.render();
-  specMultiSelect.render();
+  repoTriState.render();
+  modelTriState.render();
+  specTriState.render();
   scoreFilter.render();
   clearFiltersBtn.classList.toggle('hidden', !(structuralFilterActive() || filters.q !== ''));
 }
 
-repoFilter.addEventListener('change', () => {
-  filters.repo = repoFilter.value;
-  renderAll();
-});
 clearFiltersBtn.addEventListener('click', () => {
   filters.statusMode.clear();
-  filters.repo = '';
-  filters.models.clear();
-  filters.specs.clear();
+  filters.repoMode.clear();
+  filters.modelMode.clear();
+  filters.specMode.clear();
   filters.scoreMin = null;
   filters.scoreMax = null;
   filters.q = '';
@@ -406,5 +528,4 @@ function applyGraphFilter() {
     return { id: n.id, opacity: dim ? 0.2 : 1 };
   }));
 }
-
 
