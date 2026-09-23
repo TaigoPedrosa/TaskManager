@@ -705,6 +705,20 @@ def test_decisions_load_failure_is_an_error_state_not_an_empty_queue() -> None:
     assert 'role="alert"' in render_list
 
 
+def test_dialog_initial_focus_prefers_a_form_field_over_the_close_button() -> None:
+    body = _function_body(get_web_html(), "openDialog")
+    assert "firstFieldOrFallback().focus()" in body
+    assert "(focusables()[0] || panel).focus()" not in body
+
+
+def test_new_menu_item_returns_focus_to_the_trigger_button_not_body() -> None:
+    # The clicked item is already hidden by setOpen(false), and Plan/Task additionally await
+    # an /api/meta fetch before opening -- by the time openDialog captures
+    # document.activeElement, a menu item was never a trigger that survives either delay.
+    body = _function_body(get_web_html(), "renderNewMenu")
+    assert "btn.focus();\n    const kind = item.getAttribute" in body
+
+
 def test_api_helper_surfaces_the_servers_own_refusal_message() -> None:
     body = _function_body(get_web_html(), "api")
     assert "data && data.detail" in body

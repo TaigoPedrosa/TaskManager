@@ -74,6 +74,19 @@ function openDialog({ title, bodyHtml, onMount, onSubmit, submitLabel = 'Save', 
       .filter(el => !el.disabled && el.getClientRects().length > 0);
   }
 
+  // The header's own close (x) button is the first focusable in DOM order, ahead of every
+  // field the form actually asks for -- initial focus prefers a field inside .dlg-form when
+  // one exists, falling back to the panel's first focusable (the close button) only when a
+  // dialog has none (a bare confirm).
+  function firstFieldOrFallback() {
+    const form = panel.querySelector('.dlg-form');
+    const inForm = form
+      ? Array.from(form.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+        .filter(el => !el.disabled && el.getClientRects().length > 0)
+      : [];
+    return inForm[0] || focusables()[0] || panel;
+  }
+
   function close() {
     document.removeEventListener('keydown', onKeydown);
     overlay.remove();
@@ -127,7 +140,7 @@ function openDialog({ title, bodyHtml, onMount, onSubmit, submitLabel = 'Save', 
     }
   });
 
-  (focusables()[0] || panel).focus();
+  firstFieldOrFallback().focus();
   return { panel, close };
 }
 
@@ -751,6 +764,13 @@ function renderNewMenu() {
     const item = e.target.closest('[data-new-kind]');
     if (!item) return;
     setOpen(false);
+    // openDialog captures document.activeElement as the element to return focus to on close;
+    // the item that was just clicked is already hidden by setOpen(false) above (and, for
+    // Plan/Task, openDialog does not even run until an /api/meta fetch resolves), so by the
+    // time it captures anything the real click target has long since lost focus and the
+    // browser has fallen back to BODY. The trigger button is still in the DOM and is a
+    // reasonable place to return to either way.
+    btn.focus();
     const kind = item.getAttribute('data-new-kind');
     if (kind === 'spec') openNewSpecDialog();
     else if (kind === 'plan') openNewPlanDialog();
