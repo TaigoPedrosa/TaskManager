@@ -83,7 +83,7 @@ def test_a_lease_locks_frontmatter_files_and_a_second_claim_is_refused(db: Datab
     task(repo, "T-2", frontmatter={"declared_files": ["web/shared.tsx"]})
     coord = coordinator(db)
     coord.start_task("T-1", "a", "s")
-    with pytest.raises(ValueError, match="file collision"):
+    with pytest.raises(ValueError, match="BLOCKED_BY_LEASE"):
         coord.start_task("T-2", "b", "s")
     coord.stop_task("T-1", NodeStatus.COMPLETED)
     coord.start_task("T-2", "b", "s")
@@ -469,7 +469,7 @@ def test_each_stage_of_the_lifecycle_is_claimed_by_its_own_lease(db: DatabaseMan
 
     coord.start_task("T-1", "fix", "s")
     assert repo.get_node("T-1").status == NodeStatus.FIXING  # type: ignore[union-attr]
-    with pytest.raises(ValueError, match="file collision"):
+    with pytest.raises(ValueError, match="BLOCKED_BY_LEASE"):
         coord.start_task("T-2", "other", "s")
     coord.stop_task("T-1", NodeStatus.WAITING_MERGE)
 

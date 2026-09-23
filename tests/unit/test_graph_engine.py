@@ -3,8 +3,14 @@ from pathlib import Path
 
 import pytest
 
-from taskmanager.core.enums import NodeKind, NodeStatus, RelationType, VirtualStatus
-from taskmanager.core.models import FileLock, Lease, Node, NodeRelation
+from taskmanager.core.enums import (
+    NodeKind,
+    NodeStatus,
+    RelationType,
+    VerificationType,
+    VirtualStatus,
+)
+from taskmanager.core.models import FileLock, Lease, Node, NodeRelation, NodeVerification
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
@@ -187,6 +193,54 @@ def test_resolve_task_state_in_flight(
 
     runtime_repo.release_lease("AUTH-T01")
     assert engine.resolve_task_state("AUTH-T01") == VirtualStatus.READY
+
+
+def test_resolve_task_state_blocked_by_lease(
+    repos: tuple[NodeRepository, RuntimeRepository, GraphEngine],
+) -> None:
+    # Every depends_on gate clear, but a file this task declares is locked by another task's
+    # active lease: READY by the graph, not actually claimable -- BLOCKED_BY_LEASE, not READY
+    # and not BLOCKED (BLOCKED means an unmet dependency, which this task has none of).
+    node_repo, runtime_repo, engine = repos
+
+    holder = Node(
+        id="AUTH-T01", kind=NodeKind.TASK, title="Holds the lease", status=NodeStatus.NOT_STARTED
+    )
+    waiter = Node(
+        id="AUTH-T02",
+        kind=NodeKind.TASK,
+        title="Wants the same file",
+        status=NodeStatus.NOT_STARTED,
+    )
+    node_repo.save_node(holder)
+    node_repo.save_node(waiter)
+    node_repo.add_verification(
+        NodeVerification(
+            node_id="AUTH-T02",
+            verification_type=VerificationType.FILE_EXISTS,
+            target_path="src/shared.py",
+        )
+    )
+
+    assert engine.resolve_task_state("AUTH-T02") == VirtualStatus.READY
+
+    lease = Lease(
+        task_id="AUTH-T01",
+        agent_id="agent-worker-1",
+        session_id="sess-100",
+        branch_name="feature/shared",
+        acquired_at=datetime.now(tz=UTC),
+        last_heartbeat=datetime.now(tz=UTC),
+        ttl_seconds=300,
+    )
+    runtime_repo.acquire_lease(lease, [FileLock(file_path="src/shared.py", task_id="AUTH-T01")])
+
+    assert engine.resolve_task_state("AUTH-T02") == VirtualStatus.BLOCKED_BY_LEASE
+    # The holder itself is IN_FLIGHT, not BLOCKED_BY_LEASE on its own lock.
+    assert engine.resolve_task_state("AUTH-T01") == VirtualStatus.IN_FLIGHT
+
+    runtime_repo.release_lease("AUTH-T01")
+    assert engine.resolve_task_state("AUTH-T02") == VirtualStatus.READY
 
 
 def test_cycle_detection(

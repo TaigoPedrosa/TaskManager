@@ -148,7 +148,13 @@ def test_collision_rejection_with_active_lease(
 
     coordinator.start_task(task_id="TASK-A", agent_id="agent-1", session_id="sess-1")
 
-    with pytest.raises(ValueError, match="Cannot claim task TASK-B due to file collision"):
+    # The graph itself now reads TASK-B as BLOCKED_BY_LEASE (not READY) while TASK-A holds the
+    # file, so start_task's claims-dict lookup refuses it before reaching its own belt-and-
+    # suspenders collision check below -- that check still exists for the genuine TOCTOU race
+    # (another claim landing between the read and the write), covered separately.
+    with pytest.raises(
+        ValueError, match=r"Task TASK-B is not ready to start \(current state: BLOCKED_BY_LEASE\)"
+    ):
         coordinator.start_task(task_id="TASK-B", agent_id="agent-2", session_id="sess-2")
 
     unchanged = node_repo.get_node("TASK-B")

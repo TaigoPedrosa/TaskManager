@@ -66,6 +66,10 @@ class GraphEngine:
             if dep_node is None or not gate_satisfied(dep_node.status, gate):
                 return VirtualStatus.BLOCKED
 
+        declared_files = self.node_repo.declared_files(task_id)
+        if declared_files and self.runtime_repo.get_conflicting_tasks(declared_files):
+            return VirtualStatus.BLOCKED_BY_LEASE
+
         return VirtualStatus.READY
 
     def resolve_plan_status(self, plan_id: str) -> NodeStatus | VirtualStatus:
@@ -95,7 +99,12 @@ class GraphEngine:
         uncompleted = [
             s for s in child_states if s not in (NodeStatus.COMPLETED, NodeStatus.SUPERSEDED)
         ]
-        if uncompleted and all(s == VirtualStatus.BLOCKED for s in uncompleted):
+        # A plan is only ever reported BLOCKED, never BLOCKED_BY_LEASE -- that distinction is a
+        # per-task claimability signal, and collapsing it into one rollup value keeps a plan's
+        # status meaning "nothing under it can proceed right now" either way.
+        if uncompleted and all(
+            s in (VirtualStatus.BLOCKED, VirtualStatus.BLOCKED_BY_LEASE) for s in uncompleted
+        ):
             return VirtualStatus.BLOCKED
 
         if all(

@@ -25,6 +25,10 @@ class NodeStatus(StrEnum):
 
 class VirtualStatus(StrEnum):
     BLOCKED = "BLOCKED"
+    # Every depends_on gate is satisfied, but a file this task declares is locked by another
+    # task's active lease -- ready by the dependency graph, not claimable right now. Distinct
+    # from BLOCKED so a reader isn't sent to check dependencies that are, in fact, all clear.
+    BLOCKED_BY_LEASE = "BLOCKED_BY_LEASE"
     READY = "READY"
     IN_FLIGHT = "IN_FLIGHT"
 
