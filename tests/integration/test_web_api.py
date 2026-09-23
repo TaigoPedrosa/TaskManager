@@ -1,5 +1,6 @@
-"""Integration tests for the write API (§5): generic routes only."""
+"""Integration tests for the write API (§5), decisions (§3), attachments and file serving (§4)."""
 
+import base64
 from pathlib import Path
 
 import pytest
@@ -396,3 +397,338 @@ def test_post_sweep_returns_swept_list(
     res = client.post("/api/leases/sweep", headers=JSON)
     assert res.status_code == 200
     assert res.json() == {"swept": []}
+
+
+# -- decisions ----------------------------------------------------------------------------------
+
+
+def test_create_decision_with_options_and_blocks(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, node_repo, ledger_repo = api
+    res = client.post(
+        "/api/decisions",
+        json={
+            "question": "Which auth flow?",
+            "slug": "auth-flow",
+            "options": [
+                {"key": "a", "label": "Session cookies"},
+                {"key": "b", "label": "JWT", "description": "stateless"},
+            ],
+            "recommend": "b",
+            "blocks": ["SPEC-P1-T1"],
+        },
+    )
+    assert res.status_code == 201
+    decision_id = res.json()["id"]
+    assert decision_id == "decision-auth-flow"
+    node = node_repo.get_node(decision_id)
+    assert node is not None
+    assert node.kind == NodeKind.DECISION
+    assert node.frontmatter["decision"]["options"][1]["recommended"] is True
+    assert "decision-auth-flow" in node_repo.get_dependencies("SPEC-P1-T1")
+    assert _last_actor(ledger_repo) == "web"
+
+
+def test_create_decision_unknown_blocked_task_refused_and_writes_nothing(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, node_repo, _ledger_repo = api
+    res = client.post("/api/decisions", json={"question": "Q?", "blocks": ["NOPE"]})
+    assert res.status_code == 404
+    assert node_repo.list_nodes(kind=NodeKind.DECISION) == []
+
+
+def _seed_decision(node_repo: NodeRepository, decision_id: str = "decision-D1") -> None:
+    node_repo.save_node(
+        Node(
+            id=decision_id,
+            kind=NodeKind.DECISION,
+            title="Which auth flow?",
+            frontmatter={
+                "decision": {
+                    "options": [{"key": "a", "label": "Cookies", "recommended": False}],
+                    "allow_custom": True,
+                    "raised_by": None,
+                    "answer": None,
+                    "withdrawn_reason": "",
+                }
+            },
+        )
+    )
+
+
+def test_answer_decision_unblocks_dependent_task(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, node_repo, _ledger_repo = api
+    _seed_decision(node_repo)
+    node_repo.add_relation(
+        NodeRelation(
+            source_id="SPEC-P1-T1",
+            target_id="decision-D1",
+            relation_type=RelationType.DEPENDS_ON,
+        )
+    )
+    res = client.post(
+        "/api/decisions/decision-D1/answer",
+        json={"option": "a", "rationale": "simplest"},
+        headers={"X-TM-Actor": "owner"},
+    )
+    assert res.status_code == 200
+    node = node_repo.get_node("decision-D1")
+    assert node is not None
+    assert node.status == NodeStatus.COMPLETED
+    assert node.frontmatter["decision"]["answer"]["answered_by"] == "owner"
+
+
+def test_answer_decision_unknown_option_refused_and_writes_nothing(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, node_repo, _ledger_repo = api
+    _seed_decision(node_repo)
+    res = client.post("/api/decisions/decision-D1/answer", json={"option": "nope"})
+    assert res.status_code == 400
+    node = node_repo.get_node("decision-D1")
+    assert node is not None
+    assert node.status == NodeStatus.NOT_STARTED
+
+
+def test_reopen_and_withdraw_decision(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, node_repo, _ledger_repo = api
+    _seed_decision(node_repo)
+    client.post("/api/decisions/decision-D1/answer", json={"option": "a"})
+    res = client.post("/api/decisions/decision-D1/reopen", headers=JSON)
+    assert res.status_code == 200
+    node = node_repo.get_node("decision-D1")
+    assert node is not None
+    assert node.status == NodeStatus.NOT_STARTED
+
+    res2 = client.post("/api/decisions/decision-D1/withdraw", json={"reason": "no longer relevant"})
+    assert res2.status_code == 200
+    node2 = node_repo.get_node("decision-D1")
+    assert node2 is not None
+    assert node2.status == NodeStatus.ABANDONED
+
+
+def test_decision_blocks_add_and_remove(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, node_repo, _ledger_repo = api
+    _seed_decision(node_repo)
+    res = client.post(
+        "/api/decisions/decision-D1/blocks", json={"add": ["SPEC-P1-T1", "SPEC-P1-T2"]}
+    )
+    assert res.status_code == 200
+    assert set(node_repo.get_blocked_by("decision-D1")) == {"SPEC-P1-T1", "SPEC-P1-T2"}
+
+    res2 = client.post("/api/decisions/decision-D1/blocks", json={"remove": ["SPEC-P1-T1"]})
+    assert res2.status_code == 200
+    assert node_repo.get_blocked_by("decision-D1") == ["SPEC-P1-T2"]
+
+
+def test_list_decisions_filters_by_status_tab(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, node_repo, _ledger_repo = api
+    _seed_decision(node_repo, "decision-D1")
+    _seed_decision(node_repo, "decision-D2")
+    client.post("/api/decisions/decision-D2/answer", json={"option": "a"})
+
+    res_open = client.get("/api/decisions", params={"status": "open"})
+    assert res_open.status_code == 200
+    assert [d["id"] for d in res_open.json()] == ["decision-D1"]
+
+    res_answered = client.get("/api/decisions", params={"status": "answered"})
+    assert [d["id"] for d in res_answered.json()] == ["decision-D2"]
+
+    res_bad = client.get("/api/decisions", params={"status": "bogus"})
+    assert res_bad.status_code == 400
+
+
+# -- attachments ----------------------------------------------------------------------------
+
+
+_PNG_1PX = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+
+
+def test_post_attachment_stores_content_addressed_asset(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, node_repo, ledger_repo = api
+    res = client.post(
+        "/api/nodes/SPEC-P1-T1/attachments",
+        json={
+            "filename": "shot.png",
+            "content_base64": base64.b64encode(_PNG_1PX).decode("ascii"),
+            "caption": "before",
+            "source": "shot.png",
+        },
+    )
+    assert res.status_code == 201
+    entry = res.json()
+    assert entry["name"] == "shot.png"
+    assert entry["mime"] == "image/png"
+    node = node_repo.get_node("SPEC-P1-T1")
+    assert node is not None
+    assert node.frontmatter["attachments"] == [entry]
+    assert _last_actor(ledger_repo) == "web"
+
+    asset_res = client.get(f"/assets/{entry['asset']}")
+    assert asset_res.status_code == 200
+    assert asset_res.content == _PNG_1PX
+
+
+def test_post_attachment_unknown_node_refused_and_writes_nothing(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, node_repo, _ledger_repo = api
+    res = client.post(
+        "/api/nodes/NOPE/attachments",
+        json={"filename": "shot.png", "content_base64": base64.b64encode(_PNG_1PX).decode()},
+    )
+    assert res.status_code == 404
+    assert node_repo.get_node("NOPE") is None
+
+
+def test_post_attachment_bad_base64_refused(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, _node_repo, _ledger_repo = api
+    res = client.post(
+        "/api/nodes/SPEC-P1-T1/attachments",
+        json={"filename": "shot.png", "content_base64": "not-base64!!"},
+    )
+    assert res.status_code == 400
+
+
+def test_attachment_check_marks_stale_and_missing(
+    api: tuple[TestClient, NodeRepository, LedgerRepository], tmp_path: Path
+) -> None:
+    client, node_repo, _ledger_repo = api
+    source = tmp_path / "shot.png"
+    source.write_bytes(_PNG_1PX)
+    client.post(
+        "/api/nodes/SPEC-P1-T1/attachments",
+        json={
+            "filename": "shot.png",
+            "content_base64": base64.b64encode(_PNG_1PX).decode(),
+            "source": "shot.png",
+        },
+    )
+    node = node_repo.get_node("SPEC-P1-T1")
+    assert node is not None
+    assert node.frontmatter["attachments"][0]["source"]["state"] == "fresh"
+
+    source.write_bytes(_PNG_1PX + b"\x00")
+    res = client.post("/api/nodes/SPEC-P1-T1/attachments/check", headers=JSON)
+    assert res.status_code == 200
+    assert res.json()[0]["source"]["state"] == "stale"
+
+    source.unlink()
+    res2 = client.post("/api/nodes/SPEC-P1-T1/attachments/check", headers=JSON)
+    assert res2.json()[0]["source"]["state"] == "missing"
+
+
+def test_delete_attachment_removes_entry(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, node_repo, _ledger_repo = api
+    res = client.post(
+        "/api/nodes/SPEC-P1-T1/attachments",
+        json={"filename": "shot.png", "content_base64": base64.b64encode(_PNG_1PX).decode()},
+    )
+    asset = res.json()["asset"]
+    res2 = client.delete(f"/api/nodes/SPEC-P1-T1/attachments/{asset}", headers=JSON)
+    assert res2.status_code == 200
+    node = node_repo.get_node("SPEC-P1-T1")
+    assert node is not None
+    assert node.frontmatter.get("attachments") == []
+
+
+def test_delete_attachment_missing_is_404(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, _node_repo, _ledger_repo = api
+    res = client.delete("/api/nodes/SPEC-P1-T1/attachments/nope.png", headers=JSON)
+    assert res.status_code == 404
+
+
+# -- /assets/{name} and /api/file: read-only, path traversal refused ------------------------
+
+
+def test_get_asset_malformed_name_is_404(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, _node_repo, _ledger_repo = api
+    res = client.get("/assets/not-a-valid-name.png")
+    assert res.status_code == 404
+
+
+def test_get_asset_traversal_is_404(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, _node_repo, _ledger_repo = api
+    res = client.get("/assets/..%2f..%2fetc%2fpasswd")
+    assert res.status_code in (404, 400)
+
+
+def test_get_file_serves_an_image_inside_root(
+    api: tuple[TestClient, NodeRepository, LedgerRepository], tmp_path: Path
+) -> None:
+    client, _node_repo, _ledger_repo = api
+    (tmp_path / "shot.png").write_bytes(_PNG_1PX)
+    res = client.get("/api/file", params={"path": "shot.png"})
+    assert res.status_code == 200
+    assert res.content == _PNG_1PX
+
+
+def test_get_file_refuses_traversal_outside_root(
+    api: tuple[TestClient, NodeRepository, LedgerRepository], tmp_path: Path
+) -> None:
+    client, _node_repo, _ledger_repo = api
+    outside = tmp_path.parent / "outside.png"
+    outside.write_bytes(_PNG_1PX)
+    res = client.get("/api/file", params={"path": "../outside.png"})
+    assert res.status_code == 404
+    outside.unlink()
+
+
+def test_get_file_refuses_absolute_path_outside_root(
+    api: tuple[TestClient, NodeRepository, LedgerRepository], tmp_path: Path
+) -> None:
+    client, _node_repo, _ledger_repo = api
+    outside = tmp_path.parent / "outside2.png"
+    outside.write_bytes(_PNG_1PX)
+    res = client.get("/api/file", params={"path": str(outside)})
+    assert res.status_code == 404
+    outside.unlink()
+
+
+def test_get_file_refuses_symlink_escaping_root(
+    api: tuple[TestClient, NodeRepository, LedgerRepository], tmp_path: Path
+) -> None:
+    client, _node_repo, _ledger_repo = api
+    outside = tmp_path.parent / "outside3.png"
+    outside.write_bytes(_PNG_1PX)
+    link = tmp_path / "escape.png"
+    link.symlink_to(outside)
+    try:
+        res = client.get("/api/file", params={"path": "escape.png"})
+        assert res.status_code == 404
+    finally:
+        link.unlink()
+        outside.unlink()
+
+
+def test_get_file_refuses_non_image(
+    api: tuple[TestClient, NodeRepository, LedgerRepository], tmp_path: Path
+) -> None:
+    client, _node_repo, _ledger_repo = api
+    (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
+    res = client.get("/api/file", params={"path": "notes.txt"})
+    assert res.status_code == 404
