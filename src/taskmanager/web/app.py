@@ -3,22 +3,128 @@
 import asyncio
 import sqlite3
 from collections import Counter
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
 
-from taskmanager.core.enums import NodeKind, NodeStatus, RenderView, VirtualStatus
+from taskmanager.core.enums import (
+    NodeKind,
+    NodeStatus,
+    RenderView,
+    TransferMode,
+    VerificationType,
+    VirtualStatus,
+)
 from taskmanager.db.connection import DatabaseManager
+from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
+from taskmanager.engine.git import GitManager
 from taskmanager.engine.graph import GraphEngine
 from taskmanager.engine.heuristics import score_every_task
+from taskmanager.engine.operations import OperationError, Operations
+from taskmanager.engine.runtime import ExecutionCoordinator
+from taskmanager.engine.verification import VerificationEngine
 from taskmanager.renderers.markdown import MarkdownRenderer
 from taskmanager.web.ui import get_web_html
+
+
+class SpecCreate(BaseModel):
+    title: str
+    slug: str | None = None
+    priority: int = 50
+
+
+class PlanCreate(BaseModel):
+    title: str
+    spec: str
+    slug: str | None = None
+    priority: int = 50
+    order: int = 0
+    require_review: bool = False
+
+
+class TaskCreate(BaseModel):
+    title: str
+    plan: str
+    slug: str | None = None
+    priority: int = 50
+    order: int = 0
+    depends_on: list[str] = Field(default_factory=list)
+    models: list[str] = Field(default_factory=list)
+
+
+class NodeUpdate(BaseModel):
+    title: str | None = None
+    priority: int | None = None
+    acceptable_models: list[str] | None = None
+    target_repo: str | None = None
+    frontmatter_set: dict[str, Any] | None = None
+    frontmatter_unset: list[str] | None = None
+
+
+class StatusUpdate(BaseModel):
+    status: NodeStatus
+    remove_worktree: bool = False
+
+
+class DependencyAdd(BaseModel):
+    id: str
+    gate: NodeStatus | None = None
+
+
+class DependenciesUpdate(BaseModel):
+    add: list[DependencyAdd] = Field(default_factory=list)
+    remove: list[str] = Field(default_factory=list)
+
+
+class SupersedeRequest(BaseModel):
+    by: str
+    transfer_blocks: str | list[str] = TransferMode.ALL.value
+
+
+class MoveRequest(BaseModel):
+    plan: str
+
+
+class SectionWrite(BaseModel):
+    content: str
+    header: str | None = None
+
+
+class VerificationCreate(BaseModel):
+    type: VerificationType
+    target_path: str
+    expected_pattern: str | None = None
+
+
+def _write_guard(request: Request) -> str:
+    """Every mutating route depends on this: a JSON body forces a CORS preflight a foreign
+    page cannot pass, and a mismatched Origin catches what preflight alone would miss."""
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type != "application/json":
+        raise HTTPException(403, "write requires Content-Type: application/json")
+    origin = request.headers.get("origin")
+    if origin is not None and urlsplit(origin).netloc != request.headers.get("host", ""):
+        raise HTTPException(403, "cross-origin write refused")
+    return request.headers.get("x-tm-actor") or "web"
+
+
+Actor = Annotated[str, Depends(_write_guard)]
+
+
+@contextmanager
+def _refusals() -> Iterator[None]:
+    try:
+        yield
+    except OperationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 def add_progress(node: dict[str, Any]) -> Counter[str]:
@@ -60,8 +166,22 @@ def create_app(project_root: Path) -> FastAPI:
     db_mgr = DatabaseManager(db_dir)
     node_repo = NodeRepository(db_mgr)
     runtime_repo = RuntimeRepository(db_mgr)
+    ledger_repo = LedgerRepository(db_mgr)
     graph_engine = GraphEngine(node_repo, runtime_repo)
     renderer = MarkdownRenderer(node_repo)
+    coordinator = ExecutionCoordinator(
+        node_repo, runtime_repo, graph_engine, GitManager(project_root)
+    )
+    verification_engine = VerificationEngine(project_root)
+    operations = Operations(
+        node_repo,
+        runtime_repo,
+        graph_engine,
+        coordinator,
+        ledger_repo,
+        verification_engine,
+        actor="web",
+    )
     ws_manager = ConnectionManager()
 
     # Background change detection loop
@@ -359,5 +479,166 @@ def create_app(project_root: Path) -> FastAPI:
             stats[effective_status(t)] += 1
 
         return stats
+
+    # -- write API (§5): generic routes only, decisions and attachments are added later ----
+
+    @app.get("/api/meta")
+    async def get_meta() -> dict[str, Any]:
+        all_nodes = node_repo.list_nodes()
+        return {
+            "statuses": [s.value for s in NodeStatus] + [v.value for v in VirtualStatus],
+            "verification_types": [t.value for t in VerificationType],
+            "models": sorted({m for n in all_nodes for m in n.acceptable_models}),
+            "repos": sorted({n.target_repo for n in all_nodes if n.target_repo}),
+            "specs": [
+                {"id": s.id, "title": s.title} for s in node_repo.list_nodes(kind=NodeKind.SPEC)
+            ],
+            "plans": [
+                {"id": p.id, "title": p.title} for p in node_repo.list_nodes(kind=NodeKind.PLAN)
+            ],
+        }
+
+    @app.post("/api/specs", status_code=201)
+    async def create_spec(body: SpecCreate, actor: Actor) -> dict[str, str]:
+        with _refusals():
+            spec_id = operations.with_actor(actor).add_spec(body.title, body.slug, body.priority)
+        return {"id": spec_id}
+
+    @app.post("/api/plans", status_code=201)
+    async def create_plan(body: PlanCreate, actor: Actor) -> dict[str, Any]:
+        with _refusals():
+            plan_id, gate_id = operations.with_actor(actor).add_plan(
+                body.title, body.spec, body.slug, body.priority, body.order, body.require_review
+            )
+        return {"id": plan_id, "review_gate": gate_id}
+
+    @app.post("/api/tasks", status_code=201)
+    async def create_task(body: TaskCreate, actor: Actor) -> dict[str, str]:
+        with _refusals():
+            task_id = operations.with_actor(actor).add_task(
+                body.title,
+                body.plan,
+                body.slug,
+                body.priority,
+                body.order,
+                body.depends_on,
+                body.models,
+            )
+        return {"id": task_id}
+
+    @app.patch("/api/nodes/{node_id}")
+    async def patch_node(node_id: str, body: NodeUpdate, actor: Actor) -> dict[str, Any]:
+        with _refusals():
+            changed = operations.with_actor(actor).update_node(
+                node_id,
+                title=body.title,
+                priority=body.priority,
+                models=body.acceptable_models,
+                repo=body.target_repo,
+                frontmatter_set=body.frontmatter_set,
+                frontmatter_unset=body.frontmatter_unset,
+            )
+        return changed
+
+    @app.post("/api/nodes/{node_id}/status")
+    async def post_status(node_id: str, body: StatusUpdate, actor: Actor) -> dict[str, str]:
+        try:
+            operations.with_actor(actor).set_status(node_id, body.status, body.remove_worktree)
+        except OperationError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        except ValueError as exc:
+            # `ExecutionCoordinator.stop_task` raises a bare ValueError for an unknown node.
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"status": body.status.value}
+
+    @app.post("/api/nodes/{node_id}/dependencies")
+    async def post_dependencies(
+        node_id: str, body: DependenciesUpdate, actor: Actor
+    ) -> list[dict[str, Any]]:
+        add = [(d.id, d.gate) for d in body.add]
+        with _refusals():
+            edges = operations.with_actor(actor).set_dependencies(node_id, add, body.remove)
+        return [{"id": dep_id, "gate": gate.value} for dep_id, gate in edges]
+
+    @app.post("/api/nodes/{node_id}/supersede")
+    async def post_supersede(node_id: str, body: SupersedeRequest, actor: Actor) -> dict[str, str]:
+        transfer = (
+            body.transfer_blocks
+            if isinstance(body.transfer_blocks, str)
+            else ",".join(body.transfer_blocks)
+        )
+        with _refusals():
+            operations.with_actor(actor).supersede(node_id, body.by, transfer)
+        return {"superseded_by": body.by}
+
+    @app.post("/api/nodes/{node_id}/move")
+    async def post_move(node_id: str, body: MoveRequest, actor: Actor) -> dict[str, str]:
+        with _refusals():
+            operations.with_actor(actor).move_task(node_id, body.plan)
+        return {"plan": body.plan}
+
+    @app.put("/api/nodes/{node_id}/sections/{key}")
+    async def put_section(
+        node_id: str, key: str, body: SectionWrite, actor: Actor
+    ) -> dict[str, str]:
+        with _refusals():
+            operations.with_actor(actor).set_section(node_id, key, body.content, body.header)
+        return {"key": key}
+
+    @app.delete("/api/nodes/{node_id}/sections/{key}")
+    async def delete_section(node_id: str, key: str, actor: Actor) -> dict[str, str]:
+        with _refusals():
+            operations.with_actor(actor).remove_section(node_id, key)
+        return {"key": key}
+
+    @app.post("/api/nodes/{node_id}/verifications", status_code=201)
+    async def post_verification(
+        node_id: str, body: VerificationCreate, actor: Actor
+    ) -> dict[str, Any]:
+        with _refusals():
+            ver = operations.with_actor(actor).add_verification(
+                node_id, body.type, body.target_path, body.expected_pattern
+            )
+        return {
+            "id": ver.id,
+            "type": ver.verification_type.value,
+            "target": ver.target_path,
+            "pattern": ver.expected_pattern,
+        }
+
+    @app.delete("/api/nodes/{node_id}/verifications/{verification_id}")
+    async def delete_verification(
+        node_id: str, verification_id: int, actor: Actor
+    ) -> dict[str, int]:
+        with _refusals():
+            operations.with_actor(actor).remove_verification(node_id, verification_id)
+        return {"id": verification_id}
+
+    @app.post("/api/nodes/{node_id}/verify")
+    async def post_verify(node_id: str, actor: Actor) -> list[dict[str, Any]]:
+        with _refusals():
+            _all_passed, results = operations.with_actor(actor).run_verifications(node_id)
+        return [
+            {
+                "id": r.verification_id,
+                "type": r.verification_type.value,
+                "target": r.target_path,
+                "passed": r.passed,
+                "detail": r.message,
+            }
+            for r in results
+        ]
+
+    @app.delete("/api/nodes/{node_id}/lease")
+    async def delete_lease(node_id: str, actor: Actor) -> dict[str, str]:
+        with _refusals():
+            operations.with_actor(actor).release_lease(node_id)
+        return {"id": node_id}
+
+    @app.post("/api/leases/sweep")
+    async def post_sweep(actor: Actor) -> dict[str, list[str]]:
+        with _refusals():
+            swept = operations.with_actor(actor).sweep_leases()
+        return {"swept": swept}
 
     return app
