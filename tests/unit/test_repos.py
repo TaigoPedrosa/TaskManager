@@ -1,3 +1,7 @@
+import os
+import resource
+import sqlite3
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -36,6 +40,36 @@ def test_spec_connection_is_reused_not_reopened(tmp_path: Path) -> None:
     with db.get_spec_connection() as second:
         pass
     assert first is second
+
+
+def test_connections_of_finished_threads_are_closed(tmp_path: Path) -> None:
+    # The web server runs sync routes on anyio worker threads that retire after 10s idle, so a
+    # per-thread connection kept alive past its thread's death leaks its file descriptors until
+    # the process hits the fd limit and every new thread fails with "unable to open database
+    # file". The soft limit is lowered so the leak, not the machine's headroom, decides.
+    db = DatabaseManager(tmp_path)
+    db.init_all()
+
+    failures: list[sqlite3.Error] = []
+
+    def query() -> None:
+        try:
+            with db.get_runtime_connection() as conn:
+                conn.execute("SELECT COUNT(*) FROM leases").fetchone()
+        except sqlite3.Error as exc:
+            failures.append(exc)
+
+    open_fds = len(os.listdir("/dev/fd"))
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (open_fds + 20, hard))
+    try:
+        for _ in range(40):
+            worker = threading.Thread(target=query)
+            worker.start()
+            worker.join()
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+    assert failures == []
 
 
 def test_spec_migrations_still_self_heal_a_dropped_table(tmp_path: Path) -> None:

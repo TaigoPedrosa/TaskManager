@@ -29,13 +29,22 @@ class DatabaseManager:
         # fetchone() returns another request's row or None. Each connection sees every other
         # connection's commits through WAL, so this changes lifecycle only, not isolation.
         self._local = threading.local()
-        self._all_conns: list[sqlite3.Connection] = []
+        # Every connection with the thread that owns it. The web server's worker threads retire
+        # after a few idle seconds, and a retired thread's thread-local dict is only dropped when
+        # the garbage collector gets to it, so its connection would hold the database's file
+        # descriptors open indefinitely: one leaked set per retired thread, until the process
+        # hit its fd limit and every new thread failed with "unable to open database file".
+        # Closing the dead threads' connections before opening a new one keeps the open set
+        # bounded by the threads alive at once.
+        self._all_conns: list[tuple[threading.Thread, sqlite3.Connection]] = []
         self._all_conns_lock = threading.Lock()
 
     def _create_connection(self, db_path: Path, load_vec: bool = False) -> sqlite3.Connection:
         self.taskmanager_dir.mkdir(parents=True, exist_ok=True)
-        # check_same_thread=False only so close() can close every thread's connection from
-        # whichever thread calls it; no connection is ever used by a thread other than its own.
+        self._close_dead_threads_connections()
+        # check_same_thread=False only so a dead thread's connection, and close(), can be closed
+        # from whichever thread gets there; no connection is ever used by a thread other than
+        # its own.
         conn = sqlite3.connect(str(db_path), timeout=5.0, check_same_thread=False)
         conn.execute("PRAGMA journal_mode = WAL;")
         conn.execute("PRAGMA busy_timeout = 5000;")
@@ -45,8 +54,17 @@ class DatabaseManager:
             sqlite_vec.load(conn)
             conn.enable_load_extension(False)
         with self._all_conns_lock:
-            self._all_conns.append(conn)
+            self._all_conns.append((threading.current_thread(), conn))
         return conn
+
+    def _close_dead_threads_connections(self) -> None:
+        dead: list[tuple[threading.Thread, sqlite3.Connection]] = []
+        with self._all_conns_lock:
+            alive, self._all_conns = self._all_conns, []
+            for owner, conn in alive:
+                (self._all_conns if owner.is_alive() else dead).append((owner, conn))
+        for _, conn in dead:
+            conn.close()
 
     def _thread_conn(self, name: str, db_path: Path, load_vec: bool = False) -> sqlite3.Connection:
         conn: sqlite3.Connection | None = getattr(self._local, name, None)
@@ -159,7 +177,7 @@ class DatabaseManager:
         but a long-lived caller (the web server) that wants to drop file handles explicitly can."""
         with self._all_conns_lock:
             conns, self._all_conns = self._all_conns, []
-        for conn in conns:
+        for _, conn in conns:
             conn.close()
         self._local = threading.local()
 
