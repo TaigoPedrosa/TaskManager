@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import app
@@ -564,3 +565,62 @@ def test_cli_run_release_drops_the_lease_without_changing_status(tmp_path: Path)
         runner.invoke(app, ["task", "get", "S1-P1-t1", "--json", "--path", str(tmp_path)]).stdout
     )
     assert doc["status"] == "IMPLEMENTING"
+
+
+@pytest.mark.xfail(
+    reason="cli/main.py's plan_list/spec_list table and plan_get's detail view print the "
+    "stored status, not the §3.2a rollup (spec_get already prints a State: line; plan_get "
+    "has none) -- confirmed gap, fix belongs in cli/main.py, outside this file's scope.",
+    strict=True,
+)
+def test_spec_and_plan_list_and_get_show_derived_state_not_stored_status(
+    tmp_path: Path,
+) -> None:
+    # §3.2a: "A plan's and a spec's status is always derived from their children, everywhere
+    # it is shown ... `tm plan list`, `tm spec list`, `tm plan get`, `tm spec get`."
+    from taskmanager.core.enums import NodeStatus
+    from taskmanager.db.connection import DatabaseManager
+    from taskmanager.db.node_repo import NodeRepository
+
+    runner.invoke(app, ["init", "--path", str(tmp_path)])
+    runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "--path", str(tmp_path)])
+    runner.invoke(
+        app, ["plan", "add", "P", "--spec", "S1", "--slug", "P1", "--path", str(tmp_path)]
+    )
+    runner.invoke(
+        app, ["task", "add", "T", "--plan", "S1-P1", "--slug", "t1", "--path", str(tmp_path)]
+    )
+
+    db = DatabaseManager(tmp_path / ".taskmanager")
+    node_repo = NodeRepository(db)
+    task = node_repo.get_node("S1-P1-t1")
+    assert task is not None
+    task.status = NodeStatus.COMPLETED
+    node_repo.save_node(task)
+
+    # The plan's and spec's own stored status is still NOT_STARTED; list/get read the state
+    # rolled up from the (now-completed) task instead.
+    plan_stored = node_repo.get_node("S1-P1")
+    spec_stored = node_repo.get_node("S1")
+    assert plan_stored is not None and plan_stored.status == NodeStatus.NOT_STARTED
+    assert spec_stored is not None and spec_stored.status == NodeStatus.NOT_STARTED
+
+    res = runner.invoke(app, ["plan", "list", "--spec", "S1", "--path", str(tmp_path)])
+    assert res.exit_code == 0
+    assert "COMPLETED" in res.stdout
+    assert "NOT_STARTED" not in res.stdout
+
+    res = runner.invoke(app, ["plan", "get", "S1-P1", "--path", str(tmp_path)])
+    assert res.exit_code == 0
+    assert "Status: NOT_STARTED" in res.stdout
+    assert "State: COMPLETED" in res.stdout
+
+    res = runner.invoke(app, ["spec", "list", "--path", str(tmp_path)])
+    assert res.exit_code == 0
+    assert "COMPLETED" in res.stdout
+    assert "NOT_STARTED" not in res.stdout
+
+    res = runner.invoke(app, ["spec", "get", "S1", "--path", str(tmp_path)])
+    assert res.exit_code == 0
+    assert "Status: NOT_STARTED" in res.stdout
+    assert "State: COMPLETED" in res.stdout
