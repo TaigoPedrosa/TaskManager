@@ -252,8 +252,12 @@ def test_hash_round_trips_include_and_exclude_for_every_tri_state_dimension() ->
 
 
 def test_repo_filter_is_a_tri_state_popover_not_a_select() -> None:
+    # Scoped to the toolbar: the editing UI's own dialogs (status, supersede, gate...)
+    # legitimately use <select> for plain pickers unrelated to the tri-state filters.
     html = get_web_html()
-    assert "<select" not in html
+    toolbar = re.search(r'<header id="toolbar".*?</header>', html, re.DOTALL)
+    assert toolbar, "toolbar header not found"
+    assert "<select" not in toolbar.group(0)
     assert '<div id="repo-filter" class="relative"></div>' in html
     assert "createTriStatePopover(repoFilter" in html
 
