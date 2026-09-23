@@ -54,6 +54,15 @@ code, pre, .font-mono {
   pointer-events: auto; width: 12px; height: 12px; border-radius: 50%; background: #10b981;
   border: none; cursor: grab;
 }
+/* The resize handle sets an inline width up to SIDEBAR_MAX_WIDTH (560px, core.js), which a
+   max-width still clamps -- scoped to viewports where a drag-resized-wide sidebar (or even
+   the 320px default) would leave the graph pane, and the inspector drawer it hosts, no
+   usable width at all. A plain, unconditional clamp would also cap the deliberately wide
+   desktop case the resize handle exists for. */
+@media (max-width: 900px) {
+  #sidebar-pane { max-width: 50vw; }
+}
+
 details > summary { list-style: none; }
 details > summary::-webkit-details-marker { display: none; }
 details > summary .details-caret { transition: transform 0.15s ease; }

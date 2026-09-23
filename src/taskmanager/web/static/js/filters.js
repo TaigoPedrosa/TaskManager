@@ -355,22 +355,6 @@ function createTriStatePopover(container, { label, dimension, getOptions, modeMa
     });
   }
 
-  function clampToViewport(pop) {
-    pop.style.left = '';
-    pop.style.right = '';
-    const margin = 8;
-    let rect = pop.getBoundingClientRect();
-    if (rect.right > window.innerWidth - margin) {
-      pop.style.left = 'auto';
-      pop.style.right = '0px';
-      rect = pop.getBoundingClientRect();
-    }
-    if (rect.left < margin) {
-      pop.style.left = `${margin}px`;
-      pop.style.right = 'auto';
-    }
-  }
-
   function close(returnFocus) {
     if (!open) return;
     open = false;

@@ -702,6 +702,10 @@ function renderNewMenu() {
     open = v;
     pop.classList.toggle('hidden', !open);
     btn.setAttribute('aria-expanded', String(open));
+    // The button sits near the right edge of the toolbar, so a right-0 anchor at 375px
+    // overflowed the popup off-screen to the left (x as low as -66 measured); clamp it back
+    // into the viewport the same way the filter popovers do.
+    if (open) clampToViewport(pop);
   }
   btn.addEventListener('click', (e) => { e.stopPropagation(); setOpen(!open); });
   btn.addEventListener('keydown', (e) => {

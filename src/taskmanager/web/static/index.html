@@ -136,8 +136,10 @@
       </div>
       <div id="network-canvas" class="w-full h-full"></div>
 
-      <!-- Graph Slide-over Node Inspector Drawer -->
-      <div id="graph-inspector" class="hidden absolute top-0 right-0 w-96 h-full bg-zinc-900/95 border-l border-zinc-800 backdrop-blur z-20 flex flex-col shadow-2xl transition-transform duration-200">
+      <!-- Graph Slide-over Node Inspector Drawer. Full width below lg: at 375/768 a fixed
+           384px (w-96) panel next to a 320px sidebar left no usable canvas and, since the
+           sidebar's own width did not yield first, overlapped its action bar outright. -->
+      <div id="graph-inspector" class="hidden absolute top-0 right-0 w-full lg:w-96 h-full bg-zinc-900/95 border-l border-zinc-800 backdrop-blur z-20 flex flex-col shadow-2xl transition-transform duration-200">
         <div class="p-4 border-b border-zinc-800 flex items-start justify-between">
           <div class="space-y-1">
             <div class="flex items-center gap-2">

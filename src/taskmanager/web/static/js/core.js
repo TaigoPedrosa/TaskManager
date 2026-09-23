@@ -184,6 +184,26 @@ function esc(text) {
   return String(text ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 }
 
+// Shared by every small absolutely-positioned popover (the tri-state filter popovers, the +
+// New menu): a right-0-anchored popup overflows off-screen when its trigger sits near the
+// left edge of a narrow viewport, and a left-0-anchored one does the same near the right
+// edge. Called after the popup is shown (so getBoundingClientRect reads real geometry), it
+// flips the anchor only when the popup actually overflows either edge.
+function clampToViewport(el, margin = 8) {
+  el.style.left = '';
+  el.style.right = '';
+  let rect = el.getBoundingClientRect();
+  if (rect.right > window.innerWidth - margin) {
+    el.style.left = 'auto';
+    el.style.right = '0px';
+    rect = el.getBoundingClientRect();
+  }
+  if (rect.left < margin) {
+    el.style.left = `${margin}px`;
+    el.style.right = 'auto';
+  }
+}
+
 function statusChip(code, size = 'text-[10px]') {
   const t = getTheme(code);
   return `<span class="st-chip st-${t.code} inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full font-medium ${size}" title="${esc(t.description)}">${renderIcon(t.icon, 'w-3 h-3')}<span>${esc(t.label)}</span></span>`;

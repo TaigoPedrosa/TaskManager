@@ -236,6 +236,22 @@ def test_graph_layout_gives_nodes_room_and_a_shape_per_kind() -> None:
     assert "GRAPH_SHAPE_BY_KIND" in get_web_html()
 
 
+def test_graph_inspector_is_full_width_below_lg_not_a_fixed_384px() -> None:
+    # A fixed w-96 (384px) drawer beside a 320px sidebar left no usable canvas at 375/768 and
+    # overlapped the sidebar's own action bar outright.
+    html = get_web_html()
+    inspector = re.search(r'<div id="graph-inspector" class="([^"]*)"', html)
+    assert inspector, "graph-inspector not found"
+    classes = inspector.group(1)
+    assert "w-full" in classes
+    assert "lg:w-96" in classes
+    assert re.search(r'(?<!lg:)w-96', classes) is None
+
+
+def test_sidebar_clamps_narrower_than_the_graph_pane_it_shares() -> None:
+    assert "#sidebar-pane { max-width: 50vw; }" in get_web_html()
+
+
 def test_page_inlines_every_static_js_file() -> None:
     # One string that only that file defines, so a broken concatenation (a file dropped,
     # or read from the wrong path) shows up as a specific missing feature, not a blank page.
@@ -394,9 +410,18 @@ def test_tri_state_popover_closes_on_escape_and_returns_focus() -> None:
 
 
 def test_tri_state_popover_clamps_to_the_viewport() -> None:
-    body = _function_body(get_web_html(), "createTriStatePopover")
+    html = get_web_html()
+    body = _function_body(html, "createTriStatePopover")
     assert "clampToViewport" in body
-    assert "window.innerWidth" in body
+    shared = _function_body(html, "clampToViewport")
+    assert "window.innerWidth" in shared
+
+
+def test_new_menu_also_clamps_to_the_viewport() -> None:
+    # right-0 overflowed off-screen to the left at 375px, same shape as the filter popovers,
+    # so it shares the one clampToViewport() helper rather than a second copy of the fix.
+    body = _function_body(get_web_html(), "renderNewMenu")
+    assert "clampToViewport(pop)" in body
 
 
 def test_status_chip_rebuild_preserves_keyboard_focus() -> None:
