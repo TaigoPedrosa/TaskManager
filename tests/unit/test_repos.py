@@ -24,6 +24,32 @@ from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 
 
+def test_spec_connection_is_reused_not_reopened(tmp_path: Path) -> None:
+    # get_spec_connection() used to open a fresh sqlite3 connection (extension load and all) on
+    # every single call -- with hundreds of NodeRepository calls per web request, that dominated
+    # load time (14s -> 0.15s measured on a 342-task DB after this fix). One connection per
+    # DatabaseManager, reused, is what actually gets it.
+    db = DatabaseManager(tmp_path)
+    db.init_all()
+    with db.get_spec_connection() as first:
+        pass
+    with db.get_spec_connection() as second:
+        pass
+    assert first is second
+
+
+def test_spec_migrations_still_self_heal_a_dropped_table(tmp_path: Path) -> None:
+    # Reuse must not turn into "only check once": a connection reused across a whole process
+    # lifetime still has to notice a table another actor dropped in between.
+    db = DatabaseManager(tmp_path)
+    db.init_all()
+    with db.get_spec_connection() as conn:
+        conn.execute("DROP TABLE index_state")
+        conn.commit()
+    with db.get_spec_connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM index_state").fetchone() == (0,)
+
+
 def test_node_repo_crud(tmp_path: Path) -> None:
     db = DatabaseManager(tmp_path)
     db.init_all()
