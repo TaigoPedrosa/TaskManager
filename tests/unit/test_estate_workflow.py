@@ -1080,3 +1080,49 @@ def test_render_recursive_survives_a_relation_cycle(tmp_path: Path) -> None:
     )
     res = runner.invoke(app, ["render", "S1", "--recursive", "-C", root])
     assert res.exit_code == 0 and "relation cycle" in res.output
+
+
+def test_render_takes_several_ids_and_joins_them_in_the_order_given(tmp_path: Path) -> None:
+    root = str(tmp_path)
+    _seed_estate(tmp_path)
+    one = runner.invoke(app, ["render", "S1-P1-b", "-C", root])
+    two = runner.invoke(app, ["render", "S1-P1-a", "-C", root])
+    both = runner.invoke(app, ["render", "S1-P1-b", "S1-P1-a", "-C", root])
+    assert both.exit_code == 0
+    assert both.stdout == one.stdout[:-1] + "\n\n---\n\n" + two.stdout
+    assert both.stdout.index("id: S1-P1-b") < both.stdout.index("id: S1-P1-a")
+
+
+def test_render_with_several_ids_refuses_at_the_first_unknown_one(tmp_path: Path) -> None:
+    root = str(tmp_path)
+    _seed_estate(tmp_path)
+    res = runner.invoke(app, ["render", "S1-P1-a", "NOPE", "-C", root])
+    assert res.exit_code == 1 and "Traceback" not in res.output
+
+
+def test_task_list_render_renders_every_listed_task_instead_of_a_table(tmp_path: Path) -> None:
+    root = str(tmp_path)
+    _seed_estate(tmp_path)
+    rendered = runner.invoke(app, ["task", "list", "--render", "summary", "-C", root])
+    assert rendered.exit_code == 0
+    assert "id: S1-P1-a" in rendered.stdout and "id: S1-P1-b" in rendered.stdout
+    assert "Tasks" not in rendered.stdout  # not the table title
+    assert rendered.stdout.count("\n\n---\n\n") == 1  # two tasks, one join
+
+    scoped = runner.invoke(
+        app,
+        [
+            "task",
+            "list",
+            "--plan",
+            "S1-P1",
+            "--status",
+            "NOT_STARTED",
+            "--render",
+            "full",
+            "-C",
+            root,
+        ],
+    )
+    assert scoped.exit_code == 0
+    assert "id: S1-P1-a" in scoped.stdout and "id: S1-P1-b" in scoped.stdout

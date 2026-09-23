@@ -434,6 +434,10 @@ def task_list(
     yaml_output: Annotated[
         bool, typer.Option("--yaml", help="Output as YAML (fewer tokens than JSON)")
     ] = False,
+    render_view: Annotated[
+        RenderView | None,
+        typer.Option("--render", help="Render every listed task in this view instead of a table"),
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
@@ -443,6 +447,12 @@ def task_list(
     if plan:
         children = set(node_repo.get_children(plan))
         tasks = [t for t in tasks if t.id in children or t.id.startswith(f"{plan}-")]
+    if render_view is not None:
+        renderer = container.get(MarkdownRenderer)
+        sys.stdout.write(
+            "\n\n---\n\n".join(renderer.render(t.id, view=render_view) for t in tasks) + "\n"
+        )
+        return
     if json_output or yaml_output:
         graph = container.get(GraphEngine)
         _emit([_node_row(t, graph.resolve_task_state(t.id).value) for t in tasks], yaml_output)
@@ -1372,6 +1382,8 @@ def next_tasks(
     ] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """What can be worked on now, scored. The owner's own queue is `tm decision list --status open`,
+    not this command: an open decision blocks its task out of `next` until it is answered."""
     root = _get_root(path)
     container = _get_container(root)
     heuristics = container.get(RecommendationEngine)
@@ -1418,7 +1430,9 @@ def next_tasks(
 
 @app.command("render")
 def render(
-    qualified_id: Annotated[str, typer.Argument(help="Qualified node path (e.g. AUTH-USER-LOGIN)")],
+    qualified_ids: Annotated[
+        list[str], typer.Argument(help="Qualified node path(s) (e.g. AUTH-USER-LOGIN)")
+    ],
     view: Annotated[
         RenderView, typer.Option("--view", "-v", help="View projection: summary, subagent, or full")
     ] = RenderView.FULL,
@@ -1435,22 +1449,25 @@ def render(
     root = _get_root(path)
     container = _get_container(root)
     renderer = container.get(MarkdownRenderer)
-    qp = QualifiedPath.parse(qualified_id)
-    if recursive and qp.section_key:
-        print(
-            "[red]--recursive renders a node, not one of its sections; drop the `:section` part[/red]"
-        )
-        raise typer.Exit(code=1)
-    try:
-        output = (
-            renderer.render_recursive(qp.node_id, view=view)
-            if recursive
-            else renderer.render(qp.node_id, view=view)
-        )
-    except ValueError as exc:
-        print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1) from exc
-    sys.stdout.write(output + "\n")
+    outputs = []
+    for qualified_id in qualified_ids:
+        qp = QualifiedPath.parse(qualified_id)
+        if recursive and qp.section_key:
+            print(
+                "[red]--recursive renders a node, not one of its sections; "
+                "drop the `:section` part[/red]"
+            )
+            raise typer.Exit(code=1)
+        try:
+            outputs.append(
+                renderer.render_recursive(qp.node_id, view=view)
+                if recursive
+                else renderer.render(qp.node_id, view=view)
+            )
+        except ValueError as exc:
+            print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1) from exc
+    sys.stdout.write("\n\n---\n\n".join(outputs) + "\n")
 
 
 class _RefusingImporter:
