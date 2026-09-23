@@ -330,7 +330,7 @@ function createTriStatePopover(container, { label, dimension, getOptions, modeMa
             data-value="${esc(o.value)}"
             title="${esc(dimension)} ${esc(o.label)} · ${triModeLabel(mode)}">
             <span class="truncate min-w-0 flex-1">${esc(o.label)}</span>
-            <span class="text-zinc-500 flex-shrink-0">(${o.count})</span>
+            <span class="text-zinc-400 flex-shrink-0">(${o.count})</span>
             <span class="flex items-center gap-0.5 flex-shrink-0">
               ${triBtn('include', TRI_ICON_PLUS, mode === 'include', 'bg-emerald-600 text-white hover:bg-emerald-500', 'Include ' + o.label)}
               ${triBtn('exclude', TRI_ICON_MINUS, mode === 'exclude', 'bg-red-600 text-white hover:bg-red-500', 'Exclude ' + o.label)}

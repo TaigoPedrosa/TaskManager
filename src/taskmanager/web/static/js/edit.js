@@ -118,8 +118,10 @@ function openDialog({ title, bodyHtml, onMount, onSubmit, submitLabel = 'Save', 
     try {
       await onSubmit(panel, close);
     } catch (err) {
-      errorEl.textContent = err && err.message ? err.message : 'Request failed.';
+      const message = err && err.message ? err.message : 'Request failed.';
+      errorEl.textContent = message;
       errorEl.classList.remove('hidden');
+      toast(message, 'error');
     } finally {
       submitBtn.disabled = false;
     }

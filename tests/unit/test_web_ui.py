@@ -399,7 +399,7 @@ def test_tri_state_popover_label_and_count_do_not_share_one_truncated_span() -> 
     # A long label used to truncate together with its count in one <span>, hiding the count.
     options = _function_body(get_web_html(), "renderOptions")
     assert '<span class="truncate min-w-0 flex-1">${esc(o.label)}</span>' in options
-    assert '<span class="text-zinc-500 flex-shrink-0">(${o.count})</span>' in options
+    assert '<span class="text-zinc-400 flex-shrink-0">(${o.count})</span>' in options
 
 
 def test_tri_state_popover_closes_on_escape_and_returns_focus() -> None:
@@ -627,6 +627,37 @@ def test_view_switcher_keeps_its_square_shape_across_every_mode() -> None:
     assert "px-3 py-1.5 rounded-md font-medium bg-zinc-800" not in html
     # decisions.js's own setViewMode wrapper had the identical bug for its third view.
     assert "viewDocBtn.className = VIEW_BTN_INACTIVE" in html
+
+
+def test_answer_byline_and_popover_count_meet_aa_contrast() -> None:
+    # zinc-500 on zinc-950/zinc-900 measured 4.11:1 and 3.66:1, both below AA's 4.5:1;
+    # zinc-400 clears it on the same backgrounds.
+    html = get_web_html()
+    assert 'text-zinc-500">by ${esc(data.answer.answered_by)}' not in html
+    assert 'text-zinc-400">by ${esc(data.answer.answered_by)}' in html
+    assert '<span class="text-zinc-400 flex-shrink-0">(${o.count})</span>' in html
+
+
+def test_toolbar_dividers_hide_below_the_wrap_breakpoint() -> None:
+    # A 1px-wide divider with no content of its own wrapped onto its own empty line once the
+    # toolbar wrapped at 375/768; it hides where flex-wrap's own line break already separates
+    # the groups it used to mark.
+    html = get_web_html()
+    assert html.count('<div class="hidden sm:block w-px h-6 bg-zinc-800 flex-shrink-0"></div>') == 2
+
+
+def test_decision_option_description_renders_as_markdown() -> None:
+    body = _function_body(get_web_html(), "optionCardHtml")
+    assert "renderSectionBody(opt.description)" in body
+    assert "esc(opt.description)" not in body
+
+
+def test_dialog_refusal_also_shows_a_toast() -> None:
+    html = get_web_html()
+    dialog_call_site = re.search(r"form\.addEventListener\('submit'.*?\}\);", html, re.DOTALL)
+    assert dialog_call_site, "dialog submit handler not found"
+    catch_block = dialog_call_site.group(0).split("catch")[1].split("finally")[0]
+    assert "toast(message, 'error')" in catch_block
 
 
 def test_api_helper_surfaces_the_servers_own_refusal_message() -> None:

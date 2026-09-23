@@ -216,7 +216,7 @@ function optionCardHtml(opt, isChosen, selectable) {
         ${opt.recommended ? '<span class="px-1.5 py-0.5 rounded-full bg-emerald-950/60 text-emerald-300 border border-emerald-800/60 text-[10px] font-medium">Recommended</span>' : ''}
         ${isChosen ? `<span class="ml-auto">${renderIcon('check-circle-2', 'w-4 h-4 text-emerald-400')}</span>` : ''}
       </div>
-      ${opt.description ? `<div class="text-xs text-zinc-400">${esc(opt.description)}</div>` : ''}
+      ${opt.description ? `<div class="prose prose-invert prose-sm max-w-none text-xs text-zinc-400">${renderSectionBody(opt.description)}</div>` : ''}
     </${tag}>
   `;
 }
@@ -274,7 +274,7 @@ function renderDecisionDetail(id) {
           <div class="text-sm text-zinc-100">${esc(chosenLabel || data.answer.text || '(no answer text)')}</div>
           ${chosenLabel && data.answer.text ? `<div class="text-xs text-zinc-400">${esc(data.answer.text)}</div>` : ''}
           ${data.answer.rationale ? `<div class="text-xs text-zinc-400"><span class="font-semibold text-zinc-300">Rationale:</span> ${esc(data.answer.rationale)}</div>` : ''}
-          <div class="text-[11px] text-zinc-500">by ${esc(data.answer.answered_by)} &middot; ${esc(new Date(data.answer.answered_at).toLocaleString())}</div>
+          <div class="text-[11px] text-zinc-400">by ${esc(data.answer.answered_by)} &middot; ${esc(new Date(data.answer.answered_at).toLocaleString())}</div>
         </div>
       `;
     } else if (node.status === 'ABANDONED') {
