@@ -1,7 +1,7 @@
 export const meta = {
   name: 'tm-wave',
   description: 'Choose dispatchable tm tasks on the given specs and pipeline each through implement, review, fix and merge, with every tm transition run by the script',
-  whenToUse: 'Dispatcher tick. args: {specs, session, worktreeDir, slots, maxStrong, maxBatch, exclude, release, holdMerge, maxFixRounds, root, agentTypes, preamble, rulesDir, models}. root defaults to the session cwd; agentTypes (repo -> agent type) and preamble (repo -> brief preamble line, plus a "default" key) default to none; rulesDir (a path to read every rule file from before the first edit) defaults to none; models (family -> model id) defaults to the current Claude ids.',
+  whenToUse: 'Dispatcher tick. args: {specs, session, worktreeDir, slots, maxStrong, maxBatch, exclude, release, holdMerge, maxFixRounds, root, agentTypes, preamble, rulesDir, models}. root defaults to the session cwd; agentTypes (repo -> agent type) and preamble (repo -> brief preamble line, plus a "default" key) default to none; rulesDir (a path to read every rule file from before the first edit) defaults to none; gateLane (where suites and gates run: a string, or repo -> text with a "default" key) defaults to none; models (family -> model id) defaults to the current Claude ids.',
   phases: [
     { title: 'Discover', detail: '`tm wave discover` chooses the batch', model: 'haiku' },
     { title: 'Claim', detail: 'tm run start, and the lease worktree it made', model: 'haiku' },
@@ -38,6 +38,10 @@ const PREAMBLE = A.preamble || {}
 // A path read for every rule file before the first edit or probe; leave out where the project
 // carries no such directory.
 const RULES_DIR = A.rulesDir || null
+// Where test suites and gates run, keyed by repo with a "default" key; a string applies to every repo.
+// Many concurrent agents running suites on one machine starve each other, so a project with a
+// remote runner names it here and every implement, review, fix and merge brief carries it.
+const GATE_LANE = typeof A.gateLane === 'string' ? { default: A.gateLane } : A.gateLane || {}
 
 const SAFE = /^[A-Za-z0-9._\/-]+$/
 const q = s => {
@@ -188,10 +192,12 @@ const head = (t, role, model) => {
   const rules = RULES_DIR
     ? `\nRules: read every file in ${RULES_DIR} yourself before your first edit or probe; path-scoped rules do not load in a worktree.`
     : ''
+  const lane = GATE_LANE[t.repo] ?? GATE_LANE.default ?? ''
+  const gate = lane ? `\nGate lane: ${lane}` : ''
   return `${preamble ? preamble + '\n' : ''}tm-task: ${t.id}
 Model: ${MODEL_ID[model]}
 The tm-wave workflow that dispatched you holds this task's lease and moves its status. Do not run tm run start, stop, release, heartbeat or sweep, and do not claim or release any task. Read tm guide ${role} and follow it, skipping only its claim and release steps.
-Brief: tm render ${t.id} --view subagent${rules}
+Brief: tm render ${t.id} --view subagent${rules}${gate}
 Sections: before any tm section set, tm section get the same key and append to it. Code, comments, test names, log lines and fixtures never name a ruling, task, review or round.`
 }
 
@@ -287,7 +293,7 @@ async function merge(t, trail) {
   const mwt = `${WT}/${t.repo}-merge-${t.id}`
   const r = await agent(`${head(t, 'merge', 'sonnet')}
 Merge worktree: after git -C ${repo} fetch -q origin, git -C ${repo} worktree add --detach ${mwt} origin/main. Remove it by that path with git worktree remove when you are done.
-Merge tm/${t.id} there (a --no-ff merge with a quoted subject when origin/main has moved past the branch's base). Then run, in the foreground at the merged tip, every test job the repo's CI runs on a push to main (read the command from its CI workflow file, not from memory), and quote each command with its exit code and counts. A task-scoped gate is not enough: continuous runs never close a wave, so this merge is the only full gate the tip gets. If anything fails, check the same command on untouched origin/main in its own worktree: a failure this merge introduced means do not push and return needs_fixes naming the test; a failure already on origin/main means do not push and return blocked naming the failing test and the first red sha, so a fix is filed rather than stacked on. Re-measure git ls-remote origin main in the same breath as the push, and push only as git push origin HEAD:main. Never force; never retry a refused push.
+Merge tm/${t.id} there (a --no-ff merge with a quoted subject when origin/main has moved past the branch's base). Then run, in the foreground at the merged tip and through the gate lane above when one is named, every test job the repo's CI runs on a push to main (read the command from its CI workflow file, not from memory), and quote each command with its exit code and counts. A task-scoped gate is not enough: continuous runs never close a wave, so this merge is the only full gate the tip gets. If anything fails, check the same command on untouched origin/main in its own worktree: a failure this merge introduced means do not push and return needs_fixes naming the test; a failure already on origin/main means do not push and return blocked naming the failing test and the first red sha, so a fix is filed rather than stacked on. Re-measure git ls-remote origin main in the same breath as the push, and push only as git push origin HEAD:main. Never force; never retry a refused push.
 ${t.migration ? 'Migration: re-derive the migration head from origin/main immediately before the push, and renumber if the revision is taken.\n' : ''}${t.blockers.length ? `External blockers, each checked before merging: ${JSON.stringify(t.blockers)}. If one is unmet, do not merge; return blocked naming it.\n` : ''}If any :review finding is still open, do not merge; return needs_fixes.
 Outcome: append to tm section ${t.id}:merge.
 Return merged with the commit sha now on origin/main, needs_fixes, or blocked with the reason.`,
