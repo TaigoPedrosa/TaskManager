@@ -101,6 +101,16 @@ def _emit(data: Any, as_yaml: bool = False) -> None:
     sys.stdout.write(json.dumps(data, indent=2, ensure_ascii=False, default=str) + "\n")
 
 
+def _task_spec_id(node_repo: NodeRepository, task_id: str) -> str | None:
+    """The spec that owns a task's plan, or None when the task has no plan or the plan has no
+    spec -- what `--spec none` filters for."""
+    plan_ids = node_repo.get_parent_ids(task_id)
+    if not plan_ids:
+        return None
+    spec_ids = node_repo.get_parent_ids(plan_ids[0])
+    return spec_ids[0] if spec_ids else None
+
+
 def _node_row(node: Any, state: str | None = None) -> dict[str, Any]:
     return {
         "id": node.id,
@@ -434,6 +444,10 @@ def task_supersede(
 @task_app.command("list")
 def task_list(
     plan: Annotated[str | None, typer.Option("--plan", help="Filter by plan ID")] = None,
+    spec: Annotated[
+        str | None,
+        typer.Option("--spec", help='Filter by spec ID ("none" for tasks whose plan has no spec)'),
+    ] = None,
     status: Annotated[NodeStatus | None, typer.Option("--status", help="Filter by status")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
     yaml_output: Annotated[
@@ -452,6 +466,9 @@ def task_list(
     if plan:
         children = set(node_repo.get_children(plan))
         tasks = [t for t in tasks if t.id in children or t.id.startswith(f"{plan}-")]
+    if spec:
+        wanted = None if spec == "none" else spec
+        tasks = [t for t in tasks if _task_spec_id(node_repo, t.id) == wanted]
     if render_view is not None:
         renderer = container.get(MarkdownRenderer)
         sys.stdout.write(
@@ -631,6 +648,7 @@ def task_get(
         lease = runtime_repo.get_lease(task_id)
         dep_edges = node_repo.get_dependency_edges(task_id)
         doc = _node_row(task, graph.resolve_task_state(task_id).value)
+        doc["spec_id"] = _task_spec_id(node_repo, task_id)
         doc["frontmatter"] = task.frontmatter
         doc["depends_on"] = [
             (
@@ -1391,6 +1409,10 @@ def next_tasks(
         RecommendationStrategy, typer.Option("--strategy", help="Scoring strategy")
     ] = RecommendationStrategy.BALANCED,
     plan: Annotated[str | None, typer.Option("--plan", help="Filter by plan ID")] = None,
+    spec: Annotated[
+        str | None,
+        typer.Option("--spec", help='Filter by spec ID ("none" for tasks whose plan has no spec)'),
+    ] = None,
     model: Annotated[str | None, typer.Option("--model", help="Filter by acceptable model")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
     yaml_output: Annotated[
@@ -1405,7 +1427,7 @@ def next_tasks(
     heuristics = container.get(RecommendationEngine)
 
     ranked = heuristics.get_next_tasks(
-        plan_id=plan, model_filter=model, strategy=strategy, limit=limit
+        plan_id=plan, spec_id=spec, model_filter=model, strategy=strategy, limit=limit
     )
 
     if json_output or yaml_output:

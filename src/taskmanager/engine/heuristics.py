@@ -118,6 +118,7 @@ class RecommendationEngine:
     def get_next_tasks(
         self,
         plan_id: str | None = None,
+        spec_id: str | None = None,
         model_filter: str | None = None,
         strategy: RecommendationStrategy | str = RecommendationStrategy.BALANCED,
         limit: int = 5,
@@ -127,6 +128,14 @@ class RecommendationEngine:
         all_tasks = self.node_repo.list_nodes(kind=NodeKind.TASK)
         plans = self.node_repo.list_nodes(kind=NodeKind.PLAN)
         plan_children = {p.id: set(self.node_repo.get_children(p.id)) for p in plans}
+        # "none" reads as the sentinel for "no spec", so a task with no plan (parent_plan_id
+        # None) matches it the same way a plan with no spec parent does: .get(None) is None.
+        wanted_spec = None if spec_id in (None, "none") else spec_id
+        plan_spec = (
+            {p.id: next(iter(self.node_repo.get_parent_ids(p.id)), None) for p in plans}
+            if spec_id is not None
+            else {}
+        )
 
         scored: list[ScoredTask] = []
 
@@ -153,6 +162,9 @@ class RecommendationEngine:
                     break
 
             if plan_id is not None and parent_plan_id != plan_id:
+                continue
+
+            if spec_id is not None and plan_spec.get(parent_plan_id) != wanted_spec:
                 continue
 
             total_score, unblocking_count = _score_task(

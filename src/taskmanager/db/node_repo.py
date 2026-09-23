@@ -281,6 +281,19 @@ class NodeRepository:
             ).fetchall()
             return [r[0] for r in rows]
 
+    def get_parent_ids(self, node_id: str) -> list[str]:
+        with self.db.get_spec_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT r.source_id
+                FROM node_relations r
+                WHERE r.target_id = ? AND r.relation_type = ?
+                ORDER BY r.rowid ASC
+                """,
+                (node_id, RelationType.CONTAINS.value),
+            ).fetchall()
+            return [r[0] for r in rows]
+
     def remove_relation(self, source_id: str, target_id: str, relation_type: RelationType) -> None:
         with self.db.get_spec_connection() as conn:
             conn.execute(

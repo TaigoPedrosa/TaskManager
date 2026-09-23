@@ -339,6 +339,49 @@ def test_plan_id_filter_and_limit(
     assert len(limited) == 2
 
 
+def test_spec_id_filter(
+    env: tuple[NodeRepository, RuntimeRepository, GraphEngine, RecommendationEngine],
+) -> None:
+    node_repo, _, _, engine = env
+
+    node_repo.save_node(Node(id="SPEC-A", kind=NodeKind.SPEC, title="Spec A"))
+    node_repo.save_node(Node(id="SPEC-B", kind=NodeKind.SPEC, title="Spec B"))
+    node_repo.save_node(Node(id="A-PLAN", kind=NodeKind.PLAN, title="A Plan"))
+    node_repo.save_node(Node(id="B-PLAN", kind=NodeKind.PLAN, title="B Plan"))
+    node_repo.save_node(Node(id="ORPHAN-PLAN", kind=NodeKind.PLAN, title="Orphan Plan"))
+    node_repo.add_relation(
+        NodeRelation(source_id="SPEC-A", target_id="A-PLAN", relation_type=RelationType.CONTAINS)
+    )
+    node_repo.add_relation(
+        NodeRelation(source_id="SPEC-B", target_id="B-PLAN", relation_type=RelationType.CONTAINS)
+    )
+
+    node_repo.save_node(Node(id="A-T1", kind=NodeKind.TASK, title="A Task"))
+    node_repo.add_relation(
+        NodeRelation(source_id="A-PLAN", target_id="A-T1", relation_type=RelationType.CONTAINS)
+    )
+    node_repo.save_node(Node(id="B-T1", kind=NodeKind.TASK, title="B Task"))
+    node_repo.add_relation(
+        NodeRelation(source_id="B-PLAN", target_id="B-T1", relation_type=RelationType.CONTAINS)
+    )
+    node_repo.save_node(Node(id="ORPHAN-T1", kind=NodeKind.TASK, title="Plan, no spec"))
+    node_repo.add_relation(
+        NodeRelation(
+            source_id="ORPHAN-PLAN", target_id="ORPHAN-T1", relation_type=RelationType.CONTAINS
+        )
+    )
+    node_repo.save_node(Node(id="NO-PLAN-T1", kind=NodeKind.TASK, title="No plan at all"))
+
+    spec_a = [t.task_id for t in engine.get_next_tasks(spec_id="SPEC-A", limit=10)]
+    assert spec_a == ["A-T1"]
+
+    none_spec = {t.task_id for t in engine.get_next_tasks(spec_id="none", limit=10)}
+    assert none_spec == {"ORPHAN-T1", "NO-PLAN-T1"}
+
+    every_task = {t.task_id for t in engine.get_next_tasks(limit=10)}
+    assert every_task == {"A-T1", "B-T1", "ORPHAN-T1", "NO-PLAN-T1"}
+
+
 def test_get_next_tasks_never_offers_a_task_awaiting_decision(
     env: tuple[NodeRepository, RuntimeRepository, GraphEngine, RecommendationEngine],
 ) -> None:

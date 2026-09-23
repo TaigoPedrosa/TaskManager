@@ -168,6 +168,51 @@ def test_cli_lifecycle_spec_plan_task_render_next(tmp_path: Path) -> None:
     assert any(t["task_id"] == "AUTH-USER-LOGIN" for t in data)
 
 
+def test_task_list_and_next_take_a_spec_filter(tmp_path: Path) -> None:
+    runner.invoke(app, ["init", "--path", str(tmp_path)])
+    runner.invoke(app, ["spec", "add", "Spec A", "--slug", "SPECA", "--path", str(tmp_path)])
+    runner.invoke(app, ["spec", "add", "Spec B", "--slug", "SPECB", "--path", str(tmp_path)])
+    runner.invoke(
+        app,
+        ["plan", "add", "A Plan", "--spec", "SPECA", "--slug", "PLANA", "--path", str(tmp_path)],
+    )
+    runner.invoke(
+        app,
+        ["plan", "add", "B Plan", "--spec", "SPECB", "--slug", "PLANB", "--path", str(tmp_path)],
+    )
+    runner.invoke(
+        app,
+        ["task", "add", "A Task", "--plan", "SPECA-PLANA", "--slug", "T1", "--path", str(tmp_path)],
+    )
+    runner.invoke(
+        app,
+        ["task", "add", "B Task", "--plan", "SPECB-PLANB", "--slug", "T1", "--path", str(tmp_path)],
+    )
+
+    res = runner.invoke(app, ["task", "list", "--spec", "SPECA", "--path", str(tmp_path)])
+    assert res.exit_code == 0
+    assert "SPECA-PLANA-T1" in res.stdout
+    assert "SPECB-PLANB-T1" not in res.stdout
+
+    res = runner.invoke(
+        app, ["task", "list", "--spec", "SPECA", "--json", "--path", str(tmp_path)]
+    )
+    assert res.exit_code == 0
+    data = json.loads(res.stdout)
+    assert [t["id"] for t in data] == ["SPECA-PLANA-T1"]
+
+    res = runner.invoke(app, ["next", "--spec", "SPECB", "--json", "--path", str(tmp_path)])
+    assert res.exit_code == 0
+    data = json.loads(res.stdout)
+    assert [t["task_id"] for t in data] == ["SPECB-PLANB-T1"]
+
+    res = runner.invoke(
+        app, ["task", "get", "SPECA-PLANA-T1", "--yaml", "--path", str(tmp_path)]
+    )
+    assert res.exit_code == 0
+    assert "spec_id: SPECA" in res.stdout
+
+
 def test_cli_execution_leases_and_runtime(tmp_path: Path) -> None:
     runner.invoke(app, ["init", "--path", str(tmp_path)])
     runner.invoke(app, ["spec", "add", "Core Spec", "--slug", "CORE", "--path", str(tmp_path)])
