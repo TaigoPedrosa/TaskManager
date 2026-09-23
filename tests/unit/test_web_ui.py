@@ -692,6 +692,19 @@ def test_new_menu_supports_arrow_key_navigation_and_escape_from_an_item() -> Non
     assert "btn.focus()" in body
 
 
+def test_decisions_load_failure_is_an_error_state_not_an_empty_queue() -> None:
+    # A /api/decisions failure read as "No open decisions." -- an empty queue, not a broken
+    # one, with the badge hiding too, which is exactly the case that most looks like nothing
+    # is wrong.
+    html = get_web_html()
+    refresh = _function_body(html, "refreshDecisionsData")
+    assert "decisionsLoadFailed = true" in refresh
+    assert "toast(`Could not load decisions" in refresh
+    render_list = _function_body(html, "renderDecisionsList")
+    assert "if (decisionsLoadFailed)" in render_list
+    assert 'role="alert"' in render_list
+
+
 def test_api_helper_surfaces_the_servers_own_refusal_message() -> None:
     body = _function_body(get_web_html(), "api")
     assert "data && data.detail" in body

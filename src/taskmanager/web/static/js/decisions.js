@@ -43,15 +43,23 @@ function decisionStatusIcon(status, size = 'w-3.5 h-3.5') {
 
 // Data ---------------------------------------------------------------------------------------
 
+let decisionsLoadFailed = false;
+
 async function refreshDecisionsData() {
   if (isStaticMode) {
     decisionsData = (window.STATIC_DATA && window.STATIC_DATA.decisions) || [];
   } else {
     try {
       decisionsData = await api('GET', '/api/decisions');
+      decisionsLoadFailed = false;
     } catch (e) {
+      // A load failure used to read as "No open decisions." -- an empty queue, not a broken
+      // one -- with the badge hiding too, which is the one case that most looks like nothing
+      // is wrong.
       console.error('Failed to load decisions:', e);
       decisionsData = [];
+      decisionsLoadFailed = true;
+      toast(`Could not load decisions: ${e.message}`, 'error');
     }
   }
   updateDecisionsBadge();
@@ -175,6 +183,12 @@ function renderDecisionsList() {
       ? (b.priority - a.priority) || (new Date(a.created_at) - new Date(b.created_at))
       : (new Date(b.created_at) - new Date(a.created_at)));
 
+  if (decisionsLoadFailed) {
+    decisionsListEl.innerHTML = `<div role="alert" class="text-xs text-red-400 px-2 py-6 text-center">Could not load decisions. <button type="button" class="dec-retry-btn underline">Retry</button></div>`;
+    const retryBtn = decisionsListEl.querySelector('.dec-retry-btn');
+    if (retryBtn) retryBtn.addEventListener('click', refreshDecisionsData);
+    return;
+  }
   if (rows.length === 0) {
     decisionsListEl.innerHTML = `<div class="text-xs text-zinc-500 italic px-2 py-6 text-center">No ${decisionsTab} decisions.</div>`;
     return;
