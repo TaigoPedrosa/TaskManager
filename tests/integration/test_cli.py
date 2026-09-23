@@ -662,3 +662,74 @@ def test_spec_and_plan_list_and_get_show_derived_state_not_stored_status(
     assert res.exit_code == 0
     assert "Status: NOT_STARTED" in res.stdout
     assert "State: COMPLETED" in res.stdout
+
+
+def test_plan_list_filters_by_stored_parent_not_id_prefix(tmp_path: Path) -> None:
+    from taskmanager.core.enums import RelationType
+    from taskmanager.core.models import NodeRelation
+    from taskmanager.db.connection import DatabaseManager
+    from taskmanager.db.node_repo import NodeRepository
+
+    runner.invoke(app, ["init", "--path", str(tmp_path)])
+    runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "--path", str(tmp_path)])
+    runner.invoke(app, ["spec", "add", "S", "--slug", "S2", "--path", str(tmp_path)])
+    runner.invoke(
+        app, ["plan", "add", "Orphan", "--spec", "S1", "--slug", "ORPHAN", "--path", str(tmp_path)]
+    )
+    runner.invoke(
+        app, ["plan", "add", "Foster", "--spec", "S2", "--slug", "FOSTER", "--path", str(tmp_path)]
+    )
+
+    db = DatabaseManager(tmp_path / ".taskmanager")
+    node_repo = NodeRepository(db)
+    # S1-ORPHAN shares S1's id prefix but S1 no longer contains it.
+    node_repo.remove_relation("S1", "S1-ORPHAN", RelationType.CONTAINS)
+    # S2-FOSTER is a real child of S1 despite an id prefixed for S2.
+    node_repo.add_relation(
+        NodeRelation(source_id="S1", target_id="S2-FOSTER", relation_type=RelationType.CONTAINS)
+    )
+
+    res = runner.invoke(app, ["plan", "list", "--spec", "S1", "--path", str(tmp_path)])
+    assert res.exit_code == 0
+    assert "S2-FOSTER" in res.stdout
+    assert "S1-ORPHAN" not in res.stdout
+
+
+def test_task_list_filters_by_stored_parent_not_id_prefix(tmp_path: Path) -> None:
+    from taskmanager.core.enums import RelationType
+    from taskmanager.core.models import NodeRelation
+    from taskmanager.db.connection import DatabaseManager
+    from taskmanager.db.node_repo import NodeRepository
+
+    runner.invoke(app, ["init", "--path", str(tmp_path)])
+    runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "--path", str(tmp_path)])
+    runner.invoke(
+        app, ["plan", "add", "P1", "--spec", "S1", "--slug", "P1", "--path", str(tmp_path)]
+    )
+    runner.invoke(
+        app, ["plan", "add", "P2", "--spec", "S1", "--slug", "P2", "--path", str(tmp_path)]
+    )
+    runner.invoke(
+        app,
+        ["task", "add", "Orphan", "--plan", "S1-P1", "--slug", "ORPHAN", "--path", str(tmp_path)],
+    )
+    runner.invoke(
+        app,
+        ["task", "add", "Foster", "--plan", "S1-P2", "--slug", "FOSTER", "--path", str(tmp_path)],
+    )
+
+    db = DatabaseManager(tmp_path / ".taskmanager")
+    node_repo = NodeRepository(db)
+    # S1-P1-ORPHAN shares S1-P1's id prefix but S1-P1 no longer contains it.
+    node_repo.remove_relation("S1-P1", "S1-P1-ORPHAN", RelationType.CONTAINS)
+    # S1-P2-FOSTER is a real child of S1-P1 despite an id prefixed for S1-P2.
+    node_repo.add_relation(
+        NodeRelation(
+            source_id="S1-P1", target_id="S1-P2-FOSTER", relation_type=RelationType.CONTAINS
+        )
+    )
+
+    res = runner.invoke(app, ["task", "list", "--plan", "S1-P1", "--path", str(tmp_path)])
+    assert res.exit_code == 0
+    assert "S1-P2-FOSTER" in res.stdout
+    assert "S1-P1-ORPHAN" not in res.stdout
