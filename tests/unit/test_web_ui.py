@@ -529,6 +529,17 @@ def test_destructive_actions_confirm_before_writing() -> None:
     assert "status === 'ABANDONED'" in abandon
 
 
+def test_confirm_dialog_closes_before_the_reload_not_after() -> None:
+    # A confirm has no fields left to correct on a refusal, so it closes as soon as the button
+    # is pressed; onConfirm routinely ends in a tree/graph reload that used to keep the dialog
+    # open (Withdraw measured closing 65s after its own success toast on a large estate).
+    body = _function_body(get_web_html(), "confirmDialog")
+    close_index = body.index("close();")
+    confirm_index = body.index("await onConfirm();")
+    assert close_index < confirm_index
+    assert "catch (err)" in body
+
+
 def test_edit_dialog_only_offers_models_repo_and_frontmatter_for_tasks() -> None:
     body = _function_body(get_web_html(), "openEditNodeDialog")
     assert "isTask ? fieldRow('Acceptable models" in body

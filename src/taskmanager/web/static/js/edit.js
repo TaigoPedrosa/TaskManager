@@ -127,7 +127,12 @@ function openDialog({ title, bodyHtml, onMount, onSubmit, submitLabel = 'Save', 
   return { panel, close };
 }
 
-// A confirm is just a dialog whose only field is the warning text.
+// A confirm is just a dialog whose only field is the warning text -- and, unlike an editable
+// form, there is nothing in it left to correct on a refusal, so it closes as soon as the
+// button is pressed rather than staying open for the write plus the reload that follows it.
+// `onConfirm` routinely ends in `await afterWrite(...)`, which reloads the whole tree/graph
+// (seconds on a large estate); leaving the dialog open for that made a Withdraw or a Remove
+// look hung for as long as the reload took, disabled button and all.
 function confirmDialog({ title, message, confirmLabel = 'Confirm', destructive = true, onConfirm }) {
   return openDialog({
     title,
@@ -135,8 +140,12 @@ function confirmDialog({ title, message, confirmLabel = 'Confirm', destructive =
     destructive,
     bodyHtml: `<p class="text-xs text-zinc-300 leading-relaxed">${esc(message)}</p>`,
     onSubmit: async (panel, close) => {
-      await onConfirm();
       close();
+      try {
+        await onConfirm();
+      } catch (err) {
+        toast(err && err.message ? err.message : 'Request failed.', 'error');
+      }
     }
   });
 }
