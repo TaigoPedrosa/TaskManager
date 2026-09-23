@@ -298,8 +298,9 @@ Semantics per dimension: a task passes if (no includes, or it matches at least o
 matches no exclude. For multi-valued `acceptable_models`, matching means any overlap. Tasks with no
 repo match the value `(none)`. Hash parameters: `status`/`xstatus`, `model`/`xmodel`,
 `spec`/`xspec`, `repo`/`xrepo`, comma-separated. Old `repo=<single>` links keep working. Hover text
-on every tri-state control: "Click: include · Double-click: exclude · Click again: clear".
-Accessible name: "<dimension> <value>: included | excluded | not filtered".
+never explains the gesture: a status chip's tooltip is the status's own label, plus its filter state
+when it has one ("Waiting review · included"). A filter row's include and exclude buttons carry no
+usage tooltip. Accessible name: "<dimension> <value>: included | excluded | not filtered".
 
 ### 6.3 Editing
 
