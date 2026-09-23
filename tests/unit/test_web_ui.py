@@ -87,7 +87,7 @@ def test_stats_digest_chips_carry_no_per_status_label_text() -> None:
     body = _function_body(get_web_html(), "updateStatsDigest")
     assert "<span>${esc(theme.label)}</span>" not in body
     assert "<span>All tasks</span>" not in body
-    assert "chip.title = `${theme.label}" in body
+    assert "chip.title = 'Click: include" in body
 
 
 def test_sidebar_pane_starts_hidden_and_toggles_with_view_mode() -> None:
@@ -221,3 +221,57 @@ def test_can_edit_is_false_only_in_static_export_mode() -> None:
     can_edit = _function_body(html, "canEdit")
     assert "return !isStaticMode;" in can_edit
     assert "isStaticMode = typeof window.STATIC_DATA !== 'undefined';" in html
+
+
+def test_tri_state_grammar_is_implemented_once() -> None:
+    # One gesture handler shared by status chips and every model/spec/repo popover row,
+    # not one click-to-cycle per control.
+    html = get_web_html()
+    assert html.count("function triStateHandlers(") == 1
+    body = _function_body(html, "triStateHandlers")
+    assert "addEventListener('dblclick'" in body
+    assert "TRI_STATE_DBLCLICK_MS" in body
+    assert "e.shiftKey" in body
+    assert "TRI_STATE_DBLCLICK_MS = 220" in html
+
+
+def test_status_chips_use_the_tri_state_grammar_not_a_three_way_cycle() -> None:
+    body = _function_body(get_web_html(), "updateStatsDigest")
+    assert "triStateHandlers(chip" in body
+    assert "cycleStatusMode" not in body
+
+
+def test_hash_round_trips_include_and_exclude_for_every_tri_state_dimension() -> None:
+    html = get_web_html()
+    write_hash = _function_body(html, "writeHash")
+    read_hash = _function_body(html, "readHash")
+    for key in ("status", "xstatus", "repo", "xrepo", "model", "xmodel", "spec", "xspec"):
+        assert f"p.get('{key}')" in read_hash, f"readHash does not read {key}"
+        assert f"p.set('{key}'" in write_hash, f"writeHash does not write {key}"
+
+
+def test_repo_filter_is_a_tri_state_popover_not_a_select() -> None:
+    html = get_web_html()
+    assert "<select" not in html
+    assert '<div id="repo-filter" class="relative"></div>' in html
+    assert "createTriStatePopover(repoFilter" in html
+
+
+def test_model_and_spec_filters_are_multi_valued_tri_state_popovers() -> None:
+    html = get_web_html()
+    assert "createTriStatePopover(modelFilterEl" in html
+    assert "createTriStatePopover(specFilterEl" in html
+    # acceptable_models is a list: matching means any overlap, not exact equality.
+    assert "t.acceptable_models && t.acceptable_models.length ? t.acceptable_models : []" in html
+
+
+def test_every_tri_state_control_carries_the_same_hover_text() -> None:
+    html = get_web_html()
+    hover = "Click: include · Double-click: exclude · Click again: clear"
+    assert html.count(hover) == 2  # status chip + popover row
+
+
+def test_accessible_name_states_dimension_value_and_mode() -> None:
+    html = get_web_html()
+    assert "Status ${theme.label}: ${triModeLabel(mode)}" in html
+    assert "'included'" in html and "'excluded'" in html and "'not filtered'" in html
