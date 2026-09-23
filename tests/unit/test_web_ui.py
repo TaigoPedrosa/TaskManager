@@ -103,7 +103,7 @@ def test_stats_digest_chips_carry_no_per_status_label_text() -> None:
     body = _function_body(get_web_html(), "updateStatsDigest")
     assert "<span>${esc(theme.label)}</span>" not in body
     assert "<span>All tasks</span>" not in body
-    assert "chip.title = 'Click: include" in body
+    assert "chip.title = `${theme.label}" in body
 
 
 def test_sidebar_pane_starts_hidden_and_toggles_with_view_mode() -> None:
@@ -316,16 +316,96 @@ def test_model_and_spec_filters_are_multi_valued_tri_state_popovers() -> None:
     assert "t.acceptable_models && t.acceptable_models.length ? t.acceptable_models : []" in html
 
 
-def test_every_tri_state_control_carries_the_same_hover_text() -> None:
+def test_every_tri_state_control_carries_no_gesture_hover_text() -> None:
+    # §6.2 forbids a tooltip that explains the gesture; a row's title names the value and its
+    # filter state instead, same shape as a status chip's own title.
     html = get_web_html()
-    hover = "Click: include · Double-click: exclude · Click again: clear"
-    assert html.count(hover) == 2  # status chip + popover row
+    assert "Click: include" not in html
+    assert "Double-click: exclude" not in html
+    assert "Click again: clear" not in html
+    row = _function_body(html, "renderOptions")
+    assert "${esc(dimension)} ${esc(o.label)} · ${triModeLabel(mode)}" in row
 
 
 def test_accessible_name_states_dimension_value_and_mode() -> None:
     html = get_web_html()
     assert "Status ${theme.label}: ${triModeLabel(mode)}" in html
     assert "'included'" in html and "'excluded'" in html and "'not filtered'" in html
+
+
+def test_tri_state_popover_row_has_exactly_two_buttons_no_neutral() -> None:
+    # §6.2: "exactly two icon toggle buttons, plus and minus, with no neutral button".
+    html = get_web_html()
+    assert "TRI_ICON_CIRCLE" not in html
+    options = _function_body(html, "renderOptions")
+    assert options.count("triBtn(") == 2
+    assert "'include'" in options and "'exclude'" in options
+    assert "'neutral'" not in options
+
+
+def test_tri_state_popover_exclude_active_colour_is_red_not_gray() -> None:
+    # The exclude button used to turn the same gray whether excluded or not, so its state was
+    # colour-invisible; §6.2 wants it red when active.
+    html = get_web_html()
+    tri_btn = _function_body(html, "triBtn")
+    assert "isActive ? activeClasses" in tri_btn
+    options = _function_body(html, "renderOptions")
+    assert "bg-red-600" in options
+    assert "mode === 'exclude', 'bg-red-600" in options
+
+
+def test_tri_state_popover_button_click_toggles_back_to_neutral() -> None:
+    # Clicking an already-selected plus (or minus) used to re-select the same mode instead of
+    # clearing it, so a second click on the green plus never returned a value to neutral.
+    click = _function_body(get_web_html(), "renderOptions")
+    assert "current === btn.dataset.mode ? null : btn.dataset.mode" in click
+
+
+def test_tri_state_popover_buttons_carry_aria_pressed() -> None:
+    tri_btn = _function_body(get_web_html(), "triBtn")
+    assert "aria-pressed=\"${isActive}\"" in tri_btn
+
+
+def test_tri_state_popover_row_is_not_nested_interactive() -> None:
+    # A div[role=button][tabindex=0] wrapping two real <button>s is axe's nested-interactive
+    # violation; the row is a plain, non-focusable label area now, and the group has no
+    # listbox/option mismatch (aria-required-children) or missing accessible name
+    # (aria-input-field-name) either.
+    html = get_web_html()
+    options = _function_body(html, "renderOptions")
+    assert "role=\"button\"" not in options
+    assert "tabindex=\"0\"" not in options
+    assert 'role="group" aria-label="${esc(dimension)} values"' in html
+    assert 'role="listbox"' not in html
+
+
+def test_tri_state_popover_label_and_count_do_not_share_one_truncated_span() -> None:
+    # A long label used to truncate together with its count in one <span>, hiding the count.
+    options = _function_body(get_web_html(), "renderOptions")
+    assert "<span class=\"truncate min-w-0 flex-1\">${esc(o.label)}</span>" in options
+    assert "<span class=\"text-zinc-500 flex-shrink-0\">(${o.count})</span>" in options
+
+
+def test_tri_state_popover_closes_on_escape_and_returns_focus() -> None:
+    body = _function_body(get_web_html(), "createTriStatePopover")
+    assert "e.key === 'Escape'" in body
+    assert "close(true)" in body
+    assert ".tri-btn-main').focus()" in body
+
+
+def test_tri_state_popover_clamps_to_the_viewport() -> None:
+    body = _function_body(get_web_html(), "createTriStatePopover")
+    assert "clampToViewport" in body
+    assert "window.innerWidth" in body
+
+
+def test_status_chip_rebuild_preserves_keyboard_focus() -> None:
+    # Enter on a status chip is how a keyboard user applies a filter; the digest fully
+    # rebuilds its chips on every render, which used to drop focus to BODY so a following
+    # Shift+Enter landed on nothing.
+    body = _function_body(get_web_html(), "updateStatsDigest")
+    assert "statsDigest.contains(document.activeElement)" in body
+    assert "toFocus.focus()" in body
 
 
 def test_new_menu_renders_nothing_in_a_read_only_static_export() -> None:
