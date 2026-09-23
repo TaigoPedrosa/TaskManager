@@ -40,6 +40,7 @@ from taskmanager.engine.heuristics import RecommendationEngine
 from taskmanager.engine.operations import GUIDE_NODE, OperationError, Operations
 from taskmanager.engine.runtime import ExecutionCoordinator
 from taskmanager.engine.search import SearchEngine, SearchError
+from taskmanager.engine.wave import discover_batch, djb2
 from taskmanager.renderers.importers import BulkImporter
 from taskmanager.renderers.markdown import MarkdownRenderer
 
@@ -52,6 +53,7 @@ plan_app = typer.Typer(name="plan", help="Manage plans")
 task_app = typer.Typer(name="task", help="Manage tasks")
 section_app = typer.Typer(name="section", help="Manage node sections")
 run_app = typer.Typer(name="run", help="Execution coordination and leases")
+wave_app = typer.Typer(name="wave", help="Batch-choosing for a dispatch wave")
 verify_app = typer.Typer(name="verify", help="Static and AST verifications")
 audit_app = typer.Typer(name="audit", help="Audit ledger event logs")
 web_app = typer.Typer(name="web", help="Interactive web visualizer and exporter")
@@ -64,6 +66,7 @@ app.add_typer(plan_app)
 app.add_typer(task_app)
 app.add_typer(section_app)
 app.add_typer(run_app)
+app.add_typer(wave_app)
 app.add_typer(verify_app)
 app.add_typer(audit_app)
 app.add_typer(web_app)
@@ -1002,6 +1005,47 @@ def run_sweep(
         print(f"[yellow]Swept {len(swept)} expired lease(s): {', '.join(swept)}[/yellow]")
     else:
         print("[green]No expired leases found.[/green]")
+
+
+@wave_app.command("discover")
+def wave_discover(
+    spec: Annotated[list[str], typer.Option("--spec", help="Spec id to search; repeatable")],
+    session: Annotated[str, typer.Option("--session", help="Dispatching session id")],
+    slots: Annotated[
+        int, typer.Option("--slots", help="Total concurrent slots this session may hold")
+    ],
+    max_strong: Annotated[
+        int, typer.Option("--max-strong", help="Cap on opus/fable leases for this session")
+    ],
+    exclude: Annotated[
+        list[str] | None, typer.Option("--exclude", help="Task id to never choose this run")
+    ] = None,
+    release: Annotated[
+        list[str] | None,
+        typer.Option("--release", help="Task id whose :hold section no longer holds it"),
+    ] = None,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """One dispatch wave's batch: a JSON payload line, then `__CHECK n=<chosen> h=<djb2>`.
+
+    A caller with no shell of its own (a Workflow script) echoes the two lines back verbatim;
+    the checksum lets the caller reject a transcription that is not byte-exact.
+    """
+    root = _get_root(path)
+    container = _get_container(root)
+    payload, chosen_count = discover_batch(
+        container.get(NodeRepository),
+        container.get(RuntimeRepository),
+        container.get(Operations),
+        container.get(RecommendationEngine),
+        spec,
+        session,
+        slots,
+        max_strong,
+        exclude,
+        release,
+    )
+    sys.stdout.write(f"{payload}\n__CHECK n={chosen_count} h={djb2(payload)}\n")
 
 
 @verify_app.command("add")

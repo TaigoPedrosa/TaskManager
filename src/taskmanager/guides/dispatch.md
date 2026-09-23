@@ -124,6 +124,18 @@ control flow that gets an agent to the next one. Everything below follows from t
   boundary keeps the work moving without ever letting a script make the decision that was the
   user's.
 
+The plugin ships exactly this script as the `tm-wave` workflow (`workflows/tm-wave.js`), run by
+name — `Workflow({name: 'tm-wave', args: {...}})` — reading each batch through `tm wave discover`
+rather than reimplementing the table above by hand. `args.specs`, `.session` and `.worktreeDir` are
+required; `.root` (the tm root a bare command runs against) defaults to the dispatching session's
+own cwd, `.agentTypes` (repo → agent type), `.preamble` (repo → a line prepended to that repo's
+briefs, plus a `default` key) and `.rulesDir` (a path read for every rule file before the first
+edit) default to none, and `.models` (family → model id) defaults to the current Claude ids — pass
+only the ones this estate needs to override. A run holds at most `min(16, CPUs - 2)` agents
+concurrently, so a chosen batch larger than that queues rather than dispatching all at once;
+`args.maxBatch` caps what one run claims so the remainder is left for the next tick instead of
+sitting claimed but undispatched.
+
 Build the wave against the trees, not against the last wave's reports. A pin, a migration head, an ahead/behind count and a seam's status all decay between waves, and re-deriving them is the dispatcher's job rather than the implementer's: a stale premise dispatched is an agent spent proving the brief wrong.
 
 ## 8. When the plan changes

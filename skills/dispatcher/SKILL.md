@@ -45,6 +45,14 @@ keep doing every part that does not depend on the answer. Falling back to sequen
 without saying so is the failure this paragraph exists to name: each dispatch looks correct on its
 own, so nothing in the transcript shows the mechanism was abandoned.
 
+The plugin ships this pipeline pre-built as the `tm-wave` workflow (`workflows/tm-wave.js`): run it
+by name with `Workflow({name: 'tm-wave', args: {specs, session, worktreeDir, ...}})` rather than
+authoring the script yourself. `specs`, `session` and `worktreeDir` are required; `root`,
+`agentTypes`, `preamble`, `rulesDir` and `models` default to none or to the current Claude ids and
+are named in `tm guide dispatch` §7 for when this estate needs one overridden. A run holds at most
+`min(16, CPUs - 2)` agents concurrently, so pass `maxBatch` at or under that to keep a large chosen
+wave from sitting claimed but undispatched instead of queued for the next tick.
+
 ## The shape of it
 
 `tm next -n 5 --strategy balanced --yaml` offers what is claimable; you check the batch is file-disjoint, route each task by its `acceptable_models`, and dispatch with `tm render <task-id> --view subagent` as the brief and nothing added to it. `tm run list --yaml` is what is in flight. Statuses carry the work through review, fixes and merge; `tm task supersede` and a `DEFERRED` stop are how a plan changes shape.
