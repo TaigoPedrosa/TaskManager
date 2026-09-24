@@ -472,6 +472,36 @@ def test_symbol_signature_reads_content_from_origin_main(git_repo: Path, tmp_pat
     assert result.passed is True
 
 
+def test_test_command_reads_the_ref_from_tm_verify_ref(git_repo: Path, tmp_path: Path) -> None:
+    _git(git_repo, "checkout", "-q", "-b", "feature")
+    _commit(git_repo, "feature_only.py", "x = 1\n")
+
+    engine = VerificationEngine(tmp_path)
+    ver = NodeVerification(
+        node_id="T1",
+        verification_type=VerificationType.TEST_COMMAND,
+        target_path="",
+        expected_pattern='git -C myrepo cat-file -e "$TM_VERIFY_REF:feature_only.py"',
+    )
+    assert engine.verify_assertion(ver, target_repo="myrepo", ref="main").passed is False
+    assert engine.verify_assertion(ver, target_repo="myrepo", ref="feature").passed is True
+
+
+def test_test_command_without_a_ref_sets_no_tm_verify_ref(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("TM_VERIFY_REF", raising=False)
+    engine = VerificationEngine(tmp_path)
+    ver = NodeVerification(
+        node_id="T1",
+        verification_type=VerificationType.TEST_COMMAND,
+        target_path="",
+        expected_pattern='test -z "${TM_VERIFY_REF+set}"',
+    )
+    assert engine.verify_assertion(ver, target_repo="myrepo").passed is True
+    assert engine.verify_assertion(ver, target_repo="myrepo", ref="feature").passed is False
+
+
 def test_no_target_repo_keeps_the_working_tree_fallback(git_repo: Path, tmp_path: Path) -> None:
     (tmp_path / "root_only.py").write_text("x = 1\n", encoding="utf-8")
 

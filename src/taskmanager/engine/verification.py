@@ -1,4 +1,5 @@
 import ast
+import os
 import shutil
 import subprocess
 from collections.abc import Mapping
@@ -198,7 +199,7 @@ class VerificationEngine:
     ) -> VerificationResult:
         if target_repo and ver.verification_type in _PATH_VERIFICATION_TYPES:
             return self._verify_at_ref(ver, target_repo, ref)
-        return self._verify_in_tree(ver)
+        return self._verify_in_tree(ver, ref)
 
     def _verify_at_ref(
         self, ver: NodeVerification, target_repo: str, ref: str | None
@@ -308,7 +309,7 @@ class VerificationEngine:
             return _symbol_signature_result(ver, shown.stdout, mode_suffix)
         return _ast_export_result(ver, shown.stdout, mode_suffix)
 
-    def _verify_in_tree(self, ver: NodeVerification) -> VerificationResult:
+    def _verify_in_tree(self, ver: NodeVerification, ref: str | None = None) -> VerificationResult:
         full_path = self.root / ver.target_path
 
         if ver.verification_type == VerificationType.FILE_EXISTS:
@@ -442,9 +443,13 @@ class VerificationEngine:
                     passed=False,
                     message="No test command specified",
                 )
+            # A stored command string has no placeholder to rewrite, so the ref reaches it
+            # through the environment; unset when no ref was asked for.
+            env = None if ref is None else {**os.environ, "TM_VERIFY_REF": ref}
             res = subprocess.run(
                 command,
                 cwd=self.root,
+                env=env,
                 shell=True,
                 capture_output=True,
                 text=True,
