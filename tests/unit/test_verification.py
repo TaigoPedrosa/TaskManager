@@ -487,6 +487,21 @@ def test_test_command_reads_the_ref_from_tm_verify_ref(git_repo: Path, tmp_path:
     assert engine.verify_assertion(ver, target_repo="myrepo", ref="feature").passed is True
 
 
+def test_test_command_with_a_ref_still_inherits_the_parent_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TM_VERIFY_INHERIT_PROBE", "seen")
+    engine = VerificationEngine(tmp_path)
+    ver = NodeVerification(
+        node_id="T1",
+        verification_type=VerificationType.TEST_COMMAND,
+        target_path="",
+        expected_pattern='test "$TM_VERIFY_INHERIT_PROBE" = "seen"',
+    )
+    result = engine.verify_assertion(ver, target_repo="myrepo", ref="feature")
+    assert result.passed is True
+
+
 def test_test_command_without_a_ref_sets_no_tm_verify_ref(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

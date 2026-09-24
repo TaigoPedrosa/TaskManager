@@ -60,7 +60,7 @@ A table of the task's checks, exit 1 if any failed. What each type asserts:
 - `test_command` — the command runs in a shell; exit 0 passes.
 - `codegraph_query` — passes with `codegraph CLI not installed; skipped` where that tool is absent.
 
-Two things to know before you trust it. `file_exists`, `file_absent`, `symbol_signature` and `ast_export` read the task's `target_repo` at `origin/main` (fetched first), never your worktree, so the path checks stay red until the work is merged — before then, run `tm verify run <task-id> --ref tm/<task-id>` to check the branch itself, with no fetch. `test_command` still runs from the project root. And `No verifications to run.` exits 2: a task with no checks has not passed anything, and that is worth a line in your report.
+Two things to know before you trust it. `file_exists`, `file_absent`, `symbol_signature` and `ast_export` read the task's `target_repo` at `origin/main` (fetched first), never your worktree, so the path checks stay red until the work is merged — before then, run `tm verify run <task-id> --ref tm/<task-id>` to check the branch itself, with no fetch. `test_command` still runs from the project root, and reads the ref (when one was given) from the `TM_VERIFY_REF` env var — write it into the command as `${TM_VERIFY_REF:-origin/main}` rather than assuming the working tree. And `No verifications to run.` exits 2: a task with no checks has not passed anything, and that is worth a line in your report.
 
 ## Waiting on something that takes time
 

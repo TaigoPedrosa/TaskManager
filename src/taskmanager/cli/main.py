@@ -1135,7 +1135,8 @@ def verify_run(
             "--ref",
             help=(
                 "Git ref to check the task's path verifications against (e.g. tm/<task-id>), "
-                "read as-is with no fetch. Default: origin/main, fetched first."
+                "read as-is with no fetch. Default: origin/main, fetched first. Also exported "
+                "to a test_command as TM_VERIFY_REF, unset when --ref is omitted."
             ),
         ),
     ] = None,
