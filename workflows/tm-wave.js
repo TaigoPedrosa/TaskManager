@@ -1,7 +1,7 @@
 export const meta = {
   name: 'tm-wave',
   description: 'Choose dispatchable tm tasks on the given specs and pipeline each through implement, review, fix and merge, with every tm transition run by the script',
-  whenToUse: 'Dispatcher tick. args: {specs, session, worktreeDir, slots, maxStrong, maxBatch, exclude, release, holdMerge, maxFixRounds, root, agentTypes, preamble, rulesDir, models}. root defaults to the session cwd; agentTypes (repo -> agent type) and preamble (repo -> brief preamble line, plus a "default" key) default to none; rulesDir (a path to read every rule file from before the first edit) defaults to none; gateLane (where suites and gates run: a string, or repo -> text with a "default" key) defaults to none; models (family -> model id) defaults to the current Claude ids.',
+  whenToUse: 'Dispatcher tick. args: {specs, session, worktreeDir, slots, maxStrong, maxBatch, exclude, release, holdMerge, maxFixRounds, root, agentTypes, preamble, rulesDir, models}. root defaults to the session cwd; agentTypes (repo -> agent type) and preamble (repo -> brief preamble line, plus a "default" key) default to none; rulesDir (a path to read every rule file from before the first edit) defaults to none; gateLane (where suites and gates run: a string, or repo -> text with a "default" key; `{task}` in it becomes the task id) defaults to none; models (family -> model id) defaults to the current Claude ids.',
   phases: [
     { title: 'Discover', detail: '`tm wave discover` chooses the batch', model: 'haiku' },
     { title: 'Claim', detail: 'tm run start, and the lease worktree it made', model: 'haiku' },
@@ -192,7 +192,8 @@ const head = (t, role, model) => {
   const rules = RULES_DIR
     ? `\nRules: read every file in ${RULES_DIR} yourself before your first edit or probe; path-scoped rules do not load in a worktree.`
     : ''
-  const lane = GATE_LANE[t.repo] ?? GATE_LANE.default ?? ''
+  // `{task}` in a lane becomes this task's id, so a runner that tags its jobs can name them after it.
+  const lane = (GATE_LANE[t.repo] ?? GATE_LANE.default ?? '').replaceAll('{task}', t.id)
   const gate = lane ? `\nGate lane: ${lane}` : ''
   return `${preamble ? preamble + '\n' : ''}tm-task: ${t.id}
 Model: ${MODEL_ID[model]}
