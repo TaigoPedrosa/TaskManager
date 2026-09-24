@@ -39,7 +39,7 @@ Read only. Do not check the branch out in the project's own checkout, do not edi
 tm verify run <task-id> --ref tm/<task-id>
 ```
 
-`file_exists`, `file_absent`, `symbol_signature` and `ast_export` read that ref directly, with no fetch, so a check against the unmerged branch is real evidence, not a guess. Without `--ref` they read the task's `target_repo` at `origin/main`, fetched first — which is still red before the merge for work that is genuinely finished, so use `--ref` here rather than a manual `git -C <repo> show tm/<task-id>:<path>`. `test_command` still runs from the project root regardless. Exit 1 names each failing row; `No verifications to run.` exits 0 and proves nothing — a task with no checks is itself a finding.
+`file_exists`, `file_absent`, `symbol_signature` and `ast_export` read that ref directly, with no fetch, so a check against the unmerged branch is real evidence, not a guess. Without `--ref` they read the task's `target_repo` at `origin/main`, fetched first — which is still red before the merge for work that is genuinely finished, so use `--ref` here rather than a manual `git -C <repo> show tm/<task-id>:<path>`. `test_command` still runs from the project root regardless, and sees the same ref as `TM_VERIFY_REF` in its environment — a command that needs to check the branch itself reads `${TM_VERIFY_REF:-origin/main}`, unset when `--ref` is omitted. Exit 1 names each failing row; `No verifications to run.` exits 0 and proves nothing — a task with no checks is itself a finding.
 
 ## 5. Write the findings
 
