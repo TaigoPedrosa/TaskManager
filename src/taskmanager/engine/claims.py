@@ -235,7 +235,7 @@ class Claims:
         return self.config.lease_ttl_for(action)
 
     @staticmethod
-    def _live(lease: Lease) -> bool:
+    def live(lease: Lease) -> bool:
         if lease.ttl_seconds is None:
             # Parked for an agent: never expires until someone takes it.
             return True
@@ -266,7 +266,7 @@ class Claims:
                 return f"syncing {job.target}"
             return f"landing job {job.id} is {job.state}"
         lease = self.runtime.get_lease(node.id)
-        if lease is not None and self._live(lease):
+        if lease is not None and self.live(lease):
             return f"held by {lease.agent_id}"
         edges = snap.inherited_edges(node.id)
         decisions = [d for d in edges if snap.status(d) == DecisionStatus.OPEN]
@@ -534,11 +534,11 @@ class Claims:
     def own(self, node_id: str, lease: Lease, agent: str | None, token: str | None) -> None:
         """A named agent, or a claim's token, closes only its own live step: an agent whose lease
         expired and was claimed again must not close its successor's."""
-        if agent is not None and (lease.agent_id != agent or not self._live(lease)):
+        if agent is not None and (lease.agent_id != agent or not self.live(lease)):
             raise OperationError(
                 f"{agent} holds no live lease on {node_id}; {lease.agent_id} does", 409
             )
-        if token is not None and (lease.token != token or not self._live(lease)):
+        if token is not None and (lease.token != token or not self.live(lease)):
             raise OperationError(
                 f"token {token} holds no live lease on {node_id}: another claim holds it now",
                 409,
@@ -801,7 +801,7 @@ class Claims:
 
     def _idle(self, node_id: str) -> None:
         lease = self.runtime.get_lease(node_id)
-        if lease is not None and self._live(lease):
+        if lease is not None and self.live(lease):
             raise OperationError(
                 f"{node_id} is mid-step, held by {lease.agent_id}: wait for the step to end, "
                 "or release it",

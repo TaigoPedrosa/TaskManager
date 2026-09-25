@@ -82,7 +82,7 @@ class Landing:
             node.status != Status.MERGING
             or lease is None
             or lease.action != Action.MERGE
-            or not self.claims._live(lease)
+            or not self.claims.live(lease)
         ):
             raise OperationError(
                 f"{node_id} is {node.status} with no live merge lease: only a merge claim "
