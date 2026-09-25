@@ -5,6 +5,7 @@ from pathlib import Path
 import taskmanager
 
 RELEASE = "0.3.0"
+REPO = Path(__file__).resolve().parents[2]
 
 
 def test_version_defined() -> None:
@@ -14,12 +15,12 @@ def test_version_defined() -> None:
 
 def test_every_manifest_carries_the_release_version() -> None:
     def read_json(path: str) -> dict[str, object]:
-        loaded: dict[str, object] = json.loads(Path(path).read_text(encoding="utf-8"))
+        loaded: dict[str, object] = json.loads((REPO / path).read_text(encoding="utf-8"))
         return loaded
 
     marketplace = read_json(".claude-plugin/marketplace.json")["plugins"]
     assert isinstance(marketplace, list)
-    project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]
+    project = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     versions = {
         "pyproject": project["version"],
         "package": taskmanager.__version__,

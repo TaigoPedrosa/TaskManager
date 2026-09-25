@@ -3,6 +3,8 @@ from pathlib import Path
 
 import pytest
 
+REPO = Path(__file__).resolve().parents[2]
+
 
 def _parse_frontmatter(text: str) -> dict[str, str]:
     match = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
@@ -17,7 +19,7 @@ def _parse_frontmatter(text: str) -> dict[str, str]:
 
 
 def test_bundled_skills_exist() -> None:
-    skill_dir = Path("src/taskmanager/skills")
+    skill_dir = REPO / "src/taskmanager/skills"
     tm_skill = skill_dir / "taskmanager/SKILL.md"
     dispatcher_skill = skill_dir / "dispatcher/SKILL.md"
 
@@ -45,7 +47,7 @@ def test_bundled_skills_exist() -> None:
 
 def test_taskmanager_skill_sends_the_agent_to_the_guides() -> None:
     """The procedure lives in `tm guide <topic>`; a copy of it in the skill is a second source."""
-    tm_skill = Path("src/taskmanager/skills/taskmanager/SKILL.md")
+    tm_skill = REPO / "src/taskmanager/skills/taskmanager/SKILL.md"
     assert tm_skill.exists()
     content = tm_skill.read_text(encoding="utf-8")
 
@@ -58,13 +60,13 @@ def test_taskmanager_skill_sends_the_agent_to_the_guides() -> None:
 @pytest.mark.parametrize("skill", ["taskmanager", "dispatcher"])
 def test_the_bundled_skill_matches_the_plugin_skill(skill: str) -> None:
     """Two copies ship: the plugin reads one and the package the other."""
-    plugin = Path(f"skills/{skill}/SKILL.md").read_text(encoding="utf-8")
-    bundled = Path(f"src/taskmanager/skills/{skill}/SKILL.md").read_text(encoding="utf-8")
+    plugin = (REPO / f"skills/{skill}/SKILL.md").read_text(encoding="utf-8")
+    bundled = (REPO / f"src/taskmanager/skills/{skill}/SKILL.md").read_text(encoding="utf-8")
     assert plugin == bundled
 
 
 def test_dispatcher_skill_runs_waves_through_tm_wave() -> None:
-    content = Path("src/taskmanager/skills/dispatcher/SKILL.md").read_text(encoding="utf-8")
+    content = (REPO / "src/taskmanager/skills/dispatcher/SKILL.md").read_text(encoding="utf-8")
     for needle in (
         "tm guide dispatch",
         "tm-wave",
