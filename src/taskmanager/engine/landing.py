@@ -71,8 +71,6 @@ class Landing:
         claims = Claims.open(root)
         return cls(root, claims.config, claims, CacheRepository(claims.nodes.db), claims.jobs)
 
-    # -- entry points -------------------------------------------------------------------------
-
     def start_land(self, node_id: str) -> str:
         """Only a merge claim lands a node: anything else would push code no review passed, with
         no lease holding the node while it lands."""
@@ -182,8 +180,6 @@ class Landing:
         if self.detach:
             return self._spawn(job)
         return self.run(job.id)
-
-    # -- the landing steps --------------------------------------------------------------------
 
     def _land(self, job: Job) -> JobState:
         steps = {
@@ -410,8 +406,6 @@ class Landing:
             if not self.jobs.update(job):
                 return self._state(job)
 
-    # -- how a job ends -----------------------------------------------------------------------
-
     def _end(self, job: Job, state: JobState, **result: Any) -> bool:
         """False when the job was expired under us (its lease swept or released): the node is no
         longer this job's to move."""
@@ -486,8 +480,6 @@ class Landing:
         for cond in self.claims.nodes.get_conditions(node_id):
             if cond.needs.startswith(gates.RED_TARGET) and cond.idx not in still:
                 self.claims.nodes.remove_condition(node_id, cond.idx)
-
-    # -- helpers ------------------------------------------------------------------------------
 
     def _new_job(
         self, kind: JobKind, node_id: str, repo: str, target: str, result: dict[str, Any]

@@ -26,7 +26,7 @@ from taskmanager.core.status import (
 
 _FIX_ANSWERS = frozenset({Outcome.REJECT, Outcome.MERGE_FAILED})
 
-# `blocked` exits `tm task start` with nothing written (spec §5.2): a lease never holds it.
+# `blocked` exits `tm task start` with nothing written: a lease never holds it.
 LeaseAction = Literal[Action.IMPLEMENT, Action.REVIEW, Action.FIX, Action.MERGE, Action.SYNC]
 
 

@@ -743,8 +743,6 @@ class Operations:
         )
         return all_passed, results
 
-    # -- conditions ---------------------------------------------------------------------
-
     def add_condition(
         self,
         node_id: str,

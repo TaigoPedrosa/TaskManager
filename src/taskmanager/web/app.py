@@ -390,8 +390,8 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             rows.append(
                 _relation_row(view, dep_id, dep is not None and _finished(view, node_id, dep))
             )
-        # What a container waits on its children wait on too (§4.1), and a migration writer
-        # waits behind its chain's holder: both are named, marked as edges not its own.
+        # What a container waits on its children wait on too, and a migration writer waits
+        # behind its chain's holder: both are named, marked as edges not its own.
         snap = view.snapshot
         node = node_repo.get_node(node_id)
         if node is None or node_id not in snap.nodes:
@@ -917,8 +917,6 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         if job is None:
             raise HTTPException(404, f"no job '{job_id}'")
         return job.model_dump(mode="json")
-
-    # -- decisions (§3, §5) ------------------------------------------------------------------
 
     @app.get("/api/decisions")
     def list_decisions(status: str | None = None) -> list[dict[str, Any]]:

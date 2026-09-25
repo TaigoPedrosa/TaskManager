@@ -190,8 +190,6 @@ class Claims:
             ConditionRunner(root, ops.node_repo, cache, cfg.condition_ttl, cfg.condition_timeout),
         )
 
-    # -- reading ------------------------------------------------------------------------------
-
     def node(self, node_id: str) -> Node:
         found = self.nodes.get_node(node_id)
         if found is None:
@@ -315,8 +313,6 @@ class Claims:
             for r in results
         )
         return all(r.passed for r in results), report
-
-    # -- claiming -----------------------------------------------------------------------------
 
     def start(
         self,
@@ -496,8 +492,6 @@ class Claims:
             self.nodes.save_node(original)
             self.runtime.release_lease(original.id)
         self._ledger("task start undone", original.id, {})
-
-    # -- closing a step -----------------------------------------------------------------------
 
     def _held(
         self,
@@ -782,8 +776,6 @@ class Claims:
         if refusals:
             raise OperationError("; ".join(r.message for r in refusals), 409)
 
-    # -- repair verbs -------------------------------------------------------------------------
-
     def _idle(self, node_id: str) -> None:
         lease = self.runtime.get_lease(node_id)
         if lease is not None and self.live(lease):
@@ -930,16 +922,12 @@ class Claims:
         if dependents:
             open_stranded_decision(self.ops, node_id, status, dependents)
 
-    # -- containers ---------------------------------------------------------------------------
-
     def _child_statuses(self, node_id: str) -> list[Status]:
         return [
             Status(kid.status)
             for kid_id in self.nodes.get_children(node_id)
             if (kid := self.nodes.get_node(kid_id)) is not None and kid.kind != NodeKind.DECISION
         ]
-
-    # -- writing helpers ----------------------------------------------------------------------
 
     @staticmethod
     def _with_cycle(node: Node, cycle: Cycle) -> Node:
