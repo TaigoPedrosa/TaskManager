@@ -625,3 +625,31 @@ def test_a_task_whose_branch_is_missing_stops_for_an_agent_instead_of_completing
     job = claims.jobs.get(job_id)
     assert job is not None and job.result["reason"] == "no branch"
     assert stored(claims, "T1").status == Status.MERGING
+
+
+def test_two_landings_reaching_one_uncached_baseline_at_once_share_one_run(
+    tmp_path: Path,
+) -> None:
+    import threading
+
+    slow = junit_gate(tmp_path)
+    slow = Gate(command=f"sleep 1 && {slow.command}", junit=slow.junit, timeout=60)
+    claims, landing = estate_with(tmp_path, slow)
+    push_main(claims.root / "api", "failing.txt", "a\n")
+    reviewed_task(claims, "T1")
+    reviewed_task(claims, "T2", path="other.py")
+    jobs = [claims.start(node_id, "merger", "s1").job for node_id in ("T1", "T2")]
+    states: list[JobState] = []
+
+    def run(job_id: str | None) -> None:
+        assert job_id is not None
+        states.append(landing.run(job_id))
+
+    threads = [threading.Thread(target=run, args=(job_id,)) for job_id in jobs]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert states == [JobState.CONDITION_UNMET, JobState.CONDITION_UNMET]
+    assert sum(run.endswith("-base") for run in gate_runs(tmp_path)) == 1

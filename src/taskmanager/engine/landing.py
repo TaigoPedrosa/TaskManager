@@ -529,21 +529,35 @@ class Landing:
         return True
 
     def _baseline(self, job: Job, gate: Gate) -> GateRun:
+        """The gate at the untouched target sha, run once per (repo, sha, template): a landing
+        that finds another's run under way waits for its result instead of running its own."""
         sha = str(job.result["base_sha"])
         key = gates.template_hash(gate.command)
-        cached = self.cache.get_baseline(job.repo, sha, key)
-        if cached is not None:
-            return cached
-        worktree = self._worktree_path(job, "base")
-        gitops.add_detached_worktree(self._dir(job), worktree, sha)
+        lock = f"baseline/{sha}/{key}"
+        deadline = time.monotonic() + gate.timeout + LOCK_WAIT_SECONDS
+        while not self.jobs.acquire_branch(job.repo, lock, job.id):
+            cached = self.cache.get_baseline(job.repo, sha, key)
+            if cached is not None:
+                return cached
+            if time.monotonic() > deadline:
+                break
+            time.sleep(1)
         try:
-            run = gates.run_gate(
-                self._render(gate, job, worktree), worktree, gate.timeout, gate.junit
-            )
+            cached = self.cache.get_baseline(job.repo, sha, key)
+            if cached is not None:
+                return cached
+            worktree = self._worktree_path(job, "base")
+            gitops.add_detached_worktree(self._dir(job), worktree, sha)
+            try:
+                run = gates.run_gate(
+                    self._render(gate, job, worktree), worktree, gate.timeout, gate.junit
+                )
+            finally:
+                GitManager(self._dir(job)).remove_worktree(worktree, force=True)
+            self.cache.put_baseline(job.repo, sha, key, run)
+            return run
         finally:
-            GitManager(self._dir(job)).remove_worktree(worktree, force=True)
-        self.cache.put_baseline(job.repo, sha, key, run)
-        return run
+            self.jobs.release_branch(job.repo, lock, job.id)
 
     def _advisory(self, node_id: str) -> bool:
         """A rejection nobody below fixes lands where the parent's review sees it, so its own
