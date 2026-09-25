@@ -689,7 +689,8 @@ class Claims:
             oldest = min(since for _, since, _ in entries)
             if (now - oldest).total_seconds() < self.config.red_target_decision_after:
                 continue
-            slug = f"red-target-{repo}-{sha[:12]}"
+            # Main and a container branch can be red at one sha; each needs its own fixer.
+            slug = f"red-target-{repo}-{target.replace('/', '-')}-{sha[:12]}"
             held = [node_id for node_id, _, _ in entries if not self.ops.busy(node_id)]
             existing = self.nodes.get_node(f"decision-{slug}")
             try:

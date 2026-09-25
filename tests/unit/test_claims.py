@@ -853,3 +853,45 @@ def test_reopening_a_container_on_a_new_branch_retires_it_where_only_a_set_aside
 
     for repo in ("api", "web"):
         assert git(claims.root / repo, "branch", "--list", "tm/P*").split() == ["tm/P@1"]
+
+
+def test_main_and_a_container_branch_red_at_one_sha_each_get_their_own_decision(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path)
+    sha = "a" * 40
+    for node_id, target in (("T1", "main"), ("T2", "tm/P")):
+        add(claims, node_id)
+        claims.nodes.add_condition(
+            Condition(
+                node_id=node_id,
+                idx=0,
+                needs=f"red-target: api {target} at {sha[:12]} fails the 1 test(s)",
+                command="true",
+                stage=ConditionStage.LANDING,
+            )
+        )
+        mark = {
+            "repo": "api",
+            "target": target,
+            "sha": sha,
+            "since": "2000-01-01T00:00:00+00:00",
+            "failing": ["suite.t"],
+        }
+        claims.jobs.create(
+            Job(
+                kind=JobKind.LAND,
+                node_id=node_id,
+                repo="api",
+                target=target,
+                state=JobState.EXPIRED,
+                result={"red_target": mark},
+            )
+        )
+
+    opened = claims._escalate_red_targets()
+
+    assert len(opened) == 2
+    for node_id, target in (("T1", "main"), ("T2", "tm/P")):
+        [decision] = [d for d in opened if d in claims.nodes.get_dependencies(node_id)]
+        assert stored(claims, decision).title.startswith(f"{target} of api is red")
