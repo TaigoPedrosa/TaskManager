@@ -65,13 +65,6 @@ from taskmanager.engine.snapshot import SnapshotBuilder, roll_up_ancestors, stor
 from taskmanager.engine.stepgraph import Snapshot
 from taskmanager.engine.validation import Refusal, validate
 
-DEFAULT_TTL: dict[Action, int] = {
-    Action.IMPLEMENT: 10800,
-    Action.REVIEW: 3600,
-    Action.FIX: 7200,
-    Action.MERGE: 3600,
-    Action.SYNC: 3600,
-}
 LIVE_JOBS = frozenset({JobState.RUNNING, JobState.NEEDS_AGENT})
 # (source, base, carrier): see Claims._sync_pairs.
 SyncPair = tuple[str, str, str]
@@ -261,11 +254,7 @@ class Claims:
         return sorted(found, key=lambda r: (order.index(r) if r in order else len(order), r))
 
     def ttl_for(self, action: Action) -> int:
-        configured = self.config.lease_ttl
-        if isinstance(configured, int):
-            # A scalar is the lease_ttl earlier versions read: the implement lease.
-            return configured if action == Action.IMPLEMENT else DEFAULT_TTL[action]
-        return configured.get(action.value, DEFAULT_TTL[action])
+        return self.config.lease_ttl_for(action)
 
     @staticmethod
     def _live(lease: Lease) -> bool:
