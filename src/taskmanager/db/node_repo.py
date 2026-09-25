@@ -357,6 +357,16 @@ class NodeRepository:
             )
             self.db.spec_commit(conn)
 
+    def relations(self, relation_type: RelationType) -> list[tuple[str, str]]:
+        """Every (source, target) pair of one relation type, in insertion order."""
+        with self.db.get_state_connection() as conn:
+            rows = conn.execute(
+                "SELECT source_id, target_id FROM node_relations WHERE relation_type = ? "
+                "ORDER BY rowid ASC",
+                (relation_type.value,),
+            ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
     def get_dependencies(self, node_id: str) -> list[str]:
         with self.db.get_spec_connection() as conn:
             rows = conn.execute(

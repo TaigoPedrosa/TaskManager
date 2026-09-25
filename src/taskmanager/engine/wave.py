@@ -7,13 +7,14 @@ from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine.heuristics import RecommendationEngine
 from taskmanager.engine.operations import Operations
+from taskmanager.engine.snapshot import writes_migration
 
 # A task in one of these statuses is claimable by a fresh wave: past NOT_STARTED review dance
 # with nobody currently working it (READY tasks are found separately, through get_next_tasks).
 ENTRY_STATUSES = (NodeStatus.WAITING_REVIEW, NodeStatus.WAITING_FIXES, NodeStatus.WAITING_MERGE)
 
 # A task in one of these statuses has not yet landed on origin/main, so a migration it declares
-# still holds its repo's one-writer chain lock (see `_writes_migration`).
+# still holds its repo's one-writer chain lock (see `writes_migration`).
 UNMERGED_STATUSES = (
     NodeStatus.IMPLEMENTING,
     NodeStatus.WAITING_REVIEW,
@@ -38,10 +39,6 @@ def djb2(payload: str) -> int:
 def _family(model_ids: list[str]) -> str | None:
     found = [name for model_id in model_ids for name in _TIER if name in model_id]
     return min(found, key=_TIER.__getitem__) if found else None
-
-
-def _writes_migration(files: list[str]) -> bool:
-    return any("migrations/versions/" in f for f in files)
 
 
 def _awaiting_decisions(node_repo: NodeRepository, task_id: str) -> list[str]:
@@ -102,7 +99,7 @@ def discover_batch(
     chain_held: dict[str, str] = {}
     for status in UNMERGED_STATUSES:
         for task in node_repo.list_nodes(kind=NodeKind.TASK, status=status):
-            if _writes_migration(node_repo.declared_files(task.id)):
+            if writes_migration(node_repo.declared_files(task.id)):
                 chain_held.setdefault(task.target_repo or "", task.id)
 
     candidates: dict[str, str] = {}
@@ -137,7 +134,7 @@ def discover_batch(
         sections = {section.section_key for section in node_repo.get_all_sections(task_id)}
         if "hold" in sections and task_id not in release:
             why.append("hold section: read tm section get <id>:hold, then pass --release")
-        if entry_status == "READY" and _writes_migration(files) and repo in chain_held:
+        if entry_status == "READY" and writes_migration(files) and repo in chain_held:
             why.append(f"{repo} migration chain held by {chain_held[repo]}")
         if taken_files.intersection(files):
             why.append("declared_files overlap a task chosen this wave")
@@ -156,14 +153,14 @@ def discover_batch(
                 "repo": repo,
                 "model": model,
                 "review": _family(node.frontmatter.get("review_models") or []) or "sonnet",
-                "migration": _writes_migration(files),
+                "migration": writes_migration(files),
                 "blockers": node.frontmatter.get("external_blockers") or [],
             }
         )
         taken_files.update(files)
         if model in STRONG:
             strong_free -= 1
-        if entry_status == "READY" and _writes_migration(files):
+        if entry_status == "READY" and writes_migration(files):
             chain_held[repo] = task_id
 
     waiting = sum(entry.endswith(": no free slot") for entry in held)
