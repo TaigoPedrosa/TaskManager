@@ -60,10 +60,10 @@ class Node(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _containers_default_to_no_review(cls, data: Any) -> Any:
-        # A plan or spec reviews and fixes only when its planner asks for it; a task does unless
-        # its planner opts out.
-        if isinstance(data, dict) and data.get("kind") in _CONTAINERS:
+    def _only_tasks_review_by_default(cls, data: Any) -> Any:
+        # A plan or spec reviews and fixes only when its planner asks for it, and a decision
+        # never does; a task does unless its planner opts out.
+        if isinstance(data, dict) and data.get("kind", NodeKind.TASK) != NodeKind.TASK:
             return {"review": False, "fix": False, **data}
         return data
 

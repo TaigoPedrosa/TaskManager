@@ -222,3 +222,16 @@ def test_decision_add_unknown_recommend_exits_nonzero(tmp_path: Path) -> None:
         ],
     )
     assert res.exit_code != 0
+
+
+def test_a_decisions_payload_carries_no_step_flags(tmp_path: Path) -> None:
+    _seed_task(tmp_path)
+    runner.invoke(app, ["decision", "add", "Q1", "--slug", "q1", "-C", str(tmp_path)])
+    [row] = json.loads(
+        runner.invoke(app, ["decision", "list", "--json", "-C", str(tmp_path)]).stdout
+    )
+    got = json.loads(
+        runner.invoke(app, ["decision", "get", "decision-q1", "--json", "-C", str(tmp_path)]).stdout
+    )
+    for payload in (row, got):
+        assert not {"review", "fix", "merge"} & payload.keys()

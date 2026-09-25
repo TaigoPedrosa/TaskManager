@@ -397,14 +397,14 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
 
     def lifecycle_fields(n: Node, view: DisplayView) -> dict[str, Any]:
         is_decision = n.kind == NodeKind.DECISION
+        # A decision is never reviewed, fixed or landed.
+        flags = {} if is_decision else {"review": n.review, "fix": n.fix, "merge": n.merge.value}
         return {
             # Read through stored_status so a node saved under an old name shows its new one.
             "status": stored_status(n).value,
             "display": view.display(n),
             "phase": phase_of(n),
-            "review": n.review,
-            "fix": n.fix,
-            "merge": n.merge.value,
+            **flags,
             "outcome": n.outcome.value if n.outcome else None,
             "verdict": n.verdict,
             "fix_for": n.fix_for.value if n.fix_for else None,

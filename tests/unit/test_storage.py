@@ -163,12 +163,10 @@ def test_every_lifecycle_column_round_trips(tmp_path: Path) -> None:
         (NodeKind.TASK, True, True),
         (NodeKind.PLAN, False, False),
         (NodeKind.SPEC, False, False),
-        (NodeKind.DECISION, True, True),
+        (NodeKind.DECISION, False, False),
     ],
 )
-def test_a_container_defaults_to_no_review_and_a_task_to_review_and_fix(
-    kind: NodeKind, review: bool, fix: bool
-) -> None:
+def test_only_a_task_defaults_to_review_and_fix(kind: NodeKind, review: bool, fix: bool) -> None:
     node = Node(id="N", kind=kind, title="n")
     assert (node.review, node.fix) == (review, fix)
 

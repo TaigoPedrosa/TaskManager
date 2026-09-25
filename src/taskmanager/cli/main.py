@@ -137,7 +137,7 @@ def _task_spec_id(node_repo: NodeRepository, task_id: str) -> str | None:
 
 
 def _node_row(node: Node, state: str | None = None) -> dict[str, Any]:
-    return {
+    row: dict[str, Any] = {
         "id": node.id,
         "kind": node.kind.value,
         "title": node.title,
@@ -147,10 +147,11 @@ def _node_row(node: Node, state: str | None = None) -> dict[str, Any]:
         "priority": node.priority,
         "target_repo": node.target_repo,
         "acceptable_models": node.acceptable_models,
-        "review": node.review,
-        "fix": node.fix,
-        "merge": node.merge.value,
     }
+    if node.kind != NodeKind.DECISION:
+        # A decision is never reviewed, fixed or landed.
+        row |= {"review": node.review, "fix": node.fix, "merge": node.merge.value}
+    return row
 
 
 def _view(container: Container) -> DisplayView:
