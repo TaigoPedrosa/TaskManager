@@ -5,9 +5,12 @@ import sqlite3
 from taskmanager.core.enums import NodeKind, NodeStatus
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
+from taskmanager.engine.discovery import djb2
 from taskmanager.engine.heuristics import RecommendationEngine
 from taskmanager.engine.operations import Operations
 from taskmanager.engine.snapshot import writes_migration
+
+__all__ = ["djb2"]
 
 # A task in one of these statuses is claimable by a fresh wave: past NOT_STARTED review dance
 # with nobody currently working it (READY tasks are found separately, through get_next_tasks).
@@ -27,13 +30,6 @@ UNMERGED_STATUSES = (
 
 _TIER = {"haiku": 1, "sonnet": 2, "opus": 3, "fable": 3}
 STRONG = ("opus", "fable")
-
-
-def djb2(payload: str) -> int:
-    checksum = 5381
-    for byte in payload.encode("utf-8"):
-        checksum = (checksum * 33 + byte) & 0xFFFFFFFF
-    return checksum
 
 
 def _family(model_ids: list[str]) -> str | None:
