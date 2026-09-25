@@ -569,6 +569,8 @@ class Operations:
         old_node = self.node_repo.get_node(old_id)
         if not old_node:
             raise OperationError(f"Task '{old_id}' not found", 404)
+        if old_node.kind == NodeKind.DECISION:
+            raise OperationError(f"'{old_id}' is a decision; use `tm decision` to close it", 400)
         if new_id == old_id or self.node_repo.get_node(new_id) is None:
             raise OperationError(f"Replacement task '{new_id}' not found; nothing was changed", 400)
 

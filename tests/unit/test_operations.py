@@ -191,6 +191,18 @@ def test_supersede_missing_new_refuses_and_writes_nothing(ops_setup: tuple) -> N
     assert len(ledger_repo.list_events(limit=1000)) == before
 
 
+def test_supersede_of_a_decision_refuses_with_400_and_writes_nothing(ops_setup: tuple) -> None:
+    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    _spec_id, _plan_id, task_id = _seed_task(ops)
+    decision_id = ops.add_decision("Q?", slug="D1")
+    before = len(ledger_repo.list_events(limit=1000))
+    with pytest.raises(OperationError) as exc:
+        ops.supersede(decision_id, task_id)
+    assert exc.value.status_code == 400
+    assert node_repo.get_node(decision_id).status == DecisionStatus.OPEN
+    assert len(ledger_repo.list_events(limit=1000)) == before
+
+
 # -- move_task --------------------------------------------------------------------------------
 
 
