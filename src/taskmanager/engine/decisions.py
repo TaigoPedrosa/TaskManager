@@ -184,7 +184,7 @@ def apply_effect(ops: Operations, decision_id: str, effect: DecisionEffect) -> l
     transaction, and return the nodes it changed. A node the effect cannot apply to refuses the
     whole answer, so no node is ever half-ruled."""
     # Operations imports this module, so importing it back at load time would be circular.
-    from taskmanager.engine.operations import OperationError
+    from taskmanager.engine.operations import OperationError, validated_write
 
     if effect == DecisionEffect.NONE:
         return []
@@ -201,39 +201,43 @@ def apply_effect(ops: Operations, decision_id: str, effect: DecisionEffect) -> l
             409,
         )
     note = _note(decision_id, data)
-    for node_id in blocked:
-        if effect == DecisionEffect.DROP_EDGE:
-            if data.subject is None:
-                raise OperationError(f"'{decision_id}' names no subject to drop an edge to", 400)
-            ops.node_repo.remove_relation(node_id, data.subject, RelationType.DEPENDS_ON)
-            continue
-        node = ops.node_repo.get_node(node_id)
-        if node is None or node.status == _REACHES.get(effect):
-            continue
-        if effect == DecisionEffect.REOPEN and (waiting := _open_decisions_on(ops, node_id)):
-            raise OperationError(
-                f"'{node_id}' cannot reopen while {', '.join(waiting)} is open", 409
-            )
-        try:
-            if effect == DecisionEffect.ABANDON:
-                cycle = abandon(cycle_of(node))
-            elif effect == DecisionEffect.DEFER:
-                cycle = defer(cycle_of(node))
-            else:
-                cycle = reopen(cycle_of(node), _children_all_completed(ops, node_id))
-        except LifecycleError as exc:
-            raise OperationError(
-                f"'{decision_id}' cannot {effect} '{node_id}': {exc}", 409
-            ) from exc
-        updated = apply_cycle(node, cycle)
-        if effect == DecisionEffect.REOPEN:
-            updated.verdict = None
-        ops.node_repo.save_node(updated)
-        clear_red_targets(ops.node_repo, node_id)
-        ops.append_section(node_id, _NOTE_SECTION[effect], note)
-        if cycle.status in (Status.ABANDONED, Status.DEFERRED) and (
-            dependents := stranded_dependents(ops, node_id)
-        ):
-            open_stranded_decision(ops, node_id, cycle.status, dependents)
-        roll_up_ancestors(ops, node_id)
+    # The effect moves every node the decision blocks, so every write rule judges them.
+    with validated_write(ops.node_repo, ops.snapshots, set(blocked)):
+        for node_id in blocked:
+            if effect == DecisionEffect.DROP_EDGE:
+                if data.subject is None:
+                    raise OperationError(
+                        f"'{decision_id}' names no subject to drop an edge to", 400
+                    )
+                ops.node_repo.remove_relation(node_id, data.subject, RelationType.DEPENDS_ON)
+                continue
+            node = ops.node_repo.get_node(node_id)
+            if node is None or node.status == _REACHES.get(effect):
+                continue
+            if effect == DecisionEffect.REOPEN and (waiting := _open_decisions_on(ops, node_id)):
+                raise OperationError(
+                    f"'{node_id}' cannot reopen while {', '.join(waiting)} is open", 409
+                )
+            try:
+                if effect == DecisionEffect.ABANDON:
+                    cycle = abandon(cycle_of(node))
+                elif effect == DecisionEffect.DEFER:
+                    cycle = defer(cycle_of(node))
+                else:
+                    cycle = reopen(cycle_of(node), _children_all_completed(ops, node_id))
+            except LifecycleError as exc:
+                raise OperationError(
+                    f"'{decision_id}' cannot {effect} '{node_id}': {exc}", 409
+                ) from exc
+            updated = apply_cycle(node, cycle)
+            if effect == DecisionEffect.REOPEN:
+                updated.verdict = None
+            ops.node_repo.save_node(updated)
+            clear_red_targets(ops.node_repo, node_id)
+            ops.append_section(node_id, _NOTE_SECTION[effect], note)
+            if cycle.status in (Status.ABANDONED, Status.DEFERRED) and (
+                dependents := stranded_dependents(ops, node_id)
+            ):
+                open_stranded_decision(ops, node_id, cycle.status, dependents)
+            roll_up_ancestors(ops, node_id)
     return blocked

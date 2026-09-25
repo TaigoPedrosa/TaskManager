@@ -792,6 +792,31 @@ def test_an_investigate_answer_cannot_reopen_a_child_under_a_set_aside_container
     assert stored(claims, decision).status == "OPEN"
 
 
+@pytest.mark.parametrize(
+    ("status", "claimed_from", "refusal"),
+    [
+        (Status.FAILED, None, "reopen P first"),
+        (Status.MERGING, Status.IMPLEMENTED, "P is in a step"),
+    ],
+    ids=["failed", "in-a-step"],
+)
+def test_an_investigate_answer_cannot_reopen_a_child_under_a_failed_or_stepping_container(
+    tmp_path: Path, status: Status, claimed_from: Status | None, refusal: str
+) -> None:
+    from taskmanager.engine.decisions import open_failed_decision
+
+    claims = make_estate(tmp_path)
+    add(claims, "P", NodeKind.PLAN, status=status, claimed_from=claimed_from)
+    add(claims, "P-a", parent="P", status=Status.FAILED)
+    decision = open_failed_decision(claims.ops, "P-a", "its step failed", "")
+
+    with pytest.raises(OperationError, match=refusal):
+        claims.ops.answer_decision(decision, option="investigate")
+
+    assert stored(claims, "P-a").status == Status.FAILED
+    assert stored(claims, decision).status == "OPEN"
+
+
 def test_an_investigate_answer_ends_a_parked_landing_s_red_target_wait(tmp_path: Path) -> None:
     from taskmanager.engine.decisions import open_failed_decision
 

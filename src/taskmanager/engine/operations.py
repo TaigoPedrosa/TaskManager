@@ -902,8 +902,7 @@ class Operations:
         node.status = DecisionStatus.ANSWERED
         node.updated_at = datetime.now(tz=UTC)
         effect = chosen_effect(data)
-        # The effect moves the nodes the decision blocks, so every write rule judges them.
-        with self._checked(set(self.node_repo.get_blocked_by(decision_id))):
+        with self.node_repo.transaction():
             self.node_repo.save_node(node)
             affected = apply_effect(self, decision_id, effect)
         self._ledger(
