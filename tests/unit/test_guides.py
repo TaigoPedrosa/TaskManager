@@ -150,10 +150,10 @@ RETIRED = (
 )
 
 CLOSING_VERBS = {
-    "implement": "tm task complete <task-id> --agent <name>",
-    "fix": "tm task complete <node-id> --agent <name>",
-    "review": "tm task review <node-id> --agent <name> --approve",
-    "merge": "tm job resume <job>",
+    "implement": "tm task complete <task-id> --agent <name> --token <token>",
+    "fix": "tm task complete <node-id> --agent <name> --token <token>",
+    "review": "tm task review <node-id> --agent <name> --token <token> --approve",
+    "merge": "tm job resume <job> --agent <name> --token <token>",
 }
 
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows" / "tm-wave.js"

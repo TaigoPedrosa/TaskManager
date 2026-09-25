@@ -7,10 +7,10 @@ For the session manager: run the `tm-wave` workflow, which asks tm what each nod
 The plugin ships the dispatcher as a workflow script, `workflows/tm-wave.js`, run by name — `Workflow({name: 'tm-wave', args: {...}})` — or by path. One run is one tick:
 
 1. `tm wave discover` chooses a batch: every claimable node, within the session's slots, file-disjoint within the batch.
-2. Each chosen node runs its own loop, and no node waits for a sibling. `tm task get` reads where it stands and its `next_action`; `tm task start --worktree-dir <worktreeDir>` claims the next step and names its action and model family; the workflow dispatches the agent that action needs on the model id `models` maps that family to; the agent does the step and closes it with its guide's verb, passing the lease's agent name with `--agent`. For a `merge` or a `sync`, the workflow waits on `tm job status <job> --wait 540` instead, and dispatches an agent only when the job stops for one.
+2. Each chosen node runs its own loop, and no node waits for a sibling. `tm task get` reads where it stands and its `next_action`; `tm task start --worktree-dir <worktreeDir>` claims the next step and names its action and model family; the workflow dispatches the agent that action needs on the model id `models` maps that family to; the agent does the step and closes it with its guide's verb, passing the lease's agent name with `--agent` and the claim's token with `--token`. For a `merge` or a `sync`, the workflow waits on `tm job status <job> --wait 540` instead. When the job stops for an agent, tm parks it, and the loop claims the node again: that claim hands the job over, and only then is the agent dispatched, with the new token `tm job resume` asks for. A container landing in several repositories runs one job per repository, and the workflow follows each to the next.
 3. The loop repeats until the node is `COMPLETED`, `FAILED`, or blocked on something outside the step.
 
-A step the agent leaves open, or an agent that dies, is released by the workflow with `tm task release <id> --agent <its lease's agent>` as a failed step, which tm counts; tm refuses that release once another claim holds the node. A claim naming a family `models` does not map is released the same way, never run on a guess. tm counts fix rounds and landing failures too, so the workflow keeps no counter and no hold of its own.
+A step the agent leaves open, an agent that dies, or a handed-over job the agent never resumed is released by the workflow with `tm task release <id> --agent <its lease's agent> --token <its claim's token>` as a failed step, which tm counts; tm refuses that release once another claim holds the node. A job the agent resumed that stops again is left parked, since tm has counted it already, and the next claim hands it over. A claim naming a family `models` does not map is released the same way, never run on a guess. tm counts fix rounds and landing failures too, so the workflow keeps no counter and no hold of its own.
 
 Arguments, of which `session` and `worktreeDir` are required:
 
@@ -23,7 +23,7 @@ Arguments, of which `session` and `worktreeDir` are required:
 | `maxStrong` | of those, how many may run on `opus` or `fable` (default 5) |
 | `maxBatch` | the most nodes one tick takes on; the rest wait for the next tick |
 | `exclude` | node ids this tick never chooses |
-| `holdMerge` | node ids whose landing this tick never starts: they are implemented, reviewed and fixed, and wait at their merge step for the owner |
+| `holdMerge` | node ids whose landing this tick never starts: discovery passes over their merge step (`--hold-merge`), and a node reaching it mid-loop stops there; they are implemented, reviewed and fixed, and wait at their merge step for the owner |
 | `root` | the tm root every command runs from; defaults to the session's own directory |
 | `tm` | the `tm` executable every command runs; defaults to the one on `PATH` |
 | `agentTypes` | repository → agent type for implement and fix |
@@ -40,13 +40,14 @@ What still binds you when you run it:
 
 - **Never hand-roll the loop.** Chaining single dispatches by hand appoints the session as the scheduler and rebuilds, a notification at a time, the barrier a per-node loop removes.
 - **The workflow claims; agents close.** It runs every `tm task start` before it dispatches, so no agent explores before its claim and no second dispatcher sends a second agent. Each agent closes its own step with the verb its guide names.
-- **Resume re-reads tm.** A resumed run replays cached agent results, but the loop re-reads each node with `tm task get` before claiming, so it enters at the node's real next step rather than where the cache left it.
+- **A resumed run replays, then reads.** Resuming replays the longest unchanged prefix of the run's agent calls from cache, `tm task get` reads included, so the replayed part says what happened before the run stopped, not where the nodes stand now. Only the calls after it reach tm. A node that moved while the run was down is caught by its next live claim, which tm refuses or blocks; start a fresh tick rather than resume one that ran long ago.
 
 ## 2. What is claimable
 
 ```
 tm wave discover --session <id> --slots <n> --max-strong <n>
 tm wave discover --spec <spec-id> --session <id> --slots <n> --max-strong <n> --exclude <node-id>
+tm wave discover --session <id> --slots <n> --max-strong <n> --hold-merge <node-id>
 ```
 
 Every node of every kind whose next step can be claimed now, with that step and its model, plus landings and syncs stopped for an agent; a JSON line, then `__CHECK n=<chosen> h=<djb2>`. A node is claimable when none of these holds, checked in this order: it is mid-step or its job is running; an edge (its own, or one on a container above it) points at an open decision; an edge is unsatisfied; a `claim` condition is unmet; a sync its claim needs is running or waiting; its next step would lock a file another lease holds; its status has no next step.

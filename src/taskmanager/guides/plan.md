@@ -96,7 +96,7 @@ $ tm verify run NOTIFY-EMAIL-SENDER --ref tm/NOTIFY-EMAIL-SENDER
 symbol_signature  src/notify/email/sender.py  FAILED  File src/notify/email/sender.py missing
 ```
 
-The path checks read a ref of the task's `target_repo` (`origin/main` by default, fetched first; `--ref` names another) and never a working tree. `test_command` runs from the tm root with that ref in `TM_VERIFY_REF`, and a landing sets it to the landing target — the parent's branch for `merge: parent` — so a command reads `"$TM_VERIFY_REF"` instead of naming `origin/main`; tm refuses one that names `origin/main` itself on a task landing on its parent.
+The path checks read a ref of the task's `target_repo` (`origin/main` by default, fetched first; `--ref` names another) and never a working tree. `test_command` runs from the tm root with that ref in `TM_VERIFY_REF`, and a landing sets it to the landing target — the parent's branch for `merge: parent` — so a command reads `"$TM_VERIFY_REF"` instead of naming `origin/main`; tm refuses one that names `origin/main` itself on a task landing on its parent. The target repository is a directory under the tm root, and the ref is not checked out anywhere, so a command that runs code checks the ref out itself first, as the worked example's do.
 
 ## 7. Size a task to one agent
 
@@ -132,12 +132,18 @@ tm task depends <id> --add a,b --remove c
 tm task condition add <id> --needs "<what must hold>" --command "<check>" --stage landing
 tm task condition remove <id> <idx>
 tm section set <id>:<key> --file <path> --header "## Context"
-tm verify add <id> --type test_command --target api-suite --pattern "pytest tests/notify/test_api.py -q"
+tm verify add <id> --type test_command --target api-suite --pattern "<command>"
 tm verify list <id>
 tm verify remove <id> <verification-id>
 ```
 
-A change to `merge` once the node's branch exists is refused unless that branch was cut from the new target: code cut from a plan's branch must never land on `main` carrying the plan's unreviewed work. Reopen it with `tm task reopen <id> --note "<why>" --new-branch` instead.
+A change to `merge` once the node's branch exists is refused unless that branch was cut from the new target: code cut from a plan's branch must never land on `main` carrying the plan's unreviewed work. Set the branch aside and start a new one first; `reopen` takes only a deferred, abandoned or failed node, so defer it before reopening:
+
+```
+tm task defer <id> --note "<why>"
+tm task reopen <id> --note "<why>" --new-branch
+tm task update <id> --merge main
+```
 
 ## Worked example
 
@@ -181,7 +187,10 @@ plans:
             expected_pattern: "def send(self, message: Message) -> SendResult"
           - type: test_command
             target_path: sender-suite
-            expected_pattern: pytest tests/notify/test_sender.py -q
+            expected_pattern: >-
+              d=$(mktemp -d) && trap 'rm -rf "$d"' EXIT &&
+              git -C backend archive "$TM_VERIFY_REF" | tar -x -C "$d" &&
+              cd "$d" && pytest tests/notify/test_sender.py -q
 
       - id: NOTIFY-EMAIL-TEMPLATES
         title: Template rendering
@@ -199,7 +208,10 @@ plans:
         verifications:
           - type: test_command
             target_path: templates-suite
-            expected_pattern: pytest tests/notify/test_templates.py -q
+            expected_pattern: >-
+              d=$(mktemp -d) && trap 'rm -rf "$d"' EXIT &&
+              git -C backend archive "$TM_VERIFY_REF" | tar -x -C "$d" &&
+              cd "$d" && pytest tests/notify/test_templates.py -q
 
       - id: NOTIFY-EMAIL-API
         title: POST /notifications/email
@@ -220,7 +232,10 @@ plans:
         verifications:
           - type: test_command
             target_path: api-suite
-            expected_pattern: pytest tests/notify/test_api.py -q
+            expected_pattern: >-
+              d=$(mktemp -d) && trap 'rm -rf "$d"' EXIT &&
+              git -C backend archive "$TM_VERIFY_REF" | tar -x -C "$d" &&
+              cd "$d" && pytest tests/notify/test_api.py -q
 ```
 
 ## Never

@@ -2,7 +2,9 @@
 real CLI, so a guide that drifts from the importer reddens rather than misleading its reader."""
 
 import json
+import os
 import re
+import subprocess
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -137,3 +139,60 @@ def test_re_importing_the_untouched_example_changes_nothing(tmp_path: Path) -> N
     after = snapshot("export-after")
 
     assert before == after
+
+
+def _example_test_commands() -> list[tuple[str, str, str]]:
+    doc = yaml.safe_load(_example_document())
+    return [
+        (task["target_repo"], v["expected_pattern"], v["expected_pattern"].split()[-2])
+        for plan in doc["plans"]
+        for task in plan["tasks"]
+        for v in task.get("verifications", [])
+        if v["type"] == "test_command"
+    ]
+
+
+def _git(repo: Path, *args: str) -> None:
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+    }
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, env=env)
+
+
+def _commit_tests(repo: Path, paths: list[str], body: str, branch: str) -> None:
+    for rel in paths:
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(body, encoding="utf-8")
+    _git(repo, "checkout", "-q", "-B", branch)
+    _git(repo, "add", *paths)
+    _git(repo, "commit", "-q", "-m", branch)
+
+
+def test_every_example_test_command_runs_the_ref_it_is_given_in_its_target_repo(
+    tmp_path: Path,
+) -> None:
+    """A landing runs these from the tm root with the target in TM_VERIFY_REF; one that runs the
+    root's own files, or the repository's working tree, reads neither the target nor the ref."""
+    commands = _example_test_commands()
+    assert len(commands) == 3
+    repo = tmp_path / "backend"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    paths = [path for _, _, path in commands]
+    _commit_tests(repo, paths, "def test_holds():\n    pass\n", "green")
+    _commit_tests(repo, paths, "def test_holds():\n    assert False\n", "red")
+
+    for target_repo, command, _ in commands:
+        assert target_repo == "backend"
+        exits = {}
+        for ref in ("green", "red"):
+            env = {**os.environ, "TM_VERIFY_REF": ref}
+            done = subprocess.run(
+                command, shell=True, cwd=tmp_path, env=env, capture_output=True, check=False
+            )
+            exits[ref] = done.returncode
+        assert exits["green"] == 0 and exits["red"] != 0, (command, exits)

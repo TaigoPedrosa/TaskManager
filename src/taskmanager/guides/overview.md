@@ -25,14 +25,14 @@ set by a verb, from any stable status but COMPLETED: DEFERRED, ABANDONED, SUPERS
 
 | `action` | Claimed from | Locks the declared files | Closed with |
 |:--|:--|:--|:--|
-| `implement` | `READY` | yes | `tm task complete <id> --agent <name>` |
-| `review` | `IMPLEMENTED`, `FIXED` | no | `tm task review <id> --agent <name> --approve`, or `--reject` |
-| `fix` | `REVIEWED` | yes | `tm task complete <id> --agent <name>` |
+| `implement` | `READY` | yes | `tm task complete <id> --agent <name> --token <token>` |
+| `review` | `IMPLEMENTED`, `FIXED` | no | `tm task review <id> --agent <name> --token <token> --approve`, or `--reject` |
+| `fix` | `REVIEWED` | yes | `tm task complete <id> --agent <name> --token <token>` |
 | `merge` | `IMPLEMENTED`, `REVIEWED` | no | nothing: tm lands it as a job, and hands the job to an agent only when it stops |
 | `sync` | a container branch behind its base | no | nothing: tm merges it as a job, and hands the job to an agent only when it stops |
 | `blocked` | nothing is claimed; exit 3 | | the printed `reason` says what it waits on |
 
-The printout also names the `model` family the step runs on (`haiku`, `sonnet`, `opus` or `fable`), the `repos` it touches, the `branch`, its `base` (`main`, or the container branch it lands on), and for `implement` and `fix` the `worktree`, with `worktrees` naming one per repository when a plan or spec spans several. `--agent <name>` on a closing verb is refused unless the live lease is that agent's, so a step closes only for whoever holds it. A step that cannot go on ends with `tm task release <id> --agent <name> --blocked` naming what it now waits on; `tm task release <id> --agent <name>` alone ends it as a failed step. `tm task heartbeat <id>` renews the lease, which lasts `lease_ttl.<action>` seconds.
+The printout also names the `model` family the step runs on (`haiku`, `sonnet`, `opus` or `fable`), the `repos` it touches, the `branch`, its `base` (`main`, or the container branch it lands on), and for `implement` and `fix` the `worktree`, with `worktrees` naming one per repository when a plan or spec spans several. It also prints the claim's `token`. `--agent <name>` on a closing verb is refused unless the live lease is that agent's, and `--token <token>` unless it is that claim's, so a step closes only for whoever holds it, even when a later claim reuses the agent name. A step that cannot go on ends with `tm task release <id> --agent <name> --blocked` naming what it now waits on; `tm task release <id> --agent <name>` alone ends it as a failed step. `tm task heartbeat <id>` renews the lease, which lasts `lease_ttl.<action>` seconds.
 
 Three flags on every node decide the path through the cycle: `review` (a review follows implement), `fix` (this node fixes its own rejections; it needs `review`) and `merge` (`main`, or `parent` to land on the branch of the plan or spec above it). A task has `review` and `fix` on and lands on `main` unless its plan says otherwise; a plan or spec has both off.
 

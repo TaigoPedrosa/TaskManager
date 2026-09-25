@@ -10,7 +10,7 @@ A dispatcher's workflow usually claims the step for you and says so in the promp
 tm task start <node-id> --agent <name> --session <id> --worktree-dir <dir> --yaml
 ```
 
-`action: fix` sets the node to `FIXING`, locks its declared files again, names the `model` family, and hands back a worktree of the node's existing branch with every earlier commit on it: `worktree` for a task, and `worktrees`, one per repository, for a plan or spec whose branch spans several. Nothing is cut from `origin/main` a second time. The lease is held under `<name>`, which the verbs closing the step pass back with `--agent`; a workflow's prompt names it.
+`action: fix` sets the node to `FIXING`, locks its declared files again, names the `model` family, and hands back a worktree of the node's existing branch with every earlier commit on it: `worktree` for a task, and `worktrees`, one per repository, for a plan or spec whose branch spans several. Nothing is cut from `origin/main` a second time. The lease is held under `<name>` and the claim prints its `token`; the verbs closing the step pass both back with `--agent <name> --token <token>`, and a workflow's prompt carries them.
 
 What you answer is the node's `outcome`, printed by `tm task get <node-id> --yaml`:
 
@@ -52,7 +52,7 @@ Then the `tm verify run` exit code, and anything you found and did not touch.
 ## 5. Close the step
 
 ```
-tm task complete <node-id> --agent <name>
+tm task complete <node-id> --agent <name> --token <token>
 ```
 
 On every path that finished the round, including one where a finding was contested rather than closed. The node moves to `FIXED` and is reviewed again. A fix answering a failed landing is checked by that review but does not spend a fix round. Leave the worktree in place.

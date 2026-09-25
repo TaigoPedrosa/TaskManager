@@ -33,7 +33,7 @@ tm task start <node-id> --agent <name> --session <id> --yaml
 tm job status <job>
 ```
 
-The job's `step`, `result`, `repo`, `target` and `worktree` say where it stopped, why, and where the merge in progress is. Run `tm task heartbeat <node-id>` if the work runs long.
+The claim prints the lease's `token`; pass it, with your name, to `tm job resume`, which refuses anyone the claim did not hand the job to. The job's `step`, `result`, `repo`, `target` and `worktree` say where it stopped, why, and where the merge in progress is. Run `tm task heartbeat <node-id>` if the work runs long.
 
 ## 2. Work in the job's worktree
 
@@ -42,16 +42,16 @@ It is tm's own merge worktree, holding the merge in progress. Resolve there, com
 ## 3. Resume
 
 ```
-tm job resume <job>
-tm job resume <job> --own-defect "<the finding, one line>"
-tm job resume <job> --push
+tm job resume <job> --agent <name> --token <token>
+tm job resume <job> --agent <name> --token <token> --own-defect "<the finding, one line>"
+tm job resume <job> --agent <name> --token <token> --push
 ```
 
 - Plain `resume` continues from where the job stopped, gates the tip again and lands it.
 - `--own-defect` records that the node's own change is at fault. The node goes back for a fix with your finding in `:merge`, or to `FAILED` when it has no landing attempt left or does not fix its own defects.
 - `--push` is for `unattributed` only, after you proved the tip adds no failure the target lacks.
 
-A resume runs on in the background. `tm job status <job> --wait 540` blocks until the job leaves `running` or nine minutes pass, and prints where it went; a job stopped again is still yours.
+A resume runs on in the background. `tm job status <job> --wait 540` blocks until the job leaves `running` or nine minutes pass, and prints where it went. A job that stops again is handed back: tm parks it, counts the stop against the node, and refuses your next `resume`. On your own, claim the node again with `tm task start`, which hands it to you with a new token; under a workflow, report and stop, and the workflow claims it again.
 
 Append what you found and did to the node's `:merge` section (`tm section get <node-id>:merge` first, then `tm section set <node-id>:merge --file <path>`).
 

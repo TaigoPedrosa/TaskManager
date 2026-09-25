@@ -18,9 +18,10 @@ branch: tm/<task-id>
 base: main
 worktree: <dir>/backend-<task-id>
 worktrees: {backend: <dir>/backend-<task-id>}
+token: <token>
 ```
 
-`model` is the family the step runs on; `<name>` is the agent the lease is held under, and every verb that closes or releases the step passes it back with `--agent <name>`. When the workflow claimed for you, its prompt names both. The claim locks every path the task declares until the step closes. The branch is cut from `base` in the task's own `target_repo`, with no upstream: `main` means that repository's `origin/main`, and a branch name means the container branch the task lands on. A task with no `target_repo` is refused. Any other `action` is another role's step: read that role's guide instead.
+`model` is the family the step runs on; `<name>` is the agent the lease is held under and `<token>` names this one claim, and every verb that closes or releases the step passes them back with `--agent <name> --token <token>`. The token matters because an agent name can repeat: a later claim of the same node under the same name gets a new token, and tm refuses the old one. When the workflow claimed for you, its prompt carries both flags. The claim locks every path the task declares until the step closes. The branch is cut from `base` in the task's own `target_repo`, with no upstream: `main` means that repository's `origin/main`, and a branch name means the container branch the task lands on. A task with no `target_repo` is refused. Any other `action` is another role's step: read that role's guide instead.
 
 `action: blocked` exits 3 and writes nothing. Its `reason` names what the task waits on — an edge, a decision, a condition, a sync, or a lease holding one of its files. Report it and start nothing.
 
@@ -101,7 +102,7 @@ The branch, the commits you made, the `tm verify run` exit code and which rows f
 ## 7. Close the step
 
 ```
-tm task complete <task-id> --agent <name>
+tm task complete <task-id> --agent <name> --token <token>
 ```
 
 After the last commit and the report, on every path that finished the work. The task moves to `IMPLEMENTED`, and what follows — a review, or the landing — is tm's to choose. Leave the worktree in place: a fix round reuses it.

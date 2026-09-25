@@ -10,7 +10,7 @@ A dispatcher's workflow usually claims the step for you and says so in the promp
 tm task start <node-id> --agent <name> --session <id> --yaml
 ```
 
-`action: review` sets the node to `REVIEWING`, names the `model` family, the `repos` it touched (several for a plan or spec), its `branch` and `base`, and locks nothing: a review writes no code, so it never holds a sibling out. It cuts no worktree. The lease is held under `<name>`, which the verbs closing the step pass back with `--agent`; a workflow's prompt names it. `action: blocked` (exit 3) claimed nothing; report its `reason`.
+`action: review` sets the node to `REVIEWING`, names the `model` family, the `repos` it touched (several for a plan or spec), its `branch` and `base`, and locks nothing: a review writes no code, so it never holds a sibling out. It cuts no worktree. The lease is held under `<name>` and the claim prints its `token`; the verbs closing the step pass both back with `--agent <name> --token <token>`, and a workflow's prompt carries them. `action: blocked` (exit 3) claimed nothing; report its `reason`.
 
 The node may be a task, or a plan or spec whose children have all landed on its branch. If `tm section get <node-id>:review` already holds findings, this review checks a fix (step 3).
 
@@ -32,7 +32,14 @@ git -C <repo> diff <base>...<branch>
 git -C <repo> show <branch>:<path>
 ```
 
-Read only. Do not check the branch out in the project's own checkout, do not edit a file, do not run a formatter. If you must execute the code, do it in a worktree of your own making, outside the project, and say so in the review.
+Read only. Do not check the branch out in the project's own checkout, do not edit a file, do not run a formatter. If you must execute the code, cut a detached worktree where the workflow's prompt says (on your own, under your session's scratch directory), never inside the project, and remove it before you close the step:
+
+```
+git -C <repo> worktree add --detach <scratch>/<node-id>-review <branch>
+git -C <repo> worktree remove <scratch>/<node-id>-review
+```
+
+Say in the review that you executed it, and where.
 
 - **A first review** reads the whole diff against the brief.
 - **A plan's or spec's review** reads the whole branch too, for what is true only between its children: a producer nobody calls, a column only ever written as null, two halves that do not join.
@@ -60,11 +67,11 @@ One line per defect: the file, the symbol or line, and what breaks. No summary, 
 ## 6. Close the step
 
 ```
-tm task review <node-id> --agent <name> --approve
-tm task review <node-id> --agent <name> --reject --verdict "<one line>"
+tm task review <node-id> --agent <name> --token <token> --approve
+tm task review <node-id> --agent <name> --token <token> --reject --verdict "<one line>"
 ```
 
-tm refuses either one while the `:review` section is unchanged since your claim: the findings are the record, and a verdict without them leaves a fixer nothing to fix. It refuses it too when the live lease is not `<name>`'s: the step is no longer yours, so stop and report. `--verdict` is a free-text line shown beside the status; it never decides anything.
+tm refuses either one while the `:review` section is unchanged since your claim: the findings are the record, and a verdict without them leaves a fixer nothing to fix. It refuses it too when the live lease is not `<name>`'s or not `<token>`'s: the step is no longer yours, so stop and report. `--verdict` is a free-text line shown beside the status; it never decides anything.
 
 - **Approved**: the node goes on to its landing.
 - **Rejected, and the node fixes its own rejections**: it goes to a fix round while it has rounds left; with none left it is `FAILED`, and the owner decides.
@@ -81,4 +88,5 @@ The verdict, the numbered findings, the `tm verify run` exit code with the rows 
 - Never edit code, tests, fixtures or configuration — not even a one-line fix you can see.
 - Never approve with a finding still open, and never merge or push anything.
 - Never close the step without writing `:review` first.
+- Never leave a worktree you cut behind you.
 - Never file a finding you have not read in the branch's own content.
