@@ -35,22 +35,50 @@ function queue(list) {
   }
 }
 
-export function makeTm({ chosen = [], nodes = {}, start = {}, job = {}, releaseExit = 0, discover, corrupt = () => false } = {}) {
+// `parked` names jobs already stopped for an agent before the run starts, as an earlier tick left them.
+export function makeTm({ chosen = [], nodes = {}, start = {}, job = {}, parked = [], releaseExit = 0, discover, corrupt = () => false } = {}) {
   const state = structuredClone(nodes)
   const starts = Object.fromEntries(Object.entries(start).map(([id, list]) => [id, queue(list)]))
   const jobs = Object.fromEntries(Object.entries(job).map(([id, list]) => [id, queue(list)]))
+  // As tm does, a job stopped for an agent is parked, and only a claim made while it is stopped
+  // hands it over: `tm job resume` refuses every other caller.
+  const stopped = new Set(parked)
+  const handed = new Set()
+  const parse = text => {
+    try {
+      return JSON.parse(text)
+    } catch (e) {
+      return {}
+    }
+  }
   function answer(inner) {
     let m = inner.match(/^\S+ task get (\S+) --json$/)
     if (m) return state[m[1]] ? json(state[m[1]]) : { text: `Task '${m[1]}' not found`, exit: 1 }
     m = inner.match(/^\S+ task start (\S+) --agent wf-\S+ --session \S+ --worktree-dir \S+ --json$/)
-    if (m && starts[m[1]]) return starts[m[1]]()
+    if (m && starts[m[1]]) {
+      const reply = starts[m[1]]()
+      const c = parse(reply.text)
+      if ((c.action === 'merge' || c.action === 'sync') && stopped.has(c.job)) handed.add(c.job)
+      return reply
+    }
     m = inner.match(/^\S+ job status (\S+)(?: --wait \d+)?$/)
-    if (m && jobs[m[1]]) return jobs[m[1]]()
+    if (m && jobs[m[1]]) {
+      const reply = jobs[m[1]]()
+      if (parse(reply.text).state === 'needs_agent') stopped.add(m[1])
+      else stopped.delete(m[1])
+      return reply
+    }
     throw new Error(`the fake tm has no reply for: ${inner}`)
   }
   return {
     set(id, patch) {
       state[id] = { ...state[id], ...patch }
+    },
+    // What an agent's `tm job resume <job>` does to the fake: refused unless a claim handed it over.
+    resume(id) {
+      if (!handed.has(id)) throw new Error(`job ${id} is not handed to an agent: take it with tm task start`)
+      handed.delete(id)
+      stopped.delete(id)
     },
     reply(cmd) {
       if (/^\S+ wave discover\b/.test(cmd)) {
@@ -62,7 +90,7 @@ export function makeTm({ chosen = [], nodes = {}, start = {}, job = {}, releaseE
         const h = corrupt(m[1]) ? djb2(text) + 1 : djb2(text)
         return { stdout: `${text}\n__CHECK h=${h}\n__EXIT:${exit}\n` }
       }
-      if (/^\S+ task release \S+ --agent wf-\S+ >\/dev\/null 2>&1$/.test(cmd)) {
+      if (/^\S+ task release \S+ --agent wf-\S+(?: --token \S+)? >\/dev\/null 2>&1$/.test(cmd)) {
         return { stdout: `__EXIT:${releaseExit}\n` }
       }
       throw new Error(`the fake tm has no reply for: ${cmd}`)

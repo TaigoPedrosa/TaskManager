@@ -141,6 +141,7 @@ async function discover(attempt) {
     `--slots ${SLOTS | 0}`,
     `--max-strong ${MAX_STRONG | 0}`,
     ...(A.exclude || []).map(x => `--exclude ${q(x)}`),
+    ...[...HOLD_MERGE].map(x => `--hold-merge ${q(x)}`),
   ].join(' ')
   const r = await op('discover', `attempt-${attempt}`, cmd, /^([\s\S]*?)__EXIT:(\d+)\s*$/)
   if (!r || r.exit !== 0) return null
@@ -156,6 +157,9 @@ async function discover(attempt) {
 }
 
 const agentName = n => `wf-${q(SESSION)}-${q(n.id)}`
+// Every tick of a session claims a node under the same agent name, so the claim's token is what
+// tells this claim's step apart from a later claim of the same node.
+const owner = (n, token) => `--agent ${agentName(n)}${token ? ` --token ${q(token)}` : ''}`
 const clip = v => String((typeof v === 'string' ? v : JSON.stringify(v)) ?? '').replace(/\s+/g, ' ').slice(0, 300)
 // The harness's default agent reaches every connected tool, so a node needing a capability the
 // preferred type is not known to serve goes to the default instead.
@@ -166,10 +170,10 @@ async function read(n) {
   return r && r.exit === 0 && r.data && typeof r.data.status === 'string' ? r.data : null
 }
 
-// Only this workflow's own lease is released: tm refuses the --agent form for anyone else's, so a
-// release racing another dispatcher's claim changes nothing.
-async function release(n, trail, why) {
-  const r = await op('release', n.id, `${TM} task release ${q(n.id)} --agent ${agentName(n)} >/dev/null 2>&1`, /^__EXIT:(\d+)\s*$/)
+// Only this claim's own lease is released: tm refuses --agent and --token for any other, so a
+// release racing a later claim of the node changes nothing.
+async function release(n, trail, why, token) {
+  const r = await op('release', n.id, `${TM} task release ${q(n.id)} ${owner(n, token)} >/dev/null 2>&1`, /^__EXIT:(\d+)\s*$/)
   const refused = r && r.exit === 0 ? '' : ' (tm refused the release or the runner failed; tm run sweep returns the step once its lease expires)'
   trail.push(`released, ${why}${refused}`)
 }
@@ -185,13 +189,17 @@ async function start(n, trail) {
   }
   const d = r.data || {}
   if (r.exit === 3 || d.action === 'blocked') return { ...d, action: 'blocked', reason: d.reason || 'tm task start exited 3' }
-  if (r.exit !== 0 || !ACTIONS.includes(d.action)) {
+  if (r.exit !== 0) {
     trail.push(`claim refused: ${clip(r.text)}`)
+    return null
+  }
+  if (!ACTIONS.includes(d.action)) {
+    await release(n, trail, `its claim printed no step: ${clip(r.text)}`)
     return null
   }
   if (!Object.hasOwn(MODEL_ID, d.model)) {
     trail.push(`claim names the model family ${clip(d.model)}, which args.models does not map`)
-    await release(n, trail, 'no model id was known for it')
+    await release(n, trail, 'no model id was known for it', d.token)
     return null
   }
   return d
@@ -202,13 +210,13 @@ async function job(n, id, wait) {
   return r && r.exit === 0 && r.data && typeof r.data.state === 'string' ? r.data : null
 }
 
-// --agent names the lease this workflow took, so tm refuses the close once that lease is gone.
+// --agent and --token name the lease this claim took, so tm refuses the close once it is gone.
 const close = (n, c) => ({
-  implement: `${TM} task complete ${n.id} --agent ${agentName(n)}`,
-  fix: `${TM} task complete ${n.id} --agent ${agentName(n)}`,
-  review: `${TM} task review ${n.id} --agent ${agentName(n)} --approve or --reject (tm refuses either until your findings are in its :review section)`,
-  merge: `${TM} job resume ${c.job}`,
-  sync: `${TM} job resume ${c.job}`,
+  implement: `${TM} task complete ${n.id} ${owner(n, c.token)}`,
+  fix: `${TM} task complete ${n.id} ${owner(n, c.token)}`,
+  review: `${TM} task review ${n.id} ${owner(n, c.token)} --approve or --reject (tm refuses either until your findings are in its :review section)`,
+  merge: `${TM} job resume ${c.job} ${owner(n, c.token)}`,
+  sync: `${TM} job resume ${c.job} ${owner(n, c.token)}`,
 })[c.action]
 
 const head = (n, c, fam, role) => {
@@ -223,7 +231,7 @@ const head = (n, c, fam, role) => {
   const requires = n.requires || []
   const needs = requires.length ? `\nRequires: ${requires.join(', ')}; load the tools that provide it with ToolSearch before the first step that needs them.` : ''
   const blocked = c.action in CLAIMED
-    ? `, or, when something outside this step must happen first, with ${TM} task release ${n.id} --agent ${agentName(n)} --blocked naming the edge, decision or condition it waits on`
+    ? `, or, when something outside this step must happen first, with ${TM} task release ${n.id} ${owner(n, c.token)} --blocked naming the edge, decision or condition it waits on`
     : ''
   return `${preamble ? preamble + '\n' : ''}tm-task: ${n.id}
 Model: ${MODEL_ID[fam]}
@@ -246,6 +254,7 @@ async function work(n, c, s, trail) {
       ? `Scope: every finding in tm section ${n.id}:review not yet recorded as closed, against the fix commits on ${c.branch} and the fixer's latest :report entry, and, when the last landing failed, the failure its latest :merge entry names. Establish each closure by mutation.`
       : `Scope: the whole diff of ${c.branch} from its base, in each repository it touched: ${repos.map(r => `git -C ${ROOT}/${r} diff ${base}...${c.branch}`).join('; ')}.${container ? ' This is a container review: read what is true only between its children, and every child tm render lists as rejected by its own review.' : ''}`
     body += `\nFindings: append numbered findings to tm section ${n.id}:review, one line each; write it even when nothing is open, saying so.`
+    body += `\nScratch: a worktree you cut to execute the code goes at ${WT}/${n.id}-review, detached, and you remove it with git worktree remove before you close the step.`
   } else {
     // A container's step spans repositories, and tm cuts one worktree of its branch in each.
     const trees = Object.entries(c.worktrees || {})
@@ -260,34 +269,48 @@ async function work(n, c, s, trail) {
     { label: `${c.action}:${n.id}`, phase: WORK_PHASE[c.action], model: fam, agentType: pickType(type, n.requires) })
   trail.push(`${c.action} on ${fam}: ${r === null ? 'the agent died' : clip(r)}`)
   const after = await read(n)
-  if (!after || after.status === CLAIMED[c.action]) await release(n, trail, `the ${c.action} step was left open`)
+  if (!after || after.status === CLAIMED[c.action]) await release(n, trail, `the ${c.action} step was left open`, c.token)
+  return after
 }
 
-async function land(n, c, trail) {
+const resumes = j => Number((j.result && j.result.resumed) || 0)
+
+// tm parks the lease of a job stopped for an agent and refuses `tm job resume` to anyone a claim
+// did not hand it to, so an agent is dispatched only on the claim that handed the job over; any
+// other stop returns to run(), whose next claim is that hand-over.
+async function land(n, c, trail, handed) {
+  let id = c.job
   for (let poll = 0; poll < MAX_POLLS; poll++) {
-    const j = await job(n, c.job, true)
-    if (!j) return trail.push(`${c.action}: job ${c.job} status could not be read`)
+    const j = await job(n, id, true)
+    if (!j) return trail.push(`${c.action}: job ${id} status could not be read`)
     if (j.state === 'running') continue
+    // A container lands one repository per job, each chained to the next under the same lease.
+    if (j.state === 'succeeded' && j.result && j.result.next) {
+      trail.push(`${c.action}: ${id} succeeded; following ${clip(j.result.next)}`)
+      id = q(j.result.next)
+      handed = false
+      continue
+    }
     if (j.state !== 'needs_agent') return trail.push(`${c.action}: ${j.state}${j.result ? ` — ${clip(j.result)}` : ''}`)
-    // A blocked claim that started a sync names no model; the next claim hands the stopped job over
-    // with the family tm routes it to.
-    if (!c.model) return trail.push(`${c.action} stopped for an agent; the next claim hands it over`)
+    if (!handed || id !== c.job) return trail.push(`${c.action} stopped for an agent; the next claim hands it over`)
+    handed = false
     const fam = c.model
     const r = await agent(`${head(n, c, fam, 'merge')}
-Job: ${c.job}, a ${j.kind} of ${j.repo} onto ${j.target}, stopped at ${j.step}: ${clip(j.result)}
+Job: ${id}, a ${j.kind} of ${j.repo} onto ${j.target}, stopped at ${j.step}: ${clip(j.result)}
 Worktree: ${j.worktree} — the one tm built for this job. Work only there, and never cd in a Bash command.
-Output: ${TM} job status ${c.job} prints what stopped it.
-When this node's own change is at fault, close with ${TM} job resume ${c.job} --own-defect "<the finding, one line>" instead.`,
+Output: ${TM} job status ${id} prints what stopped it.
+When this node's own change is at fault, close with ${TM} job resume ${id} ${owner(n, c.token)} --own-defect "<the finding, one line>" instead.`,
       { label: `${c.action}-agent:${n.id}`, phase: 'Land agent', model: fam, agentType: pickType(undefined, n.requires) })
     trail.push(`${c.action} agent: ${r === null ? 'died' : clip(r)}`)
-    const k = await job(n, c.job, false)
-    if (!k || k.state === 'needs_agent') {
-      if (c.action === 'merge') await release(n, trail, 'the landing agent left the job stopped')
-      else trail.push(`sync ${c.job} left stopped; discovery offers it again`)
-      return
+    const k = await job(n, id, false)
+    // A job resumed and stopped again is parked and counted by tm itself; releasing it too would
+    // count the same stop twice and throw away the job the next agent takes over.
+    if (k && k.state === 'needs_agent' && resumes(k) > resumes(j)) {
+      return trail.push(`${c.action} stopped again after the agent resumed it; the next claim hands it over`)
     }
+    if (!k || k.state === 'needs_agent') return release(n, trail, `the ${c.action} agent left the job stopped`, c.token)
   }
-  trail.push(`${c.action}: job ${c.job} still running after ${MAX_POLLS} waits; a later tick picks it up`)
+  trail.push(`${c.action}: job ${id} still running after ${MAX_POLLS} waits; a later tick picks it up`)
 }
 
 async function run(n) {
@@ -301,9 +324,13 @@ async function run(n) {
     const c = await start(n, trail)
     if (!c) return end(s.status)
     if (c.action === 'blocked' && !c.job) return trail.push(`blocked: ${c.reason}`), end('blocked')
-    if (c.action === 'blocked') await land(n, { ...c, action: 'sync' }, trail)
-    else if (c.action === 'merge' || c.action === 'sync') await land(n, c, trail)
-    else await work(n, c, s, trail)
+    if (c.action in CLAIMED) {
+      s = await work(n, c, s, trail)
+      continue
+    }
+    // A merge claim of a node already MERGING, and every sync claim, is a hand-over of a stopped job.
+    const handed = c.action === 'sync' || (c.action === 'merge' && s.status === 'MERGING')
+    await land(n, c.action === 'blocked' ? { ...c, action: 'sync' } : c, trail, handed)
     s = await read(n)
   }
   log(`${n.id}: ${MAX_STEPS} steps without reaching COMPLETED, FAILED or blocked; tm task get ${n.id} shows where it stands`)
