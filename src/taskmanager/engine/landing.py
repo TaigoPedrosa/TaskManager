@@ -1,0 +1,495 @@
+"""Landing jobs: tm merges, gates, pushes and verifies a node, as a detached process.
+
+A landing can outlast the command runner's limit, so `tm task start` only records the job and
+spawns `python -m taskmanager.engine.landing run <job> --root <root>`. An agent is handed the job
+only when it stops at `needs_agent`.
+"""
+
+import argparse
+import os
+import subprocess
+import sys
+import threading
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Literal
+
+from taskmanager.core.models import Condition, Job
+from taskmanager.core.status import ConditionStage, JobKind, JobState, Outcome
+from taskmanager.db.cache_repo import CacheRepository
+from taskmanager.db.job_repo import JobRepository
+from taskmanager.engine import gates
+from taskmanager.engine import git as gitops
+from taskmanager.engine.claims import Claims
+from taskmanager.engine.config import Gate, ProjectConfig
+from taskmanager.engine.gates import GateRun
+from taskmanager.engine.git import GitManager
+from taskmanager.engine.operations import OperationError
+
+HEARTBEAT_SECONDS = 30
+PUSH_TRIES = 3
+LOCK_WAIT_SECONDS = 120
+LIVE = frozenset({JobState.RUNNING, JobState.NEEDS_AGENT})
+
+# Where a resumed job picks up, by the reason it stopped. A resolved conflict is gated like any
+# merge; an `error` starts over, since nothing after it can be trusted.
+RESUME_AT = {
+    "conflict": "gate",
+    "unattributed": "gate",
+    "no gate": "gate",
+    "red": "gate",
+    "push_failed": "push",
+    "branch_locked": "push",
+    "error": "start",
+}
+
+
+class Landing:
+    def __init__(
+        self,
+        root: Path,
+        config: ProjectConfig,
+        claims: Claims,
+        cache: CacheRepository,
+        jobs: JobRepository,
+        detach: bool = True,
+    ) -> None:
+        self.root = root
+        self.config = config
+        self.claims = claims
+        self.cache = cache
+        self.jobs = jobs
+        self.detach = detach
+        claims.landing = self
+
+    @classmethod
+    def open(cls, root: Path) -> Landing:
+        claims = Claims.open(root)
+        return cls(root, claims.config, claims, CacheRepository(claims.nodes.db), claims.jobs)
+
+    # -- entry points -------------------------------------------------------------------------
+
+    def start_land(self, node_id: str) -> str:
+        repos = self.claims.repos_of(node_id)
+        job = self._new_job(JobKind.LAND, node_id, repos[0], self.claims.target_of(node_id), {})
+        self._launch(job)
+        return job.id
+
+    def start_sync(self, node_id: str, pairs: list[tuple[str, str]]) -> str:
+        raise NotImplementedError("a container's cross-repository sync has no job kind yet")
+
+    def run(self, job_id: str) -> JobState:
+        job = self._job(job_id)
+        if job.state != JobState.RUNNING:
+            return job.state
+        job.pid = os.getpid()
+        self.jobs.update(job)
+        with self._beating(job.node_id):
+            try:
+                return self._land(job)
+            except (subprocess.CalledProcessError, OSError, OperationError) as exc:
+                detail = f"{exc}\n{getattr(exc, 'stderr', '') or ''}".strip()
+                return self._needs_agent(job, "error", error=detail)
+
+    def resume(self, job_id: str, own_defect: str | None = None, push: bool = False) -> JobState:
+        job = self._job(job_id)
+        if job.state != JobState.NEEDS_AGENT:
+            raise OperationError(
+                f"job {job_id} is {job.state}; only a job waiting for an agent resumes", 409
+            )
+        lease = self.claims.runtime.get_lease(job.node_id)
+        if lease is None or lease.ttl_seconds is None:
+            raise OperationError(
+                f"job {job_id} is not handed to an agent: take it with "
+                f"`tm task start {job.node_id}`",
+                409,
+            )
+        reason = str(job.result.get("reason"))
+        if own_defect is not None:
+            if job.kind == JobKind.SYNC:
+                raise OperationError(
+                    "a sync has no own defect: resolve it and resume, or release the node", 400
+                )
+            return self._own_defect(job, own_defect)
+        if push and reason != "unattributed":
+            raise OperationError("--push answers an unattributed red only", 400)
+        if (
+            reason == "conflict"
+            and job.worktree
+            and not gitops.settled(Path(job.worktree), self._merging(job))
+        ):
+            raise OperationError(
+                f"the merge in {job.worktree} is not committed: resolve every path and commit, "
+                "then resume",
+                409,
+            )
+        step = "push" if push else RESUME_AT.get(reason, "start")
+        if step == "start":
+            self._remove_worktree(job)
+        job.step = step
+        job.state = JobState.RUNNING
+        job.result.pop("push_tries", None)
+        self.jobs.update(job)
+        self.claims.heartbeat(job.node_id)
+        if self.detach:
+            self._launch(job)
+            return JobState.RUNNING
+        return self.run(job.id)
+
+    # -- the landing steps --------------------------------------------------------------------
+
+    def _land(self, job: Job) -> JobState:
+        steps = {
+            "start": self._build,
+            "gate": self._gate,
+            "push": self._push,
+            "verify": self._verify,
+        }
+        while True:
+            assert job.step is not None, "a landing job always has a step"
+            nxt = steps[job.step](job)
+            if isinstance(nxt, JobState):
+                return nxt
+            job.step = nxt
+            job.heartbeat = datetime.now(tz=UTC)
+            self.jobs.update(job)
+
+    def _build(self, job: Job) -> str | JobState:
+        repo_dir, branch = self._dir(job), self.claims.branch_of(job.node_id)
+        target = self._target_ref(job)
+        if (
+            not gitops.rev_parse(repo_dir, f"refs/heads/{branch}")
+            or gitops.is_ancestor(repo_dir, branch, target)
+            or gitops.diff_quiet(repo_dir, target, branch)
+        ):
+            # A landing killed after its push, a repository with nothing to land, and a partial
+            # container landing retried all resume here.
+            job.result["already_landed"] = True
+            return "verify"
+        unmet = self.claims.conditions.unmet(job.node_id, ConditionStage.LANDING)
+        self._drop_cleared_red_targets(job.node_id, unmet)
+        if unmet:
+            return self._blocked(job, "landing waits on " + "; ".join(c.needs for c in unmet))
+        base = gitops.rev_parse(repo_dir, target)
+        worktree = self._worktree_path(job)
+        gitops.add_detached_worktree(repo_dir, worktree, base)
+        job.worktree = str(worktree)
+        job.result["base_sha"] = base
+        if not gitops.merge_no_ff(worktree, branch, self._subject(job)):
+            return self._needs_agent(job, "conflict")
+        return "gate"
+
+    def _gate(self, job: Job) -> str | JobState:
+        worktree = Path(self._require_worktree(job))
+        gate: Gate | None
+        if job.target == "main":
+            gate = self._gate_config(job.repo, "main")
+            if gate is None:
+                return self._needs_agent(
+                    job,
+                    "no gate",
+                    detail=f"repos.{job.repo}.gates.main is not configured: a repository with "
+                    "no main gate cannot land on main",
+                )
+        else:
+            # A node's own verification is red on its target by construction, so it has no
+            # baseline: red is an own defect.
+            passed, report = self.claims.verify(
+                job.node_id, gitops.rev_parse(worktree, "HEAD"), job.repo
+            )
+            job.result["own_verify"] = report
+            if not passed and not self._advisory(job.node_id):
+                return self._own_defect(job, f"own verifications red at the merge:\n{report}")
+            gate = self._gate_config(job.repo, "parent")
+            if gate is None:
+                return "push"
+        tip = gates.run_gate(self._render(gate, job, worktree), worktree, gate.timeout, gate.junit)
+        if tip.exit_code == 0:
+            return "push"
+        base = self._baseline(job, gate)
+        verdict = gates.attribute(tip, base)
+        if verdict == "push":
+            return "push"
+        if verdict == "own_defect":
+            added = sorted((tip.failing or frozenset()) - (base.failing or frozenset()))
+            why = f"adding {', '.join(added)}" if added else f"green on {job.target}"
+            return self._own_defect(job, f"gate red at the tip, {why}:\n{tip.tail}")
+        if verdict == "red_target":
+            return self._park_red_target(job, gate, base)
+        return self._needs_agent(job, "unattributed", tip=tip.tail, base=base.tail)
+
+    def _push(self, job: Job) -> str | JobState:
+        worktree = Path(self._require_worktree(job))
+        if job.target != "main":
+            return self._move_branch(job, worktree, "verify")
+        repo_dir = self._dir(job)
+        while int(job.result.get("push_tries", 0)) < PUSH_TRIES:
+            remote = gitops.ls_remote(repo_dir, "refs/heads/main")
+            if remote and remote != job.result["base_sha"]:
+                # The full gate runs at the tip that is pushed, so a moved main is merged in and
+                # gated again.
+                gitops.fetch(repo_dir)
+                subject = f"merge({job.node_id}): origin/main into its landing"
+                if not gitops.merge_no_ff(worktree, "origin/main", subject):
+                    return self._needs_agent(job, "conflict")
+                job.result["base_sha"] = gitops.rev_parse(repo_dir, "origin/main")
+                return "gate"
+            if remote and gitops.push(worktree, "main"):
+                return "verify"
+            job.result["push_tries"] = int(job.result.get("push_tries", 0)) + 1
+        return self._needs_agent(job, "push_failed")
+
+    def _move_branch(self, job: Job, worktree: Path, done: str) -> str | JobState:
+        """Moves a local container branch to the worktree's HEAD by compare-and-swap, under the
+        branch's lock; a branch that moved meanwhile is merged in and gated again."""
+        tries = int(job.result.get("push_tries", 0))
+        if tries >= PUSH_TRIES:
+            return self._needs_agent(job, "push_failed")
+        if not self._lock(job):
+            return self._needs_agent(job, "branch_locked")
+        ref = f"refs/heads/{job.target}"
+        repo_dir = self._dir(job)
+        try:
+            head = gitops.rev_parse(worktree, "HEAD")
+            if gitops.update_ref_cas(repo_dir, ref, head, str(job.result["base_sha"])):
+                return done
+            moved = gitops.rev_parse(repo_dir, ref)
+        finally:
+            self.jobs.release_branch(job.repo, job.target, job.id)
+        job.result["push_tries"] = tries + 1
+        if not gitops.merge_no_ff(worktree, moved, f"merge({job.node_id}): {job.target} moved"):
+            return self._needs_agent(job, "conflict")
+        job.result["base_sha"] = moved
+        return "gate"
+
+    def _verify(self, job: Job) -> JobState:
+        passed, report = self.claims.verify(job.node_id, self._target_ref(job), job.repo)
+        if not passed and not self._advisory(job.node_id):
+            # The code is on the target but the node's assertion does not hold there.
+            return self._own_defect(
+                job, f"verifications red on {job.target} after landing:\n{report}"
+            )
+        self._remove_worktree(job)
+        return self._succeed(job, report)
+
+    def _succeed(self, job: Job, report: str) -> JobState:
+        if not self._end(job, JobState.SUCCEEDED, verify=report):
+            return self._state(job)
+        self.claims.landed(job.node_id, f"{job.repo}: landed on {job.target}\n{report}")
+        return JobState.SUCCEEDED
+
+    # -- how a job ends -----------------------------------------------------------------------
+
+    def _end(self, job: Job, state: JobState, **result: Any) -> bool:
+        """False when the job was expired under us (its lease swept or released): the node is no
+        longer this job's to move."""
+        current = self.jobs.get(job.id)
+        if current is None or current.state not in LIVE:
+            return False
+        job.state = state
+        job.result.update(result)
+        job.heartbeat = datetime.now(tz=UTC)
+        self.jobs.update(job)
+        return True
+
+    def _state(self, job: Job) -> JobState:
+        current = self.jobs.get(job.id)
+        return current.state if current is not None else job.state
+
+    def _needs_agent(self, job: Job, reason: str, **detail: str) -> JobState:
+        if not self._end(job, JobState.NEEDS_AGENT, reason=reason, **detail):
+            return self._state(job)
+        self.claims.park(job.node_id)
+        return JobState.NEEDS_AGENT
+
+    def _own_defect(self, job: Job, finding: str) -> JobState:
+        self._remove_worktree(job)
+        if not self._end(job, JobState.OWN_DEFECT, finding=finding):
+            return self._state(job)
+        self.claims.landing_failed(job.node_id, f"{job.repo}: {finding}")
+        return JobState.OWN_DEFECT
+
+    def _blocked(self, job: Job, why: str, **extra: Any) -> JobState:
+        self._remove_worktree(job)
+        if not self._end(job, JobState.CONDITION_UNMET, why=why, **extra):
+            return self._state(job)
+        self.claims.landing_blocked(job.node_id, f"{job.repo}: {why}")
+        return JobState.CONDITION_UNMET
+
+    def _park_red_target(self, job: Job, gate: Gate, base: GateRun) -> JobState:
+        sha = str(job.result["base_sha"])
+        failing = sorted(base.failing or frozenset())
+        for cond in self.claims.nodes.get_conditions(job.node_id):
+            if cond.needs.startswith(gates.RED_TARGET):
+                self.claims.nodes.remove_condition(job.node_id, cond.idx)
+        self.claims.nodes.add_condition(
+            Condition(
+                node_id=job.node_id,
+                idx=0,
+                needs=f"{gates.RED_TARGET}: {job.repo} main at {sha[:12]} fails the "
+                f"{len(failing)} test(s) this landing fails",
+                command=gates.red_target_command(
+                    self.root, job.repo, sha, gates.template_hash(gate.command)
+                ),
+                stage=ConditionStage.LANDING,
+            )
+        )
+        mark = {
+            "repo": job.repo,
+            "sha": sha,
+            "failing": failing,
+            "since": datetime.now(tz=UTC).isoformat(),
+        }
+        return self._blocked(
+            job, f"main is red at {sha[:12]} with the same failures", red_target=mark
+        )
+
+    def _drop_cleared_red_targets(self, node_id: str, unmet: list[Condition]) -> None:
+        still = {c.idx for c in unmet}
+        for cond in self.claims.nodes.get_conditions(node_id):
+            if cond.needs.startswith(gates.RED_TARGET) and cond.idx not in still:
+                self.claims.nodes.remove_condition(node_id, cond.idx)
+
+    # -- helpers ------------------------------------------------------------------------------
+
+    def _new_job(
+        self, kind: JobKind, node_id: str, repo: str, target: str, result: dict[str, Any]
+    ) -> Job:
+        return self.jobs.create(
+            Job(
+                kind=kind,
+                node_id=node_id,
+                repo=repo,
+                target=target,
+                state=JobState.RUNNING,
+                step="start",
+                result=result,
+            )
+        )
+
+    def _launch(self, job: Job) -> None:
+        if not self.detach:
+            return
+        log = self.root / ".taskmanager" / "jobs" / f"{job.id}.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("ab") as out:
+            # The child records its own pid: a write from here could overwrite its first step.
+            subprocess.Popen(
+                [sys.executable, "-m", "taskmanager.engine.landing", "run", job.id]
+                + ["--root", str(self.root)],
+                cwd=self.root,
+                stdin=subprocess.DEVNULL,
+                stdout=out,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+
+    def _job(self, job_id: str) -> Job:
+        job = self.jobs.get(job_id)
+        if job is None:
+            raise OperationError(f"job '{job_id}' not found", 404)
+        return job
+
+    @contextmanager
+    def _beating(self, node_id: str) -> Iterator[None]:
+        stop = threading.Event()
+
+        def beat() -> None:
+            while not stop.wait(HEARTBEAT_SECONDS):
+                self.claims.heartbeat(node_id)
+
+        thread = threading.Thread(target=beat, daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join()
+
+    def _lock(self, job: Job) -> bool:
+        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        while not self.jobs.acquire_branch(job.repo, job.target, job.id):
+            if time.monotonic() > deadline:
+                return False
+            time.sleep(1)
+        return True
+
+    def _baseline(self, job: Job, gate: Gate) -> GateRun:
+        sha = str(job.result["base_sha"])
+        key = gates.template_hash(gate.command)
+        cached = self.cache.get_baseline(job.repo, sha, key)
+        if cached is not None:
+            return cached
+        worktree = self._worktree_path(job, "base")
+        gitops.add_detached_worktree(self._dir(job), worktree, sha)
+        try:
+            run = gates.run_gate(
+                self._render(gate, job, worktree), worktree, gate.timeout, gate.junit
+            )
+        finally:
+            GitManager(self._dir(job)).remove_worktree(worktree, force=True)
+        self.cache.put_baseline(job.repo, sha, key, run)
+        return run
+
+    def _advisory(self, node_id: str) -> bool:
+        """A rejection nobody below fixes lands where the parent's review sees it, so its own
+        verifications are reported, not enforced."""
+        node = self.claims.node(node_id)
+        return node.review and not node.fix and node.outcome == Outcome.REJECT
+
+    def _merging(self, job: Job) -> str:
+        if job.kind == JobKind.SYNC:
+            return str(job.result["source"])
+        return self.claims.branch_of(job.node_id)
+
+    def _target_ref(self, job: Job) -> str:
+        if job.target == "main":
+            gitops.fetch(self._dir(job))
+        return self.claims.target_ref(job.target)
+
+    def _gate_config(self, repo: str, which: Literal["main", "parent"]) -> Gate | None:
+        repo_config = self.config.repos.get(repo)
+        return repo_config.gates.get(which) if repo_config is not None else None
+
+    def _render(self, gate: Gate, job: Job, worktree: Path) -> str:
+        return gates.render(
+            gate.command, worktree=str(worktree), node=job.node_id, repo=job.repo, target=job.target
+        )
+
+    def _subject(self, job: Job) -> str:
+        return f"merge({job.node_id}): land {self.claims.branch_of(job.node_id)} on {job.target}"
+
+    def _dir(self, job: Job) -> Path:
+        return self.root / job.repo
+
+    def _worktree_path(self, job: Job, suffix: str = "") -> Path:
+        name = f"{job.id}-{suffix}" if suffix else job.id
+        return self.root / self.config.worktree_dir / "land" / name
+
+    def _require_worktree(self, job: Job) -> str:
+        if not job.worktree:
+            raise OperationError(f"job {job.id} has no worktree at step {job.step}", 409)
+        return job.worktree
+
+    def _remove_worktree(self, job: Job) -> None:
+        if job.worktree and Path(job.worktree).exists():
+            GitManager(self._dir(job)).remove_worktree(Path(job.worktree), force=True)
+        job.worktree = None
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="python -m taskmanager.engine.landing")
+    commands = parser.add_subparsers(dest="command", required=True)
+    run = commands.add_parser("run", help="run a landing or sync job to its end or next stop")
+    run.add_argument("job_id")
+    run.add_argument("--root", type=Path, required=True)
+    args = parser.parse_args(argv)
+    print(Landing.open(args.root.resolve()).run(args.job_id))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

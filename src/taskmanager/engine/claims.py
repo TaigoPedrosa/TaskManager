@@ -47,6 +47,7 @@ from taskmanager.engine.chains import satisfied
 from taskmanager.engine.conditions import ConditionRunner, is_executable
 from taskmanager.engine.config import ConfigStore, ProjectConfig
 from taskmanager.engine.decisions import open_failed_decision, open_stranded_decision
+from taskmanager.engine.gates import RED_TARGET
 from taskmanager.engine.git import GitManager
 from taskmanager.engine.operations import OperationError, Operations
 from taskmanager.engine.routing import model_for
@@ -585,7 +586,80 @@ class Claims:
             expired = self._expire_jobs(node_id)
             if Status(found.status) in IN_STEP or expired:
                 self._advance(found, Event.EXPIRED, "lease sweep")
+        self._escalate_red_targets()
         return swept
+
+    def landed(self, node_id: str, report: str) -> Status:
+        return self._advance(self.node(node_id), Event.LANDED, "job land", note=("merge", report))
+
+    def landing_failed(self, node_id: str, finding: str) -> Status:
+        return self._advance(
+            self.node(node_id),
+            Event.OWN_DEFECT,
+            "job land",
+            note=("merge", finding),
+            evidence=finding,
+        )
+
+    def landing_blocked(self, node_id: str, why: str) -> Status:
+        """The node goes back to where its merge was claimed from; a condition is not a failure."""
+        return self._advance(
+            self.node(node_id), Event.RELEASE_BLOCKED, "job land", note=("merge", why)
+        )
+
+    def park(self, node_id: str) -> None:
+        """A job stopped for an agent keeps its lease with no ttl, so sweep leaves it alone."""
+        self.runtime.park(node_id)
+
+    def _escalate_red_targets(self) -> list[str]:
+        """One decision per red `main` that has held landings longer than
+        red_target_decision_after, blocking every landing it holds."""
+        parked: dict[tuple[str, str], list[tuple[str, datetime, list[str]]]] = {}
+        for node in self.nodes.list_nodes():
+            if node.kind == NodeKind.DECISION:
+                continue
+            if not any(c.needs.startswith(RED_TARGET) for c in self.nodes.get_conditions(node.id)):
+                continue
+            marks = [
+                j.result["red_target"]
+                for j in self.jobs.for_node(node.id)
+                if "red_target" in j.result
+            ]
+            if not marks:
+                continue
+            mark = marks[-1]
+            since = datetime.fromisoformat(str(mark["since"]))
+            key = (str(mark["repo"]), str(mark["sha"]))
+            parked.setdefault(key, []).append((node.id, since, list(mark["failing"])))
+        opened: list[str] = []
+        now = datetime.now(tz=UTC)
+        for (repo, sha), entries in parked.items():
+            oldest = min(since for _, since, _ in entries)
+            if (now - oldest).total_seconds() < self.config.red_target_decision_after:
+                continue
+            slug = f"red-target-{repo}-{sha[:12]}"
+            held = [node_id for node_id, _, _ in entries]
+            existing = self.nodes.get_node(f"decision-{slug}")
+            if existing is None:
+                opened.append(
+                    self.ops.add_decision(
+                        f"main of {repo} is red at {sha[:12]} and {len(held)} landing(s) wait on "
+                        "it: who fixes main?",
+                        slug=slug,
+                        context="Failing on main and at every parked landing:\n"
+                        + "\n".join(entries[0][2]),
+                        options=[
+                            "fixed|main is fixed; the parked landings retry on their own",
+                            "investigate|Someone investigates the red main",
+                        ],
+                        blocks=held,
+                    )
+                )
+            elif existing.status == DecisionStatus.OPEN:
+                unlinked = [n for n in held if existing.id not in self.nodes.get_dependencies(n)]
+                if unlinked:
+                    self.ops.link_decision(existing.id, add=unlinked)
+        return opened
 
     def _expire_jobs(self, node_id: str) -> int:
         live = [j for j in self.jobs.for_node(node_id) if j.state in LIVE_JOBS]

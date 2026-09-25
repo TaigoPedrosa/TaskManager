@@ -4,6 +4,7 @@ Nothing here touches the network: every `origin` is a bare repository under the 
 """
 
 import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -11,9 +12,11 @@ import yaml
 from taskmanager.core.enums import NodeKind, RelationType
 from taskmanager.core.models import Node, NodeRelation
 from taskmanager.core.status import Merge, Status
+from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.engine.claims import Claims
-from taskmanager.engine.config import ProjectConfig
+from taskmanager.engine.config import Gate, ProjectConfig
+from taskmanager.engine.landing import Landing
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -169,3 +172,41 @@ def stored(claims: Claims, node_id: str) -> Node:
 def section(claims: Claims, node_id: str, key: str) -> str:
     found = claims.nodes.get_section(node_id, key)
     return found.content if found else ""
+
+
+GATE_SCRIPT = """
+import pathlib, sys
+worktree, log = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+listed = worktree / "failing.txt"
+names = listed.read_text().split() if listed.exists() else []
+cases = "".join(f'<testcase classname="suite" name="{n}"><failure/></testcase>' for n in names)
+(worktree / "report.xml").write_text(
+    f'<testsuite><testcase classname="suite" name="ok"/>{cases}</testsuite>'
+)
+with log.open("a") as out:
+    out.write(worktree.name + "\\n")
+sys.exit(1 if names else 0)
+"""
+
+
+def junit_gate(tmp_path: Path) -> Gate:
+    """A gate that fails the tests named in the worktree's failing.txt, reports them as JUnit
+    and logs the worktree it ran in (a baseline's is named `<job>-base`)."""
+    script = tmp_path / "gate.py"
+    script.write_text(GATE_SCRIPT)
+    log = tmp_path / "gate.log"
+    return Gate(
+        command=f"{sys.executable} {script} {{worktree}} {log}", junit="report.xml", timeout=60
+    )
+
+
+def gate_runs(tmp_path: Path) -> list[str]:
+    log = tmp_path / "gate.log"
+    return log.read_text().split() if log.exists() else []
+
+
+def attach_landing(claims: Claims, detach: bool = False) -> Landing:
+    """detach=False records jobs without spawning, so a test runs each one in-process."""
+    return Landing(
+        claims.root, claims.config, claims, CacheRepository(claims.nodes.db), claims.jobs, detach
+    )

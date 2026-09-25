@@ -166,3 +166,39 @@ def ensure_branch(repo: Path, branch: str, base: str) -> bool:
 
 def rename_branch(repo: Path, old: str, new: str) -> None:
     _run(repo, "branch", "-m", old, new)
+
+
+def merge_no_ff(worktree: Path, ref: str, subject: str) -> bool:
+    """False on a conflict, leaving the merge in progress for an agent to resolve."""
+    return _git(worktree, "merge", "--no-ff", "--no-edit", "-m", subject, ref).returncode == 0
+
+
+def update_ref_cas(repo: Path, ref: str, new: str, old: str) -> bool:
+    """Moves `ref` to `new` only if it still points at `old`."""
+    return _git(repo, "update-ref", ref, new, old).returncode == 0
+
+
+def ls_remote(repo: Path, ref: str) -> str:
+    """The sha `origin` holds for `ref`, or "" when it cannot be read."""
+    res = _git(repo, "ls-remote", "origin", ref)
+    fields = res.stdout.split()
+    return fields[0] if res.returncode == 0 and fields else ""
+
+
+def push(worktree: Path, target: str) -> bool:
+    """Never forced: a refused push means the target moved, and the caller merges it in."""
+    return _git(worktree, "push", "-q", "origin", f"HEAD:refs/heads/{target}").returncode == 0
+
+
+def add_detached_worktree(repo: Path, path: Path, commit: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _run(repo, "worktree", "add", "--detach", str(path), commit)
+
+
+def settled(worktree: Path, ref: str) -> bool:
+    """A handed-over merge is resolved: none in progress, nothing uncommitted, `ref` merged."""
+    return (
+        not rev_parse(worktree, "MERGE_HEAD")
+        and _git(worktree, "status", "--porcelain").stdout.strip() == ""
+        and is_ancestor(worktree, ref, "HEAD")
+    )
