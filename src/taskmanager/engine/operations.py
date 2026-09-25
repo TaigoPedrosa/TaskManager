@@ -204,7 +204,8 @@ class Operations:
 
     def nothing_to_land(self, container_id: str) -> bool:
         """True when the container's branch changes nothing against its landing target in every
-        repository its tasks name; a git error reads as a change."""
+        repository its tasks name; a git error, or a repository not cloned here, reads as a
+        change."""
         node = self.node_repo.get_node(container_id)
         if node is None:
             return False
@@ -225,8 +226,11 @@ class Operations:
                 frontier.append(child_id)
         root = self._project_root()
         return not any(
-            gitops.rev_parse(root / repo, f"refs/heads/{branch}")
-            and not gitops.diff_quiet(root / repo, base, branch)
+            not (root / repo / ".git").exists()
+            or (
+                gitops.rev_parse(root / repo, f"refs/heads/{branch}")
+                and not gitops.diff_quiet(root / repo, base, branch)
+            )
             for repo in sorted(repos)
         )
 

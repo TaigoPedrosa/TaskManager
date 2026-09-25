@@ -431,3 +431,15 @@ def test_a_move_completes_a_plan_left_with_nothing_to_land_and_keeps_one_with_co
 
     assert get(node_repo, empty).status == Status.COMPLETED
     assert get(node_repo, full).status == Status.IMPLEMENTED
+
+
+def test_a_plan_whose_repository_is_not_cloned_is_not_read_as_having_nothing_to_land(
+    env: Env,
+) -> None:
+    node_repo, _runtime, _ledger, ops = env
+    _spec, plan, task = tree(ops)
+    ops.update_node(task, repo="ghost")
+    extra = ops.add_task("Extra", plan, slug="T2")
+    set_status(node_repo, task, Status.COMPLETED)
+    ops.supersede(extra, task, "none")
+    assert get(node_repo, plan).status == Status.IMPLEMENTED
