@@ -35,7 +35,6 @@ The brief is `tm render <task-id> --view subagent`. The agent runs it; you do no
 
 - the task id, and the command to read it: `tm render <id> --view subagent`
 - the model you routed it to
-- the worktree base, so its claim lands where the others do: `tm run start <id> --worktree --worktree-dir <dir> --agent <name> --session <id>`, which prints the path it created
 - the report path
 - its role's guide: `tm guide implement`
 
@@ -65,7 +64,6 @@ Each stage is one claim and one release. The implementer, the reviewer, the fixe
 | `WAITING_FIXES` | a fixer | `FIXING`, locking the task's files again | `WAITING_REVIEW` |
 | `WAITING_MERGE` | a merge agent | `MERGING`, locking nothing | `COMPLETED`, after the merge verifies |
 
-Find each wave's next move with `tm task list --status <S> --yaml`. `COMPLETED` is set by whoever holds the merge lease — the merge agent, or the workflow script that claimed for it — after `tm verify run` exits 0 against `origin/main`, and nowhere else; what you set directly, with `tm run stop <id> --status <S>` and no lease, is `NOT_STARTED`, `DEFERRED` and `ABANDONED`.
 
 A reviewer is dispatched without `--worktree`; its claim reads the branch and locks nothing, so it never holds a sibling out of a wave. A fix round returns to `WAITING_REVIEW` and reuses the same branch, so the reviewer re-reads a diff rather than a tree.
 
@@ -92,12 +90,10 @@ control flow that gets an agent to the next one. Everything below follows from t
   ids is the one case where a literal is correct — and then it is a literal because the *user*
   fixed the set, not because the script did.
 - **The script owns the transitions; the stage agent owns the work.** The script runs
-  `tm run start` before it dispatches a stage's agent and `tm run stop` after the agent returns,
   choosing the status by branching on the agent's structured verdict. Both still go through
   `tm run`, so the lease, the file locks and the history are written as before and `tm run list`
   agrees with `tm task list`. An agent left to claim for itself explores first, and another
   dispatcher reading `tm next` in the meantime sends a second agent to the same task. The agent's
-  prompt says its lease is held and forbids `tm run start`, `stop`, `release` and `heartbeat`.
   Never move a status any other way.
 - **An agent that dies leaves the script holding its lease.** `agent()` returns `null` when a
   subagent is skipped or dies on a terminal error, and the task claimed for it stays `IMPLEMENTING`
@@ -140,10 +136,7 @@ Build the wave against the trees, not against the last wave's reports. A pin, a 
 
 ## 8. When the plan changes
 
-- **Defer.** Write why first, then park it: `tm section set <id>:deferral --file <path>` then `tm run stop <id> --status DEFERRED`. A deferred task leaves `tm next` and keeps its dependents blocked, so defer a blocker only after superseding or re-pointing them.
 - **Supersede.** `tm task supersede <old-id> <new-id> --transfer-blocks all` sets the old task `SUPERSEDED` and re-points every dependent at the new one. The new task must already exist (otherwise nothing is changed and it exits 1). A lease and file locks held by the old task are released. A comma-separated id list re-points only those; `--transfer-blocks none` re-points nobody and leaves each dependent pointing at a `SUPERSEDED` task, **which satisfies the dependency** — use it to release dependents, never to hold them.
-- **Abandon.** `tm run stop <id> --status ABANDONED`, and only where nothing depends on it: `ABANDONED` never satisfies a dependency, so every dependent stays blocked forever.
-- **Close a plan.** When its tasks are `COMPLETED` or `SUPERSEDED`, `tm run stop <plan-id> --status COMPLETED`. Check with `tm task list --plan <plan-id> --yaml` first; nothing closes it for you. `tm plan list --yaml` shows the stored `status` and a `state` worked out from the plan's tasks: a plan whose tasks are all done reads `state: COMPLETED` while its `status` stays until you stop it.
 
 ## Decisions are the owner's queue, not yours
 

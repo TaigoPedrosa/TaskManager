@@ -16,6 +16,7 @@ from taskmanager.engine.heuristics import RecommendationEngine
 from taskmanager.engine.operations import Operations
 from taskmanager.engine.runtime import ExecutionCoordinator
 from taskmanager.engine.search import EmbeddingProvider, SearchEngine, build_provider
+from taskmanager.engine.snapshot import SnapshotBuilder
 from taskmanager.engine.verification import VerificationEngine
 from taskmanager.renderers.importers import BulkImporter
 from taskmanager.renderers.markdown import MarkdownRenderer
@@ -51,6 +52,12 @@ class TaskManagerProvider(Provider):
     @provide(scope=Scope.APP)
     def cache_repo(self, db_mgr: DatabaseManager) -> CacheRepository:
         return CacheRepository(db_mgr)
+
+    @provide(scope=Scope.APP)
+    def snapshots(
+        self, node_repo: NodeRepository, runtime_repo: RuntimeRepository, job_repo: JobRepository
+    ) -> SnapshotBuilder:
+        return SnapshotBuilder(node_repo, runtime_repo, job_repo)
 
     @provide(scope=Scope.APP)
     def condition_runner(
@@ -134,6 +141,7 @@ class TaskManagerProvider(Provider):
     get_ledger_repo = ledger_repo
     get_job_repo = job_repo
     get_cache_repo = cache_repo
+    get_snapshots = snapshots
     get_condition_runner = condition_runner
     get_graph_engine = graph_engine
     get_git_mgr = git_mgr

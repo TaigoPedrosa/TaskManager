@@ -6,7 +6,6 @@ For the agent that closes a reviewer's findings on a `WAITING_FIXES` task and ha
 
 ```
 tm task list --status WAITING_FIXES --yaml
-tm run start <task-id> --worktree --worktree-dir <dir> --agent <name> --session <id> --ttl 900
 ```
 
 The claim sets the task to `FIXING` and locks the task's declared files. `--worktree` reuses branch `tm/<task-id>` with every commit the earlier rounds made on it: if the worktree still exists it is handed back as it was, and if it was removed it is re-added on the same branch. Nothing is cut from `origin/main` a second time.
@@ -31,7 +30,6 @@ One commit per finding, or one commit naming them all — either way, every comm
 ## 3. Verify and keep the lease alive
 
 ```
-tm run heartbeat
 tm verify run <task-id>
 ```
 
@@ -40,7 +38,6 @@ Exit 1 names the failing rows. A path check reads the task's `target_repo` at `o
 ## 4. Hand it back
 
 ```
-tm run stop <task-id> --status WAITING_REVIEW
 ```
 
 On every exit path, including when you could not close a finding. `--status NOT_STARTED` only when the task turns out to be the wrong work entirely. Leave the worktree in place.

@@ -73,7 +73,8 @@ def test_cli_lifecycle_spec_plan_task_render_next(tmp_path: Path) -> None:
             "AUTH",
             "--slug",
             "REVPLAN",
-            "--require-review",
+            "--review",
+            "--fix",
             "--path",
             str(tmp_path),
         ],
@@ -262,62 +263,6 @@ def test_spec_filter_walks_a_plan_nested_under_another_plan(tmp_path: Path) -> N
     res = runner.invoke(app, ["task", "list", "--spec", "none", "--json", "--path", str(tmp_path)])
     assert res.exit_code == 0
     assert json.loads(res.stdout) == []
-
-
-def test_cli_execution_leases_and_runtime(tmp_path: Path) -> None:
-    runner.invoke(app, ["init", "--path", str(tmp_path)])
-    runner.invoke(app, ["spec", "add", "Core Spec", "--slug", "CORE", "--path", str(tmp_path)])
-    runner.invoke(
-        app, ["plan", "add", "Core Plan", "--spec", "CORE", "--slug", "P1", "--path", str(tmp_path)]
-    )
-    runner.invoke(
-        app,
-        ["task", "add", "Task Run", "--plan", "CORE-P1", "--slug", "RUN1", "--path", str(tmp_path)],
-    )
-
-    # run start
-    res = runner.invoke(
-        app,
-        [
-            "run",
-            "start",
-            "CORE-P1-RUN1",
-            "--agent",
-            "agent-alpha",
-            "--session",
-            "sess-123",
-            "--path",
-            str(tmp_path),
-        ],
-    )
-    assert res.exit_code == 0
-    assert "Started task CORE-P1-RUN1" in res.stdout
-
-    # run heartbeat
-    res = runner.invoke(
-        app,
-        ["run", "heartbeat", "CORE-P1-RUN1", "--path", str(tmp_path)],
-    )
-    assert res.exit_code == 0
-    assert "Heartbeat recorded" in res.stdout
-
-    # run list
-    res = runner.invoke(app, ["run", "list", "--path", str(tmp_path)])
-    assert res.exit_code == 0
-    assert "CORE-P1-RUN1" in res.stdout
-    assert "agent-alpha" in res.stdout
-
-    # run stop
-    res = runner.invoke(
-        app,
-        ["run", "stop", "CORE-P1-RUN1", "--status", "WAITING_REVIEW", "--path", str(tmp_path)],
-    )
-    assert res.exit_code == 0
-    assert "Stopped task CORE-P1-RUN1" in res.stdout
-
-    # run sweep
-    res = runner.invoke(app, ["run", "sweep", "--path", str(tmp_path)])
-    assert res.exit_code == 0
 
 
 def test_cli_task_supersede(tmp_path: Path) -> None:
@@ -637,52 +582,13 @@ def test_cli_section_remove_deletes_a_section(tmp_path: Path) -> None:
     assert "No section" in res.stdout
 
 
-def test_cli_run_release_drops_the_lease_without_changing_status(tmp_path: Path) -> None:
-    runner.invoke(app, ["init", "--path", str(tmp_path)])
-    runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "--path", str(tmp_path)])
-    runner.invoke(
-        app, ["plan", "add", "P", "--spec", "S1", "--slug", "P1", "--path", str(tmp_path)]
-    )
-    runner.invoke(
-        app, ["task", "add", "T", "--plan", "S1-P1", "--slug", "t1", "--path", str(tmp_path)]
-    )
-    runner.invoke(
-        app,
-        [
-            "run",
-            "start",
-            "S1-P1-t1",
-            "--agent",
-            "agent-a",
-            "--session",
-            "sess-a",
-            "--path",
-            str(tmp_path),
-        ],
-    )
-
-    res = runner.invoke(app, ["run", "release", "S1-P1-t1", "--path", str(tmp_path)])
-    assert res.exit_code == 0
-    assert "Released lease for S1-P1-t1" in res.stdout
-
-    res = runner.invoke(app, ["run", "list", "--path", str(tmp_path)])
-    assert "S1-P1-t1" not in res.stdout
-
-    doc = json.loads(
-        runner.invoke(app, ["task", "get", "S1-P1-t1", "--json", "--path", str(tmp_path)]).stdout
-    )
-    assert doc["status"] == "IMPLEMENTING"
-
-
-def test_spec_and_plan_list_and_get_show_derived_state_not_stored_status(
+def test_spec_and_plan_list_and_get_show_the_display_beside_the_stored_status(
     tmp_path: Path,
 ) -> None:
-    # §3.2a: "A plan's and a spec's status is always derived from their children, everywhere
-    # it is shown ... `tm plan list`, `tm spec list`, `tm plan get`, `tm spec get`."
-    from taskmanager.core.enums import NodeStatus
     from taskmanager.core.status import Status
     from taskmanager.db.connection import DatabaseManager
     from taskmanager.db.node_repo import NodeRepository
+    from taskmanager.engine.snapshot import roll_up_ancestors
 
     runner.invoke(app, ["init", "--path", str(tmp_path)])
     runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "--path", str(tmp_path)])
@@ -692,40 +598,21 @@ def test_spec_and_plan_list_and_get_show_derived_state_not_stored_status(
     runner.invoke(
         app, ["task", "add", "T", "--plan", "S1-P1", "--slug", "t1", "--path", str(tmp_path)]
     )
-
-    db = DatabaseManager(tmp_path / ".taskmanager")
-    node_repo = NodeRepository(db)
+    node_repo = NodeRepository(DatabaseManager(tmp_path / ".taskmanager"))
     task = node_repo.get_node("S1-P1-t1")
     assert task is not None
-    task.status = NodeStatus.COMPLETED
+    task.status = Status.COMPLETED
     node_repo.save_node(task)
-
-    # The plan's and spec's own stored status is still NOT_STARTED; list/get read the state
-    # rolled up from the (now-completed) task instead.
-    plan_stored = node_repo.get_node("S1-P1")
-    spec_stored = node_repo.get_node("S1")
-    assert plan_stored is not None and plan_stored.status == Status.READY
-    assert spec_stored is not None and spec_stored.status == Status.READY
+    roll_up_ancestors(node_repo, "S1-P1-t1")
 
     res = runner.invoke(app, ["plan", "list", "--spec", "S1", "--path", str(tmp_path)])
-    assert res.exit_code == 0
-    assert "COMPLETED" in res.stdout
-    assert "NOT_STARTED" not in res.stdout
-
+    assert res.exit_code == 0 and "WAITING_MERGE" in res.stdout
     res = runner.invoke(app, ["plan", "get", "S1-P1", "--path", str(tmp_path)])
-    assert res.exit_code == 0
-    assert "Status: READY" in res.stdout
-    assert "State: COMPLETED" in res.stdout
-
+    assert "Status: IMPLEMENTED" in res.stdout and "State: WAITING_MERGE" in res.stdout
     res = runner.invoke(app, ["spec", "list", "--path", str(tmp_path)])
-    assert res.exit_code == 0
-    assert "COMPLETED" in res.stdout
-    assert "NOT_STARTED" not in res.stdout
-
+    assert res.exit_code == 0 and "IMPLEMENTING" in res.stdout
     res = runner.invoke(app, ["spec", "get", "S1", "--path", str(tmp_path)])
-    assert res.exit_code == 0
-    assert "Status: READY" in res.stdout
-    assert "State: COMPLETED" in res.stdout
+    assert "Status: READY" in res.stdout and "State: IMPLEMENTING" in res.stdout
 
 
 def test_plan_list_filters_by_stored_parent_not_id_prefix(tmp_path: Path) -> None:

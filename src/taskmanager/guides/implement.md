@@ -16,7 +16,6 @@ That is the whole assignment: the task's frontmatter, its parent's context, its 
 ## 2. Claim it
 
 ```
-tm run start <task-id> --worktree --worktree-dir <dir> --agent <name> --session <id> --ttl 900
 ```
 
 It sets the task to `IMPLEMENTING`, locks every path the task declares, and prints the worktree it created. The worktree is `<dir>/<target_repo>-<task-id>`; its branch is `tm/<task-id>`, cut from that repository's `origin/main` (from `HEAD` when the repository has no `origin/main`) with no upstream, so a bare `git push` cannot reach main. Without `--worktree-dir`, worktrees go to `$TM_WORKTREES`, else `<project root>/.worktrees`. Without `--ttl`, the lease lasts 300 seconds.
@@ -36,12 +35,10 @@ It refuses, exit 1, and claims nothing when:
 
 Every read, edit, command and commit happens under the printed worktree path. Check the prefix of each path you edit, not just its basename: the same file exists in the project's own checkout. Commit on `tm/<task-id>` with an explicit pathspec. Do not merge, do not rebase, do not push any other branch.
 
-Inside the worktree, `tm` finds the project and the task by itself, so `tm run heartbeat`, `tm verify run` and `tm run stop` take no id.
 
 ## 4. Keep the lease alive
 
 ```
-tm run heartbeat
 ```
 
 Run it whenever you have been working longer than the TTL. `No active lease found for <id>` (exit 1) means the lease is gone and another agent may now hold the task: stop editing and report.
@@ -70,7 +67,6 @@ A gate, a build, an external state change — pick by duration, because duration
 |:--|:--|
 | under 10 minutes | a single foreground call to completion: the tool's own blocking `wait` where one exists (`aws ... wait ...`), else `timeout 540 bash -c 'until <cond>; do sleep 15; done'; echo $?` |
 | 10–30 minutes | a Monitor with a filter matching every terminal state, not only success |
-| over 30 minutes | it is not a wait, it is a task — `tm run stop --status NOT_STARTED`, report what is pending, let the dispatcher re-dispatch behind it |
 
 Never end your turn to wait on a background run "until notified." A background command's completion notification reaches you only while you are still working — ending your turn is what loses it, and nothing resumes you afterward. The output is already on disk; `tail` it instead of waiting for word of it.
 
@@ -87,7 +83,6 @@ Name the options you considered and the one you recommend. Then release the task
 ## 6. Hand it off — on every exit path
 
 ```
-tm run stop <task-id> --status WAITING_REVIEW
 ```
 
 `--status NOT_STARTED` instead when you are blocked or out of scope; the task returns to the ready list with the branch intact. Leave the worktree in place: the fix round reuses it, and the merge role removes it. Do this before you go idle, every time, including when you failed.

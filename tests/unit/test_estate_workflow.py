@@ -345,7 +345,7 @@ def test_an_export_restores_into_a_fresh_root_and_exports_identically(tmp_path: 
     runner.invoke(
         app, ["task", "update", "S1-P1-a", "--set", 'declared_files=["web/a"]', "-C", str(source)]
     )
-    runner.invoke(app, ["run", "stop", "S1-P1-a", "--status", "DEFERRED", "-C", str(source)])
+    runner.invoke(app, ["task", "defer", "S1-P1-a", "--note", "later", "-C", str(source)])
     runner.invoke(app, ["section", "set", "S1:overview", "the spec text", "-C", str(source)])
     runner.invoke(app, ["config", "set", "lease_ttl", "600", "-C", str(source)])
     runner.invoke(app, ["config", "set", "embeddings.provider", "mock", "-C", str(source)])
@@ -362,7 +362,9 @@ def test_an_export_restores_into_a_fresh_root_and_exports_identically(tmp_path: 
     restored = json.loads(
         runner.invoke(app, ["task", "get", "S1-P2-b", "--json", "-C", str(fresh)]).stdout
     )
-    assert [d["id"] for d in restored["depends_on"]] == ["S1-P1-a"]
+    # Deferring a task that others depend on strands those dependents behind a decision
+    # ("drop the edge, defer, or abandon?"), so b now also waits on that decision.
+    assert [d["id"] for d in restored["depends_on"]] == ["S1-P1-a", "decision-D1"]
     assert json.loads((tmp_path / "e1" / "_config.json").read_text()) == {
         "embeddings": {"provider": "mock"},
         "lease_ttl": 600,
@@ -488,24 +490,39 @@ def test_reads_are_json_or_yaml_and_the_two_agree(tmp_path: Path) -> None:
         assert json.loads(as_json.stdout) == yaml.safe_load(as_yaml.stdout)
         assert len(as_yaml.stdout) < len(as_json.stdout)
     rows = json.loads(runner.invoke(app, ["task", "list", "--json", "-C", str(tmp_path)]).stdout)
-    assert {r["id"]: r["state"] for r in rows} == {"S1-P1-a": "READY", "S1-P1-b": "BLOCKED"}
+    assert {r["id"]: r["state"] for r in rows} == {
+        "S1-P1-a": "READY",
+        "S1-P1-b": "BLOCKED_BY_TASK",
+    }
 
 
 def test_task_get_json_names_blockers_and_the_lease(tmp_path: Path) -> None:
+    from taskmanager.core.models import Lease
+    from taskmanager.core.status import Action, Status
+
     _seed_estate(tmp_path)
-    doc = json.loads(
-        runner.invoke(app, ["task", "get", "S1-P1-b", "--json", "-C", str(tmp_path)]).stdout
-    )
+    root = str(tmp_path)
+    doc = json.loads(runner.invoke(app, ["task", "get", "S1-P1-b", "--json", "-C", root]).stdout)
     assert doc["blocked_by"] == ["S1-P1-a"]
     assert doc["depends_on"] == [{"id": "S1-P1-a", "status": "READY"}]
     assert doc["lease"] is None
-    runner.invoke(
-        app, ["run", "start", "S1-P1-a", "--agent", "x", "--session", "y", "-C", str(tmp_path)]
+    db = DatabaseManager(tmp_path / ".taskmanager")
+    node_repo = NodeRepository(db)
+    node = node_repo.get_node("S1-P1-a")
+    assert node is not None
+    node.status, node.claimed_from = Status.IMPLEMENTING, Status.READY
+    lease = Lease(
+        task_id="S1-P1-a",
+        agent_id="x",
+        session_id="y",
+        branch_name="tm/S1-P1-a",
+        action=Action.IMPLEMENT,
+        ttl_seconds=3600,
     )
-    leased = json.loads(
-        runner.invoke(app, ["task", "get", "S1-P1-a", "--json", "-C", str(tmp_path)]).stdout
-    )
-    assert leased["state"] == "IN_FLIGHT" and leased["lease"]["agent_id"] == "x"
+    assert RuntimeRepository(db).claim(lease, [], node)
+    leased = json.loads(runner.invoke(app, ["task", "get", "S1-P1-a", "--json", "-C", root]).stdout)
+    assert leased["state"] == "IMPLEMENTING" and leased["lease"]["agent_id"] == "x"
+    assert leased["lease"]["action"] == "implement"
     assert "body" in leased["sections"]
 
 
@@ -580,40 +597,6 @@ def test_a_merge_claim_refuses_a_worktree(db: DatabaseManager) -> None:
     assert repo.get_node("T-1").status == NodeStatus.MERGING  # type: ignore[union-attr]
 
 
-def test_a_swept_merge_lease_returns_the_task_to_waiting_merge(tmp_path: Path) -> None:
-    _seed_estate(tmp_path)
-    for status_flag in ("WAITING_REVIEW", "WAITING_FIXES", "WAITING_MERGE"):
-        runner.invoke(
-            app, ["run", "start", "S1-P1-a", "--agent", "x", "--session", "y", "-C", str(tmp_path)]
-        )
-        runner.invoke(app, ["run", "stop", "S1-P1-a", "--status", status_flag, "-C", str(tmp_path)])
-    runner.invoke(
-        app,
-        [
-            "run",
-            "start",
-            "S1-P1-a",
-            "--agent",
-            "merger",
-            "--session",
-            "y",
-            "--ttl",
-            "1",
-            "-C",
-            str(tmp_path),
-        ],
-    )
-    import time
-
-    time.sleep(1.2)
-    out = runner.invoke(app, ["run", "sweep", "-C", str(tmp_path)])
-    assert "S1-P1-a" in out.output
-    doc = json.loads(
-        runner.invoke(app, ["task", "get", "S1-P1-a", "--json", "-C", str(tmp_path)]).stdout
-    )
-    assert doc["status"] == "WAITING_MERGE" and doc["lease"] is None
-
-
 def test_a_fix_round_reuses_the_branch_and_worktree_its_first_round_cut(
     db: DatabaseManager, tmp_path: Path
 ) -> None:
@@ -684,35 +667,6 @@ def test_completing_a_task_removes_the_worktree_it_no_longer_holds_a_lease_on(
     assert worktree.exists()
     coord.stop_task("T-1", NodeStatus.COMPLETED, remove_worktree=True)
     assert not worktree.exists()
-
-
-def test_a_swept_lease_returns_the_task_to_the_state_before_its_claim(tmp_path: Path) -> None:
-    _seed_estate(tmp_path)
-    runner.invoke(
-        app,
-        [
-            "run",
-            "start",
-            "S1-P1-a",
-            "--agent",
-            "x",
-            "--session",
-            "y",
-            "--ttl",
-            "1",
-            "-C",
-            str(tmp_path),
-        ],
-    )
-    import time
-
-    time.sleep(1.2)
-    out = runner.invoke(app, ["run", "sweep", "-C", str(tmp_path)])
-    assert "S1-P1-a" in out.output
-    doc = json.loads(
-        runner.invoke(app, ["task", "get", "S1-P1-a", "--json", "-C", str(tmp_path)]).stdout
-    )
-    assert doc["status"] == "NOT_STARTED" and doc["state"] == "READY" and doc["lease"] is None
 
 
 def test_an_empty_check_set_and_an_unknown_render_are_refusals(tmp_path: Path) -> None:
@@ -815,15 +769,21 @@ def test_next_returns_a_batch_whose_tasks_share_no_file(tmp_path: Path) -> None:
 
 
 def test_plan_list_reports_the_state_its_tasks_add_up_to(tmp_path: Path) -> None:
+    from taskmanager.core.status import Status
+    from taskmanager.engine.snapshot import roll_up_ancestors
+
     _seed_estate(tmp_path)
     rows = json.loads(runner.invoke(app, ["plan", "list", "--json", "-C", str(tmp_path)]).stdout)
-    # `status` is the plan's own stored field, untouched; `state` is the live rollup (§3.2a),
-    # which reads READY rather than NOT_STARTED once nothing has left its own starting status.
     assert rows[0]["status"] == "READY" and rows[0]["state"] == "READY"
-    for t in ("S1-P1-a", "S1-P1-b"):
-        runner.invoke(app, ["run", "stop", t, "--status", "COMPLETED", "-C", str(tmp_path)])
+    node_repo = NodeRepository(DatabaseManager(tmp_path / ".taskmanager"))
+    for task_id in ("S1-P1-a", "S1-P1-b"):
+        node = node_repo.get_node(task_id)
+        assert node is not None
+        node.status = Status.COMPLETED
+        node_repo.save_node(node)
+    roll_up_ancestors(node_repo, "S1-P1-a")
     rows = json.loads(runner.invoke(app, ["plan", "list", "--json", "-C", str(tmp_path)]).stdout)
-    assert rows[0]["status"] == "READY" and rows[0]["state"] == "COMPLETED"
+    assert rows[0]["status"] == "IMPLEMENTED" and rows[0]["state"] == "WAITING_MERGE"
 
 
 def test_task_depends_adds_removes_and_refuses_a_cycle_or_an_unknown_id(tmp_path: Path) -> None:
@@ -1013,6 +973,9 @@ def test_an_import_with_a_key_nothing_reads_is_refused_before_anything_is_writte
 def test_a_specs_state_rolls_up_from_its_plans_the_way_a_plans_does_from_its_tasks(
     tmp_path: Path,
 ) -> None:
+    from taskmanager.core.status import Status
+    from taskmanager.engine.snapshot import roll_up_ancestors
+
     root = str(tmp_path)
     runner.invoke(app, ["init", "-C", root])
     runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "-C", root])
@@ -1020,27 +983,31 @@ def test_a_specs_state_rolls_up_from_its_plans_the_way_a_plans_does_from_its_tas
     runner.invoke(app, ["plan", "add", "P2", "--spec", "S1", "--slug", "P2", "-C", root])
     runner.invoke(app, ["task", "add", "a", "--plan", "S1-P1", "--slug", "a", "-C", root])
     runner.invoke(app, ["task", "add", "b", "--plan", "S1-P2", "--slug", "b", "-C", root])
+    node_repo = NodeRepository(DatabaseManager(tmp_path / ".taskmanager"))
 
     def spec_row() -> dict[str, str]:
         rows = json.loads(runner.invoke(app, ["spec", "list", "--json", "-C", root]).stdout)
         return next(r for r in rows if r["id"] == "S1")
 
-    row = spec_row()
-    # `status` is the spec's own stored field, untouched; `state` is the live rollup (§3.2a).
-    assert row["status"] == "READY" and row["state"] == "READY"
+    def set_status(node_id: str, status: Status) -> None:
+        node = node_repo.get_node(node_id)
+        assert node is not None
+        node.status = status
+        node_repo.save_node(node)
 
-    runner.invoke(app, ["run", "start", "S1-P1-a", "--agent", "x", "--session", "y", "-C", root])
-    row = spec_row()
-    assert row["status"] == "READY" and row["state"] == "IMPLEMENTING"
-
-    runner.invoke(app, ["run", "stop", "S1-P1-a", "--status", "COMPLETED", "-C", root])
-    runner.invoke(app, ["run", "start", "S1-P2-b", "--agent", "x", "--session", "y", "-C", root])
-    runner.invoke(app, ["run", "stop", "S1-P2-b", "--status", "COMPLETED", "-C", root])
-    row = spec_row()
-    assert row["status"] == "READY" and row["state"] == "COMPLETED"
-
+    assert (spec_row()["status"], spec_row()["state"]) == ("READY", "READY")
+    set_status("S1-P1-a", Status.IMPLEMENTED)
+    assert (spec_row()["status"], spec_row()["state"]) == ("READY", "IMPLEMENTING")
+    for task_id in ("S1-P1-a", "S1-P2-b"):
+        set_status(task_id, Status.COMPLETED)
+        roll_up_ancestors(node_repo, task_id)
+    assert (spec_row()["status"], spec_row()["state"]) == ("READY", "IMPLEMENTING")
+    for plan_id in ("S1-P1", "S1-P2"):
+        set_status(plan_id, Status.COMPLETED)
+    roll_up_ancestors(node_repo, "S1-P1")
+    assert (spec_row()["status"], spec_row()["state"]) == ("IMPLEMENTED", "WAITING_MERGE")
     get_out = runner.invoke(app, ["spec", "get", "S1", "-C", root]).stdout
-    assert "State: COMPLETED" in get_out and "Status: READY" in get_out
+    assert "Status: IMPLEMENTED" in get_out and "State: WAITING_MERGE" in get_out
 
 
 def test_render_recursive_walks_spec_to_plans_to_tasks_in_order(tmp_path: Path) -> None:

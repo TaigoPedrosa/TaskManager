@@ -174,44 +174,6 @@ def test_render_a_decision(tmp_path: Path) -> None:
     assert "recommended" in res.output
 
 
-def test_run_stop_with_section_writes_both(tmp_path: Path) -> None:
-    _seed_task(tmp_path)
-    (tmp_path / "ruling.md").write_text("the ruling text", encoding="utf-8")
-    runner.invoke(app, ["run", "start", "S1-P1-T1", "-C", str(tmp_path)])
-    res = runner.invoke(
-        app,
-        [
-            "run",
-            "stop",
-            "S1-P1-T1",
-            "--status",
-            "COMPLETED",
-            "--section",
-            "ruling",
-            "--section-file",
-            str(tmp_path / "ruling.md"),
-            "-C",
-            str(tmp_path),
-        ],
-    )
-    assert res.exit_code == 0, res.output
-    task = json.loads(
-        runner.invoke(app, ["task", "get", "S1-P1-T1", "--json", "-C", str(tmp_path)]).stdout
-    )
-    assert task["status"] == "COMPLETED"
-    assert "ruling" in task["sections"]
-    section = runner.invoke(app, ["section", "get", "S1-P1-T1:ruling", "-C", str(tmp_path)]).stdout
-    assert "the ruling text" in section
-
-
-def test_run_stop_section_needs_section_file(tmp_path: Path) -> None:
-    _seed_task(tmp_path)
-    res = runner.invoke(
-        app, ["run", "stop", "S1-P1-T1", "--section", "ruling", "-C", str(tmp_path)]
-    )
-    assert res.exit_code != 0
-
-
 def test_attach_detach_and_attachments_check(tmp_path: Path) -> None:
     _seed_task(tmp_path)
     project_file = tmp_path / "shot.png"

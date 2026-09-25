@@ -3,7 +3,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Literal
 
-from taskmanager.core.display import Facts
+from taskmanager.core.display import Facts, display_status, phase
 from taskmanager.core.enums import NodeKind, RelationType, VerificationType
 from taskmanager.core.lifecycle import Cycle, next_action
 from taskmanager.core.models import Node
@@ -11,12 +11,14 @@ from taskmanager.core.rollup import rollup
 from taskmanager.core.status import (
     EXITS,
     Action,
+    ConditionStage,
     DecisionStatus,
     JobKind,
     JobState,
     Outcome,
     Status,
 )
+from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository, lease_alive
@@ -217,3 +219,46 @@ class SnapshotBuilder:
             busy=busy,
             literal_origin_main=any(names_origin_main(c) for c in commands),
         )
+
+
+class DisplayView:
+    """One snapshot, and the cached condition results, that every display in one read shares.
+
+    Conditions are read from the cache only: a reader must never wait on a condition's command.
+    """
+
+    def __init__(
+        self, builder: SnapshotBuilder, cache: CacheRepository | None = None, max_age: int = 0
+    ) -> None:
+        self.builder = builder
+        self.snapshot = builder.build()
+        self.cache = cache
+        self.max_age = max_age
+
+    def _unmet(self, node: Node) -> bool:
+        if self.cache is None:
+            return False
+        stages = {ConditionStage.CLAIM}
+        if next_action(self.builder.cycle(node)) == Action.MERGE:
+            stages.add(ConditionStage.LANDING)
+        for condition in self.builder.node_repo.get_conditions(node.id):
+            if condition.stage not in stages:
+                continue
+            code = self.cache.get_condition(node.id, condition.idx, condition.command, self.max_age)
+            if code is not None and code != 0:
+                return True
+        return False
+
+    def display(self, node: Node) -> str:
+        status = stored_status(node)
+        if not isinstance(status, Status):
+            return status.value
+        facts = replace(
+            self.builder.facts(node.id, self.snapshot), unmet_condition=self._unmet(node)
+        )
+        return display_status(self.builder.cycle(node), facts).value
+
+
+def phase_of(node: Node) -> str | None:
+    status = stored_status(node)
+    return phase(status).value if isinstance(status, Status) else None

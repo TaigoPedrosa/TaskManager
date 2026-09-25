@@ -1,5 +1,4 @@
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -7,11 +6,7 @@ import yaml
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import app
-from taskmanager.core.enums import NodeKind
-from taskmanager.core.models import Node
 from taskmanager.core.status import Action
-from taskmanager.db.connection import DatabaseManager
-from taskmanager.db.node_repo import NodeRepository
 from taskmanager.engine.config import (
     KEYS,
     LEASE_TTL_DEFAULTS,
@@ -194,60 +189,6 @@ def test_unset_of_the_last_key_removes_the_file(root: Path) -> None:
     assert not ConfigStore(root).path.exists()
     with pytest.raises(ConfigError):
         ConfigStore(root).unset("nope")
-
-
-def _git(cwd: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
-
-
-def _repo(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-    _git(path, "init", "-b", "main")
-    _git(path, "config", "user.email", "ci@example.com")
-    _git(path, "config", "user.name", "CI")
-    _git(path, "commit", "--allow-empty", "-m", "init")
-
-
-def test_run_start_takes_its_worktree_directory_and_ttl_through_the_precedence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = tmp_path / "estate"
-    _repo(root)
-    _repo(root / "web")
-    _git(root / "web", "update-ref", "refs/remotes/origin/main", "HEAD")
-    assert tm(root, "init")[0] == 0
-    nodes = NodeRepository(DatabaseManager(root / ".taskmanager"))
-    for n in range(1, 6):
-        nodes.save_node(Node(id=f"T-{n}", kind=NodeKind.TASK, title="t", target_repo="web"))
-
-    def start(task: str, *extra: str) -> tuple[Path, int]:
-        code, out = tm(root, "run", "start", task, "--worktree", *extra)
-        assert code == 0, out
-        lease = next(
-            lease
-            for lease in json.loads(tm(root, "run", "list", "--json")[1])["leases"]
-            if lease["task_id"] == task
-        )
-        return Path(lease["worktree_path"]).parent, lease["ttl_seconds"]
-
-    assert start("T-1") == (root / ".worktrees", LEASE_TTL_DEFAULTS["implement"])
-
-    tm(root, "config", "set", "worktree_dir", "in-file")
-    tm(root, "config", "set", "lease_ttl", "500")
-    assert start("T-2") == (root / "in-file", 500)
-
-    monkeypatch.setenv("TM_WORKTREES", str(tmp_path / "from-env"))
-    monkeypatch.setenv("TM_LEASE_TTL", "700")
-    assert start("T-3") == (tmp_path / "from-env", 700)
-
-    flagged = tmp_path / "from-flag"
-    assert start("T-4", "--worktree-dir", str(flagged), "--ttl", "900") == (flagged, 900)
-
-    monkeypatch.delenv("TM_WORKTREES")
-    monkeypatch.delenv("TM_LEASE_TTL")
-    tm(root, "config", "unset", "worktree_dir")
-    tm(root, "config", "unset", "lease_ttl")
-    assert start("T-5") == (root / ".worktrees", LEASE_TTL_DEFAULTS["implement"])
 
 
 def test_the_lifecycle_settings_default_to_the_documented_values() -> None:

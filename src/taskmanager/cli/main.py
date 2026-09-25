@@ -4,6 +4,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,30 +20,42 @@ from taskmanager.core.enums import (
     ImportFormat,
     LedgerCommand,
     NodeKind,
-    NodeStatus,
     RecommendationStrategy,
     RenderView,
     SearchMode,
     TransferMode,
     VerificationType,
 )
-from taskmanager.core.models import LedgerEvent
+from taskmanager.core.lifecycle import next_action
+from taskmanager.core.models import Condition, LedgerEvent, Node
 from taskmanager.core.naming import QualifiedPath
-from taskmanager.core.status import Action, DecisionStatus
+from taskmanager.core.status import (
+    Action,
+    ConditionStage,
+    DecisionStatus,
+    JobKind,
+    JobState,
+    Merge,
+    Outcome,
+    Status,
+)
+from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
+from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.di.container import TaskManagerProvider
+from taskmanager.engine.chains import landing_chain, satisfied
+from taskmanager.engine.claims import Blocker, Claims, DecisionSpec
 from taskmanager.engine.config import ConfigError, ConfigStore
 from taskmanager.engine.decisions import DECISION_STATUS_LABELS, read_decision
-from taskmanager.engine.graph import GraphEngine, gate_satisfied
+from taskmanager.engine.discovery import discover, djb2
 from taskmanager.engine.heuristics import RecommendationEngine
+from taskmanager.engine.landing import Landing
 from taskmanager.engine.operations import GUIDE_NODE, OperationError, Operations
-from taskmanager.engine.runtime import ExecutionCoordinator
 from taskmanager.engine.search import SearchEngine, SearchError
-from taskmanager.engine.snapshot import stored_status
-from taskmanager.engine.wave import discover_batch, djb2
+from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder, phase_of, stored_status
 from taskmanager.renderers.importers import BulkImporter
 from taskmanager.renderers.markdown import MarkdownRenderer
 
@@ -62,6 +75,9 @@ web_app = typer.Typer(name="web", help="Interactive web visualizer and exporter"
 plugin_app = typer.Typer(name="plugin", help="Install and manage harness plugins")
 config_app = typer.Typer(name="config", help="Project configuration (.taskmanager/config.yaml)")
 decision_app = typer.Typer(name="decision", help="Raise and answer decisions")
+job_app = typer.Typer(name="job", help="Landing and sync jobs")
+land_app = typer.Typer(name="land", help="Start a node's landing")
+condition_app = typer.Typer(name="condition", help="States outside the corpus a node waits on")
 
 app.add_typer(spec_app)
 app.add_typer(plan_app)
@@ -75,6 +91,9 @@ app.add_typer(web_app)
 app.add_typer(plugin_app)
 app.add_typer(config_app)
 app.add_typer(decision_app)
+app.add_typer(job_app)
+app.add_typer(land_app)
+task_app.add_typer(condition_app)
 
 
 def _emit(data: Any, as_yaml: bool = False) -> None:
@@ -117,17 +136,91 @@ def _task_spec_id(node_repo: NodeRepository, task_id: str) -> str | None:
     return node_repo.get_ancestor_of_kind(task_id, NodeKind.SPEC)
 
 
-def _node_row(node: Any, state: str | None = None) -> dict[str, Any]:
+def _node_row(node: Node, state: str | None = None) -> dict[str, Any]:
     return {
         "id": node.id,
         "kind": node.kind.value,
         "title": node.title,
         "status": node.status.value,
         "state": state or node.status.value,
+        "phase": phase_of(node),
         "priority": node.priority,
         "target_repo": node.target_repo,
         "acceptable_models": node.acceptable_models,
+        "review": node.review,
+        "fix": node.fix,
+        "merge": node.merge.value,
     }
+
+
+def _view(container: Container) -> DisplayView:
+    root = container.get(TaskManagerProvider).root
+    return DisplayView(
+        container.get(SnapshotBuilder),
+        container.get(CacheRepository),
+        ConfigStore(root).project().condition_ttl,
+    )
+
+
+def _list_rows(container: Container, kind: NodeKind, status: Status | None) -> list[dict[str, Any]]:
+    view = _view(container)
+    nodes = [
+        n
+        for n in container.get(NodeRepository).list_nodes(kind=kind)
+        if status is None or stored_status(n) == status
+    ]
+    return [_node_row(n, view.display(n)) for n in nodes]
+
+
+def _next_action(container: Container, node: Node) -> str | None:
+    """The step a claim of this node would take, before claimability is asked.
+
+    A landing stopped for an agent is handed over by a merge claim, so a `MERGING` node whose
+    landing job waits for one reads `merge`; every other step in progress reads null.
+    """
+    status = stored_status(node)
+    if not isinstance(status, Status):
+        return None
+    if status == Status.MERGING:
+        jobs = container.get(JobRepository).for_node(node.id)
+        waiting = any(j.kind == JobKind.LAND and j.state == JobState.NEEDS_AGENT for j in jobs)
+        return Action.MERGE.value if waiting else None
+    action = next_action(container.get(SnapshotBuilder).cycle(node))
+    return action.value if action is not None else None
+
+
+@contextmanager
+def _refusing() -> Iterator[None]:
+    """A refusal is its message and exit 1, never a traceback."""
+    try:
+        yield
+    except OperationError as exc:
+        print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(code=1) from exc
+
+
+_PRE_LIFECYCLE = (
+    "this directory holds a pre-lifecycle estate: run `tm init --archive` to move it to "
+    "`.taskmanager/archive-<timestamp>/` and start fresh, then re-import the ongoing work"
+)
+
+
+def _refuse_pre_lifecycle(root: Path) -> None:
+    # Checked before any connection opens: opening one on an old estate raises mid-command.
+    if DatabaseManager(root / ".taskmanager").is_pre_lifecycle():
+        print(f"[red]{escape(_PRE_LIFECYCLE)}[/red]")
+        raise typer.Exit(code=1)
+
+
+def _claims(root: Path) -> Claims:
+    """Claims wired to the landing engine, which a merge claim starts its job through."""
+    _refuse_pre_lifecycle(root)
+    return Landing.open(root).claims
+
+
+def _landing(root: Path) -> Landing:
+    _refuse_pre_lifecycle(root)
+    return Landing.open(root)
 
 
 def _find_root(start: Path) -> Path | None:
@@ -181,6 +274,7 @@ def _user_errors() -> Iterator[None]:
 
 def _get_container(path: Path | None) -> Container:
     root = _get_root(path, must_exist=False)
+    _refuse_pre_lifecycle(root)
     return make_container(TaskManagerProvider(root))
 
 
@@ -212,13 +306,11 @@ def _resolve_task_id(runtime_repo: RuntimeRepository, task_id: str | None) -> st
         return task_id
 
     cwd = Path.cwd().resolve()
-    with runtime_repo.db.get_runtime_connection() as conn:
-        rows = conn.execute("SELECT task_id, worktree_path, branch_name FROM leases").fetchall()
-        for tid, wt_path_str, _ in rows:
-            if wt_path_str:
-                wt = Path(wt_path_str).resolve()
-                if cwd == wt or wt in cwd.parents:
-                    return str(tid)
+    for lease in runtime_repo.list_leases():
+        if lease.worktree_path:
+            wt = Path(lease.worktree_path).resolve()
+            if cwd == wt or wt in cwd.parents:
+                return lease.task_id
 
     try:
         res = subprocess.run(
@@ -240,11 +332,25 @@ def _resolve_task_id(runtime_repo: RuntimeRepository, task_id: str | None) -> st
 
 @app.command("init")
 def init(
+    archive: Annotated[
+        bool,
+        typer.Option(
+            "--archive",
+            help="Move a pre-lifecycle estate to .taskmanager/archive-<timestamp>/ first",
+        ),
+    ] = False,
     path: Annotated[
         Path | None, typer.Option("--path", "-C", help="Target project root directory")
     ] = None,
 ) -> None:
     root = _get_root(path, must_exist=False)
+    if archive:
+        try:
+            moved = DatabaseManager.archive_pre_lifecycle(root)
+        except ValueError as exc:
+            print(f"[red]{escape(str(exc))}[/red]")
+            raise typer.Exit(code=1) from exc
+        print(f"[yellow]Moved the pre-lifecycle estate to {moved}[/yellow]")
     container = _get_container(root)
     db = container.get(DatabaseManager)
     db.init_all()
@@ -258,43 +364,65 @@ def spec_add(
     slug: Annotated[str | None, typer.Option("--slug", "-s", help="Specification slug/id")] = None,
     priority: Annotated[int, typer.Option("--priority", "-p", help="Priority (1-100)")] = 50,
     order: Annotated[int, typer.Option("--order", "-o", help="Display order")] = 0,
+    review: Annotated[
+        bool, typer.Option("--review/--no-review", help="A review step follows the children")
+    ] = False,
+    fix: Annotated[
+        bool, typer.Option("--fix/--no-fix", help="A rejection is fixed on this node")
+    ] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
-    container = _get_container(root)
-    ops = container.get(Operations)
-    spec_id = ops.add_spec(title, slug, priority, order)
+    ops = _get_container(root).get(Operations)
+    with _refusing():
+        spec_id = ops.add_spec(title, slug, priority, order, review=review, fix=fix)
     print(f"[green]Added spec {spec_id}[/green]")
+
+
+def _print_rows(title: str, rows: list[dict[str, Any]]) -> None:
+    table = Table(title=title)
+    table.add_column("ID", style="cyan")
+    table.add_column("Title")
+    table.add_column("State", style="yellow")
+    table.add_column("Priority", justify="right")
+    for r in rows:
+        table.add_row(escape(r["id"]), escape(r["title"]), r["state"], str(r["priority"]))
+    print(table)
 
 
 @spec_app.command("list")
 def spec_list(
-    status: Annotated[NodeStatus | None, typer.Option("--status", help="Filter by status")] = None,
+    status: Annotated[
+        Status | None, typer.Option("--status", help="Filter by stored status")
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
     yaml_output: Annotated[
         bool, typer.Option("--yaml", help="Output as YAML (fewer tokens than JSON)")
     ] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
-    root = _get_root(path)
-    container = _get_container(root)
-    node_repo = container.get(NodeRepository)
-    specs = node_repo.list_nodes(kind=NodeKind.SPEC, status=status)
+    rows = _list_rows(_get_container(_get_root(path)), NodeKind.SPEC, status)
     if json_output or yaml_output:
-        graph = container.get(GraphEngine)
-        _emit([_node_row(s, graph.resolve_spec_status(s.id).value) for s in specs], yaml_output)
+        _emit(rows, yaml_output)
         return
+    _print_rows("Specifications", rows)
 
-    graph = container.get(GraphEngine)
-    table = Table(title="Specifications")
-    table.add_column("ID", style="cyan")
-    table.add_column("Title")
-    table.add_column("State", style="yellow")
-    table.add_column("Priority", justify="right")
-    for s in specs:
-        state = graph.resolve_spec_status(s.id).value
-        table.add_row(escape(s.id), escape(s.title), state, str(s.priority))
-    print(table)
+
+def _print_container(label: str, container: Container, node_id: str, children_label: str) -> None:
+    node_repo = container.get(NodeRepository)
+    node = node_repo.get_node(node_id)
+    if node is None:
+        print(f"[red]{label} '{node_id}' not found[/red]")
+        raise typer.Exit(code=1)
+    view = _view(container)
+    children = node_repo.get_children(node_id)
+    print(f"[bold cyan]{label}:[/] {node.id}")
+    print(f"[bold]Title:[/] {escape(node.title)}")
+    print(f"[bold]Status:[/] {node.status.value}")
+    print(f"[bold]State:[/] {view.display(node)}")
+    print(f"[bold]Priority:[/] {node.priority}")
+    if children:
+        print(f"[bold]{children_label}:[/] {escape(', '.join(children))}")
 
 
 @spec_app.command("get")
@@ -302,23 +430,7 @@ def spec_get(
     spec_id: str,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
-    root = _get_root(path)
-    container = _get_container(root)
-    node_repo = container.get(NodeRepository)
-    spec = node_repo.get_node(spec_id)
-    if not spec:
-        print(f"[red]Spec '{spec_id}' not found[/red]")
-        raise typer.Exit(code=1)
-
-    children = node_repo.get_children(spec_id)
-    print(f"[bold cyan]Spec:[/] {spec.id}")
-    print(f"[bold]Title:[/] {escape(spec.title)}")
-    graph = container.get(GraphEngine)
-    print(f"[bold]Status:[/] {spec.status.value}")
-    print(f"[bold]State:[/] {graph.resolve_spec_status(spec.id).value}")
-    print(f"[bold]Priority:[/] {spec.priority}")
-    if children:
-        print(f"[bold]Plans:[/] {escape(', '.join(children))}")
+    _print_container("Spec", _get_container(_get_root(path)), spec_id, "Plans")
 
 
 @plan_app.command("add")
@@ -328,56 +440,47 @@ def plan_add(
     slug: Annotated[str | None, typer.Option("--slug", "-s", help="Plan slug")] = None,
     priority: Annotated[int, typer.Option("--priority", "-p", help="Priority")] = 50,
     order: Annotated[int, typer.Option("--order", "-o", help="Display order")] = 0,
-    require_review: Annotated[
-        bool, typer.Option("--require-review", help="Inject review gate")
+    review: Annotated[
+        bool, typer.Option("--review/--no-review", help="A review step follows the children")
     ] = False,
+    fix: Annotated[
+        bool, typer.Option("--fix/--no-fix", help="A rejection is fixed on this plan")
+    ] = False,
+    merge: Annotated[
+        Merge, typer.Option("--merge", help="Land on the parent's branch or on main")
+    ] = Merge.MAIN,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
-    container = _get_container(root)
-    ops = container.get(Operations)
-    try:
+    ops = _get_container(root).get(Operations)
+    with _refusing():
         plan_id = ops.add_plan(
-            title, spec, slug, priority, order, review=require_review, fix=require_review
+            title, spec, slug, priority, order, review=review, fix=fix, merge=merge
         )
-    except OperationError as exc:
-        print(f"[red]{escape(str(exc))}[/red]")
-        raise typer.Exit(code=1) from exc
     print(f"[green]Added plan {plan_id}[/green]")
 
 
 @plan_app.command("list")
 def plan_list(
     spec: Annotated[str | None, typer.Option("--spec", help="Filter by spec ID")] = None,
-    status: Annotated[NodeStatus | None, typer.Option("--status", help="Filter by status")] = None,
+    status: Annotated[
+        Status | None, typer.Option("--status", help="Filter by stored status")
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
     yaml_output: Annotated[
         bool, typer.Option("--yaml", help="Output as YAML (fewer tokens than JSON)")
     ] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
-    root = _get_root(path)
-    container = _get_container(root)
-    node_repo = container.get(NodeRepository)
-    plans = node_repo.list_nodes(kind=NodeKind.PLAN, status=status)
+    container = _get_container(_get_root(path))
+    rows = _list_rows(container, NodeKind.PLAN, status)
     if spec:
-        children = set(node_repo.get_children(spec))
-        plans = [p for p in plans if p.id in children]
+        children = set(container.get(NodeRepository).get_children(spec))
+        rows = [r for r in rows if r["id"] in children]
     if json_output or yaml_output:
-        graph = container.get(GraphEngine)
-        _emit([_node_row(p, graph.resolve_plan_status(p.id).value) for p in plans], yaml_output)
+        _emit(rows, yaml_output)
         return
-
-    graph = container.get(GraphEngine)
-    table = Table(title="Plans")
-    table.add_column("ID", style="cyan")
-    table.add_column("Title")
-    table.add_column("State", style="yellow")
-    table.add_column("Priority", justify="right")
-    for p in plans:
-        state = graph.resolve_plan_status(p.id).value
-        table.add_row(escape(p.id), escape(p.title), state, str(p.priority))
-    print(table)
+    _print_rows("Plans", rows)
 
 
 @plan_app.command("get")
@@ -385,22 +488,11 @@ def plan_get(
     plan_id: str,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
-    root = _get_root(path)
-    container = _get_container(root)
-    node_repo = container.get(NodeRepository)
-    plan = node_repo.get_node(plan_id)
-    if not plan:
-        print(f"[red]Plan '{plan_id}' not found[/red]")
-        raise typer.Exit(code=1)
+    _print_container("Plan", _get_container(_get_root(path)), plan_id, "Tasks")
 
-    children = node_repo.get_children(plan_id)
-    print(f"[bold cyan]Plan:[/] {plan.id}")
-    print(f"[bold]Title:[/] {escape(plan.title)}")
-    print(f"[bold]Status:[/] {plan.status.value}")
-    print(f"[bold]State:[/] {container.get(GraphEngine).resolve_plan_status(plan.id).value}")
-    print(f"[bold]Priority:[/] {plan.priority}")
-    if children:
-        print(f"[bold]Tasks:[/] {escape(', '.join(children))}")
+
+def _csv(raw: str | None) -> list[str]:
+    return [x.strip() for x in (raw or "").split(",") if x.strip()]
 
 
 @task_app.command("add")
@@ -411,19 +503,41 @@ def task_add(
     priority: Annotated[int, typer.Option("--priority", "-p", help="Priority")] = 50,
     order: Annotated[int, typer.Option("--order", "-o", help="Display order")] = 0,
     depends_on: Annotated[
-        str | None, typer.Option("--depends-on", help="Comma-separated dependency task IDs")
+        str | None, typer.Option("--depends-on", help="Comma-separated dependency IDs")
     ] = None,
     models: Annotated[
         str | None, typer.Option("--models", help="Comma-separated acceptable models")
     ] = None,
+    review: Annotated[
+        bool, typer.Option("--review/--no-review", help="A review step follows implement")
+    ] = True,
+    fix: Annotated[
+        bool, typer.Option("--fix/--no-fix", help="A rejection is fixed by this task")
+    ] = True,
+    merge: Annotated[
+        Merge, typer.Option("--merge", help="Land on the parent's branch or on main")
+    ] = Merge.MAIN,
+    requires: Annotated[
+        str | None, typer.Option("--requires", help="Comma-separated agent capabilities")
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
-    container = _get_container(root)
-    ops = container.get(Operations)
-    acceptable_models = [m.strip() for m in models.split(",") if m.strip()] if models else []
-    deps = [d.strip() for d in depends_on.split(",") if d.strip()] if depends_on else []
-    task_id = ops.add_task(title, plan, slug, priority, order, deps, acceptable_models)
+    ops = _get_container(root).get(Operations)
+    with _refusing():
+        task_id = ops.add_task(
+            title,
+            plan,
+            slug,
+            priority,
+            order,
+            _csv(depends_on),
+            _csv(models),
+            review=review,
+            fix=fix,
+            merge=merge,
+            requires=_csv(requires),
+        )
     print(f"[green]Added task {task_id}[/green]")
 
 
@@ -457,7 +571,9 @@ def task_list(
         str | None,
         typer.Option("--spec", help='Filter by spec ID ("none" for tasks whose plan has no spec)'),
     ] = None,
-    status: Annotated[NodeStatus | None, typer.Option("--status", help="Filter by status")] = None,
+    status: Annotated[
+        Status | None, typer.Option("--status", help="Filter by stored status")
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
     yaml_output: Annotated[
         bool, typer.Option("--yaml", help="Output as YAML (fewer tokens than JSON)")
@@ -468,40 +584,38 @@ def task_list(
     ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
-    root = _get_root(path)
-    container = _get_container(root)
+    container = _get_container(_get_root(path))
     node_repo = container.get(NodeRepository)
-    tasks = node_repo.list_nodes(kind=NodeKind.TASK, status=status)
+    rows = _list_rows(container, NodeKind.TASK, status)
     if plan:
         children = set(node_repo.get_children(plan))
-        tasks = [t for t in tasks if t.id in children]
+        rows = [r for r in rows if r["id"] in children]
     if spec:
         wanted = None if spec == "none" else spec
-        tasks = [t for t in tasks if _task_spec_id(node_repo, t.id) == wanted]
+        rows = [r for r in rows if _task_spec_id(node_repo, r["id"]) == wanted]
     if render_view is not None:
         renderer = container.get(MarkdownRenderer)
         sys.stdout.write(
-            "\n\n---\n\n".join(renderer.render(t.id, view=render_view) for t in tasks) + "\n"
+            "\n\n---\n\n".join(renderer.render(r["id"], view=render_view) for r in rows) + "\n"
         )
         return
     if json_output or yaml_output:
-        graph = container.get(GraphEngine)
-        _emit([_node_row(t, graph.resolve_task_state(t.id).value) for t in tasks], yaml_output)
+        _emit(rows, yaml_output)
         return
 
     table = Table(title="Tasks")
     table.add_column("ID", style="cyan")
     table.add_column("Title")
-    table.add_column("Status", style="yellow")
+    table.add_column("State", style="yellow")
     table.add_column("Priority", justify="right")
     table.add_column("Models")
-    for t in tasks:
+    for r in rows:
         table.add_row(
-            escape(t.id),
-            escape(t.title),
-            t.status.value,
-            str(t.priority),
-            escape(", ".join(t.acceptable_models)),
+            escape(r["id"]),
+            escape(r["title"]),
+            r["state"],
+            str(r["priority"]),
+            escape(", ".join(r["acceptable_models"])),
         )
     print(table)
 
@@ -570,11 +684,27 @@ def task_update(
         list[str] | None,
         typer.Option("--unset", help="Frontmatter key to remove, repeatable"),
     ] = None,
+    review: Annotated[
+        bool | None, typer.Option("--review/--no-review", help="A review step follows implement")
+    ] = None,
+    fix: Annotated[
+        bool | None, typer.Option("--fix/--no-fix", help="A rejection is fixed by this node")
+    ] = None,
+    merge: Annotated[
+        Merge | None, typer.Option("--merge", help="Land on the parent's branch or on main")
+    ] = None,
+    requires: Annotated[
+        str | None,
+        typer.Option("--requires", help="Comma-separated agent capabilities; '' clears them"),
+    ] = None,
+    land_order: Annotated[
+        str | None,
+        typer.Option("--land-order", help="Comma-separated repositories, for a plan or a spec"),
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
-    container = _get_container(root)
-    ops = container.get(Operations)
+    ops = _get_container(root).get(Operations)
     frontmatter_set: dict[str, Any] = {}
     for pair in set_frontmatter or []:
         key, sep, raw = pair.partition("=")
@@ -584,16 +714,20 @@ def task_update(
             frontmatter_set[key] = json.loads(raw)
         except ValueError:
             frontmatter_set[key] = raw
-    model_list = [m.strip() for m in models.split(",") if m.strip()] if models is not None else None
     try:
         changed = ops.update_node(
             task_id,
             title=title,
             priority=priority,
-            models=model_list,
+            models=_csv(models) if models is not None else None,
             repo=repo,
             frontmatter_set=frontmatter_set or None,
             frontmatter_unset=unset_frontmatter,
+            review=review,
+            fix=fix,
+            merge=merge,
+            requires=_csv(requires) if requires is not None else None,
+            land_order=_csv(land_order) if land_order is not None else None,
         )
     except OperationError as exc:
         raise typer.BadParameter(str(exc)) from exc
@@ -627,72 +761,84 @@ def task_get(
     ] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
-    root = _get_root(path)
-    container = _get_container(root)
+    container = _get_container(_get_root(path))
     node_repo = container.get(NodeRepository)
     task = node_repo.get_node(task_id)
     if not task:
         print(f"[red]Task '{task_id}' not found[/red]")
         raise typer.Exit(code=1)
-
-    deps = node_repo.get_dependencies(task_id)
+    view = _view(container)
+    snapshot = view.snapshot
+    state = view.display(task)
+    deps = {d: node_repo.get_node(d) for d in node_repo.get_dependencies(task_id)}
     verifications = node_repo.get_verifications(task_id)
     if json_output or yaml_output:
-        graph = container.get(GraphEngine)
-        runtime_repo = container.get(RuntimeRepository)
-        lease = runtime_repo.get_lease(task_id)
-        dep_edges = node_repo.get_dependency_edges(task_id)
-        doc = _node_row(task, graph.resolve_task_state(task_id).value)
-        doc["spec_id"] = _task_spec_id(node_repo, task_id)
-        doc["frontmatter"] = task.frontmatter
-        doc["depends_on"] = [
-            (
-                {"id": dep_id, "status": dn.status.value}
-                | ({"gate": gate.value} if gate != NodeStatus.COMPLETED else {})
-                if (dn := node_repo.get_node(dep_id))
-                else {"id": dep_id}
-            )
-            for dep_id, gate in dep_edges
-        ]
-        doc["blocked_by"] = [
-            dep_id
-            for dep_id, gate in dep_edges
-            if (dn := node_repo.get_node(dep_id)) is None or not gate_satisfied(dn.status, gate)
-        ]
-        doc["awaiting_decisions"] = [
-            dep_id
-            for dep_id, _gate in dep_edges
-            if (dn := node_repo.get_node(dep_id)) is not None
-            and dn.kind == NodeKind.DECISION
-            and stored_status(dn) == DecisionStatus.OPEN
-        ]
-        doc["declared_files"] = node_repo.declared_files(task_id)
-        doc["sections"] = [s.section_key for s in node_repo.get_all_sections(task_id)]
-        doc["verifications"] = [
+        lease = container.get(RuntimeRepository).get_lease(task_id)
+        is_decision = task.kind == NodeKind.DECISION
+        doc = _node_row(task, state)
+        doc.update(
             {
-                "type": v.verification_type.value,
-                "target_path": v.target_path,
-                "expected_pattern": v.expected_pattern,
+                "spec_id": _task_spec_id(node_repo, task_id),
+                "next_action": _next_action(container, task),
+                "frontmatter": task.frontmatter,
+                "outcome": task.outcome.value if task.outcome else None,
+                "verdict": task.verdict,
+                "fix_for": task.fix_for.value if task.fix_for else None,
+                "claimed_from": task.claimed_from.value if task.claimed_from else None,
+                "review_cycles": task.review_cycles,
+                "merge_attempts": task.merge_attempts,
+                "step_failures": task.step_failures,
+                "branch": task.branch or f"tm/{task_id}",
+                "requires": task.requires,
+                "land_order": task.land_order,
+                "landing_chain": [] if is_decision else landing_chain(snapshot, task_id),
+                "depends_on": [
+                    {"id": d, "status": n.status.value} if n else {"id": d} for d, n in deps.items()
+                ],
+                "blocked_by": [
+                    d
+                    for d, n in deps.items()
+                    if n is None
+                    or (
+                        n.kind != NodeKind.DECISION
+                        and not is_decision
+                        and not satisfied(snapshot, task_id, d)
+                    )
+                ],
+                "awaiting_decisions": [
+                    d
+                    for d, n in deps.items()
+                    if n is not None
+                    and n.kind == NodeKind.DECISION
+                    and stored_status(n) == DecisionStatus.OPEN
+                ],
+                "conditions": [
+                    c.model_dump(mode="json", exclude={"node_id"})
+                    for c in node_repo.get_conditions(task_id)
+                ],
+                "declared_files": node_repo.declared_files(task_id),
+                "sections": [s.section_key for s in node_repo.get_all_sections(task_id)],
+                "verifications": [
+                    {
+                        "type": v.verification_type.value,
+                        "target_path": v.target_path,
+                        "expected_pattern": v.expected_pattern,
+                    }
+                    for v in verifications
+                ],
+                "lease": lease.model_dump(mode="json", exclude={"task_id"}) if lease else None,
+                "jobs": [
+                    j.model_dump(mode="json")
+                    for j in container.get(JobRepository).for_node(task_id)
+                ],
             }
-            for v in verifications
-        ]
-        doc["lease"] = (
-            {
-                "agent_id": lease.agent_id,
-                "session_id": lease.session_id,
-                "worktree_path": lease.worktree_path,
-                "branch_name": lease.branch_name,
-                "last_heartbeat": lease.last_heartbeat.isoformat(),
-                "ttl_seconds": lease.ttl_seconds,
-            }
-            if lease
-            else None
         )
         _emit(doc, yaml_output)
         return
     print(f"[bold cyan]Task:[/] {task.id}")
     print(f"[bold]Title:[/] {escape(task.title)}")
     print(f"[bold]Status:[/] {task.status.value}")
+    print(f"[bold]State:[/] {state}")
     print(f"[bold]Priority:[/] {task.priority}")
     print(f"[bold]Models:[/] {escape(', '.join(task.acceptable_models))}")
     if deps:
@@ -700,6 +846,309 @@ def task_get(
     if verifications:
         v_str = ", ".join(f"{v.verification_type.value}:{v.target_path}" for v in verifications)
         print(f"[bold]Verifications:[/] {escape(v_str)}")
+
+
+@task_app.command("start")
+def task_start(
+    node_id: str,
+    agent: Annotated[str, typer.Option("--agent", help="Agent identifier")],
+    session: Annotated[str, typer.Option("--session", help="Dispatching session identifier")],
+    ttl: Annotated[
+        int | None, typer.Option("--ttl", min=1, help="Lease seconds (default: lease_ttl.<action>)")
+    ] = None,
+    worktree_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--worktree-dir",
+            help="Where an implement or fix step cuts its worktree (default: config worktree_dir)",
+        ),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+    yaml_output: Annotated[bool, typer.Option("--yaml", help="Output as YAML (default)")] = False,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Claim the node's next step and print it; `blocked` exits 3 and writes nothing."""
+    claims = _claims(_get_root(path))
+    with _refusing():
+        result = claims.start(node_id, agent, session, ttl, worktree_dir=worktree_dir)
+    _emit(
+        {
+            "action": result.action.value,
+            "reason": result.reason,
+            "model": result.model,
+            "job": result.job,
+            "repos": list(result.repos),
+            "branch": result.branch,
+            "base": result.base,
+            "worktree": result.worktree,
+            "worktrees": result.worktrees,
+        },
+        as_yaml=yaml_output or not json_output,
+    )
+    if result.action == Action.BLOCKED:
+        raise typer.Exit(code=3)
+
+
+@task_app.command("complete")
+def task_complete(
+    node_id: str,
+    agent: Annotated[
+        str | None,
+        typer.Option("--agent", help="Refused unless the node's live lease is this agent's"),
+    ] = None,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Close an implement or a fix step."""
+    with _refusing():
+        status = _claims(_get_root(path)).complete(node_id, agent=agent)
+    print(f"[green]{node_id} is {status.value}[/green]")
+
+
+@task_app.command("review")
+def task_review(
+    node_id: str,
+    approve: Annotated[bool, typer.Option("--approve")] = False,
+    reject: Annotated[bool, typer.Option("--reject")] = False,
+    verdict: Annotated[
+        str | None, typer.Option("--verdict", help="Free text; it never routes")
+    ] = None,
+    agent: Annotated[
+        str | None,
+        typer.Option("--agent", help="Refused unless the node's live lease is this agent's"),
+    ] = None,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Close a review step; the node's :review section must have changed since the claim."""
+    if approve == reject:
+        raise typer.BadParameter("give exactly one of --approve or --reject")
+    with _refusing():
+        status = _claims(_get_root(path)).review(node_id, approve, verdict, agent=agent)
+    print(f"[green]{node_id} is {status.value}[/green]")
+
+
+@task_app.command("release")
+def task_release(
+    node_id: str,
+    blocked: Annotated[
+        bool, typer.Option("--blocked", help="The step stopped on what the flags below name")
+    ] = False,
+    depends: Annotated[
+        str | None, typer.Option("--depends", help="Comma-separated ids it now waits on")
+    ] = None,
+    decision: Annotated[
+        str | None, typer.Option("--decision", help="The question it now waits on")
+    ] = None,
+    option: Annotated[
+        list[str] | None,
+        typer.Option("--option", help="'key|Label|description|effect' for --decision, repeatable"),
+    ] = None,
+    recommend: Annotated[str | None, typer.Option("--recommend")] = None,
+    needs: Annotated[
+        str | None, typer.Option("--needs", help="The state a --command condition checks")
+    ] = None,
+    command: Annotated[
+        str | None, typer.Option("--command", help="Exits 0 once --needs holds")
+    ] = None,
+    stage: Annotated[
+        ConditionStage, typer.Option("--stage", help="claim or landing")
+    ] = ConditionStage.CLAIM,
+    agent: Annotated[
+        str | None,
+        typer.Option("--agent", help="Refused unless the node's live lease is this agent's"),
+    ] = None,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Give a step back. Alone it is a transient failure, counted; with --blocked it names what
+    the node now waits on and writes it in the same call."""
+    named = bool(_csv(depends) or decision or needs or command)
+    if named and not blocked:
+        raise typer.BadParameter("--depends, --decision and --needs/--command go with --blocked")
+    if blocked and not named:
+        raise typer.BadParameter(
+            "--blocked names what the node waits on: --depends <ids>, --decision <question> "
+            "or --needs <state> --command <check>"
+        )
+    if (needs is None) != (command is None):
+        raise typer.BadParameter("--needs and --command go together")
+    blocker = (
+        Blocker(
+            depends=_csv(depends),
+            decision=(
+                DecisionSpec(question=decision, options=option or [], recommend=recommend)
+                if decision
+                else None
+            ),
+            condition=(
+                Condition(node_id=node_id, idx=0, needs=needs, command=command, stage=stage)
+                if needs is not None and command is not None
+                else None
+            ),
+        )
+        if blocked
+        else None
+    )
+    with _refusing():
+        status = _claims(_get_root(path)).release(node_id, blocked=blocker, agent=agent)
+    print(f"[green]{node_id} is {status.value}[/green]")
+
+
+@task_app.command("heartbeat")
+def task_heartbeat(
+    node_id: Annotated[
+        str | None, typer.Argument(help="Node ID (optional inside its worktree)")
+    ] = None,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    root = _get_root(path)
+    tid = _resolve_task_id(_get_container(root).get(RuntimeRepository), node_id)
+    with _refusing():
+        alive = _claims(root).heartbeat(tid)
+    if not alive:
+        print(f"[red]No live lease on {escape(tid)}[/red]")
+        raise typer.Exit(code=1)
+    print(f"[green]Heartbeat recorded for {tid}[/green]")
+
+
+@task_app.command("reopen")
+def task_reopen(
+    node_id: str,
+    note: Annotated[str, typer.Option("--note", help="Why, and what to do differently")],
+    new_branch: Annotated[
+        bool, typer.Option("--new-branch", help="Rename the old branch to <branch>@<n>")
+    ] = False,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """From FAILED, DEFERRED or ABANDONED back into the cycle, keeping the branch."""
+    with _refusing():
+        status = _claims(_get_root(path)).reopen(node_id, note, new_branch=new_branch)
+    print(f"[green]{node_id} is {status.value}[/green]")
+
+
+@task_app.command("reset")
+def task_reset(
+    node_id: str,
+    to: Annotated[
+        Status, typer.Option("--to", help="READY, IMPLEMENTED, REVIEWED, FIXED or COMPLETED")
+    ],
+    note: Annotated[str, typer.Option("--note", help="Why the stored state was wrong")],
+    outcome: Annotated[
+        Outcome | None,
+        typer.Option("--outcome", help="For REVIEWED: approve, reject or merge_failed"),
+    ] = None,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """A ledgered repair of a node with no live lease or job."""
+    with _refusing():
+        status = _claims(_get_root(path)).reset(node_id, to, note, outcome=outcome)
+    print(f"[green]{node_id} is {status.value}[/green]")
+
+
+@task_app.command("defer")
+def task_defer(
+    node_id: str,
+    note: Annotated[str, typer.Option("--note", help="Why, and until when")],
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    with _refusing():
+        status = _claims(_get_root(path)).defer(node_id, note)
+    print(f"[green]{node_id} is {status.value}[/green]")
+
+
+@task_app.command("abandon")
+def task_abandon(
+    node_id: str,
+    note: Annotated[str, typer.Option("--note", help="Why it is dropped")],
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    with _refusing():
+        status = _claims(_get_root(path)).abandon(node_id, note)
+    print(f"[green]{node_id} is {status.value}[/green]")
+
+
+@condition_app.command("add")
+def condition_add(
+    node_id: str,
+    needs: Annotated[str, typer.Option("--needs", help="The state outside the corpus")],
+    command: Annotated[str, typer.Option("--command", help="Exits 0 once the state holds")],
+    stage: Annotated[
+        ConditionStage, typer.Option("--stage", help="claim or landing")
+    ] = ConditionStage.CLAIM,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    ops = _get_container(_get_root(path)).get(Operations)
+    with _refusing():
+        added = ops.add_condition(node_id, needs, command, stage)
+    print(f"[green]Added condition {added.idx} to {node_id}[/green]")
+
+
+@condition_app.command("remove")
+def condition_remove(
+    node_id: str,
+    idx: int,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    ops = _get_container(_get_root(path)).get(Operations)
+    with _refusing():
+        ops.remove_condition(node_id, idx)
+    print(f"[green]Removed condition {idx} from {node_id}[/green]")
+
+
+@job_app.command("status")
+def job_status(
+    job_id: str,
+    wait: Annotated[
+        int,
+        typer.Option("--wait", min=0, help="Block up to this many seconds while the job runs"),
+    ] = 0,
+    yaml_output: Annotated[bool, typer.Option("--yaml", help="Output as YAML")] = False,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Print a landing or sync job; with --wait, once it leaves `running` or the time is up."""
+    jobs = _get_container(_get_root(path)).get(JobRepository)
+    deadline = time.monotonic() + wait
+    job = jobs.get(job_id)
+    while job is not None and job.state == JobState.RUNNING:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            break
+        time.sleep(min(1.0, left))
+        job = jobs.get(job_id)
+    if job is None:
+        print(f"[red]No job '{escape(job_id)}'[/red]")
+        raise typer.Exit(code=1)
+    _emit(job.model_dump(mode="json"), yaml_output)
+
+
+@job_app.command("resume")
+def job_resume(
+    job_id: str,
+    own_defect: Annotated[
+        str | None, typer.Option("--own-defect", help="The node's own defect, as a finding")
+    ] = None,
+    push: Annotated[
+        bool, typer.Option("--push", help="An unattributed red is not this node's: push")
+    ] = False,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """How an agent finishes a landing or sync job that stopped for it."""
+    if own_defect is not None and push:
+        raise typer.BadParameter("--own-defect and --push contradict each other")
+    landing = _landing(_get_root(path))
+    with _refusing():
+        state = landing.resume(job_id, own_defect=own_defect, push=push)
+    print(f"[green]Job {job_id}: {state.value}[/green]")
+
+
+@land_app.command("start")
+def land_start(
+    node_id: str,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Start the node's landing as a detached job and print its id."""
+    landing = _landing(_get_root(path))
+    with _refusing():
+        job_id = landing.start_land(node_id)
+    sys.stdout.write(f"{job_id}\n")
 
 
 @section_app.command("get")
@@ -790,147 +1239,6 @@ def section_remove(
     print(f"[green]Removed section {qualified_path}[/green]")
 
 
-@run_app.command("start")
-def run_start(
-    task_id: str,
-    worktree: Annotated[
-        bool, typer.Option("--worktree", help="Create isolated git worktree")
-    ] = False,
-    agent: Annotated[str, typer.Option("--agent", help="Agent identifier")] = "agent-1",
-    session: Annotated[str, typer.Option("--session", help="Session identifier")] = "session-1",
-    account: Annotated[str | None, typer.Option("--account", help="Account identifier")] = None,
-    worktree_dir: Annotated[
-        Path | None,
-        typer.Option(
-            "--worktree-dir",
-            help="Where worktrees go (env TM_WORKTREES, then config worktree_dir, else .worktrees)",
-        ),
-    ] = None,
-    ttl: Annotated[
-        int | None,
-        typer.Option(
-            "--ttl",
-            help="Lease seconds before it reads as abandoned (env TM_LEASE_TTL, then config lease_ttl)",
-        ),
-    ] = None,
-    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
-) -> None:
-    root = _get_root(path)
-    container = _get_container(root)
-    coordinator = container.get(ExecutionCoordinator)
-
-    worktree_base: Path | None = None
-    with _user_errors():
-        config = ConfigStore(root)
-        lease_ttl = config.lease_ttl(Action.IMPLEMENT, ttl)
-        if worktree:
-            chosen = config.resolve("worktree_dir", str(worktree_dir) if worktree_dir else None)
-            worktree_base = (
-                Path(chosen.value) if chosen.source in ("flag", "env") else root / chosen.value
-            )
-    try:
-        lease = coordinator.start_task(
-            task_id=task_id,
-            agent_id=agent,
-            session_id=session,
-            account_id=account,
-            create_worktree=worktree,
-            worktree_base=worktree_base,
-            ttl_seconds=lease_ttl,
-        )
-    except ValueError as exc:
-        print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1) from exc
-    _record_ledger(
-        container,
-        command=LedgerCommand.TASK_START,
-        target_id=task_id,
-        payload={"agent_id": agent, "session_id": session, "worktree": worktree},
-    )
-    print(f"[green]Started task {task_id}[/green]")
-    print(f"[bold]Lease Agent:[/] {lease.agent_id}")
-    print(f"[bold]Session:[/] {lease.session_id}")
-    if lease.worktree_path:
-        print(f"[bold]Worktree:[/] {lease.worktree_path}")
-
-
-@run_app.command("heartbeat")
-def run_heartbeat(
-    task_id: Annotated[
-        str | None, typer.Argument(help="Task ID (optional if inside worktree)")
-    ] = None,
-    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
-) -> None:
-    root = _get_root(path)
-    container = _get_container(root)
-    runtime_repo = container.get(RuntimeRepository)
-    coordinator = container.get(ExecutionCoordinator)
-
-    tid = _resolve_task_id(runtime_repo, task_id)
-    success = coordinator.heartbeat(tid)
-    if success:
-        _record_ledger(container, command=LedgerCommand.TASK_HEARTBEAT, target_id=tid)
-        print(f"[green]Heartbeat recorded for {tid}[/green]")
-    else:
-        print(f"[red]No active lease found for {tid}[/red]")
-        raise typer.Exit(code=1)
-
-
-@run_app.command("stop")
-def run_stop(
-    task_id: Annotated[
-        str | None, typer.Argument(help="Task ID (optional if inside worktree)")
-    ] = None,
-    status: Annotated[
-        NodeStatus, typer.Option("--status", help="Target status")
-    ] = NodeStatus.WAITING_REVIEW,
-    remove_worktree: Annotated[
-        bool, typer.Option("--remove-worktree", help="Remove worktree if created")
-    ] = False,
-    section: Annotated[
-        str | None,
-        typer.Option("--section", help="Section key to write in the same transaction"),
-    ] = None,
-    section_file: Annotated[
-        Path | None,
-        typer.Option("--section-file", help="File holding the --section content"),
-    ] = None,
-    section_header: Annotated[
-        str | None, typer.Option("--section-header", help="Section markdown header")
-    ] = None,
-    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
-) -> None:
-    root = _get_root(path)
-    container = _get_container(root)
-    runtime_repo = container.get(RuntimeRepository)
-    ops = container.get(Operations)
-
-    if (section is None) != (section_file is None):
-        raise typer.BadParameter("--section and --section-file are given together")
-    section_write = (
-        (section, section_file.read_text(encoding="utf-8"), section_header)
-        if section is not None and section_file is not None
-        else None
-    )
-
-    tid = _resolve_task_id(runtime_repo, task_id)
-    ops.set_status(tid, status, remove_worktree, section=section_write)
-    print(f"[green]Stopped task {tid} with status {status.value}[/green]")
-
-
-@run_app.command("release")
-def run_release(
-    task_id: str,
-    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
-) -> None:
-    """Drop a task's lease and file locks without touching its status."""
-    root = _get_root(path)
-    container = _get_container(root)
-    ops = container.get(Operations)
-    ops.release_lease(task_id)
-    print(f"[green]Released lease for {task_id}[/green]")
-
-
 @run_app.command("list")
 def run_list(
     json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
@@ -939,53 +1247,39 @@ def run_list(
     ] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
-    root = _get_root(path)
-    container = _get_container(root)
-    runtime_repo = container.get(RuntimeRepository)
-
-    with runtime_repo.db.get_runtime_connection() as conn:
-        leases = conn.execute(
-            "SELECT task_id, agent_id, session_id, account_id, worktree_path, branch_name, acquired_at, last_heartbeat, ttl_seconds FROM leases"
-        ).fetchall()
-        locks = conn.execute("SELECT file_path, task_id, lock_type FROM file_locks").fetchall()
-
+    runtime_repo = _get_container(_get_root(path)).get(RuntimeRepository)
+    leases = runtime_repo.list_leases()
+    locks = runtime_repo.list_locks()
     if json_output or yaml_output:
-        data = {
-            "leases": [
-                {
-                    "task_id": r[0],
-                    "agent_id": r[1],
-                    "session_id": r[2],
-                    "account_id": r[3],
-                    "worktree_path": r[4],
-                    "branch_name": r[5],
-                    "acquired_at": r[6],
-                    "last_heartbeat": r[7],
-                    "ttl_seconds": r[8],
-                }
-                for r in leases
-            ],
-            "locks": [{"file_path": r[0], "task_id": r[1], "lock_type": r[2]} for r in locks],
-        }
-        _emit(data, yaml_output)
+        _emit(
+            {
+                "leases": [lease.model_dump(mode="json") for lease in leases],
+                "locks": [lock.model_dump(mode="json") for lock in locks],
+            },
+            yaml_output,
+        )
         return
 
     table_leases = Table(title="Active Leases")
-    table_leases.add_column("Task ID", style="cyan")
-    table_leases.add_column("Agent ID")
-    table_leases.add_column("Session ID")
-    table_leases.add_column("Worktree")
-    table_leases.add_column("Last Heartbeat")
-    for l in leases:
-        table_leases.add_row(str(l[0]), str(l[1]), str(l[2]), str(l[4] or "-"), str(l[7]))
+    for column in ("Node ID", "Action", "Agent ID", "Session ID", "Worktree", "Last Heartbeat"):
+        table_leases.add_column(column)
+    for lease in leases:
+        table_leases.add_row(
+            lease.task_id,
+            lease.action.value if lease.action else "-",
+            lease.agent_id,
+            lease.session_id,
+            lease.worktree_path or "-",
+            lease.last_heartbeat.isoformat(),
+        )
     print(table_leases)
 
     table_locks = Table(title="Locked Files")
     table_locks.add_column("File Path", style="green")
-    table_locks.add_column("Task ID", style="cyan")
+    table_locks.add_column("Node ID", style="cyan")
     table_locks.add_column("Lock Type")
-    for lk in locks:
-        table_locks.add_row(str(lk[0]), str(lk[1]), str(lk[2]))
+    for lock in locks:
+        table_locks.add_row(lock.file_path, lock.task_id, lock.lock_type.value)
     print(table_locks)
 
 
@@ -993,10 +1287,8 @@ def run_list(
 def run_sweep(
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
-    root = _get_root(path)
-    container = _get_container(root)
-    ops = container.get(Operations)
-    swept = ops.sweep_leases()
+    """Return every step whose lease expired to the status it was claimed from."""
+    swept = _claims(_get_root(path)).sweep()
     if swept:
         print(f"[yellow]Swept {len(swept)} expired lease(s): {', '.join(swept)}[/yellow]")
     else:
@@ -1005,7 +1297,6 @@ def run_sweep(
 
 @wave_app.command("discover")
 def wave_discover(
-    spec: Annotated[list[str], typer.Option("--spec", help="Spec id to search; repeatable")],
     session: Annotated[str, typer.Option("--session", help="Dispatching session id")],
     slots: Annotated[
         int, typer.Option("--slots", help="Total concurrent slots this session may hold")
@@ -1013,12 +1304,12 @@ def wave_discover(
     max_strong: Annotated[
         int, typer.Option("--max-strong", help="Cap on opus/fable leases for this session")
     ],
-    exclude: Annotated[
-        list[str] | None, typer.Option("--exclude", help="Task id to never choose this run")
-    ] = None,
-    release: Annotated[
+    spec: Annotated[
         list[str] | None,
-        typer.Option("--release", help="Task id whose :hold section no longer holds it"),
+        typer.Option("--spec", help="Spec id to search, repeatable; omitted means every node"),
+    ] = None,
+    exclude: Annotated[
+        list[str] | None, typer.Option("--exclude", help="Node id to never choose this run")
     ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
@@ -1027,20 +1318,8 @@ def wave_discover(
     A caller with no shell of its own (a Workflow script) echoes the two lines back verbatim;
     the checksum lets the caller reject a transcription that is not byte-exact.
     """
-    root = _get_root(path)
-    container = _get_container(root)
-    payload, chosen_count = discover_batch(
-        container.get(NodeRepository),
-        container.get(RuntimeRepository),
-        container.get(Operations),
-        container.get(RecommendationEngine),
-        spec,
-        session,
-        slots,
-        max_strong,
-        exclude,
-        release,
-    )
+    claims = _claims(_get_root(path))
+    payload, chosen_count = discover(claims, spec or None, session, slots, max_strong, exclude)
     sys.stdout.write(f"{payload}\n__CHECK n={chosen_count} h={djb2(payload)}\n")
 
 
@@ -1889,7 +2168,7 @@ def search_cmd(
         SearchMode.AUTO
     ),
     kind: Annotated[NodeKind | None, typer.Option("--kind", help="task, plan or spec")] = None,
-    status: Annotated[NodeStatus | None, typer.Option("--status", help="Filter by status")] = None,
+    status: Annotated[str | None, typer.Option("--status", help="Filter by stored status")] = None,
     plan: Annotated[str | None, typer.Option("--plan", help="Only this plan and its tasks")] = None,
     limit: Annotated[int, typer.Option("--limit", min=1, help="Most results to print")] = 10,
     json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
@@ -2033,6 +2312,7 @@ def _run_web_server(host: str, port: int, open_browser: bool, path: Path | None)
     from taskmanager.web.app import create_app
 
     root = _get_root(path)
+    _refuse_pre_lifecycle(root)
     db_mgr = DatabaseManager(root / ".taskmanager")
     if not db_mgr.is_initialized():
         print(f"[red]Error:[/red] TaskManager is not initialized in {root}. Run 'tm init' first.")
@@ -2105,6 +2385,7 @@ def web_export(
     from taskmanager.web.static_export import export_static_html
 
     root = _get_root(path, must_exist=False)
+    _refuse_pre_lifecycle(root)
     db_mgr = DatabaseManager(root / ".taskmanager")
     if not db_mgr.is_initialized():
         print(f"[red]Error:[/red] TaskManager is not initialized in {root}. Run 'tm init' first.")

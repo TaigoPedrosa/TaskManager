@@ -6,7 +6,6 @@ Run `tm guide` for the topics and `tm guide <topic>` for the one that matches yo
 
 ## Lifecycle
 
-`NOT_STARTED` becomes `READY` when every dependency is `COMPLETED` or `SUPERSEDED`. Each stage is claimed with `tm run start <task-id> --agent <name> --session <id>` and released with `tm run stop <task-id> --status <S>`:
 
 | Claim on | Sets | Locks the task's files | Released with |
 |:--|:--|:--|:--|
@@ -22,7 +21,6 @@ A `NOT_STARTED` task whose dependencies are all satisfied but whose own `declare
 
 A `depends_on` edge onto a **decision** (a question raised with `tm decision add`) reads `AWAITING_DECISION`, not `BLOCKED`, once every other dependency is clear: an open decision is `NOT_STARTED`, an answered one `COMPLETED`, a withdrawn one `ABANDONED` — either terminal state clears the edge, so answering or withdrawing it moves the task straight to `READY`. `tm decision list --status open` is the owner's queue of what is waiting on them.
 
-A lease lasts 300 seconds unless `--ttl` or `TM_LEASE_TTL` says otherwise, and `tm run heartbeat` renews it. An expired lease does not free the task by itself: `tm run sweep` names it, drops the lease and its locks, and returns the task to the state before the claim (`NOT_STARTED`, `WAITING_REVIEW`, `WAITING_FIXES` or `WAITING_MERGE`), so it can be claimed again.
 
 ## Reading
 
@@ -37,7 +35,6 @@ A lease lasts 300 seconds unless `--ttl` or `TM_LEASE_TTL` says otherwise, and `
 
 ## Files and worktrees
 
-`--worktree` on `tm run start` cuts `tm/<task-id>` from the task's own repository's `origin/main` with no upstream, into `<worktree-dir>/<target_repo>-<task-id>`. A task's repository is `<project root>/<target_repo>`. `tm` finds its database from any directory, a worktree included, and inside a worktree it also resolves the task, so `tm run heartbeat`, `tm verify run` and `tm run stop` need no id there. `-C <project root>` or `TM_ROOT` overrides the search.
 
 A claim locks the paths the task declares — its path-bearing verifications plus any `declared_files` in its frontmatter — so two tasks touching one file cannot be in flight at once.
 

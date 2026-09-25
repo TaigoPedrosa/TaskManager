@@ -6,7 +6,6 @@ For the agent that reads a `WAITING_REVIEW` task's branch and returns it either 
 
 ```
 tm task list --status WAITING_REVIEW --yaml
-tm run start <task-id> --agent <name> --session <id>
 ```
 
 The claim sets the task to `REVIEWING` and locks nothing, because a review writes nothing. `--worktree` is refused with `this stage works from the branch already cut; it does not cut a worktree` — a review needs no checkout of its own.
@@ -52,11 +51,8 @@ A judgement call the brief itself cannot settle — not a defect, a genuine open
 ## 6. Release it
 
 ```
-tm run stop <task-id> --status WAITING_FIXES
-tm run stop <task-id> --status WAITING_MERGE
 ```
 
-`WAITING_FIXES` when you found anything, `WAITING_MERGE` when you did not. Release on every exit path, including when you ran out of budget — in that case release to `WAITING_FIXES` with what you have and say the review is partial. Run `tm run heartbeat <task-id>` if the read runs long.
 
 ## 7. Report
 
