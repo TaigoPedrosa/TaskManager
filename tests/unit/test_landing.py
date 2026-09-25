@@ -93,6 +93,24 @@ def test_a_branch_already_on_its_target_completes_without_a_new_commit(tmp_path:
     assert git(api, "ls-remote", "origin", "refs/heads/main") == before
 
 
+def test_a_branch_whose_tree_matches_target_but_not_its_history_lands_without_a_merge_commit(
+    tmp_path: Path,
+) -> None:
+    """A branch can carry a real commit forward and revert it, ending on the same tree as its
+    target without ever being a git ancestor of it: still nothing to land."""
+    claims, landing = estate_with(tmp_path, TRUE)
+    api = claims.root / "api"
+    add(claims, "T1", status=Status.REVIEWED, outcome=Outcome.APPROVE)
+    on_branch(api, "tm/T1", "feature.py", "x = 1\n")
+    on_branch(api, "tm/T1", "feature.py", None)
+    before = git(api, "ls-remote", "origin", "refs/heads/main")
+
+    assert land(claims, landing)[1] == JobState.SUCCEEDED
+    assert stored(claims, "T1").status == Status.COMPLETED
+    assert git(api, "ls-remote", "origin", "refs/heads/main") == before
+    assert merges_of(api, "T1") == 0
+
+
 def test_a_conflict_is_handed_to_an_agent_who_resolves_commits_and_resumes(tmp_path: Path) -> None:
     claims, landing = estate_with(tmp_path, TRUE)
     api = claims.root / "api"
