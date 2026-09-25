@@ -73,14 +73,27 @@ def _retarget(
         return []
     # A branch cut from a container's branch would carry that container's unreviewed code.
     where = "main" if new_target == MAIN else new_target
-    # Only a node already set aside or failed can be reopened.
-    steps = "" if n.status in REOPENABLE else "defer it, then "
+    refused = f"{n.id}: its branch exists and was not cut from {where}"
+    # Only a node already set aside or failed reopens, and landed or replaced work never does.
+    if n.status == Status.COMPLETED:
+        return [
+            Refusal(n.id, 4, f"{refused}; its code has landed; file a new task to land on {where}")
+        ]
+    if n.status == Status.SUPERSEDED:
+        return [
+            Refusal(
+                n.id, 4, f"{refused}; its replacement carries the work; change where that lands"
+            )
+        ]
+    if n.status in REOPENABLE:
+        steps = ""
+    elif n.status in IN_STEP:
+        steps = "wait for its step to end, or stop it, then defer it, then "
+    else:
+        steps = "defer it, then "
     return [
         Refusal(
-            n.id,
-            4,
-            f"{n.id}: its branch exists and was not cut from {where}; {steps}reopen it with "
-            "--new-branch before changing where it lands",
+            n.id, 4, f"{refused}; {steps}reopen it with --new-branch before changing where it lands"
         )
     ]
 

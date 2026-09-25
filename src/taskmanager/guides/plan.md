@@ -137,7 +137,7 @@ tm verify list <id>
 tm verify remove <id> <verification-id>
 ```
 
-A change to `merge` once the node's branch exists is refused unless that branch was cut from the new target: code cut from a plan's branch must never land on `main` carrying the plan's unreviewed work. Set the branch aside and start a new one first; `reopen` takes only a deferred, abandoned or failed node, so defer it before reopening:
+A change to `merge` once the node's branch exists is refused unless that branch was cut from the new target: code cut from a plan's branch must never land on `main` carrying the plan's unreviewed work. Set the branch aside and start a new one first; `reopen` takes only a deferred, abandoned or failed node, so defer it before reopening, and wait for (or stop) a step in progress before deferring. A completed node has landed and a superseded one is carried by its replacement: neither is set aside, so file a new task, or change where the replacement lands.
 
 ```
 tm task defer <id> --note "<why>"
