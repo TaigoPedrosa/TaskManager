@@ -1,84 +1,78 @@
-# Merging an approved task
+# Resolving a stopped landing
 
-For the agent that lands a `WAITING_MERGE` task's branch on its repository's main branch and completes the task once the deliverable is provably there.
+For the agent handed a landing or a sync that tm stopped because it needs judgement: a conflict, a red it cannot attribute, a refused push or a missing gate.
 
-## 1. Take the work
+## What tm already did
 
-```
-tm task list --status WAITING_MERGE --yaml
-tm task get <task-id> --yaml
-```
+tm lands every node itself, as a job, one repository at a time in the node's landing order:
 
+1. **Already landed?** A branch that is already on its target, or adds nothing to it, skips straight to the verification.
+2. **Landing conditions.** An unmet `landing` condition ends the job; the node waits on it.
+3. **Build.** A fresh merge worktree cut from the target (`origin/main`, or the container branch), and `git merge --no-ff` of the node's branch with a subject naming the node.
+4. **Gate.** On a container branch: the node's own verifications, then the repository's `parent` gate when one is configured. On `main`: the repository's `main` gate, and when it is red, the same gate on the untouched target, cached per target commit, to attribute the red.
+5. **Push.** To `main`: re-read the remote, merge it in again and re-gate if it moved, push `HEAD:main`, never force. To a container branch: a compare-and-swap of the local ref.
+6. **Verify.** The node's verifications at the target; a red here is the node's own defect.
+7. **Complete.** The merge worktree is removed and the node is `COMPLETED`.
 
-## 2. Merge in a worktree of your own, and push by refspec
+A sync merges a target into a container branch the same way, under that branch's lock. Either job stops at `needs_agent` only for something a rule cannot settle, and that is the one moment an agent is dispatched:
 
-```
-git -C <repo> fetch origin
-git -C <repo> log --oneline origin/main..tm/<task-id>
-git -C <repo> worktree add --detach <scratch>/<repo>-merge-<task-id> origin/main
-git -C <scratch>/<repo>-merge-<task-id> merge --no-ff -m "<subject naming the change>" tm/<task-id>
-git -C <repo> ls-remote origin refs/heads/main
-git -C <scratch>/<repo>-merge-<task-id> push origin HEAD:main
-```
+| Stopped for | What it needs |
+|:--|:--|
+| `conflict` | resolve the merge in the job's worktree and commit it, then resume |
+| `unattributed` | the tip and the untouched target are both red and no report names the failures: read both outputs; if the tip adds a failure, record an own defect, and if it adds none, resume with `--push` |
+| `push_failed` | three refused pushes: find out why (a permission, a protection rule, a hook) and report it; resume only once the cause is gone, and never force |
+| `no gate` | the repository has no `main` gate configured: report it; the owner configures `repos.<repo>.gates.main` |
+| a red sync | the container's `parent` gate went red after the target was merged in: fix it in the job's worktree, commit, resume |
 
-**Never merge into the shared checkout's local `main`, and never `git push origin main`.** That local branch is shared by every agent working in the repository: `git fetch` never moves it, so it is routinely behind `origin/main`, and a merge whose push was refused stays on it, where the next agent's push publishes it. A detached worktree cut from a freshly fetched `origin/main` has neither problem, and pushing `HEAD:main` sends exactly the commit you built.
+## 1. Take the job
 
-- **Fetch immediately before the merge, not when you planned it**, and re-read `ls-remote` just before the push. If `origin/main` moved in between, the push is rejected as non-fast-forward: remove the merge worktree and redo this step from a fresh fetch. Never force.
-- **Always pass `-m`.** A `--no-ff` merge with no subject commits itself with git's default one.
-- **Run the repository's own gate in the merge worktree before pushing** whenever `origin/main` has moved since the branch was cut. The review saw the branch on an older base, so only the merged tip shows how the two combine.
-- **On a conflict**, `git -C <scratch>/<repo>-merge-<task-id> merge --abort`, remove the worktree, change no status, and report. The task stays `WAITING_MERGE`.
-- **If the push is refused** by a permission check rather than rejected by the remote, stop. Report the merge worktree's path and the merge commit's sha so the owner can push it with one command. Never retry it, force it, or ask another agent or session to push it.
-- **Where `main` deploys on push, the push is the deploy.** Judge CI by the run at the current tip of `origin/main`, not the run your push triggered: a sibling landing seconds later cancels yours.
-
-## 3. Prove the deliverable is on the remote
-
-For every path `tm task get <task-id> --yaml` listed under `declared_files`:
+A dispatcher's workflow usually hands you the job and says so in the prompt. On your own, claim the stopped node, which hands you the job and its lease:
 
 ```
-git -C <repo> cat-file -e origin/main:<path>
+tm task start <node-id> --agent <name> --session <id> --yaml
+tm job status <job>
 ```
 
-Exit 0 means that path is on `origin/main`. A push that reported success and a file that is on `origin/main` are two different claims; this is the second one.
+The job's `step`, `result`, `repo`, `target` and `worktree` say where it stopped, why, and where the merge in progress is. Run `tm task heartbeat <node-id>` if the work runs long.
 
-## 4. Verify
+## 2. Work in the job's worktree
 
-```
-tm verify run <task-id>
-```
+It is tm's own merge worktree, holding the merge in progress. Resolve there, commit there with an explicit pathspec, and push nothing: tm pushes when it resumes. Never rebase, never force, and never merge in the project's own checkout or on its local `main`.
 
-It must exit 0. A path check reads the task's `target_repo` at `origin/main`, fetched first, so it measures what you just pushed regardless of what the shared checkout's own working tree happens to hold. If it exits 1, **do not complete the task**: report the failing rows, leave the status at `WAITING_MERGE`, and let it go back to fixes. If it prints `No verifications to run` it exits 2 having checked nothing: that is not a pass, so report it and let the task's owner attest it or add a check.
-
-## 5. Complete it
+## 3. Resume
 
 ```
+tm job resume <job>
+tm job resume <job> --own-defect "<the finding, one line>"
+tm job resume <job> --push
 ```
 
-This is the only place `COMPLETED` is ever set, and only after steps 3 and 4 both came back clean. Completing a task is what makes its dependents `READY`, so a wrong completion releases work onto a tree that does not hold what it needs.
+- Plain `resume` continues from where the job stopped, gates the tip again and lands it.
+- `--own-defect` records that the node's own change is at fault. The node goes back for a fix with your finding in `:merge`, or to `FAILED` when it has no landing attempt left or does not fix its own defects.
+- `--push` is for `unattributed` only, after you proved the tip adds no failure the target lacks.
 
-## 6. Remove the worktree
+A resume runs on in the background. `tm job status <job> --wait 540` blocks until the job leaves `running` or nine minutes pass, and prints where it went; a job stopped again is still yours.
 
-
-Remove the merge worktree from step 2 as well, by name and without `--force`: `git -C <repo> worktree remove <scratch>/<repo>-merge-<task-id>`.
+Append what you found and did to the node's `:merge` section (`tm section get <node-id>:merge` first, then `tm section set <node-id>:merge --file <path>`).
 
 ## Waiting on something that takes time
 
-A gate, a push, an external state change — pick by duration, because duration is what you actually know:
-
 | The wait is | Do |
 |:--|:--|
-| under 10 minutes | a single foreground call to completion: the tool's own blocking `wait` where one exists, else `timeout 540 bash -c 'until <cond>; do sleep 15; done'; echo $?` |
+| under 10 minutes | a single foreground call to completion: `timeout 540 bash -c 'until <cond>; do sleep 15; done'; echo $?` |
 | 10–30 minutes | a Monitor with a filter matching every terminal state, not only success |
+| over 30 minutes | leave the job stopped and report what is pending |
 
-Never end your turn to wait on a background run "until notified." A background command's completion notification reaches you only while you are still working — ending your turn is what loses it, and nothing resumes you afterward. The output is already on disk; `tail` it instead of waiting for word of it.
+A job you leave unresolved counts as a failed step for the node, and its lease returns to the job for the next agent. Never end your turn to wait on a background run "until notified."
 
-## 7. Report
+## 4. Report
 
-Task id, merge commit sha, the merge worktree path, the push and its `ls-remote` before and after, each declared path with its `cat-file` result, the `tm verify run` exit code, the status you set, and whether the worktree was removed.
+The job, where it stopped, what you changed and in which commit, which resume you ran and what `tm job status <job>` printed after it.
 
 ## Never
 
-- Never complete a task whose verification failed or whose deliverable you did not find on `origin/main`.
-- Never force-push, never rewrite the repository's main branch, never `git checkout`, `reset` or `clean` in a checkout you share.
-- Never merge into, commit on, or push the shared checkout's local `main`; the merge lives in your own worktree and is pushed as `HEAD:main`.
-- Never merge a branch you did not claim into `MERGING` yourself, and never review or fix the code while merging it — it goes back to `WAITING_FIXES` instead.
+- Never push, force-push, rebase or reset anything; tm pushes.
+- Never merge into, commit on, or push the project checkout's local `main`.
+- Never set a node `COMPLETED` or resume with `--push` on a red you have not attributed.
+- Never review or fix the node's own code while resolving its landing: that is an own defect, recorded with `--own-defect`.
 - Never open or edit anything under `.taskmanager/`.

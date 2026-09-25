@@ -7,6 +7,7 @@ than in the agent's terminal.
 import re
 import shlex
 from importlib.resources import files
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -129,3 +130,56 @@ def test_guide_command_exists(topic: str, command: str) -> None:
             continue
         flag = token.split("=", 1)[0]
         assert flag in accepted, f"`{name}` has no flag {flag} ({topic}.md shows `{command}`)"
+
+
+RETIRED = (
+    "tm run start",
+    "tm run stop",
+    "tm run heartbeat",
+    "NOT_STARTED",
+    "WAITING_FIXES",
+    "IN_FLIGHT",
+    ":hold",
+    "external_blockers",
+    "--release",
+    "maxFixRounds",
+)
+
+CLOSING_VERBS = {
+    "implement": "tm task complete <task-id> --agent <name>",
+    "fix": "tm task complete <node-id> --agent <name>",
+    "review": "tm task review <node-id> --agent <name> --approve",
+    "merge": "tm job resume <job>",
+}
+
+WORKFLOW = Path(__file__).resolve().parents[2] / "workflows" / "tm-wave.js"
+
+
+@pytest.mark.parametrize("topic", _topics())
+def test_guide_carries_no_retired_lifecycle_vocabulary(topic: str) -> None:
+    text = _guide_text(topic)
+    assert [word for word in RETIRED if word in text] == []
+
+
+@pytest.mark.parametrize("topic,verb", sorted(CLOSING_VERBS.items()))
+def test_role_guide_shows_the_verb_that_closes_its_step(topic: str, verb: str) -> None:
+    assert verb in _guide_text(topic)
+
+
+def test_overview_carries_the_cycle_and_the_cutover_runbook() -> None:
+    text = _guide_text("overview")
+    for needle in (
+        "READY ──claim──▶ IMPLEMENTING",
+        "MERGING ──landed and verified──▶ COMPLETED",
+        "## Moving an estate to this version",
+        "`tm init --archive`",
+        "`tm export <export dir>`",
+    ):
+        assert needle in text, needle
+
+
+def test_dispatch_guide_names_every_argument_tm_wave_reads() -> None:
+    read = set(re.findall(r"\bA\.([A-Za-z]+)", WORKFLOW.read_text(encoding="utf-8")))
+    assert read, "no argument found in the workflow script"
+    text = _guide_text("dispatch")
+    assert sorted(arg for arg in read if f"`{arg}`" not in text) == []

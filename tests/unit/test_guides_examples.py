@@ -1,6 +1,7 @@
 """The worked example in `tm guide plan` is executable documentation: it is imported here by the
 real CLI, so a guide that drifts from the importer reddens rather than misleading its reader."""
 
+import json
 import re
 from importlib.resources import files
 from pathlib import Path
@@ -85,15 +86,39 @@ def test_the_example_imports_the_documented_dependency_edges(tmp_path: Path) -> 
     }
 
 
-def test_next_offers_the_task_the_guide_says_it_offers_first(tmp_path: Path) -> None:
+def test_the_example_imports_the_documented_flags(tmp_path: Path) -> None:
     root = _imported_root(tmp_path)
 
-    ranked = _yaml("next", "-n", "5", "--yaml", "-C", str(root))
+    def flags(node_id: str) -> tuple[object, object, object]:
+        doc = _yaml("task", "get", node_id, "--yaml", "-C", str(root))
+        return doc["review"], doc["fix"], doc["merge"]
 
-    assert [t["task_id"] for t in ranked] == ["NOTIFY-EMAIL-SENDER", "NOTIFY-EMAIL-TEMPLATES"]
-    assert ranked[0]["declared_files"] == [
-        "src/notify/email/sender.py",
-        "tests/notify/test_sender.py",
+    assert flags("NOTIFY-EMAIL") == (True, True, "main")
+    assert flags("NOTIFY-EMAIL-SENDER") == (True, True, "parent")
+    assert flags("NOTIFY-EMAIL-TEMPLATES") == (True, False, "parent")
+    assert flags("NOTIFY-EMAIL-API") == (True, True, "parent")
+
+
+def test_discovery_offers_the_tasks_the_guide_says_it_offers_first(tmp_path: Path) -> None:
+    root = _imported_root(tmp_path)
+
+    output = _run(
+        "wave",
+        "discover",
+        "--session",
+        "guide-example",
+        "--slots",
+        "5",
+        "--max-strong",
+        "5",
+        "-C",
+        str(root),
+    )
+
+    payload = json.loads(output.splitlines()[0])
+    assert sorted((node["id"], node["action"]) for node in payload["chosen"]) == [
+        ("NOTIFY-EMAIL-SENDER", "implement"),
+        ("NOTIFY-EMAIL-TEMPLATES", "implement"),
     ]
 
 

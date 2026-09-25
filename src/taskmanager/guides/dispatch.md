@@ -1,169 +1,119 @@
-# Dispatching a wave
+# Dispatching
 
-For the session manager: pick the next disjoint tasks, hand each to the cheapest model that can do it, and move them through review and merge without a second record of what is in flight.
+For the session manager: run the `tm-wave` workflow, which asks tm what each node needs next and hands every step to the model tm names, and keep no record of what is in flight that tm does not already hold.
 
-## 1. Ask what can start
+## 1. The mechanism is the `tm-wave` workflow
+
+The plugin ships the dispatcher as a workflow script, `workflows/tm-wave.js`, run by name — `Workflow({name: 'tm-wave', args: {...}})` — or by path. One run is one tick:
+
+1. `tm wave discover` chooses a batch: every claimable node, within the session's slots, file-disjoint within the batch.
+2. Each chosen node runs its own loop, and no node waits for a sibling. `tm task get` reads where it stands and its `next_action`; `tm task start --worktree-dir <worktreeDir>` claims the next step and names its action and model family; the workflow dispatches the agent that action needs on the model id `models` maps that family to; the agent does the step and closes it with its guide's verb, passing the lease's agent name with `--agent`. For a `merge` or a `sync`, the workflow waits on `tm job status <job> --wait 540` instead, and dispatches an agent only when the job stops for one.
+3. The loop repeats until the node is `COMPLETED`, `FAILED`, or blocked on something outside the step.
+
+A step the agent leaves open, or an agent that dies, is released by the workflow with `tm task release <id> --agent <its lease's agent>` as a failed step, which tm counts; tm refuses that release once another claim holds the node. A claim naming a family `models` does not map is released the same way, never run on a guess. tm counts fix rounds and landing failures too, so the workflow keeps no counter and no hold of its own.
+
+Arguments, of which `session` and `worktreeDir` are required:
+
+| Argument | What it is |
+|:--|:--|
+| `session` | this dispatching session's name; every lease carries it |
+| `worktreeDir` | where implement and fix worktrees are cut, passed to every claim as `tm task start --worktree-dir` |
+| `specs` | spec ids to discover under; omitted means every spec and every node with no spec |
+| `slots` | agents this session may hold at once (default 9) |
+| `maxStrong` | of those, how many may run on `opus` or `fable` (default 5) |
+| `maxBatch` | the most nodes one tick takes on; the rest wait for the next tick |
+| `exclude` | node ids this tick never chooses |
+| `holdMerge` | node ids whose landing this tick never starts: they are implemented, reviewed and fixed, and wait at their merge step for the owner |
+| `root` | the tm root every command runs from; defaults to the session's own directory |
+| `tm` | the `tm` executable every command runs; defaults to the one on `PATH` |
+| `agentTypes` | repository → agent type for implement and fix |
+| `reviewerTypes` | `task`, `rereview` and `container` → agent type for a first review, a review after a fix, and a plan's or spec's review |
+| `capabilities` | agent type → the `requires` values it can serve; a node needing one no preferred type serves goes to the default agent |
+| `preamble` | repository → a line prepended to every brief for it, plus a `default` key |
+| `rulesDir` | a directory every agent reads before its first edit |
+| `gateLane` | where suites and gates run, as text or repository → text with a `default` key; `{task}` becomes the node id |
+| `models` | the family tm names on a claim → the model id every brief's `Model:` line carries; each family given overrides the current Claude id, and a family missing from both is released unrun |
+
+A run holds at most `min(16, CPUs - 2)` agents at once, so a batch larger than that queues inside the run; `maxBatch` keeps it from sitting claimed but idle.
+
+What still binds you when you run it:
+
+- **Never hand-roll the loop.** Chaining single dispatches by hand appoints the session as the scheduler and rebuilds, a notification at a time, the barrier a per-node loop removes.
+- **The workflow claims; agents close.** It runs every `tm task start` before it dispatches, so no agent explores before its claim and no second dispatcher sends a second agent. Each agent closes its own step with the verb its guide names.
+- **Resume re-reads tm.** A resumed run replays cached agent results, but the loop re-reads each node with `tm task get` before claiming, so it enters at the node's real next step rather than where the cache left it.
+
+## 2. What is claimable
 
 ```
-tm next -n 5 --yaml
-tm next -n 5 --strategy unblock-first --plan NOTIFY-EMAIL --model gemini-3.8-flash-high --yaml
+tm wave discover --session <id> --slots <n> --max-strong <n>
+tm wave discover --spec <spec-id> --session <id> --slots <n> --max-strong <n> --exclude <node-id>
 ```
 
-A task is returned only when it is `READY`: status `NOT_STARTED`, every `depends_on` at `COMPLETED` or `SUPERSEDED`, no live lease on it, and no declared file locked by somebody else's lease. Strategies are `balanced` (default), `unblock-first`, `finish-plans` and `priority-strict`; they reorder the same set, they never widen it.
+Every node of every kind whose next step can be claimed now, with that step and its model, plus landings and syncs stopped for an agent; a JSON line, then `__CHECK n=<chosen> h=<djb2>`. A node is claimable when none of these holds, checked in this order: it is mid-step or its job is running; an edge (its own, or one on a container above it) points at an open decision; an edge is unsatisfied; a `claim` condition is unmet; a sync its claim needs is running or waiting; its next step would lock a file another lease holds; its status has no next step.
 
-`--model <id>` keeps a task whose `acceptable_models` lists that id **and every task whose list is empty** — an empty list is "anyone", not "the strongest one".
+Within a batch no two nodes declare the same file. Across a repository, a node writing a migration holds every other migration writer back until it has landed on `main`, except siblings building on its own container branch. Two nodes touching one schema, one generated file or one shared table are not disjoint whatever their file lists say: give them an edge.
 
-## 2. Read the wave's files
+## 3. Models are tm's
 
-`tm next` excludes tasks colliding with a lease that already exists, and returns a batch in which no two tasks declare the same path. A claim on a file a live lease holds is refused, exit 1:
+`tm task start` names the model family; the workflow runs the step on the id `models` maps it to.
 
-```
-Cannot claim task <id> due to file collision: {'<path>': 'Task: <other-id>, Agent: <who>'}
-```
+| Step | Family |
+|:--|:--|
+| implement | the cheapest family in `acceptable_models` |
+| review of a task | the family of `review_models` when set, else `sonnet` |
+| review of a plan or spec | the family of `review_models` when set, else the strongest in `acceptable_models`, never below `opus` |
+| fix after a rejection, rounds 1 and 2 | the implement family when it is `opus` or `fable`, else `sonnet` |
+| fix after a rejection, round 3 onward (containers only) | the strongest in `acceptable_models`, never below `opus` |
+| fix after a failed landing; a landing or sync agent | `sonnet` |
 
-A refusal is the lock working: dispatch a different task, never a retry and never a claim with the files removed from the plan. Correct a wrong list with `tm task update <id> --set 'declared_files=["path", ...]'`.
+A list you disagree with is a plan defect: fix it with `tm task update <id> --models a,b` and say so, never dispatch around it.
 
-Two tasks touching one schema, one migration chain or one generated file are not disjoint whatever their file lists say. Sequence them.
+## 4. Holds are edges, decisions and conditions
 
-## 3. Route to a model
+A node waits only on something named: an edge (`tm task depends <id> --add <other-id>`), a decision (`tm decision add ... --blocks <id>`), or a condition (`tm task condition add <id> --needs "<what>" --command "<check>"`). `holdMerge` is the one hold the dispatcher keeps, and it is policy for this tick, not state on the node: a landing that is irreversible, deploys, or is the owner's call is listed there and reported, and the node's earlier steps still run.
 
-`acceptable_models` is the routing decision and the only one: a task is delegable to a cheaper family exactly when a model of that family is listed. Take the cheapest listed model that can do the work. A list you disagree with is a plan defect — fix it with `tm task update <id> --models a,b` and say so — never a reason to dispatch outside it.
-
-## 4. Write the prompt
-
-The brief is `tm render <task-id> --view subagent`. The agent runs it; you do not paste it, summarise it or add to it, because a restated brief drifts from the one the reviewer will read. The prompt carries only:
-
-- the task id, and the command to read it: `tm render <id> --view subagent`
-- the model you routed it to
-- the report path
-- its role's guide: `tm guide implement`
-
-Nothing else. A brief that sends an agent to read a plan document, a long history or a whole directory spends the agent before the work starts; point it at `tm render <id>` and `tm section get <id>:<key>`.
-
-## 5. Watch, do not poll
+## 5. What is in flight
 
 ```
-tm run list --yaml     # every lease and every locked file
-tm run sweep           # drops leases past their TTL
+tm run list --yaml
+tm run sweep
+tm job status <job>
+tm job status <job> --wait 540
 ```
 
-`tm run list` is the whole of what is in flight; nothing else needs writing down. Run it when an agent reports, not on a timer, and never end a turn waiting to be told about a job whose status you can ask for.
+`tm run list` is every lease, locked file and job; nothing else needs writing down, and never a session's own agent list. A lease past its TTL reads `STALE` until `tm run sweep` returns the step to where it was claimed from and counts a failed step. A landing stopped for an agent reads `WAITING_MERGE_AGENT`, and discovery offers it.
 
-Wave size is how many reports you can read carefully, not how many tasks `tm next` offers. One agent per task and one task per agent: a second agent on a live task is refused, and an agent holding two leases cannot heartbeat either reliably. Keep the slots full by replacing a finished task rather than by dispatching a whole new wave.
+## 6. When something fails
 
-A lease past its TTL does not free its task until it is swept. `tm run sweep` prints `Swept 1 expired lease(s): <id>`, releases the lease and its locks, and returns the task to the state before the abandoned claim: `NOT_STARTED` for an implementation (it appears in `tm next` again), `WAITING_REVIEW` for a review, `WAITING_FIXES` for a fix round, `WAITING_MERGE` for a merge. The lost agent's branch and worktree remain; read them before dispatching the replacement.
+A node that spends its fix rounds, its landing attempts or its failed steps is `FAILED`, and tm opens a decision on it; a `main` that stays red under parked landings for an hour opens one too; and a node deferred, abandoned or failed while others depend on it opens one on those dependents. `tm decision list --status open` is the owner's queue, not yours: do not answer a decision on the owner's behalf, and do not chase an agent to withdraw one.
 
-## 6. Move it through the cadence
+Re-running a failed step unchanged is not a fix. Before anyone answers `investigate`, change what made it fail: correct the brief with `tm section set`, widen `acceptable_models`, or split the node.
 
-Each stage is one claim and one release. The implementer, the reviewer, the fixer and the merge agent each hold their own lease, so `tm run list` always names who has it — including a merge in progress, which used to be invisible to it.
+## 7. When the plan changes
 
-| State | Dispatch | It claims, setting | It releases to |
-|:--|:--|:--|:--|
-| `READY` | an implementer | `IMPLEMENTING`, locking the task's files | `WAITING_REVIEW`, or `NOT_STARTED` if blocked |
-| `WAITING_REVIEW` | a reviewer | `REVIEWING`, locking nothing | `WAITING_FIXES` or `WAITING_MERGE` |
-| `WAITING_FIXES` | a fixer | `FIXING`, locking the task's files again | `WAITING_REVIEW` |
-| `WAITING_MERGE` | a merge agent | `MERGING`, locking nothing | `COMPLETED`, after the merge verifies |
+- **Defer**: `tm task defer <id> --note "<why>"`. The note is kept in `:deferral`.
+- **Abandon**: `tm task abandon <id> --note "<why>"`.
+- **Supersede**: `tm task supersede <old-id> <new-id> --transfer-blocks all` sets the old node `SUPERSEDED` and re-points every dependent at the new one, which must already exist.
+- **Reopen**: `tm task reopen <id> --note "<why>"` puts a failed, deferred or abandoned node back into the cycle.
+- **Repair**: `tm task reset <id> --to READY --note "<why>"`, ledgered, for a stored status that is wrong.
 
+A dependent of a deferred, abandoned or failed node is never stranded silently: the decision tm opens on it asks whether to drop the edge, defer it, or abandon it.
 
-A reviewer is dispatched without `--worktree`; its claim reads the branch and locks nothing, so it never holds a sibling out of a wave. A fix round returns to `WAITING_REVIEW` and reuses the same branch, so the reviewer re-reads a diff rather than a tree.
+## 8. Write rulings down where the work is
 
-**That table is per task, not per wave.** A task advances the moment its own stage releases, so one task can be merging while another is on its first fix round and a third has not been claimed. One reviewer per task, dispatched as soon as *that* task reaches `WAITING_REVIEW` — do not collect a plan's `WAITING_REVIEW` tasks and review them together. Batching by plan makes the slowest task in the batch the release time of every task in it, spends one reviewer's context on work it was not briefed on, and produces a single findings list somebody then has to split back apart.
-
-## 7. Chain the stages as one workflow
-
-Where the orchestration tool takes a script, the table above *is* the script, and the whole of the design is that no stage waits for a sibling:
-
-- **Pipeline, never a barrier.** Run each task through implement → review → fix → re-review → merge independently. Putting a barrier between stages — every task reviewed before any is fixed — makes each task wait for the slowest sibling at five separate points, and there is no cross-task decision at any of them to pay for it. Wall clock becomes the slowest single chain instead of the sum of the slowest per stage.
-- **Enter at the current status, not at the start.** Read each task's status when the wave is built and let it skip what it is already past: `WAITING_REVIEW` enters at review, `WAITING_MERGE` enters at merge. Re-implementing a task that is already implemented is the common failure of a script that assumes a wave starts from `READY`.
-- **Let each stage pick the next.** A review finding nothing blocking skips fix and re-review and goes to merge; one that finds something routes through fix and back. Have the stage return a structured verdict rather than prose, so the branch is a value and not a reading of a paragraph.
-- **Declare the holds before the first dispatch, not inside a stage.** A merge that is irreversible, applies to production, or is the user's decision is excluded from the script's input and reported as held. A stage that discovers the hold has already spent an agent reaching it.
-- **A status is not a lock.** Two stages of one task never run at once, so nothing needs a second lock beyond the lease — but a shared resource outside `tm` is not covered by either. A migration chain admits one **unmerged** writer, not one live lease: the seat stays taken until that branch merges, so a task releasing its lease at `WAITING_REVIEW` has not freed it, and the next claimant computes the same "next free" revision and builds a second head on one parent.
-
-**The script is not a second task database.** `tm` holds the status; the script holds only the
-control flow that gets an agent to the next one. Everything below follows from that one asymmetry.
-
-- **Read the task set from `tm` at runtime, not from a literal in the script.** A hard-coded
-  `const TASKS = [...]` freezes the queue at the moment the script was written, so work that
-  becomes ready while the run is in flight is invisible to it and a task someone else claimed in
-  the meantime is dispatched into a collision. Call `tm next` / `tm task list --status <S> --yaml`
-  inside the first stage, or re-read between rounds of a loop. A named, owner-authorised set of
-  ids is the one case where a literal is correct — and then it is a literal because the *user*
-  fixed the set, not because the script did.
-- **The script owns the transitions; the stage agent owns the work.** The script runs
-  choosing the status by branching on the agent's structured verdict. Both still go through
-  `tm run`, so the lease, the file locks and the history are written as before and `tm run list`
-  agrees with `tm task list`. An agent left to claim for itself explores first, and another
-  dispatcher reading `tm next` in the meantime sends a second agent to the same task. The agent's
-  Never move a status any other way.
-- **An agent that dies leaves the script holding its lease.** `agent()` returns `null` when a
-  subagent is skipped or dies on a terminal error, and the task claimed for it stays `IMPLEMENTING`
-  with its files locked, blocking every sibling that declared one of them. Stop it back to the
-  status it entered at before anything else is dispatched. A lease a dead script left behind is
-  what `tm run sweep` is for: run it before dispatching a replacement, never after.
-- **Cap the fix rounds inside the stage, and make the cap do something.** Two review rounds on one
-  task means the brief was wrong, not the implementer (§10). Loop fix → re-review at most twice,
-  then stop that task's chain and report it rather than starting a third round: leave it at
-  `WAITING_FIXES` for a human or a stronger model, and say which findings are still open. A loop
-  with no cap spends a wave's whole budget on the one task whose sections are wrong.
-- **A review that says DEFECTS and lists no finding is a defect in the review, not a clean task.**
-  Stop that chain and report it. The fixer downstream would otherwise claim `WAITING_FIXES` and
-  find nothing on it to fix, which is exactly what happens when a reviewer delivers its findings to
-  the dispatcher's mailbox instead of to the task's `:review` section.
-- **Resume re-runs the script, not the world.** Resuming a run replays cached results for every
-  `agent()` call whose prompt and options are unchanged — but the trees and `tm` have moved since,
-  so a cached "reviewed CLEAN" can be a verdict on a commit that is no longer the tip. Re-read each
-  task's status from `tm` at the top of a resumed run and let the entry rule above send it to the
-  right stage, rather than trusting where the cache says it was.
-- **Hold the merge stage, not the whole task, for owner-gated work.** A task whose merge is
-  irreversible, applies to production or deploys a live site still gets implemented and reviewed by
-  the script; it is the merge stage that is excluded and reported. Declaring the hold at the merge
-  boundary keeps the work moving without ever letting a script make the decision that was the
-  user's.
-
-The plugin ships exactly this script as the `tm-wave` workflow (`workflows/tm-wave.js`), run by
-name — `Workflow({name: 'tm-wave', args: {...}})` — reading each batch through `tm wave discover`
-rather than reimplementing the table above by hand. `args.specs`, `.session` and `.worktreeDir` are
-required; `.root` (the tm root a bare command runs against) defaults to the dispatching session's
-own cwd, `.agentTypes` (repo → agent type), `.preamble` (repo → a line prepended to that repo's
-briefs, plus a `default` key) and `.rulesDir` (a path read for every rule file before the first
-edit) default to none, and `.models` (family → model id) defaults to the current Claude ids — pass
-only the ones this estate needs to override. A run holds at most `min(16, CPUs - 2)` agents
-concurrently, so a chosen batch larger than that queues rather than dispatching all at once;
-`args.maxBatch` caps what one run claims so the remainder is left for the next tick instead of
-sitting claimed but undispatched.
-
-Build the wave against the trees, not against the last wave's reports. A pin, a migration head, an ahead/behind count and a seam's status all decay between waves, and re-deriving them is the dispatcher's job rather than the implementer's: a stale premise dispatched is an agent spent proving the brief wrong.
-
-## 8. When the plan changes
-
-- **Supersede.** `tm task supersede <old-id> <new-id> --transfer-blocks all` sets the old task `SUPERSEDED` and re-points every dependent at the new one. The new task must already exist (otherwise nothing is changed and it exits 1). A lease and file locks held by the old task are released. A comma-separated id list re-points only those; `--transfer-blocks none` re-points nobody and leaves each dependent pointing at a `SUPERSEDED` task, **which satisfies the dependency** — use it to release dependents, never to hold them.
-
-## Decisions are the owner's queue, not yours
-
-`tm decision list --status open` is what is waiting on the owner, not on you: a task an agent released with an open decision reads `AWAITING_DECISION` and stays out of `tm next` on its own, so there is nothing to dispatch around. Do not answer a decision on the owner's behalf, and do not chase an agent to un-ask one — `tm decision answer <id> --option <key>` or `tm decision withdraw <id>` is the owner's call, and the blocked task clears to `READY` the moment either lands.
-
-## 9. Write rulings down where the work is
-
-A decision, a constraint, a hazard or an answer the next agent will need goes on the node it applies to, not into a document and not into your own notes:
+A ruling, a constraint, a hazard or an answer the next agent will need goes on the node it applies to:
 
 ```
 tm section set <task-id>:context --file <path> --header "## Context"
-tm section set <plan-id>:context --file <path>      # reaches every task's brief
+tm section set <plan-id>:context --file <path>
 ```
 
-Anything a `tm` command can answer — what is claimed, what is ready, who holds a file, which tasks are left in a plan — is not written down at all. It decays the moment someone claims something.
-
-## 10. Escalate rather than repeat
-
-An implementer that comes back blocked twice on the same task is not going to succeed on a third identical dispatch. Re-dispatch on a stronger model and say what changed, or split the task. Two review rounds on one task means the brief was wrong: fix the task's sections before the third.
+A plan's `context` reaches every task's brief. Anything a `tm` command can answer — what is claimed, what is ready, who holds a file — is not written down at all.
 
 ## Never
 
-- Never dispatch two agents at intersecting `declared_files`, and never work around a collision refusal.
-- Never paste, summarise or extend the rendered brief.
-- Never poll `tm run list` in a loop, and never end a turn waiting for a background job to report.
-- Never dispatch the replacement of a lost agent before running `tm run sweep`.
-- Never keep a second record of what is in flight; `tm run list` and `tm next` are it.
-- Never hold a task at a stage because a sibling has not reached it; only `depends_on` makes one task wait for another.
-- Never treat a released lease as a freed migration chain: that seat is held until the branch merges.
-- Never dispatch on a premise carried from the last wave's report without re-deriving it against the tree.
+- Never dispatch a step `tm task start` did not claim, and never two agents on one node.
+- Never paste, summarise or extend the rendered brief; `tm render <id> --view subagent` is the brief.
+- Never keep a second record of what is in flight, a fix counter, or a hold outside `holdMerge`.
+- Never answer a decision that is the owner's.
+- Never re-run a failed node without changing what made it fail.

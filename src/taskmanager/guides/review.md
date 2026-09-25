@@ -1,58 +1,76 @@
-# Reviewing a task
+# Reviewing a node
 
-For the agent that reads a `WAITING_REVIEW` task's branch and returns it either with findings or approved for merge.
+For the agent that reads a node's branch after `tm task start` claimed its `review`, writes the findings on the node, and approves or rejects it.
 
-## 1. Take the task
+## 1. The claim
+
+A dispatcher's workflow usually claims the step for you and says so in the prompt: then skip to step 2. On your own:
 
 ```
-tm task list --status WAITING_REVIEW --yaml
+tm task start <node-id> --agent <name> --session <id> --yaml
 ```
 
-The claim sets the task to `REVIEWING` and locks nothing, because a review writes nothing. `--worktree` is refused with `this stage works from the branch already cut; it does not cut a worktree` — a review needs no checkout of its own.
+`action: review` sets the node to `REVIEWING`, names the `model` family, the `repos` it touched (several for a plan or spec), its `branch` and `base`, and locks nothing: a review writes no code, so it never holds a sibling out. It cuts no worktree. The lease is held under `<name>`, which the verbs closing the step pass back with `--agent`; a workflow's prompt names it. `action: blocked` (exit 3) claimed nothing; report its `reason`.
 
-Other refusals, exit 1: `Task <id> is not ready to start (current state: IN_FLIGHT)` means another agent already claimed the review; `(current state: WAITING_FIXES)` or `(current state: WAITING_MERGE)` means someone already reviewed it.
+The node may be a task, or a plan or spec whose children have all landed on its branch. If `tm section get <node-id>:review` already holds findings, this review checks a fix (step 3).
 
 ## 2. Read what was asked for
 
 ```
-tm render <task-id> --view subagent
+tm render <node-id> --view subagent
 ```
 
-That is the brief the implementer was given, and it is the only standard you review against. `tm task get <task-id> --yaml` names the task's `target_repo` and `declared_files`.
+That is the brief the implementer was given, and the only standard you review against. `tm task get <node-id> --yaml` names the node's `target_repo`, `declared_files` and flags. For a plan or spec the brief also lists every child whose own review rejected, with its `:review`: those children landed on this branch unfixed, and this review is where their findings get fixed.
 
 ## 3. Read the branch
 
-The work is on `tm/<task-id>` in `<project root>/<target_repo>`:
+In each repository the claim's `repos` names, `<base>` is `origin/main` when `base` is `main`, and the container branch otherwise:
 
 ```
-git -C <repo> log --oneline main..tm/<task-id>
-git -C <repo> diff main...tm/<task-id>
-git -C <repo> show tm/<task-id>:<path>
+git -C <repo> log --oneline <base>..<branch>
+git -C <repo> diff <base>...<branch>
+git -C <repo> show <branch>:<path>
 ```
 
 Read only. Do not check the branch out in the project's own checkout, do not edit a file, do not run a formatter. If you must execute the code, do it in a worktree of your own making, outside the project, and say so in the review.
 
+- **A first review** reads the whole diff against the brief.
+- **A plan's or spec's review** reads the whole branch too, for what is true only between its children: a producer nobody calls, a column only ever written as null, two halves that do not join.
+- **A review after a fix** checks every finding in `:review` not yet recorded as closed against the fix commits and the fixer's latest `:report` entry, and, when the last landing failed, the failure the latest `:merge` entry names. Establish each closure by making it fail.
+
 ## 4. Run the checks
 
 ```
-tm verify run <task-id> --ref tm/<task-id>
+tm verify run <node-id> --ref <branch>
 ```
 
-`file_exists`, `file_absent`, `symbol_signature` and `ast_export` read that ref directly, with no fetch, so a check against the unmerged branch is real evidence, not a guess. Without `--ref` they read the task's `target_repo` at `origin/main`, fetched first — which is still red before the merge for work that is genuinely finished, so use `--ref` here rather than a manual `git -C <repo> show tm/<task-id>:<path>`. `test_command` still runs from the project root regardless, and sees the same ref as `TM_VERIFY_REF` in its environment — a command that needs to check the branch itself reads `${TM_VERIFY_REF:-origin/main}`, unset when `--ref` is omitted. Exit 1 names each failing row; `No verifications to run.` exits 0 and proves nothing — a task with no checks is itself a finding.
+The path checks read that ref directly, with no fetch, so a check against the unmerged branch is real evidence. Each `test_command` sees the same ref as `TM_VERIFY_REF`. Exit 1 names each failing row; `No verifications to run.` exits 2 and proves nothing — a task with no checks is itself a finding.
 
 ## 5. Write the findings
 
-One line per defect: the file, the symbol or line, and what breaks. No summary, no praise, no restatement of the task, no severity essay. Order them and number them, because the fix round answers them by number. Cite a symbol rather than a line number wherever you can.
-
-Nothing to say is a valid review. Say it in one line.
-
-A judgement call the brief itself cannot settle — not a defect, a genuine open question — is raised as a decision rather than left unresolved in prose: `tm decision add "<question>" --option "a|Do X" --recommend a --blocks <task-id>`. Say so in the review and release the task to `WAITING_FIXES` as usual; it reads `AWAITING_DECISION` once the fix round releases it back.
-
-## 6. Release it
+Append them to the node before you close the step:
 
 ```
+tm section get <node-id>:review
+tm section set <node-id>:review --file <path> --header "## Review"
 ```
 
+One line per defect: the file, the symbol or line, and what breaks. No summary, no praise, no restatement of the task, no severity essay. Number them, because the fix answers them by number, and record each earlier finding as closed or still open. Cite a symbol rather than a line number wherever you can. Nothing to say is a valid review: say it in one line.
+
+## 6. Close the step
+
+```
+tm task review <node-id> --agent <name> --approve
+tm task review <node-id> --agent <name> --reject --verdict "<one line>"
+```
+
+tm refuses either one while the `:review` section is unchanged since your claim: the findings are the record, and a verdict without them leaves a fixer nothing to fix. It refuses it too when the live lease is not `<name>`'s: the step is no longer yours, so stop and report. `--verdict` is a free-text line shown beside the status; it never decides anything.
+
+- **Approved**: the node goes on to its landing.
+- **Rejected, and the node fixes its own rejections**: it goes to a fix round while it has rounds left; with none left it is `FAILED`, and the owner decides.
+- **Rejected, and the node does not fix** (`fix` off): it lands its branch on its parent unfixed, and the parent's review is where the findings are fixed.
+
+A judgement call the brief itself cannot settle — not a defect, a genuine open question — is raised rather than left in prose: `tm task release <node-id> --agent <name> --blocked --decision "<question>" --option "a|Do X|why" --recommend a`. Run `tm task heartbeat <node-id>` if the read runs long.
 
 ## 7. Report
 
@@ -61,7 +79,6 @@ The verdict, the numbered findings, the `tm verify run` exit code with the rows 
 ## Never
 
 - Never edit code, tests, fixtures or configuration — not even a one-line fix you can see.
-- Never set `COMPLETED`, and never merge or push anything.
-- Never claim the review with `--worktree`.
-- Never leave the task in `REVIEWING`.
+- Never approve with a finding still open, and never merge or push anything.
+- Never close the step without writing `:review` first.
 - Never file a finding you have not read in the branch's own content.
