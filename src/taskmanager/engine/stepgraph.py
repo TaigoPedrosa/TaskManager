@@ -7,7 +7,7 @@ from graphlib import CycleError, TopologicalSorter
 
 from taskmanager.core.enums import NodeKind
 from taskmanager.core.status import EXITS, SET_ASIDE, DecisionStatus, Merge, Status
-from taskmanager.engine.chains import landing_chain, meeting
+from taskmanager.engine.chains import landing_chain, meeting, satisfied
 
 CONTAINERS = frozenset({NodeKind.PLAN, NodeKind.SPEC})
 Graph = dict[str, set[str]]
@@ -111,7 +111,8 @@ def _migration_order(s: Snapshot, repo: str, rank: dict[str, int]) -> list[str]:
         if n.repo == repo
         and n.writes_migration
         and n.kind not in CONTAINERS
-        and n.status not in EXITS
+        # Code parked on a branch that was set aside never reaches main, so it holds nothing.
+        and not any(s.status(x) in EXITS for x in landing_chain(s, n.id))
         and s.status(reaches_main(n.id)) != Status.COMPLETED
     ]
 
@@ -130,6 +131,22 @@ def migration_order(s: Snapshot, repo: str) -> list[str]:
     one's code reaches a branch it builds on. Discovery grants in this order, so the cycle
     check sees the same waits discovery will impose."""
     return _migration_order(s, repo, _topological_rank(_base_graph(s)))
+
+
+def migration_holders(s: Snapshot, repo: str) -> dict[str, str]:
+    """For every migration writer in `repo` still open, the earlier one (by `migration_order`)
+    that holds its chain: the writer nearest ahead of it whose landing has not yet reached a
+    branch it builds on. A writer already satisfied against the current holder carries the chain
+    forward in its place, so a sibling building on already-landed work never waits behind an
+    unrelated writer that merely ranks between them."""
+    holders: dict[str, str] = {}
+    current: str | None = None
+    for entry in migration_order(s, repo):
+        if current is not None and not satisfied(s, entry, current):
+            holders[entry] = current
+        else:
+            current = entry
+    return holders
 
 
 def _with_migration_chain(s: Snapshot, graph: Graph) -> Graph:

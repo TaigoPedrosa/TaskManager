@@ -11,10 +11,9 @@ from taskmanager.core.enums import NodeKind
 from taskmanager.core.lifecycle import LifecycleError
 from taskmanager.core.models import Node
 from taskmanager.core.status import IN_STEP, Action, JobKind, JobState, Status
-from taskmanager.engine.chains import satisfied
 from taskmanager.engine.claims import Claims
 from taskmanager.engine.routing import STRONG
-from taskmanager.engine.stepgraph import Snapshot, migration_order
+from taskmanager.engine.stepgraph import Snapshot, migration_holders
 
 # Later steps first, so a wave drains work already under way before it starts more.
 _STAGE = {Action.MERGE: 0, Action.SYNC: 0, Action.FIX: 1, Action.REVIEW: 2, Action.IMPLEMENT: 3}
@@ -83,22 +82,6 @@ def _candidates(
     return sorted(found, key=lambda c: (_STAGE[c.action], -c.node.priority, c.node.id))
 
 
-def _chain_holders(snap: Snapshot, repo: str) -> dict[str, str]:
-    """For every migration writer in `repo` still open, the earlier one (by `migration_order`)
-    that holds its chain: the writer nearest ahead of it whose landing has not yet reached a
-    branch it builds on. A writer already satisfied against the current holder carries the chain
-    forward in its place, so a sibling building on already-landed work never waits behind an
-    unrelated writer that merely ranks between them."""
-    holders: dict[str, str] = {}
-    current: str | None = None
-    for entry in migration_order(snap, repo):
-        if current is not None and not satisfied(snap, entry, current):
-            holders[entry] = current
-        else:
-            current = entry
-    return holders
-
-
 def discover(
     claims: Claims,
     specs: list[str] | None,
@@ -133,7 +116,7 @@ def discover(
         why: list[str] = []
         if cand.action == Action.IMPLEMENT and migration:
             if repo not in chain_holders:
-                chain_holders[repo] = _chain_holders(snap, repo)
+                chain_holders[repo] = migration_holders(snap, repo)
             holder = chain_holders[repo].get(node.id)
             if holder is not None:
                 why.append(f"{repo} migration chain held by {holder}")

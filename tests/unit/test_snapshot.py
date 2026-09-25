@@ -366,3 +366,20 @@ def test_facts_see_a_container_whose_descendant_has_started(
         claimed_from = Status.READY if status == Status.IMPLEMENTING else None
         estate.add(f"T{n}", parent="P", status=status, claimed_from=claimed_from)
     assert estate.facts("S").descendant_started is started
+
+
+def test_a_writer_held_only_by_its_repositorys_migration_chain_shows_blocked_by_task(
+    estate: Estate,
+) -> None:
+    migration = {"declared_files": ["core/migrations/versions/001.py"]}
+    estate.add(
+        "A",
+        status=Status.IMPLEMENTING,
+        claimed_from=Status.READY,
+        target_repo="core",
+        frontmatter=migration,
+    )
+    estate.add("B", target_repo="core", frontmatter=migration)
+    estate.add("C", target_repo="core")
+    assert estate.facts("B").unsatisfied_edge is True
+    assert estate.facts("C").unsatisfied_edge is False

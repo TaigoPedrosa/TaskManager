@@ -219,3 +219,23 @@ def test_a_cycle_is_found_exactly_when_one_exists_and_the_path_is_real(seed: int
     if path is not None:
         assert path[0] == path[-1] and len(path) > 2
         assert all((path[i + 1], path[i]) in edges for i in range(len(path) - 1))
+
+
+@pytest.mark.parametrize("exit_", [Status.ABANDONED, Status.DEFERRED, Status.SUPERSEDED])
+def test_a_writer_whose_landing_chain_has_left_the_estate_holds_no_migration_chain(
+    exit_: Status,
+) -> None:
+    s = snap(
+        SnapNode("P", PLAN, status=exit_),
+        SnapNode(
+            "P-a",
+            TASK,
+            parent="P",
+            merge=PARENT,
+            repo="core",
+            writes_migration=True,
+            status=Status.COMPLETED,
+        ),
+        SnapNode("B", TASK, repo="core", writes_migration=True),
+    )
+    assert migration_order(s, "core") == ["B"]

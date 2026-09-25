@@ -22,7 +22,7 @@ from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository, lease_alive
 from taskmanager.engine.chains import satisfied
-from taskmanager.engine.stepgraph import SnapNode, Snapshot
+from taskmanager.engine.stepgraph import SnapNode, Snapshot, migration_holders
 
 if TYPE_CHECKING:
     from taskmanager.engine.operations import Operations
@@ -184,16 +184,23 @@ class SnapshotBuilder:
         jobs = self.job_repo.for_node(node_id)
         deps = snapshot.inherited_edges(node_id)
         decisions = [d for d in deps if snapshot.nodes[d].kind == NodeKind.DECISION]
-        locking = next_action(cycle_of(node)) in _LOCKING
+        action = next_action(cycle_of(node))
+        locking = action in _LOCKING
+        # Discovery holds an implement behind its repository's migration chain as it would
+        # behind an unlanded dependency, so it reads the same.
+        chain_held = (
+            action == Action.IMPLEMENT
+            and snapshot.nodes[node_id].writes_migration
+            and node_id in migration_holders(snapshot, node.target_repo or "")
+        )
         return Facts(
             lease=self._lease(node_id, datetime.now(tz=UTC)),
             job_needs_agent=any(
                 j.kind == JobKind.LAND and j.state == JobState.NEEDS_AGENT for j in jobs
             ),
             open_decision=any(snapshot.status(d) == DecisionStatus.OPEN for d in decisions),
-            unsatisfied_edge=any(
-                not satisfied(snapshot, node_id, d) for d in deps if d not in decisions
-            ),
+            unsatisfied_edge=chain_held
+            or any(not satisfied(snapshot, node_id, d) for d in deps if d not in decisions),
             sync_pending=any(j.kind == JobKind.SYNC and j.state in _LIVE_JOB for j in jobs),
             files_locked=locking
             and bool(self.runtime_repo.get_conflicting_tasks(self.lock_set(node_id, snapshot))),
