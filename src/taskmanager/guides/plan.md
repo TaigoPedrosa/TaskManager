@@ -96,7 +96,7 @@ $ tm verify run NOTIFY-EMAIL-SENDER --ref tm/NOTIFY-EMAIL-SENDER
 symbol_signature  src/notify/email/sender.py  FAILED  File src/notify/email/sender.py missing
 ```
 
-The path checks read a ref of the task's `target_repo` (`origin/main` by default, fetched first; `--ref` names another) and never a working tree. `test_command` runs from the tm root with that ref in `TM_VERIFY_REF`, and a landing sets it to the landing target — the parent's branch for `merge: parent` — so a command reads `"$TM_VERIFY_REF"` instead of naming `origin/main`; tm refuses one that names `origin/main` itself on a task landing on its parent. The target repository is a directory under the tm root, and the ref is not checked out anywhere, so a command that runs code checks the ref out itself first, as the worked example's do.
+The path checks read a ref of the task's `target_repo` (`origin/main` by default, fetched first; `--ref` names another) and never a working tree. `test_command` runs from the tm root with that ref in `TM_VERIFY_REF`, and a landing sets it to the landing target — the parent's branch for `merge: parent` — so a command reads `"${TM_VERIFY_REF:-origin/main}"` instead of naming `origin/main` (a plain `tm verify run` sets no ref); tm refuses one that names `origin/main` itself on a task landing on its parent. The target repository is a directory under the tm root, and the ref is not checked out anywhere, so a command that runs code checks the ref out itself first, as the worked example's do.
 
 ## 7. Size a task to one agent
 
@@ -189,7 +189,7 @@ plans:
             target_path: sender-suite
             expected_pattern: >-
               d=$(mktemp -d) && trap 'rm -rf "$d"' EXIT &&
-              git -C backend archive "$TM_VERIFY_REF" | tar -x -C "$d" &&
+              git -C backend archive "${TM_VERIFY_REF:-origin/main}" | tar -x -C "$d" &&
               cd "$d" && pytest tests/notify/test_sender.py -q
 
       - id: NOTIFY-EMAIL-TEMPLATES
@@ -210,7 +210,7 @@ plans:
             target_path: templates-suite
             expected_pattern: >-
               d=$(mktemp -d) && trap 'rm -rf "$d"' EXIT &&
-              git -C backend archive "$TM_VERIFY_REF" | tar -x -C "$d" &&
+              git -C backend archive "${TM_VERIFY_REF:-origin/main}" | tar -x -C "$d" &&
               cd "$d" && pytest tests/notify/test_templates.py -q
 
       - id: NOTIFY-EMAIL-API
@@ -234,7 +234,7 @@ plans:
             target_path: api-suite
             expected_pattern: >-
               d=$(mktemp -d) && trap 'rm -rf "$d"' EXIT &&
-              git -C backend archive "$TM_VERIFY_REF" | tar -x -C "$d" &&
+              git -C backend archive "${TM_VERIFY_REF:-origin/main}" | tar -x -C "$d" &&
               cd "$d" && pytest tests/notify/test_api.py -q
 ```
 

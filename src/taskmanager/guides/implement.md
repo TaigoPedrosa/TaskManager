@@ -64,7 +64,7 @@ A table of the task's checks against your branch, exit 1 if any failed. What eac
 - `test_command` — the command runs in a shell from the project root; exit 0 passes.
 - `codegraph_query` — passes with `codegraph CLI not installed; skipped` where that tool is absent.
 
-The path checks read the ref, never your worktree, so without `--ref` they read `origin/main` and stay red until the task lands. A `test_command` reads the same ref from `TM_VERIFY_REF`; when tm lands the task it sets that to the landing target, so write `"$TM_VERIFY_REF"` into the command rather than a branch name. `No verifications to run.` exits 2: a task with no checks has not passed anything, and that is worth a line in your report.
+The path checks read the ref, never your worktree, so without `--ref` they read `origin/main` and stay red until the task lands. A `test_command` reads the same ref from `TM_VERIFY_REF`; when tm lands the task it sets that to the landing target, so write `"${TM_VERIFY_REF:-origin/main}"` into the command rather than a branch name: a plain `tm verify run` sets no ref. `No verifications to run.` exits 2: a task with no checks has not passed anything, and that is worth a line in your report.
 
 ## Waiting on something that takes time
 

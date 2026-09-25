@@ -99,7 +99,7 @@ None of these touches a node mid-step: wait for the step to end, or stop it.
 
 ## Verification
 
-`tm verify run` reads `file_exists`, `file_absent`, `symbol_signature` and `ast_export` from a ref of the node's `target_repo` — `origin/main` by default, fetched first, never a working tree — and runs every `test_command` from the project root with that ref exported as `TM_VERIFY_REF`. `--ref tm/<id>` reads the node's own branch, with no fetch. A landing runs the node's verifications with `--ref` set to its target, so a `test_command` reads `"$TM_VERIFY_REF"` rather than naming a branch; tm refuses a `test_command` that names `origin/main` itself on a node landing on its parent.
+`tm verify run` reads `file_exists`, `file_absent`, `symbol_signature` and `ast_export` from a ref of the node's `target_repo` — `origin/main` by default, fetched first, never a working tree — and runs every `test_command` from the project root with the `--ref` it was given exported as `TM_VERIFY_REF`, unset when none was. `--ref tm/<id>` reads the node's own branch, with no fetch. A landing runs the node's verifications with `--ref` set to its target, so a `test_command` reads `"${TM_VERIFY_REF:-origin/main}"` rather than naming a branch; tm refuses a `test_command` that names `origin/main` itself on a node landing on its parent.
 
 `No verifications to run` exits 2: nothing was checked, and that is not a pass. A landing with nothing to verify lands and says so in `:merge`.
 

@@ -176,7 +176,8 @@ def test_every_example_test_command_runs_the_ref_it_is_given_in_its_target_repo(
     tmp_path: Path,
 ) -> None:
     """A landing runs these from the tm root with the target in TM_VERIFY_REF; one that runs the
-    root's own files, or the repository's working tree, reads neither the target nor the ref."""
+    root's own files, or the repository's working tree, reads neither the target nor the ref. A
+    plain `tm verify run` sets no ref, and then the command reads origin/main."""
     commands = _example_test_commands()
     assert len(commands) == 3
     repo = tmp_path / "backend"
@@ -186,13 +187,21 @@ def test_every_example_test_command_runs_the_ref_it_is_given_in_its_target_repo(
     _commit_tests(repo, paths, "def test_holds():\n    pass\n", "green")
     _commit_tests(repo, paths, "def test_holds():\n    assert False\n", "red")
 
+    unset = {k: v for k, v in os.environ.items() if k != "TM_VERIFY_REF"}
     for target_repo, command, _ in commands:
         assert target_repo == "backend"
         exits = {}
         for ref in ("green", "red"):
-            env = {**os.environ, "TM_VERIFY_REF": ref}
+            env = {**unset, "TM_VERIFY_REF": ref}
             done = subprocess.run(
                 command, shell=True, cwd=tmp_path, env=env, capture_output=True, check=False
             )
             exits[ref] = done.returncode
-        assert exits["green"] == 0 and exits["red"] != 0, (command, exits)
+            _git(repo, "update-ref", "refs/remotes/origin/main", ref)
+            done = subprocess.run(
+                command, shell=True, cwd=tmp_path, env=unset, capture_output=True, check=False
+            )
+            exits[f"origin/main at {ref}"] = done.returncode
+        green = exits["green"] == 0 and exits["origin/main at green"] == 0
+        red = exits["red"] != 0 and exits["origin/main at red"] != 0
+        assert green and red, (command, exits)
