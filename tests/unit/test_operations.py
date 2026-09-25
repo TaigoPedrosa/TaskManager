@@ -957,22 +957,22 @@ def test_set_status_refuses_a_decision_node(ops_setup: tuple) -> None:
     assert len(ledger_repo.list_events(limit=1000)) == before
 
 
-def test_add_decision_blocks_non_task_refuses(ops_setup: tuple) -> None:
+def test_add_decision_refuses_to_block_another_decision(ops_setup: tuple) -> None:
     _node_repo, _runtime_repo, ledger_repo, ops = ops_setup
-    spec_id = ops.add_spec("S", slug="S1")
+    first = ops.add_decision("Which way?", slug="d1")
     before = len(ledger_repo.list_events(limit=1000))
     with pytest.raises(OperationError) as exc:
-        ops.add_decision("Which way?", slug="d1", blocks=[spec_id])
+        ops.add_decision("Then what?", slug="d2", blocks=[first])
     assert exc.value.status_code == 400
     assert len(ledger_repo.list_events(limit=1000)) == before
 
 
-def test_link_decision_add_non_task_refuses(ops_setup: tuple) -> None:
+def test_link_decision_refuses_to_link_another_decision(ops_setup: tuple) -> None:
     _node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
-    spec_id = ops.add_spec("S", slug="S1")
-    decision_id = ops.add_decision("Which way?", slug="d1")
+    first = ops.add_decision("Which way?", slug="d1")
+    second = ops.add_decision("Then what?", slug="d2")
     with pytest.raises(OperationError) as exc:
-        ops.link_decision(decision_id, add=[spec_id])
+        ops.link_decision(second, add=[first])
     assert exc.value.status_code == 400
 
 

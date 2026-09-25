@@ -1,4 +1,5 @@
 import re
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -6,6 +7,7 @@ from taskmanager.core.display import Facts
 from taskmanager.core.enums import NodeKind, RelationType, VerificationType
 from taskmanager.core.lifecycle import Cycle, next_action
 from taskmanager.core.models import Node
+from taskmanager.core.rollup import rollup
 from taskmanager.core.status import (
     EXITS,
     Action,
@@ -103,6 +105,31 @@ def node_busy(
     ):
         return True
     return job_repo is not None and any(j.state in _LIVE_JOB for j in job_repo.for_node(node_id))
+
+
+def roll_up_ancestors(node_repo: NodeRepository, node_id: str) -> list[tuple[str, Status]]:
+    """Re-derive each ancestor container's status after a change under it, in the caller's
+    transaction, and return every container that moved with its new status. The completion of a
+    container whose branches match their base is the landing's to decide, not this."""
+    moved: list[tuple[str, Status]] = []
+    seen = {node_id}
+    parents = node_repo.get_parent_ids(node_id)
+    while parents and parents[0] not in seen:
+        parent = node_repo.get_node(parents[0])
+        if parent is None or parent.kind not in CONTAINERS:
+            break
+        seen.add(parent.id)
+        children = [node_repo.get_node(c) for c in node_repo.get_children(parent.id)]
+        statuses = [
+            s for c in children if c is not None and isinstance(s := stored_status(c), Status)
+        ]
+        current = cycle_of(parent)
+        derived = rollup(current.status, statuses)
+        if derived != current.status:
+            node_repo.save_node(apply_cycle(parent, replace(current, status=derived)))
+            moved.append((parent.id, derived))
+        parents = node_repo.get_parent_ids(parent.id)
+    return moved
 
 
 # ponytail: one query per node for its files, lease and jobs; bulk reads once a graph is large

@@ -20,6 +20,8 @@ from taskmanager.core.models import (
     NodeSection,
     NodeVerification,
 )
+from taskmanager.core.status import DecisionEffect
+from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
@@ -33,11 +35,14 @@ from taskmanager.engine.decisions import (
     DecisionAnswer,
     DecisionData,
     DecisionOption,
+    apply_effect,
+    chosen_effect,
     read_decision,
     write_decision,
 )
 from taskmanager.engine.graph import GraphEngine
 from taskmanager.engine.runtime import ExecutionCoordinator
+from taskmanager.engine.snapshot import node_busy
 from taskmanager.engine.verification import VerificationEngine, VerificationResult
 
 # The section a project bootstraps once and every `tm guide` overlay hangs off; `section set`
@@ -71,6 +76,7 @@ class Operations:
         ledger_repo: LedgerRepository,
         verification_engine: VerificationEngine,
         actor: str = "cli",
+        job_repo: JobRepository | None = None,
     ) -> None:
         self.node_repo = node_repo
         self.runtime_repo = runtime_repo
@@ -79,6 +85,7 @@ class Operations:
         self.ledger_repo = ledger_repo
         self.verification_engine = verification_engine
         self.actor = actor
+        self.job_repo = job_repo
 
     def with_actor(self, actor: str) -> Operations:
         return Operations(
@@ -89,7 +96,11 @@ class Operations:
             self.ledger_repo,
             self.verification_engine,
             actor=actor,
+            job_repo=self.job_repo,
         )
+
+    def busy(self, node_id: str) -> bool:
+        return node_busy(self.runtime_repo, self.job_repo, node_id)
 
     def _ledger(
         self,
@@ -461,6 +472,13 @@ class Operations:
             )
         )
 
+    def append_section(self, node_id: str, section_key: str, text: str) -> None:
+        """`text` added as a new paragraph at the end of the section, which is created if absent.
+        Joins the caller's transaction and writes no ledger entry of its own."""
+        existing = self.node_repo.get_section(node_id, section_key)
+        content = f"{existing.content}\n\n{text}" if existing and existing.content else text
+        self._write_section(node_id, section_key, content, existing.header if existing else None)
+
     def set_section(
         self, node_id: str, section_key: str, content: str, header: str | None = None
     ) -> None:
@@ -549,14 +567,36 @@ class Operations:
     # -- decisions ------------------------------------------------------------------------------
 
     @staticmethod
-    def _parse_option(raw: str) -> DecisionOption:
+    def _parse_option(raw: str | DecisionOption) -> DecisionOption:
+        if isinstance(raw, DecisionOption):
+            return raw.model_copy()
         parts = raw.split("|")
         key = parts[0].strip() if parts else ""
         label = parts[1].strip() if len(parts) > 1 else ""
         if not key or not label:
-            raise OperationError(f"--option takes 'key|Label|description', got '{raw}'", 400)
+            raise OperationError(f"--option takes 'key|Label|description|effect', got '{raw}'", 400)
         description = parts[2].strip() if len(parts) > 2 else ""
-        return DecisionOption(key=key, label=label, description=description)
+        named = parts[3].strip() if len(parts) > 3 else DecisionEffect.NONE.value
+        try:
+            effect = DecisionEffect(named)
+        except ValueError as exc:
+            raise OperationError(
+                f"'{named}' is not an effect (effects: {', '.join(DecisionEffect)})", 400
+            ) from exc
+        return DecisionOption(key=key, label=label, description=description, effect=effect)
+
+    def _refuse_unlinkable(self, node_id: str, decision_id: str) -> None:
+        node = self.node_repo.get_node(node_id)
+        if node is None:
+            raise OperationError(f"node '{node_id}' not found", 404)
+        if node.kind == NodeKind.DECISION:
+            raise OperationError(f"'{node_id}' is a decision; a decision waits on nothing", 400)
+        if self.busy(node_id):
+            raise OperationError(
+                f"'{node_id}' has a step running: link the decision once it ends, or stop it", 409
+            )
+        if self.graph.would_cause_cycle(node_id, decision_id):
+            raise OperationError(f"'{node_id}' -> '{decision_id}' would make a cycle", 409)
 
     def _get_decision(self, decision_id: str) -> Node:
         node = self.node_repo.get_node(decision_id)
@@ -570,11 +610,13 @@ class Operations:
         slug: str | None = None,
         priority: int = 50,
         context: str | None = None,
-        options: list[str] | None = None,
+        options: list[str] | list[DecisionOption] | None = None,
         recommend: str | None = None,
         allow_custom: bool = True,
         raised_by: str | None = None,
         blocks: list[str] | None = None,
+        subject: str | None = None,
+        custom_effect: DecisionEffect = DecisionEffect.NONE,
     ) -> str:
         if slug:
             decision_id = f"decision-{slug}"
@@ -598,21 +640,18 @@ class Operations:
 
         blocked_tasks = blocks or []
         for task_id in blocked_tasks:
-            blocked_node = self.node_repo.get_node(task_id)
-            if blocked_node is None:
-                raise OperationError(f"task '{task_id}' not found", 404)
-            if blocked_node.kind != NodeKind.TASK:
-                raise OperationError(f"'{task_id}' is not a task", 400)
-            # The edge is task_id -> decision_id (DEPENDS_ON); would_cause_cycle walks from the
-            # target back toward the source, so it sees the decision-to-be as already existing
-            # were it not brand new -- checked anyway, since a `blocks` list can name a decision
-            # that already depends on `task_id` through some other chain.
-            if self.graph.would_cause_cycle(task_id, decision_id):
-                raise OperationError(f"'{task_id}' -> '{decision_id}' would make a cycle", 409)
-        if raised_by is not None and self.node_repo.get_node(raised_by) is None:
-            raise OperationError(f"'{raised_by}' not found", 404)
+            self._refuse_unlinkable(task_id, decision_id)
+        for named in (raised_by, subject):
+            if named is not None and self.node_repo.get_node(named) is None:
+                raise OperationError(f"'{named}' not found", 404)
 
-        data = DecisionData(options=parsed_options, allow_custom=allow_custom, raised_by=raised_by)
+        data = DecisionData(
+            options=parsed_options,
+            allow_custom=allow_custom,
+            raised_by=raised_by,
+            subject=subject,
+            custom_effect=custom_effect,
+        )
         node = Node(
             id=decision_id,
             kind=NodeKind.DECISION,
@@ -675,10 +714,14 @@ class Operations:
         write_decision(node, data)
         node.status = NodeStatus.COMPLETED
         node.updated_at = datetime.now(tz=UTC)
+        effect = chosen_effect(data)
         with self.node_repo.transaction():
             self.node_repo.save_node(node)
+            affected = apply_effect(self, decision_id, effect)
         self._ledger(
-            LedgerCommand.DECISION_ANSWER, target_id=decision_id, payload={"option": option}
+            LedgerCommand.DECISION_ANSWER,
+            target_id=decision_id,
+            payload={"option": option, "effect": effect.value, "affected": affected},
         )
 
     def reopen_decision(self, decision_id: str) -> None:
@@ -713,13 +756,7 @@ class Operations:
         add_ids = add or []
         remove_ids = remove or []
         for task_id in add_ids:
-            node = self.node_repo.get_node(task_id)
-            if node is None:
-                raise OperationError(f"task '{task_id}' not found", 404)
-            if node.kind != NodeKind.TASK:
-                raise OperationError(f"'{task_id}' is not a task", 400)
-            if self.graph.would_cause_cycle(task_id, decision_id):
-                raise OperationError(f"'{task_id}' -> '{decision_id}' would make a cycle", 409)
+            self._refuse_unlinkable(task_id, decision_id)
         for task_id in remove_ids:
             if decision_id not in self.node_repo.get_dependencies(task_id):
                 raise OperationError(f"'{task_id}' does not wait on '{decision_id}'", 409)

@@ -25,6 +25,7 @@ from taskmanager.core.enums import (
     VirtualStatus,
 )
 from taskmanager.db.connection import DatabaseManager
+from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
@@ -277,6 +278,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         ledger_repo,
         verification_engine,
         actor="web",
+        job_repo=JobRepository(db_mgr),
     )
     ws_manager = ConnectionManager()
 

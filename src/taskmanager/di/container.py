@@ -116,9 +116,16 @@ class TaskManagerProvider(Provider):
         coordinator: ExecutionCoordinator,
         ledger_repo: LedgerRepository,
         verification_engine: VerificationEngine,
+        job_repo: JobRepository,
     ) -> Operations:
         return Operations(
-            node_repo, runtime_repo, graph_engine, coordinator, ledger_repo, verification_engine
+            node_repo,
+            runtime_repo,
+            graph_engine,
+            coordinator,
+            ledger_repo,
+            verification_engine,
+            job_repo=job_repo,
         )
 
     get_db_mgr = db_mgr
