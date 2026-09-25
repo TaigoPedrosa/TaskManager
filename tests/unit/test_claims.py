@@ -1,6 +1,7 @@
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 from lifecycle_estate import add, branch_at, git, make_estate, on_branch, section, stored
@@ -588,3 +589,48 @@ def test_a_node_the_lifecycle_refuses_to_expire_does_not_stop_the_sweep_for_its_
 
     assert stored(claims, "OK").status == Status.READY
     assert stored(claims, "BAD").status == Status.FAILED
+
+
+def test_a_child_reopens_under_its_rolled_up_exit_only_once_the_container_is_reopened(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path)
+    add(claims, "P", NodeKind.PLAN)
+    add(claims, "P-a", parent="P")
+    claims.defer("P-a", "later")
+    assert stored(claims, "P").status == Status.DEFERRED
+
+    with pytest.raises(OperationError, match="reopen P first"):
+        claims.reopen("P-a", "back")
+    assert stored(claims, "P-a").status == Status.DEFERRED
+
+    claims.reopen("P", "back")
+    claims.reopen("P-a", "back")
+    assert (stored(claims, "P").status, stored(claims, "P-a").status) == (
+        Status.READY,
+        Status.READY,
+    )
+
+
+def test_a_container_claimed_just_before_a_reopen_commits_refuses_the_reopen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claims = make_estate(tmp_path)
+    add(claims, "P", NodeKind.PLAN, review=True, fix=True, status=Status.IMPLEMENTED)
+    add(claims, "U", parent="P", status=Status.COMPLETED)
+    add(claims, "T", parent="P", status=Status.DEFERRED)
+    real = claims.nodes.transaction
+
+    def claimed_first() -> Any:
+        monkeypatch.setattr(claims.nodes, "transaction", real)
+        claims.nodes.save_node(
+            stored(claims, "P").model_copy(
+                update={"status": Status.REVIEWING, "claimed_from": Status.IMPLEMENTED}
+            )
+        )
+        return real()
+
+    monkeypatch.setattr(claims.nodes, "transaction", claimed_first)
+    with pytest.raises(OperationError, match="P is in a step"):
+        claims.reopen("T", "back")
+    assert stored(claims, "T").status == Status.DEFERRED

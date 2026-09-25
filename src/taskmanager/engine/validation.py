@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from taskmanager.core.enums import NodeKind
-from taskmanager.core.status import EXITS, Merge, Status
+from taskmanager.core.status import EXITS, IN_STEP, Merge, Status
 from taskmanager.engine.chains import MAIN, landing_target
 from taskmanager.engine.stepgraph import SnapNode, Snapshot, find_cycle, format_cycle
 
@@ -85,10 +85,10 @@ def _retarget(
 def _placement(before: Snapshot, after: Snapshot, n: SnapNode) -> list[Refusal]:
     old = before.nodes.get(n.id)
     arrived = old is None or old.parent != n.parent
-    reopened = (
-        old is not None
-        and old.status in _SET_ASIDE_OR_FAILED
-        and n.status not in _SET_ASIDE_OR_FAILED
+    # Work that left a container's count, or that already landed, coming back into play.
+    reopened = old is not None and (
+        (old.status in _SET_ASIDE_OR_FAILED and n.status not in _SET_ASIDE_OR_FAILED)
+        or (old.status == Status.COMPLETED and n.status != Status.COMPLETED)
     )
     if not (arrived or reopened):
         return []
@@ -105,7 +105,15 @@ def _placement(before: Snapshot, after: Snapshot, n: SnapNode) -> list[Refusal]:
             refusals.append(
                 Refusal(n.id, 6, f"{n.id}: {ancestor} is COMPLETED; file a new plan instead")
             )
-        elif holder.busy:
+        elif holder.status in _SET_ASIDE_OR_FAILED:
+            # The rollup keeps an exit someone chose, so the ancestor would never count this
+            # child's work.
+            refusals.append(
+                Refusal(n.id, 6, f"{n.id}: {ancestor} is {holder.status}; reopen {ancestor} first")
+            )
+        elif holder.busy or holder.status in IN_STEP:
+            # A step whose lease lapsed still owns the ancestor until a sweep returns it, and
+            # the sweep does not re-derive it from a child added meanwhile.
             refusals.append(
                 Refusal(
                     n.id,

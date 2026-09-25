@@ -835,13 +835,11 @@ class Claims:
         after = self._with_cycle(node, nxt)
         if clear_verdict:
             after = after.model_copy(update={"verdict": None})
-        snap = self.snapshots.build()
-        moved = replace(
-            snap, nodes={**snap.nodes, node.id: replace(snap.nodes[node.id], status=nxt.status)}
-        )
-        self._refuse(validate(snap, moved, {node.id}, _UnmovedBranches()))
         with self.nodes.transaction():
+            # Read inside the transaction, so a claim landing just before it is seen.
+            before = self.snapshots.build()
             self.nodes.save_node(after)
+            self._refuse(validate(before, self.snapshots.build(), {node.id}, _UnmovedBranches()))
             self.note(node.id, *note)
             if nxt.status in (Status.DEFERRED, Status.ABANDONED):
                 self._strand(node.id, nxt.status)

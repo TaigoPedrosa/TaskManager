@@ -132,9 +132,20 @@ def test_a_literal_origin_main_verification_is_refused_on_a_parent_landing(
 
 COMPLETED_P = SnapNode("P", PLAN, status=Status.COMPLETED)
 BUSY_P = SnapNode("P", PLAN, status=Status.REVIEWING, busy=True)
+HOLDERS = [
+    COMPLETED_P,
+    BUSY_P,
+    # A step whose agent died still owns the container until a sweep returns it.
+    SnapNode("P", PLAN, status=Status.MERGING),
+    SnapNode("P", PLAN, status=Status.DEFERRED),
+    SnapNode("P", PLAN, status=Status.ABANDONED),
+    SnapNode("P", PLAN, status=Status.FAILED),
+]
 
 
-@pytest.mark.parametrize("holder", [COMPLETED_P, BUSY_P], ids=["completed", "busy"])
+@pytest.mark.parametrize(
+    "holder", HOLDERS, ids=["completed", "busy", "stale-step", "deferred", "abandoned", "failed"]
+)
 @pytest.mark.parametrize(
     ("child_before", "child_after"),
     [
@@ -148,8 +159,12 @@ BUSY_P = SnapNode("P", PLAN, status=Status.REVIEWING, busy=True)
             SnapNode("T", TASK, parent="P", status=Status.DEFERRED),
             SnapNode("T", TASK, parent="P"),
         ),
+        (
+            SnapNode("T", TASK, parent="P", status=Status.COMPLETED),
+            SnapNode("T", TASK, parent="P"),
+        ),
     ],
-    ids=["new", "moved-in", "reopened-failed", "reopened-deferred"],
+    ids=["new", "moved-in", "reopened-failed", "reopened-deferred", "reset-out-of-completed"],
 )
 def test_nothing_arrives_under_a_completed_or_busy_container(
     holder: SnapNode, child_before: SnapNode | None, child_after: SnapNode
@@ -161,10 +176,20 @@ def test_nothing_arrives_under_a_completed_or_busy_container(
     assert rules(before, after, {"T"}) == [("T", 6)]
 
 
+@pytest.mark.parametrize("exit_", [Status.DEFERRED, Status.ABANDONED, Status.FAILED])
+def test_a_child_arriving_under_a_set_aside_container_is_told_to_reopen_it(
+    exit_: Status,
+) -> None:
+    before = snap(SnapNode("P", PLAN, status=exit_))
+    after = with_node(before, SnapNode("T", TASK, parent="P"))
+    [refusal] = validate(before, after, {"T"}, Branches())
+    assert "reopen P first" in refusal.message
+
+
 def test_nothing_arrives_under_a_container_whose_ancestor_completed() -> None:
     before = snap(
         SnapNode("S", SPEC, status=Status.COMPLETED),
-        SnapNode("P", PLAN, parent="S", status=Status.DEFERRED),
+        SnapNode("P", PLAN, parent="S"),
     )
     after = with_node(before, SnapNode("T", TASK, parent="P"))
     assert rules(before, after, {"T"}) == [("T", 6)]
