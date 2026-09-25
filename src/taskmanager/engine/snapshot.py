@@ -169,7 +169,11 @@ class SnapshotBuilder:
         own = self.node_repo.declared_files(node_id)
         if own or snapshot.nodes[node_id].kind not in CONTAINERS:
             return own
-        files = [f for d in snapshot.descendants(node_id) for f in self.node_repo.declared_files(d)]
+        files = [
+            f
+            for d in snapshot.counted_descendants(node_id)
+            for f in self.node_repo.declared_files(d)
+        ]
         return list(dict.fromkeys(files))
 
     def facts(self, node_id: str, snapshot: Snapshot) -> Facts:

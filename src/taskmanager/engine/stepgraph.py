@@ -52,6 +52,16 @@ class Snapshot:
             found.extend(self.descendants(child))
         return found
 
+    def counted_descendants(self, node_id: str) -> list[str]:
+        """Descendants a container still counts: a set-aside node never lands, so it and its
+        subtree are left out."""
+        found: list[str] = []
+        for child in self.children(node_id):
+            if self.status(child) not in SET_ASIDE:
+                found.append(child)
+                found.extend(self.counted_descendants(child))
+        return found
+
     def inherited_edges(self, node_id: str) -> list[str]:
         """Every dependency of `node_id` and of each of its ancestors, own first."""
         found: list[str] = []

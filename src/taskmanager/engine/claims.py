@@ -28,6 +28,7 @@ from taskmanager.core.models import (
 from taskmanager.core.status import (
     EXITS,
     IN_STEP,
+    SET_ASIDE,
     Action,
     ConditionStage,
     DecisionStatus,
@@ -204,10 +205,15 @@ class Claims:
         return "origin/main" if target == "main" else target
 
     def _descendants(self, node_id: str) -> list[str]:
+        """The descendants a container still counts: a set-aside node never lands, so neither it
+        nor anything under it adds a repository, a lock or a verification to the container's."""
         found: list[str] = []
         frontier = self.nodes.get_children(node_id)
         while frontier:
             child = frontier.pop(0)
+            found_node = self.nodes.get_node(child)
+            if found_node is None or found_node.status in SET_ASIDE:
+                continue
             found.append(child)
             frontier.extend(self.nodes.get_children(child))
         return found

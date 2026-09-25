@@ -348,6 +348,15 @@ def test_a_container_declaring_no_files_locks_its_descendants_files(estate: Esta
     assert estate.builder.lock_set("Q", estate.builder.build()) == ["q.py"]
 
 
+def test_a_container_locks_no_file_of_a_descendant_it_no_longer_counts(estate: Estate) -> None:
+    estate.add("P", NodeKind.PLAN, status=Status.READY)
+    estate.add("T1", parent="P", frontmatter={"declared_files": ["a.py"]})
+    estate.add("T2", parent="P", status=Status.ABANDONED, frontmatter={"declared_files": ["b.py"]})
+    estate.add("Q", NodeKind.PLAN, parent="P", status=Status.DEFERRED)
+    estate.add("T3", parent="Q", frontmatter={"declared_files": ["c.py"]})
+    assert estate.builder.lock_set("P", estate.builder.build()) == ["a.py"]
+
+
 @pytest.mark.parametrize(
     ("child_statuses", "started"),
     [

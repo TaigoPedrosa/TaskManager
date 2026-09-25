@@ -634,3 +634,50 @@ def test_a_container_claimed_just_before_a_reopen_commits_refuses_the_reopen(
     with pytest.raises(OperationError, match="P is in a step"):
         claims.reopen("T", "back")
     assert stored(claims, "T").status == Status.DEFERRED
+
+
+def test_a_container_lands_locks_and_verifies_only_the_descendants_it_still_counts(
+    tmp_path: Path,
+) -> None:
+    from taskmanager.core.enums import VerificationType
+    from taskmanager.core.models import NodeVerification
+
+    claims = make_estate(tmp_path, repos=("api", "web"))
+    add(
+        claims,
+        "P",
+        NodeKind.PLAN,
+        review=True,
+        fix=True,
+        status=Status.REVIEWED,
+        outcome=Outcome.REJECT,
+        review_cycles=1,
+    )
+    add(claims, "T1", parent="P", merge=Merge.PARENT, status=Status.COMPLETED, files=["api/a.py"])
+    add(
+        claims,
+        "T2",
+        parent="P",
+        merge=Merge.PARENT,
+        status=Status.ABANDONED,
+        repo="web",
+        files=["web/b.py"],
+    )
+    add(claims, "Q", NodeKind.PLAN, parent="P", merge=Merge.PARENT, status=Status.DEFERRED)
+    add(claims, "T3", parent="Q", merge=Merge.PARENT, repo="web", files=["web/c.py"])
+    for node_id, path in (("T1", "api/README.md"), ("T2", "web/missing.py"), ("T3", "web/x.py")):
+        claims.nodes.add_verification(
+            NodeVerification(
+                node_id=node_id, verification_type=VerificationType.FILE_EXISTS, target_path=path
+            )
+        )
+    claims.landing = FakeLanding()
+
+    assert claims.repos_of("P") == ["api"]
+    passed, report = claims.verify("P", "origin/main")
+    assert passed, report
+    assert claims.start("P", "fixer", "s1").action == Action.FIX
+    assert {lock.file_path for lock in claims.runtime.list_locks()} == {
+        "api/README.md",
+        "api/a.py",
+    }
