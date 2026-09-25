@@ -115,3 +115,54 @@ class GitManager:
             text=True,
             check=True,
         )
+
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=False
+    )
+
+
+def _run(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+def rev_parse(repo: Path, ref: str) -> str:
+    """The commit `ref` names in `repo`, or "" when it names none (or `repo` is no repository)."""
+    res = _git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+    return res.stdout.strip() if res.returncode == 0 else ""
+
+
+def is_ancestor(repo: Path, a: str, b: str) -> bool:
+    return _git(repo, "merge-base", "--is-ancestor", a, b).returncode == 0
+
+
+def diff_quiet(repo: Path, base: str, branch: str) -> bool:
+    """True when `branch` changes no file against its merge base with `base`.
+
+    Trees, not commits: a sync merge commit that brought nothing of the branch's own is not a
+    change. A git error reads as a change, so nothing completes on a failed comparison.
+    """
+    return _git(repo, "diff", "--quiet", f"{base}...{branch}").returncode == 0
+
+
+def fetch(repo: Path) -> bool:
+    return _git(repo, "fetch", "-q", "origin", "main").returncode == 0
+
+
+def ensure_branch(repo: Path, branch: str, base: str) -> bool:
+    """Creates `branch` at `base` unless it exists; True when it was created.
+
+    `--no-track`: a branch cut from `origin/main` would otherwise make a bare `git push` target
+    the deploying `main`.
+    """
+    if rev_parse(repo, f"refs/heads/{branch}"):
+        return False
+    _run(repo, "branch", "--no-track", branch, base)
+    return True
+
+
+def rename_branch(repo: Path, old: str, new: str) -> None:
+    _run(repo, "branch", "-m", old, new)

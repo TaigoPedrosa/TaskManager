@@ -1,0 +1,876 @@
+"""The claims engine: the only writer of a node's position in the dispatch cycle.
+
+Every verb reads the stored cycle, asks the pure lifecycle rules for the next one, and writes it
+with its lease change and the parents' rollup in one state.db transaction.
+"""
+
+import hashlib
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
+from pathlib import Path
+from subprocess import CalledProcessError
+from typing import Any, Protocol, cast
+
+from taskmanager.core import lifecycle
+from taskmanager.core.enums import NodeKind, RelationType
+from taskmanager.core.lifecycle import Caps, Cycle, LifecycleError
+from taskmanager.core.models import (
+    Condition,
+    FileLock,
+    Lease,
+    LeaseAction,
+    LedgerEvent,
+    Node,
+    NodeRelation,
+)
+from taskmanager.core.rollup import rollup
+from taskmanager.core.status import (
+    EXITS,
+    IN_STEP,
+    Action,
+    ConditionStage,
+    DecisionStatus,
+    Event,
+    JobKind,
+    JobState,
+    Merge,
+    Outcome,
+    Status,
+)
+from taskmanager.db.cache_repo import CacheRepository
+from taskmanager.db.connection import DatabaseManager
+from taskmanager.db.job_repo import JobRepository
+from taskmanager.di.container import create_container
+from taskmanager.engine import git as gitops
+from taskmanager.engine.chains import satisfied
+from taskmanager.engine.conditions import ConditionRunner, is_executable
+from taskmanager.engine.config import ConfigStore, ProjectConfig
+from taskmanager.engine.decisions import open_failed_decision, open_stranded_decision
+from taskmanager.engine.git import GitManager
+from taskmanager.engine.operations import OperationError, Operations
+from taskmanager.engine.routing import model_for
+from taskmanager.engine.snapshot import SnapshotBuilder, stored_status
+from taskmanager.engine.stepgraph import Snapshot
+from taskmanager.engine.validation import Refusal, validate
+
+DEFAULT_TTL: dict[Action, int] = {
+    Action.IMPLEMENT: 10800,
+    Action.REVIEW: 3600,
+    Action.FIX: 7200,
+    Action.MERGE: 3600,
+    Action.SYNC: 3600,
+}
+LIVE_JOBS = frozenset({JobState.RUNNING, JobState.NEEDS_AGENT})
+CONTAINERS = frozenset({NodeKind.PLAN, NodeKind.SPEC})
+
+_STALLED = "max_step_failures steps in a row ended without progress"
+_FAILED_BECAUSE: dict[Event, str] = {
+    Event.REJECT: "its review rejected it with no fix round left",
+    Event.OWN_DEFECT: "its landing failed on its own defect with no merge fix left",
+    Event.RELEASE: _STALLED,
+    Event.EXPIRED: _STALLED,
+}
+
+
+@dataclass(frozen=True)
+class DecisionSpec:
+    question: str
+    # Each option is "key|Label|description|effect", the `tm decision add --option` syntax.
+    options: list[str] = field(default_factory=list)
+    recommend: str | None = None
+
+
+@dataclass(frozen=True)
+class Blocker:
+    depends: list[str] = field(default_factory=list)
+    decision: DecisionSpec | None = None
+    condition: Condition | None = None
+
+
+@dataclass(frozen=True)
+class ClaimResult:
+    action: Action
+    reason: str | None = None
+    model: str | None = None
+    job: str | None = None
+    repos: list[str] = field(default_factory=list)
+    branch: str | None = None
+    base: str | None = None
+    # A task's worktree; for a container, the directory holding one worktree per repository.
+    worktree: str | None = None
+    # Repository name to the worktree the step works in there.
+    worktrees: dict[str, str] = field(default_factory=dict)
+
+
+class LandingJobs(Protocol):
+    def start_land(self, node_id: str) -> str: ...
+
+    def start_sync(self, node_id: str, pairs: list[tuple[str, str]]) -> str: ...
+
+
+class _UnmovedBranches:
+    """Branch facts for writes that change neither `merge` nor the parent, where the
+    branch-base rule cannot fire."""
+
+    def branch_exists(self, node_id: str) -> bool:
+        return False
+
+    def base_matches(self, node_id: str, new_target: str) -> bool:
+        return True
+
+
+class Claims:
+    def __init__(
+        self,
+        root: Path,
+        config: ProjectConfig,
+        ops: Operations,
+        jobs: JobRepository,
+        snapshots: SnapshotBuilder,
+        conditions: ConditionRunner,
+    ) -> None:
+        self.root = root
+        self.config = config
+        self.ops = ops
+        self.nodes = ops.node_repo
+        self.runtime = ops.runtime_repo
+        self.jobs = jobs
+        self.snapshots = snapshots
+        self.conditions = conditions
+        # Set by the landing engine when it is built: it needs these claims to move nodes.
+        self.landing: LandingJobs | None = None
+        self.caps = Caps(
+            fix_rounds_task=config.max_fix_rounds.task,
+            fix_rounds_container=config.max_fix_rounds.container,
+            merge_attempts=config.max_merge_attempts,
+            step_failures=config.max_step_failures,
+        )
+
+    @classmethod
+    def open(cls, root: Path, config: ProjectConfig | None = None) -> Claims:
+        container = create_container(root)
+        db = container.get(DatabaseManager)
+        ops = container.get(Operations)
+        cfg = config or ConfigStore(root).project()
+        jobs = JobRepository(db)
+        cache = CacheRepository(db)
+        return cls(
+            root,
+            cfg,
+            ops,
+            jobs,
+            SnapshotBuilder(ops.node_repo, ops.runtime_repo, jobs),
+            ConditionRunner(root, ops.node_repo, cache, cfg.condition_ttl, cfg.condition_timeout),
+        )
+
+    # -- reading ------------------------------------------------------------------------------
+
+    def node(self, node_id: str) -> Node:
+        found = self.nodes.get_node(node_id)
+        if found is None:
+            raise OperationError(f"node '{node_id}' not found", 404)
+        if found.kind == NodeKind.DECISION:
+            raise OperationError(f"'{node_id}' is a decision; use `tm decision`", 400)
+        return found
+
+    @staticmethod
+    def is_container(node: Node) -> bool:
+        return node.kind in CONTAINERS
+
+    def branch_of(self, node_id: str) -> str:
+        return self.node(node_id).branch or f"tm/{node_id}"
+
+    def _parent(self, node_id: str) -> str | None:
+        parents = self.nodes.get_parent_ids(node_id)
+        return parents[0] if parents else None
+
+    def target_of(self, node_id: str) -> str:
+        """The branch `node_id` lands on: `main`, or its parent's branch."""
+        parent = self._parent(node_id)
+        if self.node(node_id).merge == Merge.PARENT and parent is not None:
+            return self.branch_of(parent)
+        return "main"
+
+    @staticmethod
+    def target_ref(target: str) -> str:
+        """The ref a landing target is read at: `main` only through the fetched `origin/main`;
+        container branches are local refs in the shared clones."""
+        return "origin/main" if target == "main" else target
+
+    def _descendants(self, node_id: str) -> list[str]:
+        found: list[str] = []
+        frontier = self.nodes.get_children(node_id)
+        while frontier:
+            child = frontier.pop(0)
+            found.append(child)
+            frontier.extend(self.nodes.get_children(child))
+        return found
+
+    def repos_of(self, node_id: str) -> list[str]:
+        """A task's target repository; a container's, the repositories of its descendant tasks
+        in landing order (`land_order`, then config `repo_order`, then by name)."""
+        node = self.node(node_id)
+        if not self.is_container(node):
+            return [node.target_repo] if node.target_repo else []
+        found: set[str] = set()
+        for descendant in self._descendants(node_id):
+            child = self.nodes.get_node(descendant)
+            if child is not None and child.target_repo:
+                found.add(child.target_repo)
+        order = [*node.land_order, *self.config.repo_order]
+        return sorted(found, key=lambda r: (order.index(r) if r in order else len(order), r))
+
+    def ttl_for(self, action: Action) -> int:
+        configured = self.config.lease_ttl
+        if isinstance(configured, int):
+            # A scalar is the lease_ttl earlier versions read: the implement lease.
+            return configured if action == Action.IMPLEMENT else DEFAULT_TTL[action]
+        return configured.get(action.value, DEFAULT_TTL[action])
+
+    @staticmethod
+    def _live(lease: Lease) -> bool:
+        if lease.ttl_seconds is None:
+            # Parked for an agent: never expires until someone takes it.
+            return True
+        age = (datetime.now(tz=UTC) - lease.last_heartbeat).total_seconds()
+        return age <= lease.ttl_seconds
+
+    def _locked_files(self, node: Node, action: Action | None) -> list[str]:
+        if action not in (Action.IMPLEMENT, Action.FIX):
+            return []
+        own = self.nodes.declared_files(node.id)
+        if own or not self.is_container(node):
+            return own
+        return list(
+            dict.fromkeys(
+                f for d in self._descendants(node.id) for f in self.nodes.declared_files(d)
+            )
+        )
+
+    def blocked_reason(self, node: Node, snap: Snapshot, action: Action | None) -> str | None:
+        """Why `node` cannot be claimed now, the first reason in claimability order; None when
+        it can. Reads only: discovery asks it of every node."""
+        live = [j for j in self.jobs.for_node(node.id) if j.state in LIVE_JOBS]
+        if live:
+            job = live[0]
+            if job.kind == JobKind.SYNC:
+                return f"syncing {job.target}"
+            return f"landing job {job.id} is {job.state}"
+        lease = self.runtime.get_lease(node.id)
+        if lease is not None and self._live(lease):
+            return f"held by {lease.agent_id}"
+        edges = snap.inherited_edges(node.id)
+        decisions = [d for d in edges if snap.status(d) == DecisionStatus.OPEN]
+        if decisions:
+            return f"awaiting decision {', '.join(decisions)}"
+        waiting = [
+            d
+            for d in edges
+            if isinstance(snap.status(d), Status) and not satisfied(snap, node.id, d)
+        ]
+        if waiting:
+            return f"waits on {', '.join(waiting)}"
+        stages = [
+            ConditionStage.CLAIM,
+            *([ConditionStage.LANDING] if action == Action.MERGE else []),
+        ]
+        for stage in stages:
+            unmet = self.conditions.unmet(node.id, stage)
+            if unmet:
+                return f"condition unmet: {unmet[0].needs}"
+        if action is None:
+            return f"{node.status} has no next action"
+        if action == Action.IMPLEMENT and not node.target_repo:
+            return "no target_repo: a task is cut and landed in its target repository"
+        if action == Action.MERGE and not self.repos_of(node.id):
+            return "nothing to land: no task under it names a target_repo"
+        conflicts = self.runtime.get_conflicting_tasks(self._locked_files(node, action))
+        if conflicts:
+            return f"declared files locked: {', '.join(sorted(conflicts))}"
+        return None
+
+    def next_step(self, node: Node) -> tuple[Action | None, str | None]:
+        """The action a claim would take now, and the model it would name."""
+        cycle = self.snapshots.cycle(node)
+        action = lifecycle.next_action(cycle)
+        if action is None:
+            return None, None
+        claimed = lifecycle.claim(cycle)
+        return action, model_for(
+            action, self._with_cycle(node, claimed), lifecycle.fix_round(claimed)
+        )
+
+    def verify(self, node_id: str, ref: str, repo: str | None = None) -> tuple[bool, str]:
+        """The node's verifications at `ref` (a container's: every descendant task's), limited to
+        `repo` when given. An empty set passes and says so."""
+        node = self.node(node_id)
+        ids = (
+            [d for d in self._descendants(node_id) if self.node(d).kind == NodeKind.TASK]
+            if self.is_container(node)
+            else [node_id]
+        )
+        repo_for: dict[str, str | None] = {i: self.node(i).target_repo for i in ids}
+        checks = [
+            v
+            for i in ids
+            if repo is None or repo_for[i] == repo
+            for v in self.nodes.get_verifications(i)
+        ]
+        if not checks:
+            return True, f"no verifications to run at {ref}: an empty set passes"
+        results = self.ops.verification_engine.verify_all(checks, repo_for, ref)
+        report = "\n".join(
+            f"{'PASS' if r.passed else 'FAIL'} {r.verification_type} {r.target_path}: {r.message}"
+            for r in results
+        )
+        return all(r.passed for r in results), report
+
+    # -- claiming -----------------------------------------------------------------------------
+
+    def start(
+        self,
+        node_id: str,
+        agent: str,
+        session: str,
+        ttl: int | None = None,
+        worktree_dir: Path | None = None,
+    ) -> ClaimResult:
+        self.node(node_id)
+        self.sweep()
+        node = self.node(node_id)
+        handed = self._hand_over(node, agent, session, ttl)
+        if handed is not None:
+            return handed
+        snap = self.snapshots.build()
+        cycle = self.snapshots.cycle(node)
+        action = lifecycle.next_action(cycle)
+        reason = self.blocked_reason(node, snap, action)
+        if reason is not None or action is None:
+            return ClaimResult(Action.BLOCKED, reason)
+        return self._claim(node, cycle, action, agent, session, ttl, worktree_dir)
+
+    def _hand_over(
+        self, node: Node, agent: str, session: str, ttl: int | None
+    ) -> ClaimResult | None:
+        """A job stopped for an agent is handed, with its lease, to whoever claims its node."""
+        job = next(
+            (j for j in self.jobs.for_node(node.id) if j.state == JobState.NEEDS_AGENT), None
+        )
+        lease = self.runtime.get_lease(node.id)
+        if job is None or lease is None or lease.ttl_seconds is not None:
+            return None
+        action = Action.MERGE if job.kind == JobKind.LAND else Action.SYNC
+        model = model_for(action, node, 0)
+        if not self.runtime.take_over(node.id, agent, session, ttl or self.ttl_for(action), model):
+            return ClaimResult(Action.BLOCKED, f"job {job.id} was handed to another agent first")
+        self._ledger("job handover", node.id, {"job": job.id, "agent": agent})
+        if action == Action.SYNC:
+            branch, base = job.target, str(job.result.get("source", job.target))
+        else:
+            branch, base = self.branch_of(node.id), job.target
+        return ClaimResult(
+            action,
+            None,
+            model,
+            job.id,
+            [job.repo],
+            branch,
+            base,
+            job.worktree,
+            {job.repo: job.worktree} if job.worktree else {},
+        )
+
+    def _claim(
+        self,
+        node: Node,
+        cycle: Cycle,
+        action: Action,
+        agent: str,
+        session: str,
+        ttl: int | None,
+        worktree_dir: Path | None,
+    ) -> ClaimResult:
+        claimed = lifecycle.claim(cycle)
+        after = self._with_cycle(node, claimed)
+        model = model_for(action, after, lifecycle.fix_round(claimed))
+        lease = Lease(
+            task_id=node.id,
+            agent_id=agent,
+            session_id=session,
+            branch_name=self.branch_of(node.id),
+            ttl_seconds=ttl or self.ttl_for(action),
+            action=cast(LeaseAction, action),
+            review_hash=self._review_hash(node.id) if action == Action.REVIEW else None,
+            model=model,
+        )
+        locks = [FileLock(file_path=f, task_id=node.id) for f in self._locked_files(node, action)]
+        if not self.runtime.claim(lease, locks, after):
+            return ClaimResult(Action.BLOCKED, "claimed by another session at the same instant")
+        self._ledger(
+            "task start", node.id, {"action": action.value, "agent": agent, "from": node.status}
+        )
+        try:
+            return self._begin(after, action, model, worktree_dir)
+        except (OperationError, CalledProcessError, OSError) as exc:
+            self._unclaim(node)
+            detail = getattr(exc, "stderr", None) or str(exc)
+            raise OperationError(f"claim of {node.id} undone: {detail}".strip(), 409) from exc
+
+    def _begin(
+        self, node: Node, action: Action, model: str, worktree_dir: Path | None
+    ) -> ClaimResult:
+        repos = self.repos_of(node.id)
+        branch = self.branch_of(node.id)
+        if self.is_container(node):
+            repos = [r for r in repos if gitops.rev_parse(self.root / r, f"refs/heads/{branch}")]
+        worktree: str | None = None
+        worktrees: dict[str, str] = {}
+        if action in (Action.IMPLEMENT, Action.FIX):
+            worktree, worktrees = self._cut(node, repos, worktree_dir)
+        job = self._landing().start_land(node.id) if action == Action.MERGE else None
+        return ClaimResult(
+            action,
+            None,
+            model,
+            job,
+            repos,
+            branch,
+            self.target_of(node.id),
+            worktree,
+            worktrees,
+        )
+
+    def _landing(self) -> LandingJobs:
+        if self.landing is None:
+            raise OperationError("no landing engine is attached to these claims", 500)
+        return self.landing
+
+    def _cut(
+        self, node: Node, repos: list[str], worktree_dir: Path | None
+    ) -> tuple[str, dict[str, str]]:
+        """A worktree of the node's branch in each repository. A branch that already exists is
+        checked out as it stands, never cut again: a fix continues its implement's commits, and a
+        reopened or re-imported node resumes its branch. Write-time validation refuses a change
+        of target once the branch exists, so an existing branch is cut from this node's target."""
+        # An absolute worktree_dir replaces the root: `Path / absolute` is the absolute path.
+        base_dir = self.root / (worktree_dir or self.config.worktree_dir)
+        branch = self.branch_of(node.id)
+        worktrees: dict[str, str] = {}
+        if not self.is_container(node):
+            repo = repos[0]
+            path = GitManager(self.root / repo).create_worktree(
+                branch, base_dir / f"{repo}-{node.id}", self._base_ref(node.id, repo)
+            )
+            worktrees[repo] = str(path)
+            return str(path), worktrees
+        for repo in repos:
+            path = GitManager(self.root / repo).create_worktree(
+                branch, base_dir / node.id / repo, self._base_ref(node.id, repo)
+            )
+            worktrees[repo] = str(path)
+        return str(base_dir / node.id), worktrees
+
+    def _base_ref(self, node_id: str, repo: str) -> str:
+        """The ref `node_id`'s branch is cut from in `repo`, creating each ancestor container
+        branch on the way: a node builds on its landing target, never on `main` past a parent
+        that has not landed."""
+        repo_dir = self.root / repo
+        parent = self._parent(node_id)
+        if self.node(node_id).merge != Merge.PARENT or parent is None:
+            gitops.fetch(repo_dir)
+            return GitManager(repo_dir).default_base_ref()
+        parent_branch = self.branch_of(parent)
+        if not gitops.rev_parse(repo_dir, f"refs/heads/{parent_branch}"):
+            gitops.ensure_branch(repo_dir, parent_branch, self._base_ref(parent, repo))
+        return parent_branch
+
+    def _unclaim(self, original: Node) -> None:
+        with self.nodes.transaction():
+            self.nodes.save_node(original)
+            self.runtime.release_lease(original.id)
+        self._ledger("task start undone", original.id, {})
+
+    # -- closing a step -----------------------------------------------------------------------
+
+    def _held(
+        self, node_id: str, statuses: tuple[Status, ...], agent: str | None
+    ) -> tuple[Node, Lease]:
+        node = self.node(node_id)
+        if Status(node.status) not in statuses:
+            wanted = " or ".join(statuses)
+            raise OperationError(f"{node_id} is {node.status}; this closes {wanted}", 409)
+        lease = self.runtime.get_lease(node_id)
+        if lease is None:
+            raise OperationError(f"{node_id} holds no lease: it was swept or released", 409)
+        self._own(node_id, lease, agent)
+        return node, lease
+
+    def _own(self, node_id: str, lease: Lease, agent: str | None) -> None:
+        """A named agent closes only its own live step: an agent whose lease expired and was
+        claimed again must not close its successor's."""
+        if agent is not None and (lease.agent_id != agent or not self._live(lease)):
+            raise OperationError(
+                f"{agent} holds no live lease on {node_id}; {lease.agent_id} does", 409
+            )
+
+    def complete(self, node_id: str, agent: str | None = None) -> Status:
+        node, _ = self._held(node_id, (Status.IMPLEMENTING, Status.FIXING), agent)
+        return self._advance(node, Event.COMPLETE, "task complete")
+
+    def review(
+        self,
+        node_id: str,
+        approve: bool,
+        verdict: str | None = None,
+        agent: str | None = None,
+    ) -> Status:
+        node, lease = self._held(node_id, (Status.REVIEWING,), agent)
+        if self._review_hash(node_id) == lease.review_hash:
+            raise OperationError(
+                f"{node_id}:review is unchanged since the claim: write the findings with "
+                f"`tm section set {node_id}:review` first",
+                409,
+            )
+        event = Event.APPROVE if approve else Event.REJECT
+        evidence = self._section_text(node_id, "review")
+        return self._advance(node, event, "task review", verdict=verdict, evidence=evidence)
+
+    def release(
+        self, node_id: str, blocked: Blocker | None = None, agent: str | None = None
+    ) -> Status:
+        node = self.node(node_id)
+        lease = self.runtime.get_lease(node_id)
+        if lease is None:
+            raise OperationError(f"{node_id} holds no lease to release", 409)
+        self._own(node_id, lease, agent)
+        if blocked is not None:
+            if not (blocked.depends or blocked.decision or blocked.condition):
+                raise OperationError(
+                    "--blocked names what the node now waits on: --depends, --decision or "
+                    "--condition",
+                    400,
+                )
+            if blocked.condition is not None and not is_executable(blocked.condition.command):
+                raise OperationError(
+                    "a condition needs a command that exits 0 once it holds; a question for a "
+                    "person is a --decision",
+                    400,
+                )
+            self._check_edges(node_id, blocked.depends)
+        has_job = any(j.state in LIVE_JOBS for j in self.jobs.for_node(node_id))
+        if Status(node.status) not in IN_STEP and not has_job:
+            raise OperationError(f"{node_id} is {node.status}, not mid-step", 409)
+        self._expire_jobs(node_id)
+        event = Event.RELEASE_BLOCKED if blocked is not None else Event.RELEASE
+        return self._advance(node, event, "task release", blocker=blocked)
+
+    def heartbeat(self, node_id: str) -> bool:
+        return self.runtime.heartbeat(node_id)
+
+    def sweep(self) -> list[str]:
+        swept = self.runtime.sweep_expired_leases()
+        for node in self.nodes.list_nodes():
+            if (
+                node.id not in swept
+                and node.kind != NodeKind.DECISION
+                and Status(node.status) in IN_STEP
+                and self.runtime.get_lease(node.id) is None
+            ):
+                swept.append(node.id)
+        for node_id in swept:
+            found = self.nodes.get_node(node_id)
+            if found is None or found.kind == NodeKind.DECISION:
+                continue
+            expired = self._expire_jobs(node_id)
+            if Status(found.status) in IN_STEP or expired:
+                self._advance(found, Event.EXPIRED, "lease sweep")
+        return swept
+
+    def _expire_jobs(self, node_id: str) -> int:
+        live = [j for j in self.jobs.for_node(node_id) if j.state in LIVE_JOBS]
+        for job in live:
+            self.jobs.update(job.model_copy(update={"state": JobState.EXPIRED}))
+            self.jobs.release_branch(job.repo, job.target, job.id)
+        return len(live)
+
+    def _advance(
+        self,
+        node: Node,
+        event: Event,
+        command: str,
+        *,
+        verdict: str | None = None,
+        note: tuple[str, str] | None = None,
+        blocker: Blocker | None = None,
+        evidence: str = "",
+    ) -> Status:
+        try:
+            nxt = lifecycle.advance(self.snapshots.cycle(node), event, self.caps)
+        except LifecycleError as exc:
+            raise OperationError(str(exc), 409) from exc
+        after = self._with_cycle(node, nxt)
+        if verdict is not None:
+            after = after.model_copy(update={"verdict": verdict})
+        with self.nodes.transaction():
+            self.nodes.save_node(after)
+            # Every event that moves a node ends the step its lease was for.
+            self.runtime.release_lease(node.id)
+            if note is not None:
+                self.note(node.id, *note)
+            if blocker is not None:
+                self._write_blocker(node.id, blocker)
+            if nxt.status == Status.FAILED and node.status != Status.FAILED:
+                reason = _FAILED_BECAUSE.get(event, "its step failed")
+                open_failed_decision(self.ops, node.id, reason, evidence)
+            self._propagate(node.id)
+        self._ledger(
+            command, node.id, {"event": event.value, "from": node.status, "to": nxt.status}
+        )
+        return nxt.status
+
+    def _write_blocker(self, node_id: str, blocker: Blocker) -> None:
+        for dep in blocker.depends:
+            self.nodes.add_relation(
+                NodeRelation(
+                    source_id=node_id, target_id=dep, relation_type=RelationType.DEPENDS_ON
+                )
+            )
+        if blocker.decision is not None:
+            spec = blocker.decision
+            self.ops.add_decision(
+                spec.question,
+                options=spec.options,
+                recommend=spec.recommend,
+                raised_by=node_id,
+                blocks=[node_id],
+            )
+        if blocker.condition is not None:
+            self.nodes.add_condition(blocker.condition.model_copy(update={"node_id": node_id}))
+
+    def _check_edges(self, node_id: str, depends: list[str]) -> None:
+        missing = [d for d in depends if self.nodes.get_node(d) is None]
+        if missing:
+            raise OperationError(f"no node {', '.join(missing)}", 404)
+        before = self.snapshots.build()
+        after = replace(before, edges=[*before.edges, *((node_id, d) for d in depends)])
+        self._refuse(validate(before, after, {node_id}, _UnmovedBranches()))
+
+    @staticmethod
+    def _refuse(refusals: list[Refusal]) -> None:
+        if refusals:
+            raise OperationError("; ".join(r.message for r in refusals), 409)
+
+    # -- repair verbs -------------------------------------------------------------------------
+
+    def _idle(self, node_id: str) -> None:
+        lease = self.runtime.get_lease(node_id)
+        if lease is not None and self._live(lease):
+            raise OperationError(
+                f"{node_id} is mid-step, held by {lease.agent_id}: wait for the step to end, "
+                "or release it",
+                409,
+            )
+        job = next((j for j in self.jobs.for_node(node_id) if j.state in LIVE_JOBS), None)
+        if job is not None:
+            raise OperationError(f"{node_id} has job {job.id} {job.state}: wait for it", 409)
+
+    def reopen(self, node_id: str, note: str, new_branch: bool = False) -> Status:
+        node = self.node(node_id)
+        self._idle(node_id)
+        open_decisions = [
+            d
+            for d in self.nodes.get_dependencies(node_id)
+            if (dep := self.nodes.get_node(d)) is not None
+            and stored_status(dep) == DecisionStatus.OPEN
+        ]
+        if open_decisions:
+            raise OperationError(
+                f"an open decision blocks {node_id} ({', '.join(open_decisions)}): answer it first",
+                409,
+            )
+        counted = [s for s in self._child_statuses(node_id) if s not in EXITS]
+        all_done = bool(counted) and all(s == Status.COMPLETED for s in counted)
+        try:
+            nxt = lifecycle.reopen(self.snapshots.cycle(node), all_done)
+        except LifecycleError as exc:
+            raise OperationError(str(exc), 409) from exc
+        if new_branch:
+            self._retire_branch(node_id)
+        return self._rewrite(node, nxt, ("reopen", note), "task reopen", clear_verdict=True)
+
+    def reset(self, node_id: str, to: Status, note: str, outcome: Outcome | None = None) -> Status:
+        node = self.node(node_id)
+        self._idle(node_id)
+        if to == Status.COMPLETED:
+            self._prove_landed(node_id)
+        try:
+            nxt = lifecycle.reset(self.snapshots.cycle(node), to, outcome)
+        except LifecycleError as exc:
+            raise OperationError(str(exc), 400) from exc
+        return self._rewrite(node, nxt, ("reset", note), "task reset")
+
+    def defer(self, node_id: str, note: str) -> Status:
+        return self._set_aside(node_id, note, lifecycle.defer, "deferral", "task defer")
+
+    def abandon(self, node_id: str, note: str) -> Status:
+        return self._set_aside(node_id, note, lifecycle.abandon, "abandonment", "task abandon")
+
+    def _set_aside(
+        self,
+        node_id: str,
+        note: str,
+        rule: Callable[[Cycle], Cycle],
+        key: str,
+        command: str,
+    ) -> Status:
+        node = self.node(node_id)
+        self._idle(node_id)
+        try:
+            nxt = rule(self.snapshots.cycle(node))
+        except LifecycleError as exc:
+            raise OperationError(str(exc), 409) from exc
+        return self._rewrite(node, nxt, (key, note), command)
+
+    def _rewrite(
+        self,
+        node: Node,
+        nxt: Cycle,
+        note: tuple[str, str],
+        command: str,
+        *,
+        clear_verdict: bool = False,
+    ) -> Status:
+        after = self._with_cycle(node, nxt)
+        if clear_verdict:
+            after = after.model_copy(update={"verdict": None})
+        snap = self.snapshots.build()
+        moved = replace(
+            snap, nodes={**snap.nodes, node.id: replace(snap.nodes[node.id], status=nxt.status)}
+        )
+        self._refuse(validate(snap, moved, {node.id}, _UnmovedBranches()))
+        with self.nodes.transaction():
+            self.nodes.save_node(after)
+            self.note(node.id, *note)
+            if nxt.status in (Status.DEFERRED, Status.ABANDONED):
+                self._strand(node.id, nxt.status)
+            self._propagate(node.id)
+        self._ledger(command, node.id, {"from": node.status, "to": nxt.status})
+        return nxt.status
+
+    def _prove_landed(self, node_id: str) -> None:
+        branch, target = self.branch_of(node_id), self.target_of(node_id)
+        ref = self.target_ref(target)
+        container = self.is_container(self.node(node_id))
+        for repo in self.repos_of(node_id):
+            repo_dir = self.root / repo
+            if target == "main":
+                gitops.fetch(repo_dir)
+            if not gitops.rev_parse(repo_dir, f"refs/heads/{branch}"):
+                if container:
+                    continue
+                raise OperationError(f"{branch} does not exist in {repo}", 409)
+            if not gitops.is_ancestor(repo_dir, branch, ref):
+                raise OperationError(f"{branch} is not on {target} in {repo}: land it first", 409)
+        passed, report = self.verify(node_id, ref)
+        if not passed:
+            raise OperationError(f"verifications red on {target}:\n{report}", 409)
+
+    def _retire_branch(self, node_id: str) -> None:
+        """Keeps the old branch as `<branch>@<n>` so the reopened node starts clean."""
+        branch = self.branch_of(node_id)
+        for repo in self.repos_of(node_id):
+            repo_dir = self.root / repo
+            if not gitops.rev_parse(repo_dir, f"refs/heads/{branch}"):
+                continue
+            n = 1
+            while gitops.rev_parse(repo_dir, f"refs/heads/{branch}@{n}"):
+                n += 1
+            gitops.rename_branch(repo_dir, branch, f"{branch}@{n}")
+
+    def _strand(self, node_id: str, status: Status) -> None:
+        dependents = [
+            d
+            for d in self.nodes.get_blocked_by(node_id)
+            if (dep := self.nodes.get_node(d)) is not None and dep.kind != NodeKind.DECISION
+        ]
+        if dependents:
+            open_stranded_decision(self.ops, node_id, status, dependents)
+
+    # -- containers ---------------------------------------------------------------------------
+
+    def _child_statuses(self, node_id: str) -> list[Status]:
+        return [
+            Status(kid.status)
+            for kid_id in self.nodes.get_children(node_id)
+            if (kid := self.nodes.get_node(kid_id)) is not None and kid.kind != NodeKind.DECISION
+        ]
+
+    def _propagate(self, node_id: str) -> None:
+        """Re-derives every ancestor container's status from its children, inside the caller's
+        transaction."""
+        child = node_id
+        while (parent_id := self._parent(child)) is not None:
+            parent = self.node(parent_id)
+            current = Status(parent.status)
+            derived = rollup(current, self._child_statuses(parent_id))
+            if derived == Status.IMPLEMENTED and self._nothing_to_land(parent_id):
+                # Code already on its target is never reviewed again.
+                derived = Status.COMPLETED
+            if derived == current:
+                return
+            self.nodes.save_node(
+                parent.model_copy(update={"status": derived, "updated_at": datetime.now(tz=UTC)})
+            )
+            if derived in (Status.DEFERRED, Status.ABANDONED):
+                self._strand(parent_id, derived)
+            self._ledger("rollup", parent_id, {"from": current, "to": derived})
+            child = parent_id
+
+    def _nothing_to_land(self, container_id: str) -> bool:
+        branch = self.branch_of(container_id)
+        ref = self.target_ref(self.target_of(container_id))
+        for repo in self.repos_of(container_id):
+            repo_dir = self.root / repo
+            if gitops.rev_parse(repo_dir, f"refs/heads/{branch}") and not gitops.diff_quiet(
+                repo_dir, ref, branch
+            ):
+                return False
+        return True
+
+    # -- writing helpers ----------------------------------------------------------------------
+
+    @staticmethod
+    def _with_cycle(node: Node, cycle: Cycle) -> Node:
+        return node.model_copy(
+            update={
+                "status": cycle.status,
+                "claimed_from": cycle.claimed_from,
+                "outcome": cycle.outcome,
+                "fix_for": cycle.fix_for,
+                "review_cycles": cycle.review_cycles,
+                "merge_attempts": cycle.merge_attempts,
+                "step_failures": cycle.step_failures,
+                "updated_at": datetime.now(tz=UTC),
+            }
+        )
+
+    def _section_text(self, node_id: str, key: str) -> str:
+        found = self.nodes.get_section(node_id, key)
+        return found.content if found else ""
+
+    def _review_hash(self, node_id: str) -> str:
+        return hashlib.sha256(self._section_text(node_id, "review").encode()).hexdigest()
+
+    def note(self, node_id: str, key: str, text: str) -> None:
+        """Appends a timestamped entry to `node_id:key`, keeping what earlier entries said."""
+        existing = self._section_text(node_id, key)
+        entry = f"{datetime.now(tz=UTC):%Y-%m-%d %H:%M} {text}"
+        self.ops.set_section(node_id, key, f"{existing}\n\n{entry}" if existing else entry)
+
+    def _ledger(self, command: str, node_id: str, payload: dict[str, Any]) -> None:
+        self.ops.ledger_repo.append(
+            LedgerEvent(
+                actor_id=self.ops.actor, command=command, target_id=node_id, payload=payload
+            )
+        )
