@@ -641,13 +641,13 @@ class Claims:
     def count_unresolved(self, node_id: str) -> Status:
         """One step failure for a job an agent took over that stopped again: the job stays
         parked for the next agent, and at the cap the node fails as a release would."""
-        node = self.node(node_id)
-        if node.step_failures + 1 >= self.caps.step_failures:
-            self._expire_jobs(node_id)
-            return self._advance(node, Event.RELEASE, "job stopped again")
         with self.nodes.transaction():
-            # Read again under the write lock: the whole row is written back.
+            # Read under the write lock: a count read before it can be stale by the time it
+            # writes, and two counts below the cap would then carry the node past it unfailed.
             node = self.node(node_id)
+            if node.step_failures + 1 >= self.caps.step_failures:
+                self._expire_jobs(node_id)
+                return self._advance(node, Event.RELEASE, "job stopped again")
             failures = node.step_failures + 1
             self.nodes.save_node(node.model_copy(update={"step_failures": failures}))
         self._ledger("job stopped again", node_id, {"step_failures": failures})

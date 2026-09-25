@@ -914,3 +914,32 @@ def test_counting_a_stopped_job_keeps_an_edit_that_committed_after_the_count_beg
 
     node = stored(claims, "T1")
     assert (node.title, node.step_failures) == ("Renamed", 1)
+
+
+def test_two_counts_racing_below_the_cap_fail_the_node_that_reaches_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claims = make_estate(tmp_path)
+    add(claims, "T1")
+    claims.start("T1", "agent-1", "s1")
+    below = claims.caps.step_failures - 2
+    claims.nodes.save_node(stored(claims, "T1").model_copy(update={"step_failures": below}))
+    real = claims.nodes.transaction
+    # Both counts reach the write lock before either takes it: a cap read outside the lock is
+    # then stale for whichever count commits second.
+    barrier = threading.Barrier(2, timeout=10)
+
+    def both_at_the_lock() -> Any:
+        if not claims.nodes.db.in_transaction:
+            barrier.wait()
+        return real()
+
+    monkeypatch.setattr(claims.nodes, "transaction", both_at_the_lock)
+    threads = [threading.Thread(target=claims.count_unresolved, args=("T1",)) for _ in "ab"]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    node = stored(claims, "T1")
+    assert (node.status, node.step_failures) == (Status.FAILED, claims.caps.step_failures)
