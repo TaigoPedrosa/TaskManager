@@ -299,3 +299,23 @@ def test_a_sync_that_cannot_be_launched_stops_for_an_agent_instead_of_running_no
     assert job is not None and (job.state, job.result["reason"]) == (JobState.NEEDS_AGENT, "error")
     lease = claims.runtime.get_lease("X")
     assert lease is not None and lease.ttl_seconds is None
+
+
+def test_a_dependency_landed_as_main_s_tree_but_not_its_history_is_synced_once(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path)
+    api = claims.root / "api"
+    add(claims, "P", NodeKind.PLAN, review=True, fix=True)
+    add(claims, "Y", status=Status.COMPLETED)
+    add(claims, "X", parent="P", merge=Merge.PARENT, depends=("Y",))
+    branch_at(api, "tm/P")
+    # A landing whose diff against main was already empty leaves tm/Y off main's history.
+    on_branch(api, "tm/Y", "y.py", "y = 1\n")
+    push_main(api, "y.py", "y = 1\n")
+    landing = attach_landing(claims)
+    first = claims.start("X", "implementer", "s1")
+    assert first.job is not None
+    assert landing.run(first.job) == JobState.SUCCEEDED
+
+    assert claims.start("X", "implementer", "s1").action == Action.IMPLEMENT

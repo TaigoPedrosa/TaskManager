@@ -1009,8 +1009,10 @@ class Claims:
 
     def sync_units(self, pairs: list[SyncPair]) -> list[tuple[str, str, str]]:
         """(source ref, base branch, repository) for each pair and repository where the base
-        lacks the carrier's landed branch. Only the dependency's code triggers a sync, never the
-        source merely moving on; a repository without the carrier's branch has nothing to sync."""
+        lacks both the carrier's landed branch and the source. Only the dependency's code
+        triggers a sync, never the source merely moving on; a repository without the carrier's
+        branch has nothing to sync. A carrier landed with an empty diff is on the source's tree
+        but not its history, so the base holding the source is what ends its sync."""
         units: list[tuple[str, str, str]] = []
         fetched: set[str] = set()
         for source, base, carrier in pairs:
@@ -1029,6 +1031,7 @@ class Claims:
                 if (
                     present
                     and not gitops.is_ancestor(repo_dir, carried, base_branch)
+                    and not gitops.is_ancestor(repo_dir, source_ref, base_branch)
                     and unit not in units
                 ):
                     units.append(unit)
