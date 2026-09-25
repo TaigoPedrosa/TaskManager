@@ -46,7 +46,7 @@ from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.di.container import TaskManagerProvider
-from taskmanager.engine.chains import landing_chain, satisfied
+from taskmanager.engine.chains import landing_chain
 from taskmanager.engine.claims import Blocker, Claims, DecisionSpec
 from taskmanager.engine.config import ConfigError, ConfigStore
 from taskmanager.engine.decisions import DECISION_STATUS_LABELS, read_decision
@@ -55,7 +55,13 @@ from taskmanager.engine.heuristics import RecommendationEngine
 from taskmanager.engine.landing import Landing
 from taskmanager.engine.operations import GUIDE_NODE, OperationError, Operations
 from taskmanager.engine.search import SearchEngine, SearchError
-from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder, phase_of, stored_status
+from taskmanager.engine.snapshot import (
+    DisplayView,
+    SnapshotBuilder,
+    phase_of,
+    stored_status,
+    waits_on,
+)
 from taskmanager.renderers.importers import BulkImporter
 from taskmanager.renderers.markdown import MarkdownRenderer
 
@@ -143,14 +149,18 @@ def _node_row(node: Node, state: str | None = None) -> dict[str, Any]:
         "title": node.title,
         "status": node.status.value,
         "state": state or node.status.value,
-        "phase": phase_of(node),
         "priority": node.priority,
         "target_repo": node.target_repo,
         "acceptable_models": node.acceptable_models,
     }
     if node.kind != NodeKind.DECISION:
-        # A decision is never reviewed, fixed or landed.
-        row |= {"review": node.review, "fix": node.fix, "merge": node.merge.value}
+        # A decision has no cycle: it is never claimed, reviewed, fixed or landed.
+        row |= {
+            "phase": phase_of(node),
+            "review": node.review,
+            "fix": node.fix,
+            "merge": node.merge.value,
+        }
     return row
 
 
@@ -715,7 +725,7 @@ def task_update(
             frontmatter_set[key] = json.loads(raw)
         except ValueError:
             frontmatter_set[key] = raw
-    try:
+    with _refusing():
         changed = ops.update_node(
             task_id,
             title=title,
@@ -730,8 +740,6 @@ def task_update(
             requires=_csv(requires) if requires is not None else None,
             land_order=_csv(land_order) if land_order is not None else None,
         )
-    except OperationError as exc:
-        raise typer.BadParameter(str(exc)) from exc
     print(f"[green]Updated {task_id}: {', '.join(changed)}[/green]")
 
 
@@ -776,6 +784,7 @@ def task_get(
     if json_output or yaml_output:
         lease = container.get(RuntimeRepository).get_lease(task_id)
         is_decision = task.kind == NodeKind.DECISION
+        waiting, awaiting = waits_on(snapshot, task)
         doc = _node_row(task, state)
         doc.update(
             {
@@ -796,23 +805,8 @@ def task_get(
                 "depends_on": [
                     {"id": d, "status": n.status.value} if n else {"id": d} for d, n in deps.items()
                 ],
-                "blocked_by": [
-                    d
-                    for d, n in deps.items()
-                    if n is None
-                    or (
-                        n.kind != NodeKind.DECISION
-                        and not is_decision
-                        and not satisfied(snapshot, task_id, d)
-                    )
-                ],
-                "awaiting_decisions": [
-                    d
-                    for d, n in deps.items()
-                    if n is not None
-                    and n.kind == NodeKind.DECISION
-                    and stored_status(n) == DecisionStatus.OPEN
-                ],
+                "blocked_by": [d for d, n in deps.items() if n is None] + waiting,
+                "awaiting_decisions": awaiting,
                 "conditions": [
                     c.model_dump(mode="json", exclude={"node_id"})
                     for c in node_repo.get_conditions(task_id)
@@ -883,6 +877,7 @@ def task_start(
             "base": result.base,
             "worktree": result.worktree,
             "worktrees": result.worktrees,
+            "token": result.token,
         },
         as_yaml=yaml_output or not json_output,
     )
@@ -897,11 +892,15 @@ def task_complete(
         str | None,
         typer.Option("--agent", help="Refused unless the node's live lease is this agent's"),
     ] = None,
+    token: Annotated[
+        str | None,
+        typer.Option("--token", help="Refused unless the node's live lease is this claim's"),
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     """Close an implement or a fix step."""
     with _refusing():
-        status = _claims(_get_root(path)).complete(node_id, agent=agent)
+        status = _claims(_get_root(path)).complete(node_id, agent=agent, token=token)
     print(f"[green]{node_id} is {status.value}[/green]")
 
 
@@ -917,13 +916,19 @@ def task_review(
         str | None,
         typer.Option("--agent", help="Refused unless the node's live lease is this agent's"),
     ] = None,
+    token: Annotated[
+        str | None,
+        typer.Option("--token", help="Refused unless the node's live lease is this claim's"),
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     """Close a review step; the node's :review section must have changed since the claim."""
     if approve == reject:
         raise typer.BadParameter("give exactly one of --approve or --reject")
     with _refusing():
-        status = _claims(_get_root(path)).review(node_id, approve, verdict, agent=agent)
+        status = _claims(_get_root(path)).review(
+            node_id, approve, verdict, agent=agent, token=token
+        )
     print(f"[green]{node_id} is {status.value}[/green]")
 
 
@@ -957,6 +962,10 @@ def task_release(
         str | None,
         typer.Option("--agent", help="Refused unless the node's live lease is this agent's"),
     ] = None,
+    token: Annotated[
+        str | None,
+        typer.Option("--token", help="Refused unless the node's live lease is this claim's"),
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     """Give a step back. Alone it is a transient failure, counted; with --blocked it names what
@@ -989,7 +998,9 @@ def task_release(
         else None
     )
     with _refusing():
-        status = _claims(_get_root(path)).release(node_id, blocked=blocker, agent=agent)
+        status = _claims(_get_root(path)).release(
+            node_id, blocked=blocker, agent=agent, token=token
+        )
     print(f"[green]{node_id} is {status.value}[/green]")
 
 
@@ -1129,6 +1140,14 @@ def job_resume(
     push: Annotated[
         bool, typer.Option("--push", help="An unattributed red is not this node's: push")
     ] = False,
+    agent: Annotated[
+        str | None,
+        typer.Option("--agent", help="Refused unless the node's live lease is this agent's"),
+    ] = None,
+    token: Annotated[
+        str | None,
+        typer.Option("--token", help="Refused unless the node's live lease is this claim's"),
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     """How an agent finishes a landing or sync job that stopped for it."""
@@ -1136,7 +1155,7 @@ def job_resume(
         raise typer.BadParameter("--own-defect and --push contradict each other")
     landing = _landing(_get_root(path))
     with _refusing():
-        state = landing.resume(job_id, own_defect=own_defect, push=push)
+        state = landing.resume(job_id, own_defect=own_defect, push=push, agent=agent, token=token)
     print(f"[green]Job {job_id}: {state.value}[/green]")
 
 
@@ -1145,7 +1164,7 @@ def land_start(
     node_id: str,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
-    """Start the node's landing as a detached job and print its id."""
+    """Start the landing of a node a merge claim holds, as a detached job, and print its id."""
     landing = _landing(_get_root(path))
     with _refusing():
         job_id = landing.start_land(node_id)
@@ -1312,6 +1331,10 @@ def wave_discover(
     exclude: Annotated[
         list[str] | None, typer.Option("--exclude", help="Node id to never choose this run")
     ] = None,
+    hold_merge: Annotated[
+        list[str] | None,
+        typer.Option("--hold-merge", help="Node id whose merge is not offered, repeatable"),
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     """One dispatch wave's batch: a JSON payload line, then `__CHECK n=<chosen> h=<djb2>`.
@@ -1320,7 +1343,9 @@ def wave_discover(
     the checksum lets the caller reject a transcription that is not byte-exact.
     """
     claims = _claims(_get_root(path))
-    payload, chosen_count = discover(claims, spec or None, session, slots, max_strong, exclude)
+    payload, chosen_count = discover(
+        claims, spec or None, session, slots, max_strong, exclude, hold_merge
+    )
     sys.stdout.write(f"{payload}\n__CHECK n={chosen_count} h={djb2(payload)}\n")
 
 
@@ -1340,7 +1365,8 @@ def verify_add(
     root = _get_root(path)
     container = _get_container(root)
     ops = container.get(Operations)
-    ops.add_verification(task_id, type, target, pattern)
+    with _refusing():
+        ops.add_verification(task_id, type, target, pattern)
     print(f"[green]Added {type.value} verification to task {task_id}[/green]")
 
 
@@ -1462,7 +1488,7 @@ def decision_add(
     context_file: Annotated[Path | None, typer.Option("--context-file")] = None,
     option: Annotated[
         list[str] | None,
-        typer.Option("--option", help="'key|Label|description', repeatable"),
+        typer.Option("--option", help="'key|Label|description|effect', repeatable"),
     ] = None,
     recommend: Annotated[str | None, typer.Option("--recommend")] = None,
     no_custom: Annotated[bool, typer.Option("--no-custom")] = False,
@@ -1509,14 +1535,7 @@ def decision_list(
             raise typer.BadParameter("--status is one of: open, answered, withdrawn")
         decisions = [d for d in decisions if stored_status(d) == wanted]
     if json_output or yaml_output:
-        rows = []
-        for d in decisions:
-            row = _node_row(d)
-            label = DECISION_STATUS_LABELS.get(cast("DecisionStatus", d.status), d.status.value)
-            row["status"] = label
-            row["state"] = label
-            rows.append(row)
-        _emit(rows, yaml_output)
+        _emit([_node_row(d) for d in decisions], yaml_output)
         return
     table = Table(title="Decisions")
     table.add_column("ID", style="cyan")
@@ -1547,8 +1566,6 @@ def decision_get(
     label = DECISION_STATUS_LABELS.get(cast("DecisionStatus", node.status), node.status.value)
     if json_output or yaml_output:
         doc = _node_row(node)
-        doc["status"] = label
-        doc["state"] = label
         doc["decision"] = json.loads(data.model_dump_json())
         doc["blocked_tasks"] = node_repo.get_blocked_by(decision_id)
         _emit(doc, yaml_output)
@@ -2001,7 +2018,15 @@ def export_cmd(
             },
         )
     for spec_id in sorted(specs):
-        dump(f"_spec-{spec_id}.json", {"spec": _export_node(node_repo, specs[spec_id])})
+        spec_doc: dict[str, Any] = {"spec": _export_node(node_repo, specs[spec_id])}
+        children = set(node_repo.get_children(spec_id))
+        # Import accepts tasks straight under a spec, or under nothing; the archive keeps both.
+        if spec_tasks := [_export_node(node_repo, t) for t in tasks if t.id in children]:
+            spec_doc["tasks"] = spec_tasks
+        dump(f"_spec-{spec_id}.json", spec_doc)
+    parented = {c for n in [*specs.values(), *plans] for c in node_repo.get_children(n.id)}
+    if lone := [_export_node(node_repo, t) for t in tasks if t.id not in parented]:
+        dump("_tasks.json", {"tasks": lone})
     with _user_errors():
         settings = ConfigStore(root).document()
     if settings is not None:
@@ -2051,18 +2076,26 @@ def restore_cmd(
     if not docs and decisions_doc is None:
         print(f"[red]No export files in {directory}[/red]")
         raise typer.Exit(code=1)
-    # Plans depend on each other, so the first pass keeps only the edges a document can satisfy
-    # by itself and the second adds the rest; decisions go in between so a task's depends_on edge
-    # onto one resolves in the second pass, then specs go last so their full data wins.
+    # Documents depend on each other, so the first pass keeps only the edges a document can
+    # satisfy by itself and the second adds the rest; decisions go in between so a task's
+    # depends_on edge onto one resolves in the second pass, then specs go last so their full
+    # data wins over the stub a plan's document carries.
     plan_docs = [d for d in docs if d.get("plans")]
     spec_docs = [d for d in docs if not d.get("plans")]
 
-    for doc in plan_docs:
+    def nodes_of(doc: dict[str, Any]) -> list[dict[str, Any]]:
+        plans = doc.get("plans", [])
+        return [
+            *([doc["spec"]] if doc.get("spec") else []),
+            *(n for p in plans for n in [p, *p.get("tasks", [])]),
+            *doc.get("tasks", []),
+        ]
+
+    for doc in [*plan_docs, *spec_docs]:
         first = copy.deepcopy(doc)
-        own = {n["id"] for p in first["plans"] for n in [p, *p.get("tasks", [])]}
-        for p in first["plans"]:
-            for n in [p, *p.get("tasks", [])]:
-                n["depends_on"] = [d for d in n.get("depends_on", []) if d in own]
+        own = {n["id"] for n in nodes_of(first)}
+        for n in nodes_of(first):
+            n["depends_on"] = [d for d in n.get("depends_on", []) if d in own]
         importer.import_dict(first)
     if decisions_doc is not None:
         importer.import_dict(decisions_doc)
@@ -2072,7 +2105,8 @@ def restore_cmd(
     if settings_file.exists():
         with _user_errors():
             ConfigStore(root).replace(json.loads(settings_file.read_text(encoding="utf-8")))
-    print(f"[green]Restored {len(plan_docs)} plans and {len(spec_docs)} specs into {root}[/green]")
+    specs = sum(1 for d in spec_docs if d.get("spec"))
+    print(f"[green]Restored {len(plan_docs)} plans and {specs} specs into {root}[/green]")
 
 
 @config_app.command("list")
@@ -2169,7 +2203,9 @@ def search_cmd(
         SearchMode.AUTO
     ),
     kind: Annotated[NodeKind | None, typer.Option("--kind", help="task, plan or spec")] = None,
-    status: Annotated[str | None, typer.Option("--status", help="Filter by stored status")] = None,
+    status: Annotated[
+        Status | None, typer.Option("--status", help="Filter by stored status")
+    ] = None,
     plan: Annotated[str | None, typer.Option("--plan", help="Only this plan and its tasks")] = None,
     limit: Annotated[int, typer.Option("--limit", min=1, help="Most results to print")] = 10,
     json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,

@@ -13,7 +13,7 @@ from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
-from taskmanager.engine.snapshot import SnapshotBuilder, apply_cycle, cycle_of
+from taskmanager.engine.snapshot import SnapshotBuilder, apply_cycle, cycle_of, waits_on
 
 
 class Estate:
@@ -392,3 +392,21 @@ def test_a_writer_held_only_by_its_repositorys_migration_chain_shows_blocked_by_
     estate.add("C", target_repo="core")
     assert estate.facts("B").unsatisfied_edge is True
     assert estate.facts("C").unsatisfied_edge is False
+
+
+def test_a_writer_held_by_its_migration_chain_names_the_writer_it_waits_behind(
+    estate: Estate,
+) -> None:
+    migration = {"declared_files": ["core/migrations/versions/001.py"]}
+    estate.add(
+        "A",
+        status=Status.IMPLEMENTING,
+        claimed_from=Status.READY,
+        target_repo="core",
+        frontmatter=migration,
+    )
+    estate.add("B", target_repo="core", frontmatter=migration)
+    snap = estate.builder.build()
+    b = estate.nodes.get_node("B")
+    assert b is not None
+    assert waits_on(snap, b) == (["A"], [])

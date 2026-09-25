@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from taskmanager.core.models import Lease
-from taskmanager.core.status import Action, DecisionStatus, DisplayStatus, Phase, Status
+from taskmanager.core.status import Action, DecisionStatus, DisplayStatus, Merge, Phase, Status
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
@@ -242,3 +242,50 @@ def test_decision_rows_use_decision_statuses_and_list_the_nodes_they_block(web: 
         ("S1-P1-a", "AWAITING_DECISION")
     ]
     assert rows[0]["decision"]["options"][0]["effect"] == "abandon"
+
+
+def test_a_verification_its_node_cannot_run_is_refused_and_writes_nothing(web: Web) -> None:
+    client, root = web
+    ops = create_container(root).get(Operations)
+    ops.add_task("c", "S1-P1", slug="c", merge=Merge.PARENT)
+    res = client.post(
+        "/api/nodes/S1-P1-c/verifications",
+        json={"type": "test_command", "target_path": "git show origin/main:x"},
+    )
+    assert res.status_code == 400 and "origin/main" in res.json()["detail"], res.json()
+    assert repo(root).get_verifications("S1-P1-c") == []
+
+
+def test_a_node_lists_the_edges_it_inherits_from_its_container_as_not_its_own(web: Web) -> None:
+    client, root = web
+    ops = create_container(root).get(Operations)
+    ops.add_plan("Q", "S1", slug="P2")
+    ops.add_task("c", "S1-P2", slug="c")
+    ops.set_dependencies("S1-P2", ["S1-P1-a"], [])
+    detail = client.get("/api/nodes/S1-P2-c").json()
+    assert detail["display"] == "BLOCKED_BY_TASK"
+    assert [
+        (d["id"], d["finished"], d.get("inherited_from")) for d in detail["dependency_details"]
+    ] == [("S1-P1-a", False, "S1-P2")]
+    spec = next(n for n in client.get("/api/tree").json() if n["id"] == "S1")
+    card = next(t for p in spec["children"] for t in p["children"] if t["id"] == "S1-P2-c")
+    assert [d["id"] for d in card["dependency_details"]] == ["S1-P1-a"]
+
+
+def test_a_container_card_in_the_tree_shows_its_lease(web: Web) -> None:
+    client, root = web
+    node_repo = repo(root)
+    plan = node_repo.get_node("S1-P1")
+    assert plan is not None
+    plan.status, plan.claimed_from = Status.REVIEWING, Status.IMPLEMENTED
+    lease = Lease(
+        task_id="S1-P1",
+        agent_id="reviewer",
+        session_id="s",
+        branch_name="tm/S1-P1",
+        action=Action.REVIEW,
+        ttl_seconds=3600,
+    )
+    assert RuntimeRepository(node_repo.db).claim(lease, [], plan, expected=Status.READY)
+    spec = next(n for n in client.get("/api/tree").json() if n["id"] == "S1")
+    assert spec["children"][0]["lease"]["agent_id"] == "reviewer"

@@ -9,6 +9,7 @@ from taskmanager.cli.main import app
 from taskmanager.core.status import ConditionStage, Merge
 from taskmanager.di.container import create_container
 from taskmanager.engine.operations import Operations
+from taskmanager.renderers.importers import BulkImporter
 
 runner = CliRunner()
 CHECK = "curl -fsS https://staging.example/health"
@@ -86,3 +87,33 @@ def test_restore_refuses_a_pre_lifecycle_export_and_writes_nothing(tmp_path: Pat
     assert res.exit_code == 1
     assert "v0.2.0" in res.output and "tm import" in res.output
     assert not (fresh / ".taskmanager").exists()
+
+
+def test_tasks_a_spec_or_nothing_holds_export_and_restore_byte_identically(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    seeded(source)
+    importer = create_container(source).get(BulkImporter)
+    importer.import_dict(
+        {"spec": {"id": "S2", "title": "T"}, "tasks": [{"id": "ST", "title": "t"}]}
+    )
+    importer.import_dict({"tasks": [{"id": "LONE", "title": "l", "depends_on": ["S1-P1-a"]}]})
+    ops = create_container(source).get(Operations)
+    ops.set_dependencies("S1-P1-b", ["ST"], [])
+
+    e1, e2 = tmp_path / "e1", tmp_path / "e2"
+    assert runner.invoke(app, ["export", str(e1), "-C", str(source)]).exit_code == 0
+    spec = json.loads((e1 / "_spec-S2.json").read_text())
+    assert [t["id"] for t in spec["tasks"]] == ["ST"]
+    assert [t["id"] for t in json.loads((e1 / "_tasks.json").read_text())["tasks"]] == ["LONE"]
+
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    res = runner.invoke(app, ["restore", str(e1), "-C", str(fresh)])
+    assert res.exit_code == 0, res.output
+    assert runner.invoke(app, ["export", str(e2), "-C", str(fresh)]).exit_code == 0
+    assert sorted(f.name for f in e1.glob("*.json")) == sorted(f.name for f in e2.glob("*.json"))
+    for f in sorted(e1.glob("*.json")):
+        assert f.read_bytes() == (e2 / f.name).read_bytes(), f.name

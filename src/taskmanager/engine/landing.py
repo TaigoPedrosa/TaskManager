@@ -18,12 +18,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 from taskmanager.core.models import Condition, Job
-from taskmanager.core.status import ConditionStage, JobKind, JobState, Outcome
+from taskmanager.core.status import Action, ConditionStage, JobKind, JobState, Outcome, Status
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.engine import gates
 from taskmanager.engine import git as gitops
-from taskmanager.engine.claims import Claims, SyncPair
+from taskmanager.engine.claims import LIVE_JOBS, Claims, SyncPair
 from taskmanager.engine.config import Gate, ProjectConfig
 from taskmanager.engine.gates import GateRun
 from taskmanager.engine.git import GitManager
@@ -74,6 +74,25 @@ class Landing:
     # -- entry points -------------------------------------------------------------------------
 
     def start_land(self, node_id: str) -> str:
+        """Only a merge claim lands a node: anything else would push code no review passed, with
+        no lease holding the node while it lands."""
+        node = self.claims.node(node_id)
+        lease = self.claims.runtime.get_lease(node_id)
+        if (
+            node.status != Status.MERGING
+            or lease is None
+            or lease.action != Action.MERGE
+            or not self.claims._live(lease)
+        ):
+            raise OperationError(
+                f"{node_id} is {node.status} with no live merge lease: only a merge claim "
+                f"lands it, through `tm task start {node_id}`",
+                409,
+            )
+        if any(
+            j.kind == JobKind.LAND and j.state in LIVE_JOBS for j in self.jobs.for_node(node_id)
+        ):
+            raise OperationError(f"{node_id} is already landing", 409)
         repos = self.claims.repos_of(node_id)
         job = self._new_job(JobKind.LAND, node_id, repos[0], self.claims.target_of(node_id), {})
         self._launch(job)
@@ -110,7 +129,14 @@ class Landing:
                 detail = f"{exc}\n{getattr(exc, 'stderr', '') or ''}".strip()
                 return self._needs_agent(job, "error", error=detail)
 
-    def resume(self, job_id: str, own_defect: str | None = None, push: bool = False) -> JobState:
+    def resume(
+        self,
+        job_id: str,
+        own_defect: str | None = None,
+        push: bool = False,
+        agent: str | None = None,
+        token: str | None = None,
+    ) -> JobState:
         job = self._job(job_id)
         if job.state != JobState.NEEDS_AGENT:
             raise OperationError(
@@ -123,6 +149,7 @@ class Landing:
                 f"`tm task start {job.node_id}`",
                 409,
             )
+        self.claims.own(job.node_id, lease, agent, token)
         reason = str(job.result.get("reason"))
         if own_defect is not None:
             if job.kind == JobKind.SYNC:

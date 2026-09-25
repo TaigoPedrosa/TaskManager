@@ -18,10 +18,13 @@ from typer.testing import CliRunner
 from taskmanager.cli.main import app
 from taskmanager.core.models import Job
 from taskmanager.core.status import JobKind, JobState, Status
+from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.node_repo import NodeRepository
+from taskmanager.di.container import create_container
 from taskmanager.engine.discovery import djb2
+from taskmanager.engine.operations import Operations
 
 runner = CliRunner()
 
@@ -81,6 +84,7 @@ def test_start_claims_implement_then_complete_and_a_review_that_approves(tmp_pat
         "base",
         "worktree",
         "worktrees",
+        "token",
     }
     assert (step["action"], step["repos"], step["branch"], step["base"]) == (
         "implement",
@@ -426,3 +430,172 @@ def test_no_guide_or_command_page_shows_a_removed_run_verb() -> None:
         if REMOVED_RUN_VERBS.search(line)
     ]
     assert shown == []
+
+
+def approved(root: Path, node_id: str) -> None:
+    assert start(root, node_id)[0] == 0
+    assert tm(root, "task", "complete", node_id).exit_code == 0
+    assert start(root, node_id)[1]["action"] == "review"
+    tm(root, "section", "set", f"{node_id}:review", "no findings")
+    assert tm(root, "task", "review", node_id, "--approve").exit_code == 0
+
+
+def test_a_step_closes_or_releases_only_under_the_token_its_claim_printed(tmp_path: Path) -> None:
+    estate(tmp_path)
+    code, step = start(tmp_path, "S1-P1-a")
+    assert code == 0 and step["token"]
+    wrong = tm(tmp_path, "task", "complete", "S1-P1-a", "--token", "not-this-claim")
+    assert wrong.exit_code == 1 and "not-this-claim" in wrong.output
+    assert tm(tmp_path, "task", "complete", "S1-P1-a", "--token", step["token"]).exit_code == 0
+
+    first = step["token"]
+    code, step = start(tmp_path, "S1-P1-a")
+    assert (code, step["action"]) == (0, "review") and step["token"] != first
+    tm(tmp_path, "section", "set", "S1-P1-a:review", "no findings")
+    stale = tm(tmp_path, "task", "review", "S1-P1-a", "--approve", "--token", first)
+    assert stale.exit_code == 1, stale.output
+    assert tm(tmp_path, "task", "release", "S1-P1-a", "--token", first).exit_code == 1
+    assert get(tmp_path, "S1-P1-a")["status"] == "REVIEWING"
+    assert tm(tmp_path, "task", "release", "S1-P1-a", "--token", step["token"]).exit_code == 0
+    assert get(tmp_path, "S1-P1-a")["status"] == "IMPLEMENTED"
+
+    code, step = start(tmp_path, "S1-P1-a")
+    tm(tmp_path, "section", "set", "S1-P1-a:review", "still no findings")
+    ok = tm(tmp_path, "task", "review", "S1-P1-a", "--approve", "--token", step["token"])
+    assert ok.exit_code == 0, ok.output
+
+
+def test_wave_discover_holds_only_the_merges_it_is_told_to_hold(tmp_path: Path) -> None:
+    estate(tmp_path)
+    approved(tmp_path, "S1-P1-a")
+    base = ["wave", "discover", "--session", "s", "--slots", "4", "--max-strong", "1"]
+
+    def batch(*extra: str) -> dict[str, Any]:
+        res = tm(tmp_path, *base, *extra)
+        assert res.exit_code == 0, res.output
+        doc: dict[str, Any] = json.loads(res.stdout.split("\n")[0])
+        return doc
+
+    offered = batch()
+    assert [(c["id"], c["action"]) for c in offered["chosen"]] == [("S1-P1-a", "merge")]
+    held = batch("--hold-merge", "S1-P1-a", "--hold-merge", "S1-P1-b")
+    assert held["chosen"] == []
+    assert "S1-P1-a: merge held by the dispatcher" in held["held"]
+
+
+def test_land_start_on_a_node_no_merge_claim_holds_pushes_nothing(tmp_path: Path) -> None:
+    estate(tmp_path)
+    core = tmp_path / "core"
+    git(core, "checkout", "-q", "-b", "tm/S1-P1-a")
+    (core / "a.py").write_text("x = 1\n")
+    git(core, "add", "a.py")
+    git(core, "commit", "-q", "-m", "a")
+    git(core, "checkout", "-q", "main")
+    before = subprocess.run(
+        ["git", "ls-remote", "origin", "refs/heads/main"],
+        cwd=core,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    for status in ("READY", "IMPLEMENTED"):
+        if status != "READY":
+            tm(tmp_path, "task", "reset", "S1-P1-a", "--to", status, "--note", "repair")
+        res = tm(tmp_path, "land", "start", "S1-P1-a")
+        assert res.exit_code == 1 and "merge claim" in res.output, res.output
+
+    after = subprocess.run(
+        ["git", "ls-remote", "origin", "refs/heads/main"],
+        cwd=core,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert after == before
+    doc = get(tmp_path, "S1-P1-a")
+    assert (doc["status"], doc["jobs"], doc["next_action"]) == ("IMPLEMENTED", [], "review")
+
+
+def test_job_resume_in_another_agents_name_or_under_another_claims_token_is_refused(
+    tmp_path: Path,
+) -> None:
+    estate(tmp_path)
+    assert start(tmp_path, "S1-P1-a")[0] == 0
+    jobs = JobRepository(DatabaseManager(tmp_path / ".taskmanager"))
+    job = jobs.create(Job(kind=JobKind.LAND, node_id="S1-P1-a", repo="core", target="main"))
+    jobs.set_state(
+        job.model_copy(update={"state": JobState.NEEDS_AGENT, "result": {"reason": "conflict"}})
+    )
+    other = tm(tmp_path, "job", "resume", job.id, "--agent", "agent-b")
+    assert other.exit_code == 1 and "agent-b holds no live lease" in other.output, other.output
+    stale = tm(tmp_path, "job", "resume", job.id, "--token", "not-this-claim")
+    assert stale.exit_code == 1 and "not-this-claim" in stale.output, stale.output
+    stored_job = jobs.get(job.id)
+    assert stored_job is not None and stored_job.state == JobState.NEEDS_AGENT
+
+
+def test_verify_add_refuses_a_check_its_node_cannot_run_and_an_unknown_node(
+    tmp_path: Path,
+) -> None:
+    estate(tmp_path)
+    tm(tmp_path, "task", "add", "c", "--plan", "S1-P1", "--slug", "c", "--merge", "parent")
+    bad = tm(
+        tmp_path,
+        "verify",
+        "add",
+        "S1-P1-c",
+        "--type",
+        "test_command",
+        "--target",
+        "git show origin/main:x",
+    )
+    assert bad.exit_code == 1 and "origin/main" in bad.output, bad.output
+    assert get(tmp_path, "S1-P1-c")["verifications"] == []
+    assert tm(tmp_path, "task", "update", "S1-P1-c", "--title", "c2").exit_code == 0
+    unknown = tm(tmp_path, "verify", "add", "NOPE", "--type", "file_exists", "--target", "x")
+    assert unknown.exit_code == 1 and "NOPE" in unknown.output
+    assert unknown.exception is None or isinstance(unknown.exception, SystemExit)
+
+
+def test_a_refused_task_update_prints_its_message_and_exits_1(tmp_path: Path) -> None:
+    estate(tmp_path)
+    res = tm(tmp_path, "task", "update", "S1-P1-a", "--no-review")
+    assert res.exit_code == 1 and "fix needs review" in res.output, res.output
+
+
+def test_task_get_names_what_its_ancestors_wait_on(tmp_path: Path) -> None:
+    estate(tmp_path)
+    assert tm(tmp_path, "plan", "add", "Q", "--spec", "S1", "--slug", "P2").exit_code == 0
+    tm(tmp_path, "task", "add", "c", "--plan", "S1-P2", "--slug", "c")
+    ops = create_container(tmp_path).get(Operations)
+    ops.set_dependencies("S1-P2", ["S1-P1-a"], [])
+    doc = get(tmp_path, "S1-P2-c")
+    assert (doc["state"], doc["blocked_by"]) == ("BLOCKED_BY_TASK", ["S1-P1-a"])
+
+    added = tm(tmp_path, "decision", "add", "Which way?", "--slug", "way", "--blocks", "S1-P2")
+    assert added.exit_code == 0, added.output
+    doc = get(tmp_path, "S1-P2-c")
+    assert (doc["state"], doc["awaiting_decisions"]) == ("AWAITING_DECISION", ["decision-way"])
+
+
+def test_a_completed_reset_of_a_task_with_no_repository_is_refused(tmp_path: Path) -> None:
+    estate(tmp_path)
+    tm(tmp_path, "task", "add", "c", "--plan", "S1-P1", "--slug", "c")
+    res = tm(tmp_path, "task", "reset", "S1-P1-c", "--to", "COMPLETED", "--note", "done by hand")
+    assert res.exit_code == 1 and "no target_repo" in res.output, res.output
+    assert get(tmp_path, "S1-P1-c")["status"] == "READY"
+
+
+def test_next_leaves_out_a_task_whose_claim_condition_last_failed(tmp_path: Path) -> None:
+    estate(tmp_path)
+    added = tm(
+        tmp_path, "task", "condition", "add", "S1-P1-a", "--needs", "up", "--command", "false"
+    )
+    assert added.exit_code == 0, added.output
+    container = create_container(tmp_path)
+    [condition] = container.get(NodeRepository).get_conditions("S1-P1-a")
+    container.get(CacheRepository).put_condition("S1-P1-a", condition.idx, "false", 1)
+    assert get(tmp_path, "S1-P1-a")["state"] == "BLOCKED_BY_CONDITION"
+    ranked = json.loads(tm(tmp_path, "next", "--json").stdout)
+    assert "S1-P1-a" not in [t["task_id"] for t in ranked]

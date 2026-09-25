@@ -184,25 +184,15 @@ class SnapshotBuilder:
         if node is None:
             raise KeyError(node_id)
         jobs = self.job_repo.for_node(node_id)
-        deps = snapshot.inherited_edges(node_id)
-        decisions = [d for d in deps if snapshot.nodes[d].kind == NodeKind.DECISION]
-        action = next_action(cycle_of(node))
-        locking = action in _LOCKING
-        # Discovery holds an implement behind its repository's migration chain as it would
-        # behind an unlanded dependency, so it reads the same.
-        chain_held = (
-            action == Action.IMPLEMENT
-            and snapshot.nodes[node_id].writes_migration
-            and node_id in migration_holders(snapshot, node.target_repo or "")
-        )
+        work, decisions = waits_on(snapshot, node)
+        locking = next_action(cycle_of(node)) in _LOCKING
         return Facts(
             lease=self._lease(node_id, datetime.now(tz=UTC)),
             job_needs_agent=any(
                 j.kind == JobKind.LAND and j.state == JobState.NEEDS_AGENT for j in jobs
             ),
-            open_decision=any(snapshot.status(d) == DecisionStatus.OPEN for d in decisions),
-            unsatisfied_edge=chain_held
-            or any(not satisfied(snapshot, node_id, d) for d in deps if d not in decisions),
+            open_decision=bool(decisions),
+            unsatisfied_edge=bool(work),
             sync_pending=any(j.kind == JobKind.SYNC and j.state in _LIVE_JOB for j in jobs),
             files_locked=locking
             and bool(self.runtime_repo.get_conflicting_tasks(self.lock_set(node_id, snapshot))),
@@ -275,6 +265,32 @@ class DisplayView:
             self.builder.facts(node.id, self.snapshot), unmet_condition=self._unmet(node)
         )
         return display_status(self.builder.cycle(node), facts).value
+
+
+def chain_holder(snapshot: Snapshot, node: Node) -> str | None:
+    """The migration writer an implement of `node` waits behind in its repository's chain.
+    Discovery holds it there as it would behind an unlanded dependency, so it reads the same."""
+    if (
+        node.kind == NodeKind.DECISION
+        or not snapshot.nodes[node.id].writes_migration
+        or next_action(cycle_of(node)) != Action.IMPLEMENT
+    ):
+        return None
+    return migration_holders(snapshot, node.target_repo or "").get(node.id)
+
+
+def waits_on(snapshot: Snapshot, node: Node) -> tuple[list[str], list[str]]:
+    """The work `node` waits to see landed and the open decisions it waits on, its containers'
+    edges and its migration chain included: every reason its display blocks on, by name."""
+    if node.id not in snapshot.nodes or node.kind == NodeKind.DECISION:
+        return [], []
+    edges = [d for d in snapshot.inherited_edges(node.id) if d in snapshot.nodes]
+    decisions = [d for d in edges if snapshot.nodes[d].kind == NodeKind.DECISION]
+    work = [d for d in edges if d not in decisions and not satisfied(snapshot, node.id, d)]
+    holder = chain_holder(snapshot, node)
+    if holder is not None and holder not in work:
+        work.append(holder)
+    return work, [d for d in decisions if snapshot.status(d) == DecisionStatus.OPEN]
 
 
 def phase_of(node: Node) -> str | None:

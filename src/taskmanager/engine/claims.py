@@ -548,10 +548,10 @@ class Claims:
         lease = self.runtime.get_lease(node_id)
         if lease is None:
             raise OperationError(f"{node_id} holds no lease: it was swept or released", 409)
-        self._own(node_id, lease, agent, token)
+        self.own(node_id, lease, agent, token)
         return node, lease
 
-    def _own(self, node_id: str, lease: Lease, agent: str | None, token: str | None) -> None:
+    def own(self, node_id: str, lease: Lease, agent: str | None, token: str | None) -> None:
         """A named agent, or a claim's token, closes only its own live step: an agent whose lease
         expired and was claimed again must not close its successor's."""
         if agent is not None and (lease.agent_id != agent or not self._live(lease)):
@@ -598,7 +598,7 @@ class Claims:
         lease = self.runtime.get_lease(node_id)
         if lease is None:
             raise OperationError(f"{node_id} holds no lease to release", 409)
-        self._own(node_id, lease, agent, token)
+        self.own(node_id, lease, agent, token)
         if blocked is not None:
             if not (blocked.depends or blocked.decision or blocked.condition):
                 raise OperationError(
@@ -913,7 +913,12 @@ class Claims:
         branch, target = self.branch_of(node_id), self.target_of(node_id)
         ref = self.target_ref(target)
         container = self.is_container(self.node(node_id))
-        for repo in self.repos_of(node_id):
+        repos = self.repos_of(node_id)
+        if not container and not repos:
+            raise OperationError(
+                f"{node_id} has no target_repo: nothing proves it landed; set --repo first", 409
+            )
+        for repo in repos:
             repo_dir = self.root / repo
             if target == "main":
                 gitops.fetch(repo_dir)

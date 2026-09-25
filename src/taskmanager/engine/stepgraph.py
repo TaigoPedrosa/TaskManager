@@ -64,10 +64,16 @@ class Snapshot:
 
     def inherited_edges(self, node_id: str) -> list[str]:
         """Every dependency of `node_id` and of each of its ancestors, own first."""
-        found: list[str] = []
+        return list(self.edge_owners(node_id))
+
+    def edge_owners(self, node_id: str) -> dict[str, str]:
+        """`inherited_edges`, each mapped to the node (itself or an ancestor) that declares it."""
+        found: dict[str, str] = {}
         owner: str | None = node_id
         while owner is not None:
-            found.extend(dep for d, dep in self.edges if d == owner and dep not in found)
+            for d, dep in self.edges:
+                if d == owner:
+                    found.setdefault(dep, owner)
             owner = self.parent(owner)
         return found
 

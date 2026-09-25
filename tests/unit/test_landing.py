@@ -653,3 +653,50 @@ def test_two_landings_reaching_one_uncached_baseline_at_once_share_one_run(
 
     assert states == [JobState.CONDITION_UNMET, JobState.CONDITION_UNMET]
     assert sum(run.endswith("-base") for run in gate_runs(tmp_path)) == 1
+
+
+def test_a_landing_starts_only_under_a_merge_claim_and_never_beside_a_live_one(
+    tmp_path: Path,
+) -> None:
+    claims, landing = estate_with(tmp_path, TRUE)
+    api = claims.root / "api"
+    reviewed_task(claims)
+    before = git(api, "ls-remote", "origin", "refs/heads/main")
+
+    with pytest.raises(OperationError, match="merge claim"):
+        landing.start_land("T1")
+    assert claims.jobs.for_node("T1") == []
+
+    result = claims.start("T1", "merger", "s1")
+    assert result.action == Action.MERGE and result.job is not None
+    with pytest.raises(OperationError, match="already landing"):
+        landing.start_land("T1")
+    assert [j.id for j in claims.jobs.for_node("T1")] == [result.job]
+    assert git(api, "ls-remote", "origin", "refs/heads/main") == before
+
+    assert landing.run(result.job) == JobState.SUCCEEDED
+
+
+def test_a_handed_over_job_resumes_only_for_the_agent_and_token_it_was_handed_to(
+    tmp_path: Path,
+) -> None:
+    claims, landing = estate_with(tmp_path, TRUE)
+    reviewed_task(claims, path="app.py", content="branch\n")
+    push_main(claims.root / "api", "app.py", "main\n")
+    job_id, state = land(claims, landing)
+    assert state == JobState.NEEDS_AGENT
+
+    handed = claims.start("T1", "resolver", "s2")
+    assert handed.token is not None
+    with pytest.raises(OperationError, match="someone holds no live lease"):
+        landing.resume(job_id, agent="someone")
+    with pytest.raises(OperationError, match="another claim holds it"):
+        landing.resume(job_id, token="stale")
+    job = claims.jobs.get(job_id)
+    assert job is not None and job.state == JobState.NEEDS_AGENT and job.worktree
+    worktree = Path(job.worktree)
+    (worktree / "app.py").write_text("both\n")
+    git(worktree, "add", "app.py")
+    git(worktree, "commit", "-q", "--no-edit")
+
+    assert landing.resume(job_id, agent="resolver", token=handed.token) == JobState.SUCCEEDED

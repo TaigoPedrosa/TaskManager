@@ -41,7 +41,14 @@ from taskmanager.engine.config import ConfigStore
 from taskmanager.engine.heuristics import score_every_task
 from taskmanager.engine.landing import Landing
 from taskmanager.engine.operations import OperationError, Operations
-from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder, phase_of, stored_status
+from taskmanager.engine.snapshot import (
+    DisplayView,
+    SnapshotBuilder,
+    chain_holder,
+    phase_of,
+    stored_status,
+    waits_on,
+)
 from taskmanager.renderers.markdown import MarkdownRenderer
 from taskmanager.web.ui import get_web_html
 
@@ -376,12 +383,28 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     def dependency_details(
         node_id: str, view: DisplayView, deps: list[str] | None = None
     ) -> list[dict[str, Any]]:
+        own = deps if deps is not None else node_repo.get_dependencies(node_id)
         rows = []
-        for dep_id in deps if deps is not None else node_repo.get_dependencies(node_id):
+        for dep_id in own:
             dep = node_repo.get_node(dep_id)
             rows.append(
                 _relation_row(view, dep_id, dep is not None and _finished(view, node_id, dep))
             )
+        # What a container waits on its children wait on too (§4.1), and a migration writer
+        # waits behind its chain's holder: both are named, marked as edges not its own.
+        snap = view.snapshot
+        node = node_repo.get_node(node_id)
+        if node is None or node_id not in snap.nodes:
+            return rows
+        work, decisions = waits_on(snap, node)
+        owners = snap.edge_owners(node_id)
+        for dep_id, owner in owners.items():
+            if owner != node_id and dep_id in snap.nodes:
+                row = _relation_row(view, dep_id, dep_id not in work and dep_id not in decisions)
+                rows.append(row | {"inherited_from": owner})
+        holder = chain_holder(snap, node)
+        if holder is not None and holder not in owners:
+            rows.append(_relation_row(view, holder, False) | {"migration_chain": node.target_repo})
         return rows
 
     def dependent_details(
@@ -396,15 +419,17 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         ]
 
     def lifecycle_fields(n: Node, view: DisplayView) -> dict[str, Any]:
-        is_decision = n.kind == NodeKind.DECISION
-        # A decision is never reviewed, fixed or landed.
-        flags = {} if is_decision else {"review": n.review, "fix": n.fix, "merge": n.merge.value}
+        # Read through stored_status so a node saved under an old name shows its new one.
+        status = {"status": stored_status(n).value, "display": view.display(n)}
+        if n.kind == NodeKind.DECISION:
+            # A decision has no cycle: it is never claimed, reviewed, fixed or landed.
+            return status
         return {
-            # Read through stored_status so a node saved under an old name shows its new one.
-            "status": stored_status(n).value,
-            "display": view.display(n),
+            **status,
             "phase": phase_of(n),
-            **flags,
+            "review": n.review,
+            "fix": n.fix,
+            "merge": n.merge.value,
             "outcome": n.outcome.value if n.outcome else None,
             "verdict": n.verdict,
             "fix_for": n.fix_for.value if n.fix_for else None,
@@ -415,8 +440,8 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             "branch": n.branch or f"tm/{n.id}",
             "requires": n.requires,
             "land_order": n.land_order,
-            "landing_chain": [] if is_decision else landing_chain(view.snapshot, n.id),
-            "base_chain": [] if is_decision else base_chain(view.snapshot, n.id),
+            "landing_chain": landing_chain(view.snapshot, n.id),
+            "base_chain": base_chain(view.snapshot, n.id),
         }
 
     def lease_dict(node_id: str) -> dict[str, Any] | None:
@@ -516,7 +541,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
                     }
                     for v in verifications
                 ],
-                "lease": lease_dict(n.id) if n.kind == NodeKind.TASK else None,
+                "lease": lease_dict(n.id),
                 "children": [],
             }
 

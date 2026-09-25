@@ -662,12 +662,13 @@ class Operations:
             target_path=target,
             expected_pattern=pattern,
         )
-        self.node_repo.add_verification(ver)
-        self._ledger(
-            LedgerCommand.VERIFICATION_ADD,
-            target_id=task_id,
-            payload={"type": verification_type.value, "target": target},
-        )
+        with self._checked({task_id}):
+            self.node_repo.add_verification(ver)
+            self._ledger(
+                LedgerCommand.VERIFICATION_ADD,
+                target_id=task_id,
+                payload={"type": verification_type.value, "target": target},
+            )
         return ver
 
     def remove_verification(self, task_id: str, verification_id: int) -> None:

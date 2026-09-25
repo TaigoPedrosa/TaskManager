@@ -1,6 +1,7 @@
 // Depends-on list for the graph inspector. Only a task is offered "+ Add dependency" (the
 // CLI's own `task depends` is task-scoped); an existing edge on any other kind still gets a
-// remove button, since nothing in the schema actually forbids one.
+// remove button, since nothing in the schema actually forbids one. A row a container or a
+// migration chain imposes has none: removing it belongs to that container or that chain.
 function renderDependencies(details, status, node, editable) {
   const addControl = editable && node.kind === 'task'
     ? `
@@ -21,7 +22,9 @@ function renderDependencies(details, status, node, editable) {
       ${d.status ? statusIcon(d.status) : '<span class="text-[10px] font-mono text-red-400">missing</span>'}
       <span class="font-mono text-[11px] text-zinc-300">${esc(d.id)}</span>
       <span class="truncate text-[11px] text-zinc-400 flex-1">${esc(d.title || '')}</span>
-      ${editable ? `<button type="button" class="dep-remove-btn p-1 rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-800 flex-shrink-0" data-dep-id="${esc(d.id)}" aria-label="Remove dependency ${esc(d.id)}">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
+      ${d.inherited_from ? `<span class="text-[10px] text-zinc-500 flex-shrink-0">via ${esc(d.inherited_from)}</span>` : ''}
+      ${d.migration_chain ? `<span class="text-[10px] text-zinc-500 flex-shrink-0">${esc(d.migration_chain)} migration chain</span>` : ''}
+      ${editable && !d.inherited_from && !d.migration_chain ? `<button type="button" class="dep-remove-btn p-1 rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-800 flex-shrink-0" data-dep-id="${esc(d.id)}" aria-label="Remove dependency ${esc(d.id)}">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
     </div>
   `).join('');
   return `

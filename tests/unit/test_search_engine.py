@@ -531,3 +531,13 @@ def test_an_old_vector_table_with_one_row_per_node_asks_for_a_rebuild(kit: Kit) 
     with pytest.raises(SearchError, match="one vector per node.*tm index --rebuild"):
         kit.engine.index()
     assert kit.engine.index(rebuild=True).embedded == 1
+
+
+def test_search_refuses_a_status_that_is_not_one(project: Path) -> None:
+    res = runner.invoke(app, ["search", "keys", "--status", "ready", "-C", str(project)])
+    assert res.exit_code == 2 and "READY" in res.output
+    code, out = _cli(project, "search", "keys", "--json", "--status", "READY")
+    assert code == 0 and {h["id"] for h in json.loads(out)["results"]} == {
+        "S1-P1-keys",
+        "S1-P1-docs",
+    }
