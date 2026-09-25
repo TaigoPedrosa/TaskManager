@@ -93,7 +93,7 @@ class Landing:
             target,
             {"units": [list(unit) for unit in units], "done": 0, "source": source},
         )
-        self._launch(job)
+        self._spawn(job)
         return job.id
 
     def run(self, job_id: str) -> JobState:
@@ -153,8 +153,7 @@ class Landing:
             raise OperationError(f"job {job_id} moved while it was being resumed", 409)
         self.claims.heartbeat(job.node_id)
         if self.detach:
-            self._launch(job)
-            return JobState.RUNNING
+            return self._spawn(job)
         return self.run(job.id)
 
     # -- the landing steps --------------------------------------------------------------------
@@ -323,10 +322,7 @@ class Landing:
         # not against this one, which has already succeeded.
         if not self.detach:
             return self.run(following.id)
-        try:
-            self._launch(following)
-        except OSError as exc:
-            return self._needs_agent(following, "error", error=str(exc))
+        self._spawn(following)
         return JobState.SUCCEEDED
 
     def _sync(self, job: Job) -> JobState:
@@ -497,6 +493,15 @@ class Landing:
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
+
+    def _spawn(self, job: Job) -> JobState:
+        """Launches `job`'s process; a launch that fails stops the job for an agent, so no job
+        is left running with no process to end it."""
+        try:
+            self._launch(job)
+        except OSError as exc:
+            return self._needs_agent(job, "error", error=f"could not launch: {exc}")
+        return JobState.RUNNING
 
     def _job(self, job_id: str) -> Job:
         job = self.jobs.get(job_id)

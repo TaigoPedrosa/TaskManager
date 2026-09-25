@@ -280,3 +280,22 @@ def test_a_dependency_landed_in_one_repository_syncs_no_other(tmp_path: Path) ->
     units = claims.sync_units(claims._sync_pairs("X", claims.snapshots.build()))
 
     assert units == [("origin/main", "tm/P", "api")]
+
+
+def test_a_sync_that_cannot_be_launched_stops_for_an_agent_instead_of_running_nowhere(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claims, landing = lagging_parent(tmp_path)
+
+    def unlaunchable(job: object) -> None:
+        raise OSError("fork failed")
+
+    monkeypatch.setattr(landing, "_launch", unlaunchable)
+    first = claims.start("X", "implementer", "s1")
+
+    assert first.action == Action.BLOCKED
+    assert first.job is not None
+    job = claims.jobs.get(first.job)
+    assert job is not None and (job.state, job.result["reason"]) == (JobState.NEEDS_AGENT, "error")
+    lease = claims.runtime.get_lease("X")
+    assert lease is not None and lease.ttl_seconds is None
