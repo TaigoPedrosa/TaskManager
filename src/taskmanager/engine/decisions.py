@@ -8,7 +8,7 @@ from taskmanager.core.models import Node
 
 # §3.1: a decision is stored as a node reusing NodeStatus, but presented under its own names
 # everywhere a human reads it -- the CLI table, `tm decision get`, the JSON/YAML rows.
-DECISION_STATUS_LABELS: dict[NodeStatus, str] = {
+DECISION_STATUS_LABELS: dict[str, str] = {
     NodeStatus.NOT_STARTED: "Open",
     NodeStatus.COMPLETED: "Answered",
     NodeStatus.ABANDONED: "Withdrawn",

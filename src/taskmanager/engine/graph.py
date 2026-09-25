@@ -1,13 +1,15 @@
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from taskmanager.core.enums import NodeKind, NodeStatus, RelationType, VirtualStatus
 from taskmanager.core.models import Lease, Node, NodeRelation
+from taskmanager.core.status import DecisionStatus, Status
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 
 # A task's forward progress through one lease cycle. SUPERSEDED, ABANDONED and DEFERRED are
 # side-exits, not positions on this line, and are handled separately by `gate_satisfied`.
-LIFECYCLE_ORDER: dict[NodeStatus, int] = {
+LIFECYCLE_ORDER: dict[str, int] = {
     NodeStatus.NOT_STARTED: 0,
     NodeStatus.IMPLEMENTING: 1,
     NodeStatus.WAITING_REVIEW: 2,
@@ -29,7 +31,7 @@ _BLOCKED_STATES = {
 }
 
 
-def gate_satisfied(status: NodeStatus, gate: NodeStatus) -> bool:
+def gate_satisfied(status: str, gate: str) -> bool:
     """Whether a dependency's current status clears a `depends_on` edge's gate: at or past
     `gate` in the lifecycle order. SUPERSEDED clears any gate, same as it always cleared the
     implicit COMPLETED gate every bare edge carries; ABANDONED and DEFERRED clear none."""
@@ -70,7 +72,9 @@ class GraphEngine:
                 return True
         return False
 
-    def resolve_task_state(self, task_id: str) -> VirtualStatus | NodeStatus:
+    def resolve_task_state(
+        self, task_id: str
+    ) -> VirtualStatus | NodeStatus | Status | DecisionStatus:
         node = self.node_repo.get_node(task_id)
         if node is None:
             raise ValueError(f"Task '{task_id}' not found")
@@ -105,8 +109,8 @@ class GraphEngine:
 
     def _rollup(
         self,
-        counted_states: list[NodeStatus | VirtualStatus],
-        set_aside_statuses: list[NodeStatus],
+        counted_states: Sequence[str],
+        set_aside_statuses: Sequence[str],
         all_not_started: bool,
     ) -> NodeStatus | VirtualStatus:
         """§3.2a, shared by the plan-over-tasks and spec-over-plans rollups: `counted_states` is
@@ -131,7 +135,9 @@ class GraphEngine:
             return VirtualStatus.READY
         return NodeStatus.IMPLEMENTING
 
-    def resolve_plan_status(self, plan_id: str) -> NodeStatus | VirtualStatus:
+    def resolve_plan_status(
+        self, plan_id: str
+    ) -> NodeStatus | VirtualStatus | Status | DecisionStatus:
         plan_node = self.node_repo.get_node(plan_id)
         if plan_node is None:
             raise ValueError(f"Plan '{plan_id}' not found")
@@ -164,7 +170,9 @@ class GraphEngine:
             ),
         )
 
-    def resolve_spec_status(self, spec_id: str) -> NodeStatus | VirtualStatus:
+    def resolve_spec_status(
+        self, spec_id: str
+    ) -> NodeStatus | VirtualStatus | Status | DecisionStatus:
         """A spec's status the same way a plan's is: rolled up from its children, here plans
         rather than tasks. Reuses `resolve_plan_status`'s already-coarse result per child."""
         spec_node = self.node_repo.get_node(spec_id)

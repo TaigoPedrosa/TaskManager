@@ -531,13 +531,3 @@ def test_an_old_vector_table_with_one_row_per_node_asks_for_a_rebuild(kit: Kit) 
     with pytest.raises(SearchError, match="one vector per node.*tm index --rebuild"):
         kit.engine.index()
     assert kit.engine.index(rebuild=True).embedded == 1
-
-
-def test_the_index_state_table_exists_in_a_database_made_before_it(tmp_path: Path) -> None:
-    db = DatabaseManager(tmp_path / ".taskmanager")
-    db.init_all()
-    with db.get_spec_connection() as conn:
-        conn.execute("DROP TABLE index_state")
-        conn.commit()
-    with db.get_spec_connection() as conn:
-        assert conn.execute("SELECT COUNT(*) FROM index_state").fetchone() == (0,)

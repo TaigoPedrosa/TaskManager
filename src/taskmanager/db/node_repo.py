@@ -11,13 +11,33 @@ from taskmanager.core.enums import (
     VerificationType,
 )
 from taskmanager.core.models import (
+    Condition,
     Node,
     NodeRelation,
     NodeSection,
     NodeVerification,
 )
+from taskmanager.core.status import ConditionStage, DecisionStatus, Status
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.utils import parse_db_datetime, to_db_timestamp
+
+_NODE_COLUMNS = (
+    "id, kind, title, status, priority, ordinal, target_repo, acceptable_models, "
+    "frontmatter_json, claimed_from, review, fix, merge, outcome, verdict, fix_for, "
+    "review_cycles, merge_attempts, step_failures, branch, requires, land_order, "
+    "created_at, updated_at"
+)
+
+
+def _status(raw: str) -> NodeStatus | Status | DecisionStatus:
+    # A value both vocabularies share reads as NodeStatus, so modules not yet on the new
+    # vocabulary keep matching it; each name only the new vocabulary has reads as its own.
+    for vocabulary in (NodeStatus, Status):
+        try:
+            return vocabulary(raw)
+        except ValueError:
+            continue
+    return DecisionStatus(raw)
 
 
 class NodeRepository:
@@ -36,12 +56,9 @@ class NodeRepository:
     def save_node(self, node: Node) -> None:
         with self.db.get_spec_connection() as conn:
             conn.execute(
-                """
-                INSERT INTO nodes (
-                    id, kind, title, status, priority, ordinal, target_repo,
-                    acceptable_models, frontmatter_json, created_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                f"""
+                INSERT INTO nodes ({_NODE_COLUMNS})
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     kind=excluded.kind,
                     title=excluded.title,
@@ -51,6 +68,19 @@ class NodeRepository:
                     target_repo=excluded.target_repo,
                     acceptable_models=excluded.acceptable_models,
                     frontmatter_json=excluded.frontmatter_json,
+                    claimed_from=excluded.claimed_from,
+                    review=excluded.review,
+                    fix=excluded.fix,
+                    merge=excluded.merge,
+                    outcome=excluded.outcome,
+                    verdict=excluded.verdict,
+                    fix_for=excluded.fix_for,
+                    review_cycles=excluded.review_cycles,
+                    merge_attempts=excluded.merge_attempts,
+                    step_failures=excluded.step_failures,
+                    branch=excluded.branch,
+                    requires=excluded.requires,
+                    land_order=excluded.land_order,
                     updated_at=excluded.updated_at;
                 """,
                 (
@@ -63,6 +93,19 @@ class NodeRepository:
                     node.target_repo,
                     json.dumps(node.acceptable_models),
                     json.dumps(node.frontmatter),
+                    node.claimed_from.value if node.claimed_from else None,
+                    int(node.review),
+                    int(node.fix),
+                    node.merge.value,
+                    node.outcome.value if node.outcome else None,
+                    node.verdict,
+                    node.fix_for.value if node.fix_for else None,
+                    node.review_cycles,
+                    node.merge_attempts,
+                    node.step_failures,
+                    node.branch,
+                    json.dumps(node.requires),
+                    json.dumps(node.land_order),
                     to_db_timestamp(node.created_at),
                     to_db_timestamp(node.updated_at),
                 ),
@@ -100,12 +143,7 @@ class NodeRepository:
     def get_node(self, node_id: str) -> Node | None:
         with self.db.get_spec_connection() as conn:
             row = conn.execute(
-                """
-                SELECT id, kind, title, status, priority, ordinal, target_repo,
-                       acceptable_models, frontmatter_json, created_at, updated_at
-                FROM nodes WHERE id = ?
-                """,
-                (node_id,),
+                f"SELECT {_NODE_COLUMNS} FROM nodes WHERE id = ?", (node_id,)
             ).fetchone()
             if not row:
                 return None
@@ -114,11 +152,7 @@ class NodeRepository:
     def list_nodes(
         self, kind: NodeKind | None = None, status: NodeStatus | None = None
     ) -> list[Node]:
-        query = (
-            "SELECT id, kind, title, status, priority, ordinal, target_repo, "
-            "acceptable_models, frontmatter_json, created_at, updated_at "
-            "FROM nodes WHERE 1=1"
-        )
+        query = f"SELECT {_NODE_COLUMNS} FROM nodes WHERE 1=1"
         params: list[str] = []
         if kind is not None:
             query += " AND kind = ?"
@@ -512,19 +546,68 @@ class NodeRepository:
 
     @staticmethod
     def _row_to_node(row: tuple[Any, ...]) -> Node:
-        return Node(
-            id=row[0],
-            kind=NodeKind(row[1]),
-            title=row[2],
-            status=NodeStatus(row[3]),
-            priority=row[4],
-            ordinal=row[5],
-            target_repo=row[6],
-            acceptable_models=json.loads(row[7]),
-            frontmatter=json.loads(row[8]),
-            created_at=parse_db_datetime(row[9]),
-            updated_at=parse_db_datetime(row[10]),
+        return Node.model_validate(
+            {
+                "id": row[0],
+                "kind": NodeKind(row[1]),
+                "title": row[2],
+                "status": _status(row[3]),
+                "priority": row[4],
+                "ordinal": row[5],
+                "target_repo": row[6],
+                "acceptable_models": json.loads(row[7]),
+                "frontmatter": json.loads(row[8]),
+                "claimed_from": row[9],
+                "review": bool(row[10]),
+                "fix": bool(row[11]),
+                "merge": row[12],
+                "outcome": row[13],
+                "verdict": row[14],
+                "fix_for": row[15],
+                "review_cycles": row[16],
+                "merge_attempts": row[17],
+                "step_failures": row[18],
+                "branch": row[19],
+                "requires": json.loads(row[20]),
+                "land_order": json.loads(row[21]),
+                "created_at": parse_db_datetime(row[22]),
+                "updated_at": parse_db_datetime(row[23]),
+            }
         )
+
+    def get_conditions(self, node_id: str) -> list[Condition]:
+        with self.db.get_state_connection() as conn:
+            rows = conn.execute(
+                "SELECT node_id, idx, needs, command, stage FROM node_conditions "
+                "WHERE node_id = ? ORDER BY idx ASC",
+                (node_id,),
+            ).fetchall()
+        return [
+            Condition(node_id=r[0], idx=r[1], needs=r[2], command=r[3], stage=ConditionStage(r[4]))
+            for r in rows
+        ]
+
+    def add_condition(self, condition: Condition) -> Condition:
+        with self.db.get_state_connection() as conn:
+            (idx,) = conn.execute(
+                "SELECT COALESCE(MAX(idx), 0) + 1 FROM node_conditions WHERE node_id = ?",
+                (condition.node_id,),
+            ).fetchone()
+            conn.execute(
+                "INSERT INTO node_conditions (node_id, idx, needs, command, stage) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (condition.node_id, idx, condition.needs, condition.command, condition.stage.value),
+            )
+            self.db.spec_commit(conn)
+        return condition.model_copy(update={"idx": idx})
+
+    def remove_condition(self, node_id: str, idx: int) -> bool:
+        with self.db.get_state_connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM node_conditions WHERE node_id = ? AND idx = ?", (node_id, idx)
+            )
+            self.db.spec_commit(conn)
+            return cursor.rowcount > 0
 
     def update_ordinal(self, node_id: str, ordinal: int) -> None:
         with self.db.get_spec_connection() as conn:

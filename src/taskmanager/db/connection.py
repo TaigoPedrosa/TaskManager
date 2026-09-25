@@ -2,25 +2,50 @@ import sqlite3
 import threading
 from collections.abc import Generator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 import sqlite_vec  # type: ignore[import-untyped]
 
+import taskmanager
 from taskmanager.db.schema import (
-    INDEX_STATE_SQL,
     LEDGER_SCHEMA_SQL,
-    RUNTIME_SCHEMA_SQL,
-    SPEC_SCHEMA_SQL,
+    SCHEMA_VERSION,
+    STATE_SCHEMA_SQL,
     vec_nodes_sql,
 )
+
+_SQLITE_HEADER = b"SQLite format 3\x00"
+# The database files a pre-lifecycle tm kept; an archive moves each with its WAL and shared memory.
+_LEGACY_FILES = ("spec.db", "runtime.db", "ledger.db")
+# Written as plain text where a pre-lifecycle tm looks for its databases, so it fails with "file is
+# not a database" instead of silently creating an empty estate beside this one.
+_TOMBSTONES = ("spec.db", "runtime.db")
+
+PRE_LIFECYCLE_MESSAGE = (
+    "this directory holds a pre-lifecycle estate: run `tm init --archive` to move it to "
+    "`.taskmanager/archive-<timestamp>/` and start fresh, then re-import the ongoing work"
+)
+
+
+class PreLifecycleEstate(Exception):
+    def __init__(self) -> None:
+        super().__init__(PRE_LIFECYCLE_MESSAGE)
+
+
+def _is_sqlite(path: Path) -> bool:
+    try:
+        with path.open("rb") as fh:
+            return fh.read(len(_SQLITE_HEADER)) == _SQLITE_HEADER
+    except OSError:
+        return False
 
 
 class DatabaseManager:
     def __init__(self, taskmanager_dir: Path) -> None:
         self.taskmanager_dir = taskmanager_dir
         self.dir = taskmanager_dir
-        self.spec_db = taskmanager_dir / "spec.db"
-        self.runtime_db = taskmanager_dir / "runtime.db"
+        self.state_db = taskmanager_dir / "state.db"
         self.ledger_db = taskmanager_dir / "ledger.db"
         # One connection per database *per thread*, reused for that thread's lifetime rather
         # than reopened on every get_*_connection() call (reopening, with its extension load,
@@ -39,7 +64,12 @@ class DatabaseManager:
         self._all_conns: list[tuple[threading.Thread, sqlite3.Connection]] = []
         self._all_conns_lock = threading.Lock()
 
+    def is_pre_lifecycle(self) -> bool:
+        return not self.state_db.exists() and _is_sqlite(self.taskmanager_dir / "spec.db")
+
     def _create_connection(self, db_path: Path, load_vec: bool = False) -> sqlite3.Connection:
+        if self.is_pre_lifecycle():
+            raise PreLifecycleEstate()
         self.taskmanager_dir.mkdir(parents=True, exist_ok=True)
         self._close_dead_threads_connections()
         # check_same_thread=False only so a dead thread's connection, and close(), can be closed
@@ -76,70 +106,26 @@ class DatabaseManager:
     @property
     def _spec_tx_depth(self) -> int:
         """>0 while this thread holds `spec_transaction()` open: its repository calls skip
-        their own commit and the migration self-heal, so a run of writes lands as one commit
-        or none. Per thread, like the connection, so another thread's writes keep committing."""
+        their own commit, so a run of writes lands as one commit or none. Per thread, like the
+        connection, so another thread's writes keep committing."""
         return int(getattr(self._local, "spec_tx_depth", 0))
 
     @_spec_tx_depth.setter
     def _spec_tx_depth(self, value: int) -> None:
         self._local.spec_tx_depth = value
 
-    def _ensure_spec_migrations(self, conn: sqlite3.Connection) -> None:
-        try:
-            # One query decides whether anything needs healing at all: `nodes`, `index_state`
-            # and the verification uniqueness index all existing is the steady state every call
-            # hits, so that state costs one `sqlite_master` lookup rather than the five
-            # statements below (including a whole-table GROUP BY) -- with hundreds of
-            # NodeRepository calls per web request, running those five unconditionally was
-            # 48,638 calls for one `/api/tree` on a 541-task DB, 11.4s of its 12.9s. A dropped
-            # table, or a database old enough to predate the uniqueness index, is still caught
-            # and healed on the very next call, which is what the self-heal test exercises.
-            row = conn.execute(
-                "SELECT "
-                "(SELECT 1 FROM sqlite_master WHERE type='table' AND name='nodes'), "
-                "(SELECT 1 FROM sqlite_master WHERE type='table' AND name='index_state'), "
-                "(SELECT 1 FROM sqlite_master WHERE type='index' AND name='uq_node_verifications')"
-            ).fetchone()
-            has_nodes, has_index_state, has_uq_index = row
-            if not has_nodes:
-                return
-            if has_index_state and has_uq_index:
-                return
-            cols = [r[1] for r in conn.execute("PRAGMA table_info(nodes)").fetchall()]
-            if "ordinal" not in cols:
-                conn.execute("ALTER TABLE nodes ADD COLUMN ordinal INTEGER NOT NULL DEFAULT 0;")
-                conn.commit()
-            conn.executescript(INDEX_STATE_SQL)
-            # A repeat import used to insert every verification again.
-            conn.execute(
-                """
-                DELETE FROM node_verifications WHERE id NOT IN (
-                    SELECT MIN(id) FROM node_verifications
-                    GROUP BY node_id, verification_type, target_path,
-                             COALESCE(expected_pattern, '')
-                )
-                """
-            )
-            conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_node_verifications ON node_verifications "
-                "(node_id, verification_type, target_path, COALESCE(expected_pattern, ''))"
-            )
-            conn.commit()
-        except sqlite3.Error:
-            pass
+    @property
+    def in_transaction(self) -> bool:
+        return self._spec_tx_depth > 0
 
     @contextmanager
-    def get_spec_connection(self) -> Generator[sqlite3.Connection]:
-        # _ensure_spec_migrations is meant to self-heal a tampered-with or older-version DB on
-        # every open (a real test exercises exactly that: drop a table, expect it back on the
-        # next connection) -- skipping it after the first call broke that. It stays unconditional;
-        # what got expensive was opening a fresh connection (with a fresh extension load) to run
-        # it against, which the cached connection below already fixes on its own: profiled on a
-        # 342-task DB, /api/tree went from 14.06s to 0.155s from connection reuse alone.
-        conn = self._thread_conn("spec", self.spec_db, load_vec=True)
-        if self._spec_tx_depth == 0:
-            self._ensure_spec_migrations(conn)
-        yield conn
+    def get_state_connection(self) -> Generator[sqlite3.Connection]:
+        yield self._thread_conn("state", self.state_db, load_vec=True)
+
+    # Nodes, leases and locks share one database, so every repository's writes can join one
+    # transaction; both other names still have callers.
+    get_spec_connection = get_state_connection
+    get_runtime_connection = get_state_connection
 
     def spec_commit(self, conn: sqlite3.Connection) -> None:
         """The commit every repository write ends with -- except while `spec_transaction()`
@@ -150,7 +136,7 @@ class DatabaseManager:
 
     @contextmanager
     def spec_transaction(self) -> Generator[sqlite3.Connection]:
-        with self.get_spec_connection() as conn:
+        with self.get_state_connection() as conn:
             self._spec_tx_depth += 1
             try:
                 yield conn
@@ -163,10 +149,6 @@ class DatabaseManager:
                     conn.commit()
             finally:
                 self._spec_tx_depth -= 1
-
-    @contextmanager
-    def get_runtime_connection(self) -> Generator[sqlite3.Connection]:
-        yield self._thread_conn("runtime", self.runtime_db)
 
     @contextmanager
     def get_ledger_connection(self) -> Generator[sqlite3.Connection]:
@@ -182,32 +164,50 @@ class DatabaseManager:
         self._local = threading.local()
 
     def init_all(self, vector_dimensions: int = 384) -> None:
-        with self.get_spec_connection() as conn:
-            conn.executescript(SPEC_SCHEMA_SQL)
-            conn.executescript(INDEX_STATE_SQL)
-            # Safe migration for existing databases
-            cols = [r[1] for r in conn.execute("PRAGMA table_info(nodes)").fetchall()]
-            if "ordinal" not in cols:
-                conn.execute("ALTER TABLE nodes ADD COLUMN ordinal INTEGER NOT NULL DEFAULT 0;")
+        with self.get_state_connection() as conn:
+            conn.executescript(STATE_SCHEMA_SQL)
             conn.execute(vec_nodes_sql(vector_dimensions))
-            conn.commit()
-
-        with self.get_runtime_connection() as conn:
-            conn.executescript(RUNTIME_SCHEMA_SQL)
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             conn.commit()
 
         with self.get_ledger_connection() as conn:
             conn.executescript(LEDGER_SCHEMA_SQL)
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             conn.commit()
 
+        tombstone = (
+            f"taskmanager {taskmanager.__version__} owns this directory; its estate is in "
+            "state.db. This file is not a database, so an older tm fails here instead of "
+            "opening an empty estate.\n"
+        )
+        for name in _TOMBSTONES:
+            (self.taskmanager_dir / name).write_text(tombstone, encoding="utf-8")
+
     def is_initialized(self) -> bool:
-        if not self.spec_db.exists():
+        if not self.state_db.exists():
             return False
         try:
-            with self.get_spec_connection() as conn:
+            with self.get_state_connection() as conn:
                 row = conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='nodes'"
                 ).fetchone()
                 return bool(row)
         except sqlite3.Error, OSError:
             return False
+
+    @staticmethod
+    def archive_pre_lifecycle(root: Path) -> Path:
+        """Move a pre-lifecycle estate's databases under `.taskmanager/archive-<timestamp>/`,
+        untouched, so `init_all` can start a fresh one. Nothing is ever deleted."""
+        tm_dir = root / ".taskmanager"
+        if not DatabaseManager(tm_dir).is_pre_lifecycle():
+            raise ValueError(f"{tm_dir} holds no pre-lifecycle estate to archive")
+        stamp = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        archive = tm_dir / f"archive-{stamp}"
+        archive.mkdir()
+        for name in _LEGACY_FILES:
+            for suffix in ("", "-wal", "-shm"):
+                src = tm_dir / f"{name}{suffix}"
+                if src.exists():
+                    src.rename(archive / src.name)
+        return archive

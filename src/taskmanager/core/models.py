@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from taskmanager.core.enums import (
     LedgerCommand,
@@ -11,6 +11,9 @@ from taskmanager.core.enums import (
     RelationType,
     VerificationType,
 )
+from taskmanager.core.status import ConditionStage, DecisionStatus, Merge, Outcome, Status
+
+_CONTAINERS = frozenset({NodeKind.PLAN, NodeKind.SPEC})
 
 
 class Node(BaseModel):
@@ -19,14 +22,46 @@ class Node(BaseModel):
     id: str
     kind: NodeKind
     title: str
-    status: NodeStatus = NodeStatus.NOT_STARTED
+    status: NodeStatus | Status | DecisionStatus = NodeStatus.NOT_STARTED
     priority: int = Field(default=50, ge=1, le=100)
     ordinal: int = 0
     target_repo: str | None = None
     acceptable_models: list[str] = Field(default_factory=list)
     frontmatter: dict[str, Any] = Field(default_factory=dict)
+    claimed_from: Status | None = None
+    review: bool = True
+    fix: bool = True
+    merge: Merge = Merge.MAIN
+    outcome: Outcome | None = None
+    verdict: str | None = None
+    fix_for: Outcome | None = None
+    review_cycles: int = Field(default=0, ge=0)
+    merge_attempts: int = Field(default=0, ge=0)
+    step_failures: int = Field(default=0, ge=0)
+    branch: str | None = None
+    requires: list[str] = Field(default_factory=list)
+    land_order: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _containers_default_to_no_review(cls, data: Any) -> Any:
+        # A plan or spec reviews and fixes only when its planner asks for it; a task does unless
+        # its planner opts out.
+        if isinstance(data, dict) and data.get("kind") in _CONTAINERS:
+            return {"review": False, "fix": False, **data}
+        return data
+
+
+class Condition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str
+    idx: int = 0
+    needs: str
+    command: str
+    stage: ConditionStage = ConditionStage.CLAIM
 
 
 class NodeSection(BaseModel):

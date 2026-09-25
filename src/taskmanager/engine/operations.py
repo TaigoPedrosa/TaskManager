@@ -45,7 +45,7 @@ from taskmanager.engine.verification import VerificationEngine, VerificationResu
 GUIDE_NODE = "guide"
 
 # A task's forward progress through one lease cycle, reused for a lease-sweep rollback.
-_SWEEP_BACK: dict[NodeStatus, NodeStatus] = {
+_SWEEP_BACK: dict[str, NodeStatus] = {
     NodeStatus.IMPLEMENTING: NodeStatus.NOT_STARTED,
     NodeStatus.REVIEWING: NodeStatus.WAITING_REVIEW,
     NodeStatus.FIXING: NodeStatus.WAITING_FIXES,

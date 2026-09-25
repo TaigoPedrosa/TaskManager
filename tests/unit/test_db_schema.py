@@ -6,48 +6,6 @@ import pytest
 from taskmanager.db.connection import DatabaseManager
 
 
-def test_database_initialization(tmp_path: Path) -> None:
-    db_mgr = DatabaseManager(tmp_path)
-    db_mgr.init_all(vector_dimensions=384)
-
-    spec_path = tmp_path / "spec.db"
-    runtime_path = tmp_path / "runtime.db"
-    ledger_path = tmp_path / "ledger.db"
-
-    assert spec_path.exists()
-    assert runtime_path.exists()
-    assert ledger_path.exists()
-
-    with db_mgr.get_spec_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables = {row[0] for row in cursor.fetchall()}
-        assert "nodes" in tables
-        assert "node_sections" in tables
-        assert "node_relations" in tables
-        assert "node_verifications" in tables
-        assert "nodes_fts" in tables
-        assert "embedding_metadata" in tables
-        assert "vec_nodes" in tables
-
-    with db_mgr.get_runtime_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables = {row[0] for row in cursor.fetchall()}
-        assert "leases" in tables
-        assert "file_locks" in tables
-
-    with db_mgr.get_ledger_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables = {row[0] for row in cursor.fetchall()}
-        assert "ledger_events" in tables
-
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='index'")
-        indices = {row[0] for row in cursor.fetchall()}
-        assert "idx_ledger_target" in indices
-
-
 def test_wal_mode_and_pragmas(tmp_path: Path) -> None:
     db_mgr = DatabaseManager(tmp_path)
     db_mgr.init_all()
@@ -221,37 +179,3 @@ def test_foreign_key_violation_raises(tmp_path: Path) -> None:
                 """,
             ("NONEXISTENT", "details", 1, "Details", "Section content"),
         )
-
-
-def test_ensure_spec_migrations_heals_a_database_missing_only_the_uniqueness_index(
-    tmp_path: Path,
-) -> None:
-    # A database that already has `index_state` but predates the verification uniqueness index
-    # must still get it -- the fast path below only skips healing once *both* are present, not
-    # on `index_state` alone.
-    db_mgr = DatabaseManager(tmp_path)
-    db_mgr.init_all()
-    with db_mgr.get_spec_connection() as conn:
-        conn.execute("DROP INDEX uq_node_verifications")
-        conn.commit()
-    with db_mgr.get_spec_connection() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='uq_node_verifications'"
-        ).fetchone()
-        assert row is not None
-
-
-def test_ensure_spec_migrations_skips_remediation_once_healthy(tmp_path: Path) -> None:
-    # Once `nodes` and `index_state` both exist, `_ensure_spec_migrations` has nothing to heal
-    # and must settle for the one cheap lookup that proves it -- not the executescript, dedup
-    # DELETE and CREATE UNIQUE INDEX below, which is what made 48,638 self-heal calls the
-    # dominant cost of one `/api/tree` request on a several-hundred-task database.
-    db_mgr = DatabaseManager(tmp_path)
-    db_mgr.init_all()
-    with db_mgr.get_spec_connection() as conn:
-        statements: list[str] = []
-        conn.set_trace_callback(statements.append)
-        for _ in range(20):
-            db_mgr._ensure_spec_migrations(conn)
-        conn.set_trace_callback(None)
-        assert not any("DELETE FROM node_verifications" in s for s in statements)

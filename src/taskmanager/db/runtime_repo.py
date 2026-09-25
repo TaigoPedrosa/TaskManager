@@ -51,7 +51,7 @@ class RuntimeRepository:
                     """,
                     (lock.file_path, lock.task_id, lock.lock_type),
                 )
-            conn.commit()
+            self.db.spec_commit(conn)
 
     def get_lease(self, task_id: str) -> Lease | None:
         with self.db.get_runtime_connection() as conn:
@@ -84,14 +84,14 @@ class RuntimeRepository:
                 "UPDATE leases SET last_heartbeat = ? WHERE task_id = ?",
                 (now_str, task_id),
             )
-            conn.commit()
+            self.db.spec_commit(conn)
             return cursor.rowcount > 0
 
     def release_lease(self, task_id: str) -> None:
         with self.db.get_runtime_connection() as conn:
             conn.execute("DELETE FROM leases WHERE task_id = ?", (task_id,))
             conn.execute("DELETE FROM file_locks WHERE task_id = ?", (task_id,))
-            conn.commit()
+            self.db.spec_commit(conn)
 
     def is_file_locked(self, file_path: str) -> bool:
         with self.db.get_runtime_connection() as conn:
@@ -152,5 +152,5 @@ class RuntimeRepository:
             for t in expired_tasks:
                 conn.execute("DELETE FROM leases WHERE task_id = ?", (t,))
                 conn.execute("DELETE FROM file_locks WHERE task_id = ?", (t,))
-            conn.commit()
+            self.db.spec_commit(conn)
         return expired_tasks
