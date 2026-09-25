@@ -13,10 +13,10 @@ import httpx
 from taskmanager.core.enums import (
     EmbeddingProviderType,
     NodeKind,
-    NodeStatus,
     SearchMode,
     SearchTargetType,
 )
+from taskmanager.core.status import DecisionStatus, Status
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.schema import vec_nodes_sql
 from taskmanager.engine.config import DEFAULT_KEY_ENV, EmbeddingsConfig
@@ -176,7 +176,7 @@ def chunks(text: str, size: int = CHUNK_CHARS) -> list[str]:
 
 
 def _where(
-    kinds: Iterable[NodeKind | str], status: NodeStatus | str | None, plan: str | None
+    kinds: Iterable[NodeKind | str], status: Status | DecisionStatus | str | None, plan: str | None
 ) -> tuple[str, list[Any]]:
     sql, params = "", []
     kind_values = [str(k) for k in kinds]
@@ -269,7 +269,7 @@ class SearchEngine:
         target_type: SearchTargetType | str = SearchTargetType.TITLE,
         section_key: str | None = None,
     ) -> None:
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             self._replace(conn, node_id, str(target_type), section_key or "", [vector])
             conn.commit()
 
@@ -334,7 +334,7 @@ class SearchEngine:
         if self.provider is None:
             raise SearchError(NO_PROVIDER)
         kinds = tuple(kinds)
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             if rebuild or self._never_indexed(conn):
                 conn.execute("DROP TABLE IF EXISTS vec_nodes")
                 conn.execute(vec_nodes_sql(self.settings.dimensions))
@@ -374,13 +374,13 @@ class SearchEngine:
         return IndexReport(len(todo), len(want) - len(todo), len(gone))
 
     def stale_nodes(self) -> set[str]:
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             want, have = self._desired(conn, ()), self._recorded(conn, ())
         changed = [k for k, text in want.items() if have.get(k) != _hash(text)]
         return {k[0] for k in [*changed, *(k for k in have if k not in want)]}
 
     def status(self) -> dict[str, Any]:
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             built = conn.execute(
                 "SELECT provider, model_name, dimensions FROM embedding_metadata ORDER BY id DESC"
             ).fetchone()
@@ -410,7 +410,7 @@ class SearchEngine:
         query: str,
         query_vector: list[float] | None = None,
         kinds: Iterable[NodeKind | str] | None = None,
-        statuses: list[NodeStatus | str] | None = None,
+        statuses: list[Status | DecisionStatus | str] | None = None,
         limit: int = 5,
         plan: str | None = None,
     ) -> list[dict[str, Any]]:
@@ -419,7 +419,7 @@ class SearchEngine:
         if statuses:
             where += f" AND n.status IN ({','.join('?' for _ in statuses)})"
             params += [str(s) for s in statuses]
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             dims = self._table_dimensions(conn)
             vec = query_vector if query_vector is not None else self._embed(query, dims)
             if len(vec) != dims:
@@ -452,7 +452,7 @@ class SearchEngine:
         self,
         query: str,
         kinds: Iterable[NodeKind | str] = (),
-        status: NodeStatus | str | None = None,
+        status: Status | DecisionStatus | str | None = None,
         plan: str | None = None,
         limit: int = 10,
     ) -> list[Hit]:
@@ -460,7 +460,7 @@ class SearchEngine:
         if not match:
             return []
         where, params = _where(kinds, status, plan)
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             rows = conn.execute(
                 f"""
                 SELECT n.id, n.kind, n.title, n.status, {_PLAN_SQL},
@@ -478,13 +478,13 @@ class SearchEngine:
         self,
         query: str,
         kinds: Iterable[NodeKind | str] = (),
-        status: NodeStatus | str | None = None,
+        status: Status | DecisionStatus | str | None = None,
         plan: str | None = None,
         limit: int = 10,
     ) -> list[Hit]:
         if self.provider is None:
             raise SearchError(NO_PROVIDER)
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             self._check_index(conn)
             empty = conn.execute("SELECT COUNT(*) FROM vec_nodes").fetchone()[0] == 0
         if empty:
@@ -512,7 +512,7 @@ class SearchEngine:
         self,
         query: str,
         kinds: Iterable[NodeKind | str] = (),
-        status: NodeStatus | str | None = None,
+        status: Status | DecisionStatus | str | None = None,
         plan: str | None = None,
         limit: int = 10,
     ) -> list[Hit]:
@@ -538,7 +538,7 @@ class SearchEngine:
         query: str,
         mode: SearchMode = SearchMode.AUTO,
         kinds: Iterable[NodeKind | str] = (),
-        status: NodeStatus | str | None = None,
+        status: Status | DecisionStatus | str | None = None,
         plan: str | None = None,
         limit: int = 10,
     ) -> tuple[list[Hit], SearchMode]:
@@ -554,7 +554,7 @@ class SearchEngine:
     def _has_index(self) -> bool:
         if self.provider is None:
             return False
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             try:
                 self._table_dimensions(conn)
             except SearchError:
@@ -563,7 +563,7 @@ class SearchEngine:
 
     def _with_snippets(self, hits: list[Hit]) -> list[Hit]:
         """A semantic hit has no matched text, so it shows the start of the section it matched."""
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             out = []
             for hit in hits:
                 if not hit.snippet:

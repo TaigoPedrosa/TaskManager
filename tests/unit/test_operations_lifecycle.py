@@ -14,9 +14,7 @@ from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
-from taskmanager.engine.graph import GraphEngine
 from taskmanager.engine.operations import OperationError, Operations
-from taskmanager.engine.runtime import ExecutionCoordinator
 from taskmanager.engine.verification import VerificationEngine
 from taskmanager.renderers.markdown import MarkdownRenderer
 
@@ -29,16 +27,13 @@ def make_ops(root: Path) -> Env:
     node_repo = NodeRepository(db)
     runtime_repo = RuntimeRepository(db)
     ledger_repo = LedgerRepository(db)
-    graph = GraphEngine(node_repo, runtime_repo)
     ops = Operations(
         node_repo,
         runtime_repo,
-        graph,
-        ExecutionCoordinator(node_repo, runtime_repo, graph),
         ledger_repo,
         VerificationEngine(root),
+        JobRepository(db),
         actor="tester",
-        job_repo=JobRepository(db),
     )
     return node_repo, runtime_repo, ledger_repo, ops
 

@@ -11,11 +11,11 @@ from taskmanager.cli.main import app
 from taskmanager.core.enums import (
     EmbeddingProviderType,
     NodeKind,
-    NodeStatus,
     RelationType,
     SearchMode,
 )
 from taskmanager.core.models import Node, NodeRelation, NodeSection
+from taskmanager.core.status import Outcome, Status
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.engine.config import EmbeddingsConfig
@@ -64,7 +64,7 @@ class Kit:
         )
 
     def vectors(self) -> list[tuple[str, str, str]]:
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             return conn.execute(
                 "SELECT node_id, target_type, section_key FROM vec_nodes ORDER BY rowid"
             ).fetchall()
@@ -159,9 +159,9 @@ def test_filters_apply_before_the_limit(kit: Kit) -> None:
     kit.node("S1-P1", "deploy plan one", NodeKind.PLAN)
     kit.node("S1-P2", "plan two", NodeKind.PLAN)
     for n in range(4):
-        kit.node(f"S1-P1-t{n}", "deploy deploy deploy", status=NodeStatus.NOT_STARTED)
+        kit.node(f"S1-P1-t{n}", "deploy deploy deploy", status=Status.READY)
         kit.contains("S1-P1", f"S1-P1-t{n}")
-    kit.node("S1-P2-late", "deploy once", status=NodeStatus.WAITING_MERGE)
+    kit.node("S1-P2-late", "deploy once", status=Status.REVIEWED, outcome=Outcome.APPROVE)
     kit.contains("S1-P2", "S1-P2-late")
 
     def ids(**kw: object) -> list[str]:
@@ -169,7 +169,7 @@ def test_filters_apply_before_the_limit(kit: Kit) -> None:
 
     assert ids() != ["S1-P2-late"]
     assert ids(plan="S1-P2") == ["S1-P2-late"]
-    assert ids(status=NodeStatus.WAITING_MERGE) == ["S1-P2-late"]
+    assert ids(status=Status.REVIEWED) == ["S1-P2-late"]
     assert ids(kinds=[NodeKind.SPEC]) == ["S1"]
     assert ids(kinds=[NodeKind.PLAN]) == ["S1-P1"]
     assert kit.engine.fts("deploy", plan="S1-P2", limit=1)[0].plan == "S1-P2"
@@ -182,7 +182,7 @@ def test_the_vector_search_filters_before_the_limit_too(kit: Kit) -> None:
         kit.node(f"near-{n}", "x")
         kit.contains("S1-P1", f"near-{n}")
         kit.engine.index_node(f"near-{n}", [1.0] + [0.0] * (DIMS - 1))
-    kit.node("far", "y", status=NodeStatus.COMPLETED)
+    kit.node("far", "y", status=Status.COMPLETED)
     kit.contains("S1-P2", "far")
     kit.engine.index_node("far", [0.0, 1.0] + [0.0] * (DIMS - 2))
     query = [1.0] + [0.0] * (DIMS - 1)
@@ -270,7 +270,7 @@ def test_indexing_prunes_what_no_longer_exists(kit: Kit) -> None:
     kit.node("T-1", "Title")
     kit.section("T-1", "a", "body")
     kit.engine.index()
-    with kit.db.get_spec_connection() as conn:
+    with kit.db.get_state_connection() as conn:
         conn.execute("DELETE FROM node_sections WHERE node_id = 'T-1'")
         conn.commit()
     report = kit.engine.index()
@@ -519,7 +519,7 @@ def test_a_missing_sentence_transformers_prints_the_install_hint(
 
 
 def test_an_old_vector_table_with_one_row_per_node_asks_for_a_rebuild(kit: Kit) -> None:
-    with kit.db.get_spec_connection() as conn:
+    with kit.db.get_state_connection() as conn:
         conn.execute("DROP TABLE vec_nodes")
         conn.execute(
             f"CREATE VIRTUAL TABLE vec_nodes USING vec0(node_id TEXT PRIMARY KEY, "

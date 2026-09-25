@@ -15,7 +15,6 @@ from taskmanager.core.status import (
     DecisionStatus,
     JobKind,
     JobState,
-    Outcome,
     Status,
 )
 from taskmanager.db.cache_repo import CacheRepository
@@ -27,18 +26,6 @@ from taskmanager.engine.stepgraph import SnapNode, Snapshot
 
 CONTAINERS = frozenset({NodeKind.PLAN, NodeKind.SPEC})
 
-# Writers not yet on the new vocabulary store these names; each maps to the position it means.
-_LEGACY: dict[str, tuple[Status, Outcome | None]] = {
-    "NOT_STARTED": (Status.READY, None),
-    "WAITING_REVIEW": (Status.IMPLEMENTED, None),
-    "WAITING_FIXES": (Status.REVIEWED, Outcome.REJECT),
-    "WAITING_MERGE": (Status.REVIEWED, Outcome.APPROVE),
-}
-_LEGACY_DECISION: dict[str, DecisionStatus] = {
-    "NOT_STARTED": DecisionStatus.OPEN,
-    "COMPLETED": DecisionStatus.ANSWERED,
-    "ABANDONED": DecisionStatus.WITHDRAWN,
-}
 # A job stopped for an agent still owns its node's worktree and lease, as a running one does.
 _LIVE_JOB = frozenset({JobState.RUNNING, JobState.NEEDS_AGENT})
 _LOCKING = frozenset({Action.IMPLEMENT, Action.FIX})
@@ -57,22 +44,18 @@ def names_origin_main(command: str) -> bool:
 
 
 def stored_status(node: Node) -> Status | DecisionStatus:
-    raw = node.status.value
-    if node.kind == NodeKind.DECISION:
-        return _LEGACY_DECISION.get(raw) or DecisionStatus(raw)
-    legacy = _LEGACY.get(raw)
-    return legacy[0] if legacy else Status(raw)
+    return node.status
 
 
 def cycle_of(node: Node) -> Cycle:
-    legacy = _LEGACY.get(node.status.value)
-    status, outcome = legacy if legacy else (Status(node.status.value), None)
+    if not isinstance(node.status, Status):
+        raise ValueError(f"decision {node.id!r} has no cycle")  # noqa: TRY004
     return Cycle(
-        status=status,
+        status=node.status,
         container=node.kind in CONTAINERS,
         review=node.review,
         fix=node.fix,
-        outcome=node.outcome or outcome,
+        outcome=node.outcome,
         fix_for=node.fix_for,
         claimed_from=node.claimed_from,
         review_cycles=node.review_cycles,

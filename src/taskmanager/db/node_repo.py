@@ -5,7 +5,6 @@ from typing import Any
 
 from taskmanager.core.enums import (
     NodeKind,
-    NodeStatus,
     RelationType,
     TransferMode,
     VerificationType,
@@ -29,17 +28,6 @@ _NODE_COLUMNS = (
 )
 
 
-def _status(raw: str) -> NodeStatus | Status | DecisionStatus:
-    # A value both vocabularies share reads as NodeStatus, so modules not yet on the new
-    # vocabulary keep matching it; each name only the new vocabulary has reads as its own.
-    for vocabulary in (NodeStatus, Status):
-        try:
-            return vocabulary(raw)
-        except ValueError:
-            continue
-    return DecisionStatus(raw)
-
-
 class NodeRepository:
     def __init__(self, db_mgr: DatabaseManager) -> None:
         self.db = db_mgr
@@ -54,7 +42,7 @@ class NodeRepository:
             yield
 
     def save_node(self, node: Node) -> None:
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             conn.execute(
                 f"""
                 INSERT INTO nodes ({_NODE_COLUMNS})
@@ -141,7 +129,7 @@ class NodeRepository:
             self.db.spec_commit(conn)
 
     def get_node(self, node_id: str) -> Node | None:
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             row = conn.execute(
                 f"SELECT {_NODE_COLUMNS} FROM nodes WHERE id = ?", (node_id,)
             ).fetchone()
@@ -150,7 +138,7 @@ class NodeRepository:
             return self._row_to_node(row)
 
     def list_nodes(
-        self, kind: NodeKind | None = None, status: NodeStatus | None = None
+        self, kind: NodeKind | None = None, status: Status | DecisionStatus | None = None
     ) -> list[Node]:
         query = f"SELECT {_NODE_COLUMNS} FROM nodes WHERE 1=1"
         params: list[str] = []
@@ -161,12 +149,12 @@ class NodeRepository:
             query += " AND status = ?"
             params.append(status.value if hasattr(status, "value") else str(status))
         query += " ORDER BY ordinal ASC, priority DESC, id ASC"
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             rows = conn.execute(query, tuple(params)).fetchall()
             return [self._row_to_node(r) for r in rows]
 
     def save_section(self, section: NodeSection) -> None:
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             conn.execute(
                 """
                 INSERT INTO node_sections (node_id, section_key, ordinal, header, content)
@@ -218,7 +206,7 @@ class NodeRepository:
             self.db.spec_commit(conn)
 
     def get_section(self, node_id: str, section_key: str) -> NodeSection | None:
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             row = conn.execute(
                 """
                 SELECT node_id, section_key, ordinal, header, content
@@ -238,7 +226,7 @@ class NodeRepository:
             )
 
     def remove_section(self, node_id: str, section_key: str) -> bool:
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             cursor = conn.execute(
                 "DELETE FROM node_sections WHERE node_id = ? AND section_key = ?",
                 (node_id, section_key),
@@ -257,7 +245,7 @@ class NodeRepository:
             return cursor.rowcount > 0
 
     def get_all_sections(self, node_id: str) -> list[NodeSection]:
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             rows = conn.execute(
                 """
                 SELECT node_id, section_key, ordinal, header, content
@@ -284,7 +272,7 @@ class NodeRepository:
             if hasattr(relation.relation_type, "value")
             else str(relation.relation_type)
         )
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             conn.execute(
                 """
                 INSERT INTO node_relations (source_id, target_id, relation_type, metadata_json)
@@ -302,7 +290,7 @@ class NodeRepository:
             self.db.spec_commit(conn)
 
     def get_children(self, parent_id: str) -> list[str]:
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             rows = conn.execute(
                 """
                 SELECT r.target_id
@@ -316,7 +304,7 @@ class NodeRepository:
             return [r[0] for r in rows]
 
     def get_parent_ids(self, node_id: str) -> list[str]:
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             rows = conn.execute(
                 """
                 SELECT r.source_id
@@ -349,7 +337,7 @@ class NodeRepository:
             current = parent
 
     def remove_relation(self, source_id: str, target_id: str, relation_type: RelationType) -> None:
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             conn.execute(
                 "DELETE FROM node_relations WHERE source_id = ? AND target_id = ? "
                 "AND relation_type = ?",
@@ -368,32 +356,15 @@ class NodeRepository:
         return [(r[0], r[1]) for r in rows]
 
     def get_dependencies(self, node_id: str) -> list[str]:
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             rows = conn.execute(
                 "SELECT target_id FROM node_relations WHERE source_id = ? AND relation_type = ? ORDER BY rowid ASC",
                 (node_id, RelationType.DEPENDS_ON.value),
             ).fetchall()
             return [r[0] for r in rows]
 
-    def get_dependency_edges(self, node_id: str) -> list[tuple[str, NodeStatus]]:
-        """Each dependency with the status its target must reach to satisfy it — `COMPLETED`
-        for a bare edge (today's behavior, unchanged), or the edge's own `gate` metadata."""
-        with self.db.get_spec_connection() as conn:
-            rows = conn.execute(
-                "SELECT target_id, metadata_json FROM node_relations "
-                "WHERE source_id = ? AND relation_type = ? ORDER BY rowid ASC",
-                (node_id, RelationType.DEPENDS_ON.value),
-            ).fetchall()
-            edges: list[tuple[str, NodeStatus]] = []
-            for target_id, metadata_json in rows:
-                metadata = json.loads(metadata_json) if metadata_json else {}
-                gate_raw = metadata.get("gate")
-                gate = NodeStatus(gate_raw) if gate_raw else NodeStatus.COMPLETED
-                edges.append((target_id, gate))
-            return edges
-
     def get_blocked_by(self, node_id: str) -> list[str]:
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             rows = conn.execute(
                 "SELECT source_id FROM node_relations WHERE target_id = ? AND relation_type = ? ORDER BY rowid ASC",
                 (node_id, RelationType.DEPENDS_ON.value),
@@ -411,7 +382,7 @@ class NodeRepository:
             TransferMode(transfer_mode.lower()) if isinstance(transfer_mode, str) else transfer_mode
         )
         dep_val = RelationType.DEPENDS_ON.value
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             if mode == TransferMode.ALL:
                 conn.execute(
                     "UPDATE OR IGNORE node_relations SET target_id = ? WHERE target_id = ? AND relation_type = ?",
@@ -441,7 +412,7 @@ class NodeRepository:
             if hasattr(ver.verification_type, "value")
             else str(ver.verification_type)
         )
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             if ver.id is not None:
                 conn.execute(
                     """
@@ -517,7 +488,7 @@ class NodeRepository:
         return list(dict.fromkeys(files))
 
     def remove_verification(self, node_id: str, verification_id: int) -> bool:
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             cursor = conn.execute(
                 "DELETE FROM node_verifications WHERE node_id = ? AND id = ?",
                 (node_id, verification_id),
@@ -526,12 +497,12 @@ class NodeRepository:
             return cursor.rowcount > 0
 
     def clear_verifications(self, node_id: str) -> None:
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             conn.execute("DELETE FROM node_verifications WHERE node_id = ?", (node_id,))
             self.db.spec_commit(conn)
 
     def get_verifications(self, node_id: str) -> list[NodeVerification]:
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             rows = conn.execute(
                 """
                 SELECT id, node_id, verification_type, target_path,
@@ -561,7 +532,7 @@ class NodeRepository:
                 "id": row[0],
                 "kind": NodeKind(row[1]),
                 "title": row[2],
-                "status": _status(row[3]),
+                "status": row[3],
                 "priority": row[4],
                 "ordinal": row[5],
                 "target_repo": row[6],
@@ -620,7 +591,7 @@ class NodeRepository:
             return cursor.rowcount > 0
 
     def update_ordinal(self, node_id: str, ordinal: int) -> None:
-        with self.db.get_spec_connection() as conn:
+        with self.db.get_state_connection() as conn:
             conn.execute(
                 "UPDATE nodes SET ordinal = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (ordinal, node_id),

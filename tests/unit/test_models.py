@@ -9,14 +9,12 @@ from taskmanager.core.enums import (
     LedgerCommand,
     LockType,
     NodeKind,
-    NodeStatus,
     RecommendationStrategy,
     RelationType,
     RenderView,
     SearchTargetType,
     TransferMode,
     VerificationType,
-    VirtualStatus,
 )
 from taskmanager.core.models import (
     FileLock,
@@ -27,29 +25,16 @@ from taskmanager.core.models import (
     NodeSection,
     NodeVerification,
 )
+from taskmanager.core.status import DecisionStatus, Status
 
 
 def test_enums_values() -> None:
     assert NodeKind.SPEC.value == "spec"
     assert NodeKind.PLAN.value == "plan"
     assert NodeKind.TASK.value == "task"
-    assert NodeKind.REVIEW_GATE.value == "review_gate"
 
-    assert NodeStatus.NOT_STARTED.value == "NOT_STARTED"
-    assert NodeStatus.IMPLEMENTING.value == "IMPLEMENTING"
-    assert NodeStatus.WAITING_REVIEW.value == "WAITING_REVIEW"
-    assert NodeStatus.REVIEWING.value == "REVIEWING"
-    assert NodeStatus.WAITING_FIXES.value == "WAITING_FIXES"
-    assert NodeStatus.FIXING.value == "FIXING"
-    assert NodeStatus.WAITING_MERGE.value == "WAITING_MERGE"
-    assert NodeStatus.COMPLETED.value == "COMPLETED"
-    assert NodeStatus.SUPERSEDED.value == "SUPERSEDED"
-    assert NodeStatus.ABANDONED.value == "ABANDONED"
-    assert NodeStatus.DEFERRED.value == "DEFERRED"
-
-    assert VirtualStatus.BLOCKED.value == "BLOCKED"
-    assert VirtualStatus.READY.value == "READY"
-    assert VirtualStatus.IN_FLIGHT.value == "IN_FLIGHT"
+    assert [s.value for s in Status][:3] == ["READY", "IMPLEMENTING", "IMPLEMENTED"]
+    assert [s.value for s in DecisionStatus] == ["OPEN", "ANSWERED", "WITHDRAWN"]
 
     assert RelationType.CONTAINS.value == "contains"
     assert RelationType.DEPENDS_ON.value == "depends_on"
@@ -100,7 +85,7 @@ def test_node_instantiation_defaults() -> None:
     assert node.id == "AUTH-T01"
     assert node.kind == NodeKind.TASK
     assert node.title == "Test Node"
-    assert node.status == NodeStatus.NOT_STARTED
+    assert node.status == Status.READY
     assert node.priority == 50
     assert node.target_repo is None
     assert node.acceptable_models == []
@@ -115,7 +100,7 @@ def test_node_instantiation_explicit() -> None:
         id="AUTH-T01",
         kind=NodeKind.TASK,
         title="Implement JWT token verification",
-        status=NodeStatus.IMPLEMENTING,
+        status=Status.IMPLEMENTING,
         priority=80,
         target_repo="auth-service",
         acceptable_models=["claude-3-7-sonnet", "gemini-3.8-flash"],
@@ -126,7 +111,7 @@ def test_node_instantiation_explicit() -> None:
     assert node.id == "AUTH-T01"
     assert node.kind == NodeKind.TASK
     assert node.priority == 80
-    assert node.status == NodeStatus.IMPLEMENTING
+    assert node.status == Status.IMPLEMENTING
     assert node.target_repo == "auth-service"
     assert len(node.acceptable_models) == 2
     assert node.frontmatter == {"risk": "high"}

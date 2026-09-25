@@ -6,14 +6,12 @@ import pytest
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import app
-from taskmanager.core.enums import NodeKind, NodeStatus, VerificationType
+from taskmanager.core.enums import NodeKind, VerificationType
 from taskmanager.core.models import Node, NodeVerification
+from taskmanager.core.status import Status
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
-from taskmanager.engine.git import GitManager
-from taskmanager.engine.graph import GraphEngine
-from taskmanager.engine.runtime import ExecutionCoordinator
 from taskmanager.renderers.importers import BulkImporter
 
 runner = CliRunner()
@@ -46,16 +44,6 @@ def task(node_repo: NodeRepository, task_id: str, **kw: object) -> Node:
     return node
 
 
-def coordinator(db: DatabaseManager, git_root: Path | None = None) -> ExecutionCoordinator:
-    node_repo, runtime_repo = NodeRepository(db), RuntimeRepository(db)
-    return ExecutionCoordinator(
-        node_repo=node_repo,
-        runtime_repo=runtime_repo,
-        graph_engine=GraphEngine(node_repo=node_repo, runtime_repo=runtime_repo),
-        git_mgr=GitManager(git_root) if git_root else None,
-    )
-
-
 def test_declared_files_are_paths_from_frontmatter_and_path_verifications(
     db: DatabaseManager,
 ) -> None:
@@ -75,25 +63,6 @@ def test_declared_files_are_paths_from_frontmatter_and_path_verifications(
         )
     )
     assert repo.declared_files("T-1") == ["web/c.tsx", "web/a.tsx", "web/b.tsx"]
-
-
-def test_a_lease_locks_frontmatter_files_and_a_second_claim_is_refused(db: DatabaseManager) -> None:
-    repo = NodeRepository(db)
-    task(repo, "T-1", frontmatter={"declared_files": ["web/shared.tsx"]})
-    task(repo, "T-2", frontmatter={"declared_files": ["web/shared.tsx"]})
-    coord = coordinator(db)
-    coord.start_task("T-1", "a", "s")
-    with pytest.raises(ValueError, match="BLOCKED_BY_LEASE"):
-        coord.start_task("T-2", "b", "s")
-    coord.stop_task("T-1", NodeStatus.COMPLETED)
-    coord.start_task("T-2", "b", "s")
-
-
-def test_the_lease_ttl_is_the_one_asked_for(db: DatabaseManager) -> None:
-    repo = NodeRepository(db)
-    task(repo, "T-1")
-    lease = coordinator(db).start_task("T-1", "a", "s", ttl_seconds=1800)
-    assert lease.ttl_seconds == 1800
 
 
 def test_a_repeated_verification_is_stored_once(db: DatabaseManager) -> None:
@@ -155,50 +124,6 @@ def test_importing_the_same_document_twice_changes_nothing(db: DatabaseManager) 
     importer.import_dict(doc)
     importer.import_dict(doc)
     assert len(repo.get_verifications("P-1")) == 1
-
-
-def test_a_worktree_is_cut_in_the_tasks_own_repository_from_origin_main_without_upstream(
-    db: DatabaseManager, tmp_path: Path
-) -> None:
-    root = tmp_path / "estate"
-    init_repo(root)
-    init_repo(root / "web")
-    git(root / "web", "update-ref", "refs/remotes/origin/main", "HEAD")
-    repo = NodeRepository(db)
-    task(repo, "T-1", target_repo="web")
-    coord = coordinator(db, root)
-
-    lease = coord.start_task("T-1", "a", "s", create_worktree=True, worktree_base=tmp_path / "wt")
-
-    worktree = Path(lease.worktree_path or "")
-    assert worktree == tmp_path / "wt" / "web-T-1"
-    assert git(worktree, "rev-parse", "--abbrev-ref", "HEAD") == "tm/T-1"
-    upstream = subprocess.run(
-        ["git", "rev-parse", "--abbrev-ref", "tm/T-1@{upstream}"],
-        cwd=root / "web",
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert upstream.returncode != 0
-    assert "tm/T-1" in git(root / "web", "branch", "--list", "tm/T-1")
-    assert "tm/T-1" not in git(root, "branch", "--list")
-
-    coord.stop_task("T-1", NodeStatus.WAITING_REVIEW, remove_worktree=True)
-    assert not worktree.exists()
-
-
-def test_a_worktree_needs_a_git_repository_for_the_task(
-    db: DatabaseManager, tmp_path: Path
-) -> None:
-    root = tmp_path / "estate"
-    init_repo(root)
-    repo = NodeRepository(db)
-    task(repo, "T-1", target_repo="web")
-    with pytest.raises(ValueError, match="not a git repository"):
-        coordinator(db, root).start_task(
-            "T-1", "a", "s", create_worktree=True, worktree_base=tmp_path / "wt"
-        )
 
 
 def test_the_root_is_found_from_a_subdirectory_and_from_a_worktree_outside_it(
@@ -545,78 +470,6 @@ def test_yaml_keeps_multiline_text_readable(capsys: pytest.CaptureFixture[str]) 
     assert yaml.safe_load(out) == doc
 
 
-def test_each_stage_of_the_lifecycle_is_claimed_by_its_own_lease(db: DatabaseManager) -> None:
-    repo = NodeRepository(db)
-    task(repo, "T-1", frontmatter={"declared_files": ["web/a.tsx"]})
-    task(repo, "T-2", frontmatter={"declared_files": ["web/a.tsx"]})
-    coord = coordinator(db)
-
-    coord.start_task("T-1", "impl", "s")
-    assert repo.get_node("T-1").status == NodeStatus.IMPLEMENTING  # type: ignore[union-attr]
-    coord.stop_task("T-1", NodeStatus.WAITING_REVIEW)
-
-    coord.start_task("T-1", "rev", "s")
-    assert repo.get_node("T-1").status == NodeStatus.REVIEWING  # type: ignore[union-attr]
-    # A review locks nothing, so another task on the same file starts while it runs.
-    coord.start_task("T-2", "other", "s")
-    coord.stop_task("T-2", NodeStatus.NOT_STARTED)
-    coord.stop_task("T-1", NodeStatus.WAITING_FIXES)
-
-    coord.start_task("T-1", "fix", "s")
-    assert repo.get_node("T-1").status == NodeStatus.FIXING  # type: ignore[union-attr]
-    with pytest.raises(ValueError, match="BLOCKED_BY_LEASE"):
-        coord.start_task("T-2", "other", "s")
-    coord.stop_task("T-1", NodeStatus.WAITING_MERGE)
-
-    coord.start_task("T-1", "merger", "s")
-    assert repo.get_node("T-1").status == NodeStatus.MERGING  # type: ignore[union-attr]
-    # A merge locks nothing either, same as a review.
-    coord.start_task("T-2", "other", "s")
-    coord.stop_task("T-2", NodeStatus.NOT_STARTED)
-    with pytest.raises(ValueError, match="not ready to start"):
-        coord.start_task("T-1", "second merger", "s")
-    coord.stop_task("T-1", NodeStatus.COMPLETED)
-
-    with pytest.raises(ValueError, match="not ready to start"):
-        coord.start_task("T-1", "late", "s")
-
-
-def test_a_merge_claim_refuses_a_worktree(db: DatabaseManager) -> None:
-    repo = NodeRepository(db)
-    task(repo, "T-1")
-    coord = coordinator(db)
-    coord.start_task("T-1", "impl", "s")
-    coord.stop_task("T-1", NodeStatus.WAITING_REVIEW)
-    coord.start_task("T-1", "rev", "s")
-    coord.stop_task("T-1", NodeStatus.WAITING_MERGE)
-
-    with pytest.raises(ValueError, match="does not cut a worktree"):
-        coord.start_task("T-1", "merger", "s", create_worktree=True, worktree_base=Path("/tmp"))
-
-    coord.start_task("T-1", "merger", "s")
-    assert repo.get_node("T-1").status == NodeStatus.MERGING  # type: ignore[union-attr]
-
-
-def test_a_fix_round_reuses_the_branch_and_worktree_its_first_round_cut(
-    db: DatabaseManager, tmp_path: Path
-) -> None:
-    root = tmp_path / "estate"
-    init_repo(root)
-    init_repo(root / "web")
-    git(root / "web", "update-ref", "refs/remotes/origin/main", "HEAD")
-    repo = NodeRepository(db)
-    task(repo, "T-1", target_repo="web")
-    coord = coordinator(db, root)
-    first = coord.start_task("T-1", "a", "s", create_worktree=True, worktree_base=tmp_path / "wt")
-    coord.stop_task("T-1", NodeStatus.WAITING_FIXES)
-    again = coord.start_task("T-1", "b", "s", create_worktree=True, worktree_base=tmp_path / "wt")
-    assert again.worktree_path == first.worktree_path
-    coord.stop_task("T-1", NodeStatus.WAITING_FIXES, remove_worktree=True)
-    # Removed, the branch survives, so a later round cuts the worktree again from it.
-    third = coord.start_task("T-1", "c", "s", create_worktree=True, worktree_base=tmp_path / "wt")
-    assert Path(third.worktree_path or "").exists()
-
-
 def test_guide_serves_the_builtin_text_then_the_project_addendum(tmp_path: Path) -> None:
     runner.invoke(app, ["init", "-C", str(tmp_path)])
     listed = runner.invoke(app, ["guide", "-C", str(tmp_path)])
@@ -649,24 +502,6 @@ def test_guide_lists_a_project_only_topic(tmp_path: Path) -> None:
         runner.invoke(app, ["guide", "frontend", "-C", str(tmp_path)]).stdout.strip()
         == "Use the design system."
     )
-
-
-def test_completing_a_task_removes_the_worktree_it_no_longer_holds_a_lease_on(
-    db: DatabaseManager, tmp_path: Path
-) -> None:
-    root = tmp_path / "estate"
-    init_repo(root)
-    init_repo(root / "web")
-    git(root / "web", "update-ref", "refs/remotes/origin/main", "HEAD")
-    repo = NodeRepository(db)
-    task(repo, "T-1", target_repo="web")
-    coord = coordinator(db, root)
-    lease = coord.start_task("T-1", "a", "s", create_worktree=True, worktree_base=tmp_path / "wt")
-    coord.stop_task("T-1", NodeStatus.WAITING_MERGE)
-    worktree = Path(lease.worktree_path or "")
-    assert worktree.exists()
-    coord.stop_task("T-1", NodeStatus.COMPLETED, remove_worktree=True)
-    assert not worktree.exists()
 
 
 def test_an_empty_check_set_and_an_unknown_render_are_refusals(tmp_path: Path) -> None:
@@ -850,17 +685,20 @@ def test_brackets_in_task_text_reach_the_reader_untouched(tmp_path: Path) -> Non
 
 
 def test_reimporting_a_document_keeps_the_progress_it_does_not_state(db: DatabaseManager) -> None:
+    from taskmanager.core.status import Outcome, Status
+
     repo = NodeRepository(db)
     importer = BulkImporter(repo)
-    doc = {
-        "plans": [{"id": "P", "title": "P", "tasks": [{"id": "P-1", "title": "a", "priority": 70}]}]
-    }
-    importer.import_dict(doc)
-    coord = coordinator(db)
-    coord.start_task("P-1", "x", "s")
-    coord.stop_task("P-1", NodeStatus.WAITING_MERGE)
+    importer.import_dict(
+        {
+            "plans": [
+                {"id": "P", "title": "P", "tasks": [{"id": "P-1", "title": "a", "priority": 70}]}
+            ]
+        }
+    )
     node = repo.get_node("P-1")
     assert node is not None
+    node.status, node.outcome = Status.REVIEWED, Outcome.APPROVE
     node.acceptable_models = ["claude-sonnet-5"]
     node.frontmatter = {"declared_files": ["web/a"]}
     repo.save_node(node)
@@ -871,10 +709,9 @@ def test_reimporting_a_document_keeps_the_progress_it_does_not_state(db: Databas
     kept = repo.get_node("P-1")
     assert kept is not None
     assert kept.title == "a renamed"
-    assert kept.status == NodeStatus.WAITING_MERGE and kept.priority == 70
-    assert kept.acceptable_models == ["claude-sonnet-5"] and kept.frontmatter == {
-        "declared_files": ["web/a"]
-    }
+    assert (kept.status, kept.outcome, kept.priority) == (Status.REVIEWED, Outcome.APPROVE, 70)
+    assert kept.acceptable_models == ["claude-sonnet-5"]
+    assert kept.frontmatter == {"declared_files": ["web/a"]}
 
     importer.import_dict(
         {
@@ -888,7 +725,7 @@ def test_reimporting_a_document_keeps_the_progress_it_does_not_state(db: Databas
         }
     )
     stated = repo.get_node("P-1")
-    assert stated is not None and stated.status == NodeStatus.COMPLETED and stated.priority == 20
+    assert stated is not None and stated.status == Status.COMPLETED and stated.priority == 20
 
 
 def test_a_document_that_states_checks_replaces_them_and_verify_can_list_and_remove(

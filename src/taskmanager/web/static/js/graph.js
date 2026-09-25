@@ -1,11 +1,10 @@
 // Vis Network DAG Graph
-// Shape per node kind so spec/plan/task/review_gate read as distinct at a glance,
-// independent of the status colouring the fill and border already carry.
+// Shape per node kind so spec/plan/task read as distinct at a glance, independent of the
+// status colouring the fill and border already carry.
 const GRAPH_SHAPE_BY_KIND = {
   spec: { shape: 'hexagon' },
   plan: { shape: 'box', shapeProperties: { borderRadius: 14 } },
   task: { shape: 'box', shapeProperties: { borderRadius: 3 } },
-  review_gate: { shape: 'diamond' }
 };
 
 function renderGraph(graph) {

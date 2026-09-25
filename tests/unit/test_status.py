@@ -2,7 +2,6 @@ from enum import StrEnum
 
 import pytest
 
-from taskmanager.core.enums import NodeStatus
 from taskmanager.core.status import (
     EXITS,
     IN_STEP,
@@ -123,20 +122,3 @@ def test_in_step_statuses_are_the_ing_statuses() -> None:
 
 def test_a_rollup_sets_aside_exactly_the_exits() -> None:
     assert SET_ASIDE == {Status.DEFERRED, Status.ABANDONED, Status.SUPERSEDED}
-
-
-@pytest.mark.parametrize(
-    "name",
-    [
-        "IMPLEMENTING",
-        "REVIEWING",
-        "FIXING",
-        "MERGING",
-        "COMPLETED",
-        "DEFERRED",
-        "ABANDONED",
-        "SUPERSEDED",
-    ],
-)
-def test_a_status_both_vocabularies_name_compares_equal_across_them(name: str) -> None:
-    assert NodeStatus[name] == Status[name]

@@ -172,7 +172,7 @@ class MarkdownRenderer:
         return "\n\n".join(parts) + "\n"
 
     def _get_parent_ids(self, node_id: str) -> list[str]:
-        with self.node_repo.db.get_spec_connection() as conn:
+        with self.node_repo.db.get_state_connection() as conn:
             rows = conn.execute(
                 "SELECT source_id FROM node_relations WHERE target_id = ? AND relation_type = ? ORDER BY rowid ASC",
                 (node_id, RelationType.CONTAINS.value),

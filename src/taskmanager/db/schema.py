@@ -1,12 +1,23 @@
+from taskmanager.core.status import DecisionStatus, Status
+
 # The schema a fresh `tm init` writes. A later change bumps this and migrates by user_version.
 SCHEMA_VERSION = 1
 
-STATE_SCHEMA_SQL = """
+# Built from the enums so the vocabulary SQLite enforces and the one the code writes cannot drift.
+_CYCLE_STATUSES = ", ".join(f"'{s.value}'" for s in Status)
+_DECISION_STATUSES = ", ".join(f"'{s.value}'" for s in DecisionStatus)
+NODE_STATUS_CHECK = (
+    f"CHECK ((kind = 'decision' AND status IN ({_DECISION_STATUSES})) "
+    f"OR (kind <> 'decision' AND status IN ({_CYCLE_STATUSES})))"
+)
+
+STATE_SCHEMA_SQL = (
+    """
 CREATE TABLE IF NOT EXISTS nodes (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL,
     title TEXT NOT NULL,
-    status TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'READY',
     priority INTEGER NOT NULL DEFAULT 50,
     ordinal INTEGER NOT NULL DEFAULT 0,
     target_repo TEXT,
@@ -27,7 +38,10 @@ CREATE TABLE IF NOT EXISTS nodes (
     land_order TEXT NOT NULL DEFAULT '[]',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CHECK (fix <= review)
+    CHECK (fix <= review),
+    """
+    + NODE_STATUS_CHECK
+    + """
 );
 
 CREATE TABLE IF NOT EXISTS node_sections (
@@ -144,6 +158,7 @@ CREATE TABLE IF NOT EXISTS branch_locks (
     PRIMARY KEY (repo, branch)
 );
 """
+)
 
 # Derived results only: dropping this database loses time, never state.
 CACHE_SCHEMA_SQL = """

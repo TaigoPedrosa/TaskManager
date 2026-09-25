@@ -8,7 +8,6 @@ from lifecycle_estate import add, make_estate, stored
 from taskmanager.core.enums import NodeKind
 from taskmanager.core.models import Job, Lease
 from taskmanager.core.status import Action, JobKind, JobState, Merge, Outcome, Status
-from taskmanager.engine import wave
 from taskmanager.engine.claims import Claims
 from taskmanager.engine.discovery import discover, djb2
 
@@ -71,7 +70,6 @@ def waiting_job(claims: Claims, node_id: str, kind: JobKind) -> str:
 def test_the_batch_checksum_is_djb2_over_the_payload_bytes() -> None:
     assert djb2("") == 5381
     assert djb2("a") == (5381 * 33 + ord("a")) & 0xFFFFFFFF
-    assert wave.djb2 is djb2
 
 
 def test_every_kind_of_node_is_offered_with_its_next_step_model_and_requirements(

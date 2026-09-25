@@ -9,7 +9,6 @@ from pathlib import Path
 from taskmanager.core.enums import (
     LockType,
     NodeKind,
-    NodeStatus,
     RelationType,
     VerificationType,
 )
@@ -22,6 +21,7 @@ from taskmanager.core.models import (
     NodeSection,
     NodeVerification,
 )
+from taskmanager.core.status import Status
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
@@ -29,15 +29,15 @@ from taskmanager.db.runtime_repo import RuntimeRepository
 
 
 def test_spec_connection_is_reused_not_reopened(tmp_path: Path) -> None:
-    # get_spec_connection() used to open a fresh sqlite3 connection (extension load and all) on
+    # get_state_connection() used to open a fresh sqlite3 connection (extension load and all) on
     # every single call -- with hundreds of NodeRepository calls per web request, that dominated
     # load time (14s -> 0.15s measured on a 342-task DB after this fix). One connection per
     # DatabaseManager, reused, is what actually gets it.
     db = DatabaseManager(tmp_path)
     db.init_all()
-    with db.get_spec_connection() as first:
+    with db.get_state_connection() as first:
         pass
-    with db.get_spec_connection() as second:
+    with db.get_state_connection() as second:
         pass
     assert first is second
 
@@ -54,7 +54,7 @@ def test_connections_of_finished_threads_are_closed(tmp_path: Path) -> None:
 
     def query() -> None:
         try:
-            with db.get_runtime_connection() as conn:
+            with db.get_state_connection() as conn:
                 conn.execute("SELECT COUNT(*) FROM leases").fetchone()
         except sqlite3.Error as exc:
             failures.append(exc)
@@ -81,7 +81,7 @@ def test_node_repo_crud(tmp_path: Path) -> None:
         id="AUTH-T01",
         kind=NodeKind.TASK,
         title="Test Task",
-        status=NodeStatus.NOT_STARTED,
+        status=Status.READY,
         priority=60,
         target_repo="backend",
         acceptable_models=["claude-3-7-sonnet"],
@@ -94,21 +94,21 @@ def test_node_repo_crud(tmp_path: Path) -> None:
     assert loaded.id == "AUTH-T01"
     assert loaded.kind == NodeKind.TASK
     assert loaded.title == "Test Task"
-    assert loaded.status == NodeStatus.NOT_STARTED
+    assert loaded.status == Status.READY
     assert loaded.priority == 60
     assert loaded.target_repo == "backend"
     assert loaded.acceptable_models == ["claude-3-7-sonnet"]
     assert loaded.frontmatter == {"risk": "medium"}
 
     node.title = "Updated Task Title"
-    node.status = NodeStatus.IMPLEMENTING
+    node.status = Status.IMPLEMENTING
     node.priority = 90
     repo.save_node(node)
 
     updated = repo.get_node("AUTH-T01")
     assert updated is not None
     assert updated.title == "Updated Task Title"
-    assert updated.status == NodeStatus.IMPLEMENTING
+    assert updated.status == Status.IMPLEMENTING
     assert updated.priority == 90
 
     assert repo.get_node("NONEXISTENT") is None
@@ -119,18 +119,10 @@ def test_node_repo_list_nodes(tmp_path: Path) -> None:
     db.init_all()
     repo = NodeRepository(db)
 
-    repo.save_node(
-        Node(id="AUTH-S01", kind=NodeKind.SPEC, title="Spec", status=NodeStatus.COMPLETED)
-    )
-    repo.save_node(
-        Node(id="AUTH-P01", kind=NodeKind.PLAN, title="Plan", status=NodeStatus.NOT_STARTED)
-    )
-    repo.save_node(
-        Node(id="AUTH-T01", kind=NodeKind.TASK, title="Task 1", status=NodeStatus.NOT_STARTED)
-    )
-    repo.save_node(
-        Node(id="AUTH-T02", kind=NodeKind.TASK, title="Task 2", status=NodeStatus.COMPLETED)
-    )
+    repo.save_node(Node(id="AUTH-S01", kind=NodeKind.SPEC, title="Spec", status=Status.COMPLETED))
+    repo.save_node(Node(id="AUTH-P01", kind=NodeKind.PLAN, title="Plan", status=Status.READY))
+    repo.save_node(Node(id="AUTH-T01", kind=NodeKind.TASK, title="Task 1", status=Status.READY))
+    repo.save_node(Node(id="AUTH-T02", kind=NodeKind.TASK, title="Task 2", status=Status.COMPLETED))
 
     all_nodes = repo.list_nodes()
     assert len(all_nodes) == 4
@@ -139,11 +131,11 @@ def test_node_repo_list_nodes(tmp_path: Path) -> None:
     assert len(tasks) == 2
     assert {n.id for n in tasks} == {"AUTH-T01", "AUTH-T02"}
 
-    completed = repo.list_nodes(status=NodeStatus.COMPLETED)
+    completed = repo.list_nodes(status=Status.COMPLETED)
     assert len(completed) == 2
     assert {n.id for n in completed} == {"AUTH-S01", "AUTH-T02"}
 
-    completed_tasks = repo.list_nodes(kind=NodeKind.TASK, status=NodeStatus.COMPLETED)
+    completed_tasks = repo.list_nodes(kind=NodeKind.TASK, status=Status.COMPLETED)
     assert len(completed_tasks) == 1
     assert completed_tasks[0].id == "AUTH-T02"
 
@@ -196,7 +188,7 @@ def test_node_repo_sections(tmp_path: Path) -> None:
     assert reloaded is not None
     assert reloaded.content == "- [x] Step 1 finished"
 
-    with db.get_spec_connection() as conn:
+    with db.get_state_connection() as conn:
         row = conn.execute(
             "SELECT node_id FROM nodes_fts WHERE nodes_fts MATCH 'finished'"
         ).fetchone()
@@ -245,19 +237,6 @@ def test_node_repo_relations(tmp_path: Path) -> None:
 
     blocked = repo.get_blocked_by("AUTH-T01")
     assert blocked == ["AUTH-T02"]
-
-    edges = repo.get_dependency_edges("AUTH-T02")
-    assert edges == [("AUTH-T01", NodeStatus.COMPLETED)]
-
-    repo.add_relation(
-        NodeRelation(
-            source_id="AUTH-T02",
-            target_id="AUTH-T01",
-            relation_type=RelationType.DEPENDS_ON,
-            metadata={"gate": NodeStatus.WAITING_REVIEW.value},
-        )
-    )
-    assert repo.get_dependency_edges("AUTH-T02") == [("AUTH-T01", NodeStatus.WAITING_REVIEW)]
 
 
 def test_node_repo_get_ancestor_of_kind_walks_nested_plans(tmp_path: Path) -> None:

@@ -1,14 +1,10 @@
 from dataclasses import dataclass
 
-from taskmanager.core.enums import (
-    NodeKind,
-    NodeStatus,
-    RecommendationStrategy,
-    VirtualStatus,
-)
+from taskmanager.core.enums import NodeKind, RecommendationStrategy
+from taskmanager.core.status import DisplayStatus, Status
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
-from taskmanager.engine.graph import GraphEngine
+from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder
 
 
 @dataclass
@@ -69,7 +65,7 @@ def _score_task(
                 1
                 for s in siblings
                 if (node := node_repo.get_node(s))
-                and node.status in (NodeStatus.COMPLETED, NodeStatus.SUPERSEDED)
+                and node.status in (Status.COMPLETED, Status.SUPERSEDED)
             )
             total_siblings = len(siblings)
             s_close = (completed_count / total_siblings) * 100.0
@@ -108,12 +104,11 @@ class RecommendationEngine:
         self,
         node_repo: NodeRepository,
         runtime_repo: RuntimeRepository,
-        graph_engine: GraphEngine,
+        snapshots: SnapshotBuilder,
     ) -> None:
         self.node_repo = node_repo
         self.runtime_repo = runtime_repo
-        self.graph = graph_engine
-        self.graph_engine = graph_engine
+        self.snapshots = snapshots
 
     def get_next_tasks(
         self,
@@ -125,6 +120,7 @@ class RecommendationEngine:
     ) -> list[ScoredTask]:
         weights = _STRATEGY_WEIGHTS[_resolve_strategy(strategy)]
 
+        view = DisplayView(self.snapshots)
         all_tasks = self.node_repo.list_nodes(kind=NodeKind.TASK)
         plans = self.node_repo.list_nodes(kind=NodeKind.PLAN)
         plan_children = {p.id: set(self.node_repo.get_children(p.id)) for p in plans}
@@ -140,7 +136,7 @@ class RecommendationEngine:
         scored: list[ScoredTask] = []
 
         for task in all_tasks:
-            if self.graph.resolve_task_state(task.id) != VirtualStatus.READY:
+            if view.display(task) != DisplayStatus.READY.value:
                 continue
 
             if (
@@ -150,9 +146,9 @@ class RecommendationEngine:
             ):
                 continue
 
-            # A file-lock conflict already reads as BLOCKED_BY_LEASE, not READY, so the
-            # `!= VirtualStatus.READY` check above already excludes it; declared_files is
-            # still needed below, for the batch's own same-file collision guard.
+            # A file-lock conflict already reads as BLOCKED_BY_LEASE, not READY, so the check
+            # above already excludes it; declared_files is still needed below, for the batch's
+            # own same-file collision guard.
             declared_files = self.node_repo.declared_files(task.id)
 
             parent_plan_id: str | None = None

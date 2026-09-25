@@ -10,7 +10,7 @@ def test_wal_mode_and_pragmas(tmp_path: Path) -> None:
     db_mgr = DatabaseManager(tmp_path)
     db_mgr.init_all()
 
-    with db_mgr.get_spec_connection() as conn:
+    with db_mgr.get_state_connection() as conn:
         journal_mode = conn.execute("PRAGMA journal_mode;").fetchone()[0]
         busy_timeout = conn.execute("PRAGMA busy_timeout;").fetchone()[0]
         foreign_keys = conn.execute("PRAGMA foreign_keys;").fetchone()[0]
@@ -22,7 +22,7 @@ def test_wal_mode_and_pragmas(tmp_path: Path) -> None:
         assert vec_ver is not None
         assert vec_ver[0].startswith("v")
 
-    with db_mgr.get_runtime_connection() as conn:
+    with db_mgr.get_state_connection() as conn:
         journal_mode = conn.execute("PRAGMA journal_mode;").fetchone()[0]
         busy_timeout = conn.execute("PRAGMA busy_timeout;").fetchone()[0]
         foreign_keys = conn.execute("PRAGMA foreign_keys;").fetchone()[0]
@@ -44,7 +44,7 @@ def test_vec_nodes_virtual_table(tmp_path: Path) -> None:
     dimensions = 4
     db_mgr.init_all(vector_dimensions=dimensions)
 
-    with db_mgr.get_spec_connection() as conn:
+    with db_mgr.get_state_connection() as conn:
         conn.execute(
             """
             INSERT INTO vec_nodes (node_id, target_type, section_key, embedding)
@@ -75,7 +75,7 @@ def test_fts5_virtual_table(tmp_path: Path) -> None:
     db_mgr = DatabaseManager(tmp_path)
     db_mgr.init_all()
 
-    with db_mgr.get_spec_connection() as conn:
+    with db_mgr.get_state_connection() as conn:
         conn.execute(
             """
             INSERT INTO nodes_fts (node_id, title, frontmatter_text, content_text)
@@ -106,13 +106,13 @@ def test_foreign_key_cascade_deletion(tmp_path: Path) -> None:
     db_mgr = DatabaseManager(tmp_path)
     db_mgr.init_all()
 
-    with db_mgr.get_spec_connection() as conn:
+    with db_mgr.get_state_connection() as conn:
         conn.execute(
             """
             INSERT INTO nodes (id, kind, title, status)
             VALUES (?, ?, ?, ?)
             """,
-            ("AUTH-01", "task", "Auth Task", "NOT_STARTED"),
+            ("AUTH-01", "task", "Auth Task", "READY"),
         )
         conn.execute(
             """
@@ -136,7 +136,7 @@ def test_foreign_key_cascade_deletion(tmp_path: Path) -> None:
         ).fetchone()
         assert sec_after is None
 
-    with db_mgr.get_runtime_connection() as conn:
+    with db_mgr.get_state_connection() as conn:
         conn.execute(
             """
             INSERT INTO leases (task_id, agent_id, session_id, branch_name)
@@ -171,7 +171,7 @@ def test_foreign_key_violation_raises(tmp_path: Path) -> None:
     db_mgr = DatabaseManager(tmp_path)
     db_mgr.init_all()
 
-    with db_mgr.get_spec_connection() as conn, pytest.raises(sqlite3.IntegrityError):
+    with db_mgr.get_state_connection() as conn, pytest.raises(sqlite3.IntegrityError):
         conn.execute(
             """
                 INSERT INTO node_sections (node_id, section_key, ordinal, header, content)

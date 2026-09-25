@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -8,7 +8,6 @@ from taskmanager.core.enums import (
     LedgerCommand,
     LockType,
     NodeKind,
-    NodeStatus,
     RelationType,
     VerificationType,
 )
@@ -35,7 +34,7 @@ class Node(BaseModel):
     id: str
     kind: NodeKind
     title: str
-    status: NodeStatus | Status | DecisionStatus = NodeStatus.NOT_STARTED
+    status: Status | DecisionStatus = Status.READY
     priority: int = Field(default=50, ge=1, le=100)
     ordinal: int = 0
     target_repo: str | None = None
@@ -65,6 +64,15 @@ class Node(BaseModel):
         if isinstance(data, dict) and data.get("kind") in _CONTAINERS:
             return {"review": False, "fix": False, **data}
         return data
+
+    @model_validator(mode="after")
+    def _status_fits_kind(self) -> Self:
+        is_decision = self.kind == NodeKind.DECISION
+        if is_decision and "status" not in self.model_fields_set:
+            self.status = DecisionStatus.OPEN
+        if isinstance(self.status, DecisionStatus) != is_decision:
+            raise ValueError(f"a {self.kind.value} cannot hold status {self.status.value}")
+        return self
 
 
 class Condition(BaseModel):

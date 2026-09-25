@@ -1,7 +1,7 @@
 from enum import StrEnum
 from typing import Any, cast
 
-from taskmanager.core.enums import NodeKind, NodeStatus, RelationType, VerificationType
+from taskmanager.core.enums import NodeKind, RelationType, VerificationType
 from taskmanager.core.models import (
     Condition,
     Node,
@@ -251,7 +251,7 @@ class BulkImporter:
             raise ValueError(
                 f"{REFUSED}node {node_id!r} has no title and none exists to fall back to"
             )
-        status: NodeStatus | Status | DecisionStatus
+        status: Status | DecisionStatus
         if "status" in data:
             status = BulkImporter._parse_status(node_id, kind, data["status"])
         elif existing is not None:

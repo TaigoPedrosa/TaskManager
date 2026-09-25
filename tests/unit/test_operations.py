@@ -1,20 +1,17 @@
 import subprocess
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from taskmanager.core.enums import NodeKind, NodeStatus, VerificationType
-from taskmanager.core.models import Lease
+from taskmanager.core.enums import NodeKind, VerificationType
 from taskmanager.core.status import DecisionStatus, Status
 from taskmanager.db.connection import DatabaseManager
+from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine.decisions import read_decision
-from taskmanager.engine.graph import GraphEngine
 from taskmanager.engine.operations import OperationError, Operations
-from taskmanager.engine.runtime import ExecutionCoordinator
 from taskmanager.engine.verification import VerificationEngine
 
 
@@ -27,16 +24,12 @@ def ops_setup(
     node_repo = NodeRepository(db)
     runtime_repo = RuntimeRepository(db)
     ledger_repo = LedgerRepository(db)
-    graph = GraphEngine(node_repo=node_repo, runtime_repo=runtime_repo)
-    coordinator = ExecutionCoordinator(node_repo, runtime_repo, graph, git_mgr=None)
-    verification_engine = VerificationEngine(tmp_path)
     ops = Operations(
         node_repo,
         runtime_repo,
-        graph,
-        coordinator,
         ledger_repo,
-        verification_engine,
+        VerificationEngine(tmp_path),
+        JobRepository(db),
         actor="tester",
     )
     return node_repo, runtime_repo, ledger_repo, ops
@@ -175,7 +168,7 @@ def test_supersede_marks_old_superseded_and_transfers_blocks(ops_setup: tuple) -
     new = ops.add_task("New", plan_id, slug="NEW")
     blocked = ops.add_task("Blocked", plan_id, slug="BLK", depends_on=[old])
     ops.supersede(old, new)
-    assert node_repo.get_node(old).status == NodeStatus.SUPERSEDED
+    assert node_repo.get_node(old).status == Status.SUPERSEDED
     assert node_repo.get_dependencies(blocked) == [new]
     assert _last_event_actor(ledger_repo) == "tester"
 
@@ -227,64 +220,6 @@ def test_move_task_missing_plan_refuses_and_writes_nothing(ops_setup: tuple) -> 
         ops.move_task(task_id, "NOPE")
     assert exc.value.status_code == 404
     assert task_id in node_repo.get_children(plan_id)
-    assert len(ledger_repo.list_events(limit=1000)) == before
-
-
-# -- status / leases ----------------------------------------------------------------------
-
-
-def test_set_status_stops_task_and_releases_lease(ops_setup: tuple) -> None:
-    node_repo, runtime_repo, ledger_repo, ops = ops_setup
-    _spec_id, _plan_id, task_id = _seed_task(ops)
-    runtime_repo.acquire_lease(
-        Lease(task_id=task_id, agent_id="a", session_id="s", branch_name=f"tm/{task_id}"), []
-    )
-    ops.set_status(task_id, NodeStatus.COMPLETED)
-    assert node_repo.get_node(task_id).status == NodeStatus.COMPLETED
-    assert runtime_repo.get_lease(task_id) is None
-    assert _last_event_actor(ledger_repo) == "tester"
-
-
-def test_release_lease_drops_lease_without_changing_status(ops_setup: tuple) -> None:
-    node_repo, runtime_repo, ledger_repo, ops = ops_setup
-    _spec_id, _plan_id, task_id = _seed_task(ops)
-    runtime_repo.acquire_lease(
-        Lease(task_id=task_id, agent_id="a", session_id="s", branch_name=f"tm/{task_id}"), []
-    )
-    ops.release_lease(task_id)
-    assert runtime_repo.get_lease(task_id) is None
-    assert node_repo.get_node(task_id).status == Status.READY
-    assert _last_event_actor(ledger_repo) == "tester"
-
-
-def test_sweep_leases_rolls_back_status_of_expired_claims(ops_setup: tuple) -> None:
-    node_repo, runtime_repo, ledger_repo, ops = ops_setup
-    _spec_id, _plan_id, task_id = _seed_task(ops)
-    node = node_repo.get_node(task_id)
-    node.status = NodeStatus.IMPLEMENTING
-    node_repo.save_node(node)
-    stale = datetime.now(tz=UTC) - timedelta(hours=1)
-    runtime_repo.acquire_lease(
-        Lease(
-            task_id=task_id,
-            agent_id="a",
-            session_id="s",
-            branch_name=f"tm/{task_id}",
-            last_heartbeat=stale,
-            ttl_seconds=60,
-        ),
-        [],
-    )
-    swept = ops.sweep_leases()
-    assert swept == [task_id]
-    assert node_repo.get_node(task_id).status == NodeStatus.NOT_STARTED
-    assert _last_event_actor(ledger_repo) == "tester"
-
-
-def test_sweep_leases_with_nothing_expired_writes_no_ledger(ops_setup: tuple) -> None:
-    _node_repo, _runtime_repo, ledger_repo, ops = ops_setup
-    before = len(ledger_repo.list_events(limit=1000))
-    assert ops.sweep_leases() == []
     assert len(ledger_repo.list_events(limit=1000)) == before
 
 
@@ -440,35 +375,6 @@ def test_with_actor_returns_a_new_operations_carrying_the_actor(ops_setup: tuple
     assert web_ops is not ops
     web_ops.add_spec("S", slug="WEBS")
     assert _last_event_actor(ledger_repo) == "web"
-
-
-# -- set_status with an atomic section -------------------------------------------------------
-
-
-def test_set_status_with_section_writes_status_and_section_together(ops_setup: tuple) -> None:
-    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
-    _spec_id, _plan_id, task_id = _seed_task(ops)
-    ops.set_status(
-        task_id, NodeStatus.COMPLETED, section=("ruling", "the ruling text", "## Ruling")
-    )
-    assert node_repo.get_node(task_id).status == NodeStatus.COMPLETED
-    sec = node_repo.get_section(task_id, "ruling")
-    assert sec is not None
-    assert sec.content == "the ruling text"
-    assert _last_event_actor(ledger_repo) == "tester"
-
-
-def test_set_status_failure_leaves_the_section_unwritten(ops_setup: tuple) -> None:
-    node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
-    _spec_id, _plan_id, task_id = _seed_task(ops)
-
-    def boom(**_kwargs: object) -> None:
-        raise ValueError("stop_task refused")
-
-    ops.coordinator.stop_task = boom  # type: ignore[method-assign]
-    with pytest.raises(ValueError):
-        ops.set_status(task_id, NodeStatus.COMPLETED, section=("ruling", "text", None))
-    assert node_repo.get_section(task_id, "ruling") is None
 
 
 # -- decisions --------------------------------------------------------------------------------
@@ -916,15 +822,6 @@ def test_move_task_target_not_a_plan_refuses(ops_setup: tuple) -> None:
     assert exc.value.status_code == 400
 
 
-def test_release_lease_missing_node_refuses(ops_setup: tuple) -> None:
-    _node_repo, _runtime_repo, ledger_repo, ops = ops_setup
-    before = len(ledger_repo.list_events(limit=1000))
-    with pytest.raises(OperationError) as exc:
-        ops.release_lease("ghost")
-    assert exc.value.status_code == 404
-    assert len(ledger_repo.list_events(limit=1000)) == before
-
-
 def test_reopen_decision_already_open_refuses(ops_setup: tuple) -> None:
     _node_repo, _runtime_repo, ledger_repo, ops = ops_setup
     decision_id = ops.add_decision("Which way?", slug="d1")
@@ -932,18 +829,6 @@ def test_reopen_decision_already_open_refuses(ops_setup: tuple) -> None:
     with pytest.raises(OperationError) as exc:
         ops.reopen_decision(decision_id)
     assert exc.value.status_code == 409
-    assert len(ledger_repo.list_events(limit=1000)) == before
-
-
-def test_set_status_refuses_a_decision_node(ops_setup: tuple) -> None:
-    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
-    decision_id = ops.add_decision("Which way?", slug="d1")
-    before = len(ledger_repo.list_events(limit=1000))
-    with pytest.raises(OperationError) as exc:
-        ops.set_status(decision_id, NodeStatus.COMPLETED)
-    assert exc.value.status_code == 409
-    assert node_repo.get_node(decision_id).status == DecisionStatus.OPEN
-    assert node_repo.get_node(decision_id).frontmatter["decision"]["answer"] is None
     assert len(ledger_repo.list_events(limit=1000)) == before
 
 
@@ -1086,48 +971,6 @@ def test_move_task_second_write_failure_leaves_old_parent_intact(ops_setup: tupl
     assert len(ledger_repo.list_events(limit=1000)) == before
 
 
-def test_sweep_leases_second_write_failure_leaves_first_task_unrolled_back(
-    ops_setup: tuple,
-) -> None:
-    node_repo, runtime_repo, ledger_repo, ops = ops_setup
-    _spec_id, plan_id, task_a = _seed_task(ops)
-    task_b = ops.add_task("B", plan_id, slug="B2")
-    for tid in (task_a, task_b):
-        node = node_repo.get_node(tid)
-        assert node is not None
-        node.status = NodeStatus.IMPLEMENTING
-        node_repo.save_node(node)
-    stale = datetime.now(tz=UTC) - timedelta(hours=1)
-    for tid in (task_a, task_b):
-        runtime_repo.acquire_lease(
-            Lease(
-                task_id=tid,
-                agent_id="a",
-                session_id="s",
-                branch_name=f"tm/{tid}",
-                last_heartbeat=stale,
-                ttl_seconds=60,
-            ),
-            [],
-        )
-    before = len(ledger_repo.list_events(limit=1000))
-    original = node_repo.save_node
-    calls = {"n": 0}
-
-    def boom(node: object) -> None:
-        calls["n"] += 1
-        if calls["n"] == 2:
-            raise RuntimeError("boom")
-        original(node)  # type: ignore[arg-type]
-
-    node_repo.save_node = boom  # type: ignore[method-assign]
-    with pytest.raises(RuntimeError):
-        ops.sweep_leases()
-    assert node_repo.get_node(task_a).status == NodeStatus.IMPLEMENTING
-    assert node_repo.get_node(task_b).status == NodeStatus.IMPLEMENTING
-    assert len(ledger_repo.list_events(limit=1000)) == before
-
-
 def test_add_decision_second_write_failure_leaves_decision_node_unwritten(
     ops_setup: tuple,
 ) -> None:
@@ -1163,24 +1006,6 @@ def test_link_decision_second_add_failure_leaves_first_unlinked(ops_setup: tuple
     with pytest.raises(RuntimeError):
         ops.link_decision(decision_id, add=[task_a, task_b])
     assert decision_id not in node_repo.get_dependencies(task_a)
-    assert len(ledger_repo.list_events(limit=1000)) == before
-
-
-def test_set_status_with_section_second_write_failure_leaves_status_unchanged(
-    ops_setup: tuple,
-) -> None:
-    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
-    _spec_id, _plan_id, task_id = _seed_task(ops)
-    before = len(ledger_repo.list_events(limit=1000))
-
-    def boom(*_a: object, **_kw: object) -> None:
-        raise RuntimeError("boom")
-
-    node_repo.save_section = boom  # type: ignore[method-assign]
-    with pytest.raises(RuntimeError):
-        ops.set_status(task_id, NodeStatus.COMPLETED, section=("ruling", "text", None))
-    assert node_repo.get_node(task_id).status == Status.READY
-    assert node_repo.get_section(task_id, "ruling") is None
     assert len(ledger_repo.list_events(limit=1000)) == before
 
 

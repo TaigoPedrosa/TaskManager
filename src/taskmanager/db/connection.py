@@ -124,11 +124,6 @@ class DatabaseManager:
     def get_state_connection(self) -> Generator[sqlite3.Connection]:
         yield self._thread_conn("state", self.state_db, load_vec=True)
 
-    # Nodes, leases and locks share one database, so every repository's writes can join one
-    # transaction; both other names still have callers.
-    get_spec_connection = get_state_connection
-    get_runtime_connection = get_state_connection
-
     def spec_commit(self, conn: sqlite3.Connection) -> None:
         """The commit every repository write ends with -- except while `spec_transaction()`
         is open, where the caller wants one commit (or one rollback) for the whole run rather

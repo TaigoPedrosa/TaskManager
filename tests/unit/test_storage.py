@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 import taskmanager
-from taskmanager.core.enums import NodeKind, NodeStatus
+from taskmanager.core.enums import NodeKind
 from taskmanager.core.models import Condition, Lease, Node
 from taskmanager.core.status import ConditionStage, DecisionStatus, Merge, Outcome, Status
 from taskmanager.db.connection import DatabaseManager, PreLifecycleEstate
@@ -181,8 +181,6 @@ def test_a_container_keeps_the_flags_its_planner_set() -> None:
 @pytest.mark.parametrize(
     ("status", "vocabulary"),
     [
-        (NodeStatus.NOT_STARTED, NodeStatus),
-        (NodeStatus.COMPLETED, NodeStatus),
         (Status.READY, Status),
         (Status.IMPLEMENTED, Status),
         (Status.FAILED, Status),
@@ -191,10 +189,11 @@ def test_a_container_keeps_the_flags_its_planner_set() -> None:
     ],
 )
 def test_a_stored_status_reads_back_in_its_own_vocabulary(
-    tmp_path: Path, status: NodeStatus | Status | DecisionStatus, vocabulary: type
+    tmp_path: Path, status: Status | DecisionStatus, vocabulary: type
 ) -> None:
+    kind = NodeKind.DECISION if vocabulary is DecisionStatus else NodeKind.TASK
     repo = NodeRepository(_fresh(tmp_path))
-    repo.save_node(Node(id="N", kind=NodeKind.TASK, title="n", status=status))
+    repo.save_node(Node(id="N", kind=kind, title="n", status=status))
     loaded = repo.get_node("N")
     assert loaded is not None
     assert loaded.status == status

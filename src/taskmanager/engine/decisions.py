@@ -12,15 +12,12 @@ from taskmanager.engine.snapshot import apply_cycle, cycle_of, roll_up_ancestors
 if TYPE_CHECKING:
     from taskmanager.engine.operations import Operations
 
-# A decision's stored status is shown under its own names everywhere a human reads it -- the CLI
-# table, `tm decision get`, the JSON/YAML rows.
-DECISION_STATUS_LABELS: dict[str, str] = {
-    "NOT_STARTED": "Open",
-    "COMPLETED": "Answered",
-    "ABANDONED": "Withdrawn",
-    DecisionStatus.OPEN.value: "Open",
-    DecisionStatus.ANSWERED.value: "Answered",
-    DecisionStatus.WITHDRAWN.value: "Withdrawn",
+# How a decision's status reads everywhere a human sees it: the CLI table, `tm decision get`,
+# the JSON and YAML rows.
+DECISION_STATUS_LABELS: dict[DecisionStatus, str] = {
+    DecisionStatus.OPEN: "Open",
+    DecisionStatus.ANSWERED: "Answered",
+    DecisionStatus.WITHDRAWN: "Withdrawn",
 }
 
 # The section each effect appends its note to, beside the ledger entry.

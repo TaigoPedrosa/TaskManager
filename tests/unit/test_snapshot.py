@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from taskmanager.core.display import Facts
-from taskmanager.core.enums import NodeKind, NodeStatus, RelationType, VerificationType
+from taskmanager.core.enums import NodeKind, RelationType, VerificationType
 from taskmanager.core.lifecycle import Cycle
 from taskmanager.core.models import FileLock, Job, Lease, Node, NodeRelation, NodeVerification
 from taskmanager.core.status import DecisionStatus, JobKind, JobState, Merge, Outcome, Status
@@ -112,15 +112,7 @@ def test_a_snapshot_carries_every_node_its_parent_and_every_edge(estate: Estate)
 @pytest.mark.parametrize(
     ("kind", "stored", "read"),
     [
-        (NodeKind.TASK, NodeStatus.NOT_STARTED, Status.READY),
-        (NodeKind.TASK, NodeStatus.WAITING_REVIEW, Status.IMPLEMENTED),
-        (NodeKind.TASK, NodeStatus.WAITING_FIXES, Status.REVIEWED),
-        (NodeKind.TASK, NodeStatus.WAITING_MERGE, Status.REVIEWED),
-        (NodeKind.TASK, NodeStatus.COMPLETED, Status.COMPLETED),
         (NodeKind.TASK, Status.FAILED, Status.FAILED),
-        (NodeKind.DECISION, NodeStatus.NOT_STARTED, DecisionStatus.OPEN),
-        (NodeKind.DECISION, NodeStatus.COMPLETED, DecisionStatus.ANSWERED),
-        (NodeKind.DECISION, NodeStatus.ABANDONED, DecisionStatus.WITHDRAWN),
         (NodeKind.DECISION, DecisionStatus.OPEN, DecisionStatus.OPEN),
     ],
 )
@@ -229,21 +221,6 @@ def test_a_cycle_carries_the_stored_lifecycle_fields() -> None:
         merge_attempts=1,
         step_failures=1,
     )
-
-
-@pytest.mark.parametrize(
-    ("stored", "status", "outcome"),
-    [
-        (NodeStatus.NOT_STARTED, Status.READY, None),
-        (NodeStatus.WAITING_FIXES, Status.REVIEWED, Outcome.REJECT),
-        (NodeStatus.WAITING_MERGE, Status.REVIEWED, Outcome.APPROVE),
-    ],
-)
-def test_a_cycle_reads_an_old_status_as_the_position_it_held(
-    stored: NodeStatus, status: Status, outcome: Outcome | None
-) -> None:
-    c = cycle_of(Node(id="T", kind=NodeKind.TASK, title="t", status=stored))
-    assert (c.status, c.outcome) == (status, outcome)
 
 
 def test_applying_a_cycle_round_trips_through_storage(estate: Estate) -> None:

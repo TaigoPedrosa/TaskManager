@@ -5,36 +5,7 @@ class NodeKind(StrEnum):
     SPEC = "spec"
     PLAN = "plan"
     TASK = "task"
-    REVIEW_GATE = "review_gate"
     DECISION = "decision"
-
-
-class NodeStatus(StrEnum):
-    NOT_STARTED = "NOT_STARTED"
-    IMPLEMENTING = "IMPLEMENTING"
-    WAITING_REVIEW = "WAITING_REVIEW"
-    REVIEWING = "REVIEWING"
-    WAITING_FIXES = "WAITING_FIXES"
-    FIXING = "FIXING"
-    WAITING_MERGE = "WAITING_MERGE"
-    MERGING = "MERGING"
-    COMPLETED = "COMPLETED"
-    SUPERSEDED = "SUPERSEDED"
-    ABANDONED = "ABANDONED"
-    DEFERRED = "DEFERRED"
-
-
-class VirtualStatus(StrEnum):
-    BLOCKED = "BLOCKED"
-    # Every depends_on gate is satisfied, but a file this task declares is locked by another
-    # task's active lease -- ready by the dependency graph, not claimable right now. Distinct
-    # from BLOCKED so a reader isn't sent to check dependencies that are, in fact, all clear.
-    BLOCKED_BY_LEASE = "BLOCKED_BY_LEASE"
-    # Every non-decision dependency is satisfied, but at least one depends_on edge points at an
-    # open decision -- ready by the graph once it is answered or withdrawn, not before.
-    AWAITING_DECISION = "AWAITING_DECISION"
-    READY = "READY"
-    IN_FLIGHT = "IN_FLIGHT"
 
 
 class RelationType(StrEnum):

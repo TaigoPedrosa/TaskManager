@@ -2,8 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from taskmanager.core.enums import NodeKind, NodeStatus, RelationType, VerificationType
+from taskmanager.core.enums import NodeKind, RelationType, VerificationType
 from taskmanager.core.models import Node, NodeRelation, NodeSection, NodeVerification
+from taskmanager.core.status import DecisionStatus, Status
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.renderers.importers import BulkImporter
@@ -19,7 +20,7 @@ def test_markdown_renderer_projections(tmp_path: Path) -> None:
         id="AUTH-T01",
         kind=NodeKind.TASK,
         title="JWT Auth Task",
-        status=NodeStatus.NOT_STARTED,
+        status=Status.READY,
         priority=80,
         acceptable_models=["sonnet"],
     )
@@ -58,7 +59,7 @@ def test_markdown_renderer_summary_with_overview(tmp_path: Path) -> None:
         id="SPEC-01",
         kind=NodeKind.SPEC,
         title="Authentication Spec",
-        status=NodeStatus.NOT_STARTED,
+        status=Status.READY,
         priority=50,
         acceptable_models=["opus"],
         frontmatter={"owner": "security-team"},
@@ -262,7 +263,7 @@ def test_markdown_renderer_renders_a_decision(tmp_path: Path) -> None:
         id="decision-D1",
         kind=NodeKind.DECISION,
         title="Which way?",
-        status=NodeStatus.COMPLETED,
+        status=DecisionStatus.ANSWERED,
         frontmatter={"decision": data.model_dump(mode="json")},
     )
     repo.save_node(node)

@@ -12,7 +12,6 @@ from typing import Any
 from taskmanager.core.enums import (
     LedgerCommand,
     NodeKind,
-    NodeStatus,
     RelationType,
     TransferMode,
     VerificationType,
@@ -48,8 +47,6 @@ from taskmanager.engine.decisions import (
     read_decision,
     write_decision,
 )
-from taskmanager.engine.graph import GraphEngine
-from taskmanager.engine.runtime import ExecutionCoordinator
 from taskmanager.engine.snapshot import (
     CONTAINERS,
     SnapshotBuilder,
@@ -66,14 +63,6 @@ from taskmanager.engine.verification import VerificationEngine, VerificationResu
 # The section a project bootstraps once and every `tm guide` overlay hangs off; `section set`
 # points a user here when they try to write to it before it exists.
 GUIDE_NODE = "guide"
-
-# A task's forward progress through one lease cycle, reused for a lease-sweep rollback.
-_SWEEP_BACK: dict[str, NodeStatus] = {
-    NodeStatus.IMPLEMENTING: NodeStatus.NOT_STARTED,
-    NodeStatus.REVIEWING: NodeStatus.WAITING_REVIEW,
-    NodeStatus.FIXING: NodeStatus.WAITING_FIXES,
-    NodeStatus.MERGING: NodeStatus.WAITING_MERGE,
-}
 
 
 class OperationError(ValueError):
@@ -193,35 +182,27 @@ class Operations:
         self,
         node_repo: NodeRepository,
         runtime_repo: RuntimeRepository,
-        graph: GraphEngine,
-        coordinator: ExecutionCoordinator,
         ledger_repo: LedgerRepository,
         verification_engine: VerificationEngine,
+        job_repo: JobRepository,
         actor: str = "cli",
-        job_repo: JobRepository | None = None,
     ) -> None:
         self.node_repo = node_repo
         self.runtime_repo = runtime_repo
-        self.graph = graph
-        self.coordinator = coordinator
         self.ledger_repo = ledger_repo
         self.verification_engine = verification_engine
-        self.actor = actor
         self.job_repo = job_repo
-        self.snapshots = SnapshotBuilder(
-            node_repo, runtime_repo, job_repo or JobRepository(node_repo.db)
-        )
+        self.actor = actor
+        self.snapshots = SnapshotBuilder(node_repo, runtime_repo, job_repo)
 
     def with_actor(self, actor: str) -> Operations:
         return Operations(
             self.node_repo,
             self.runtime_repo,
-            self.graph,
-            self.coordinator,
             self.ledger_repo,
             self.verification_engine,
+            self.job_repo,
             actor=actor,
-            job_repo=self.job_repo,
         )
 
     def _checked(self, touched: set[str]) -> Any:
@@ -598,54 +579,6 @@ class Operations:
             LedgerCommand.TASK_MOVE, target_id=task_id, payload={"from": old_plan, "to": plan_id}
         )
 
-    # -- status / leases ----------------------------------------------------------------------
-
-    def set_status(
-        self,
-        task_id: str,
-        status: NodeStatus = NodeStatus.WAITING_REVIEW,
-        remove_worktree: bool = False,
-        section: tuple[str, str, str | None] | None = None,
-    ) -> None:
-        node = self.node_repo.get_node(task_id)
-        if node is not None and node.kind == NodeKind.DECISION:
-            raise OperationError(
-                f"'{task_id}' is a decision; use `tm decision answer/withdraw/reopen`", 409
-            )
-        payload: dict[str, Any] = {"status": status.value, "remove_worktree": remove_worktree}
-        # Both writes share one `node_repo` transaction: `stop_task`'s status change and the
-        # section write either both land or neither does, so a ruling can never land without
-        # its status even when the status write itself succeeds and the section write is what
-        # fails.
-        with self.node_repo.transaction():
-            self.coordinator.stop_task(
-                task_id=task_id, new_status=status, remove_worktree=remove_worktree
-            )
-            if section is not None:
-                key, content, header = section
-                self._write_section(task_id, key, content, header)
-                payload["section"] = key
-        self._ledger(LedgerCommand.TASK_STOP, target_id=task_id, payload=payload)
-
-    def release_lease(self, task_id: str) -> None:
-        if self.node_repo.get_node(task_id) is None:
-            raise OperationError(f"node '{task_id}' not found", 404)
-        self.runtime_repo.release_lease(task_id)
-        self._ledger(LedgerCommand.LEASE_RELEASE, target_id=task_id)
-
-    def sweep_leases(self) -> list[str]:
-        swept = self.runtime_repo.sweep_expired_leases()
-        if swept:
-            # An abandoned claim returns the task to the state before it, or nobody could claim it.
-            with self.node_repo.transaction():
-                for task_id in swept:
-                    node = self.node_repo.get_node(task_id)
-                    if node is not None and node.status in _SWEEP_BACK:
-                        node.status = _SWEEP_BACK[node.status]
-                        self.node_repo.save_node(node)
-            self._ledger(LedgerCommand.LEASE_SWEEP, payload={"swept_tasks": swept})
-        return swept
-
     # -- sections -------------------------------------------------------------------------
 
     def _write_section(
@@ -827,8 +760,6 @@ class Operations:
             raise OperationError(
                 f"'{node_id}' has a step running: link the decision once it ends, or stop it", 409
             )
-        if self.graph.would_cause_cycle(node_id, decision_id):
-            raise OperationError(f"'{node_id}' -> '{decision_id}' would make a cycle", 409)
 
     def _get_decision(self, decision_id: str) -> Node:
         node = self.node_repo.get_node(decision_id)

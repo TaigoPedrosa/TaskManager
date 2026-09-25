@@ -11,10 +11,8 @@ from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine.conditions import ConditionRunner
 from taskmanager.engine.config import ConfigStore
 from taskmanager.engine.git import GitManager
-from taskmanager.engine.graph import GraphEngine
 from taskmanager.engine.heuristics import RecommendationEngine
 from taskmanager.engine.operations import Operations
-from taskmanager.engine.runtime import ExecutionCoordinator
 from taskmanager.engine.search import EmbeddingProvider, SearchEngine, build_provider
 from taskmanager.engine.snapshot import SnapshotBuilder
 from taskmanager.engine.verification import VerificationEngine
@@ -69,33 +67,17 @@ class TaskManagerProvider(Provider):
         )
 
     @provide(scope=Scope.APP)
-    def graph_engine(
-        self, node_repo: NodeRepository, runtime_repo: RuntimeRepository
-    ) -> GraphEngine:
-        return GraphEngine(node_repo, runtime_repo)
-
-    @provide(scope=Scope.APP)
     def git_mgr(self) -> GitManager:
         return GitManager(self.root)
-
-    @provide(scope=Scope.APP)
-    def coordinator(
-        self,
-        node_repo: NodeRepository,
-        runtime_repo: RuntimeRepository,
-        graph_engine: GraphEngine,
-        git_mgr: GitManager,
-    ) -> ExecutionCoordinator:
-        return ExecutionCoordinator(node_repo, runtime_repo, graph_engine, git_mgr)
 
     @provide(scope=Scope.APP)
     def heuristics(
         self,
         node_repo: NodeRepository,
         runtime_repo: RuntimeRepository,
-        graph_engine: GraphEngine,
+        snapshots: SnapshotBuilder,
     ) -> RecommendationEngine:
-        return RecommendationEngine(node_repo, runtime_repo, graph_engine)
+        return RecommendationEngine(node_repo, runtime_repo, snapshots)
 
     @provide(scope=Scope.APP)
     def verification_engine(self) -> VerificationEngine:
@@ -119,21 +101,11 @@ class TaskManagerProvider(Provider):
         self,
         node_repo: NodeRepository,
         runtime_repo: RuntimeRepository,
-        graph_engine: GraphEngine,
-        coordinator: ExecutionCoordinator,
         ledger_repo: LedgerRepository,
         verification_engine: VerificationEngine,
         job_repo: JobRepository,
     ) -> Operations:
-        return Operations(
-            node_repo,
-            runtime_repo,
-            graph_engine,
-            coordinator,
-            ledger_repo,
-            verification_engine,
-            job_repo=job_repo,
-        )
+        return Operations(node_repo, runtime_repo, ledger_repo, verification_engine, job_repo)
 
     get_db_mgr = db_mgr
     get_node_repo = node_repo
@@ -143,9 +115,7 @@ class TaskManagerProvider(Provider):
     get_cache_repo = cache_repo
     get_snapshots = snapshots
     get_condition_runner = condition_runner
-    get_graph_engine = graph_engine
     get_git_mgr = git_mgr
-    get_coordinator = coordinator
     get_heuristics = heuristics
     get_verification_engine = verification_engine
     get_renderer = renderer

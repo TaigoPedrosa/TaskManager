@@ -5,8 +5,9 @@ from typing import Any
 import httpx
 import pytest
 
-from taskmanager.core.enums import NodeKind, NodeStatus
+from taskmanager.core.enums import NodeKind
 from taskmanager.core.models import Node
+from taskmanager.core.status import Status
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.engine.search import (
@@ -47,15 +48,13 @@ def test_sqlite_vec_knn_matching_with_mock_provider(tmp_path: Path) -> None:
     db.init_all(vector_dimensions=4)
     repo = NodeRepository(db)
 
-    repo.save_node(
-        Node(id="AUTH-T01", kind=NodeKind.TASK, title="JWT Auth", status=NodeStatus.NOT_STARTED)
-    )
+    repo.save_node(Node(id="AUTH-T01", kind=NodeKind.TASK, title="JWT Auth", status=Status.READY))
     repo.save_node(
         Node(
             id="DATA-T01",
             kind=NodeKind.TASK,
             title="Postgres Migration",
-            status=NodeStatus.NOT_STARTED,
+            status=Status.READY,
         )
     )
 
@@ -69,7 +68,7 @@ def test_sqlite_vec_knn_matching_with_mock_provider(tmp_path: Path) -> None:
     assert len(results) == 2
     assert results[0]["node_id"] == "AUTH-T01"
     assert results[0]["title"] == "JWT Auth"
-    assert results[0]["status"] == NodeStatus.NOT_STARTED.value
+    assert results[0]["status"] == Status.READY.value
     assert results[0]["distance"] < results[1]["distance"]
 
     text_results = engine.search(query="JWT", limit=2)
@@ -84,7 +83,7 @@ def test_index_node_upsert_replaces_vector(tmp_path: Path) -> None:
     repo = NodeRepository(db)
 
     repo.save_node(
-        Node(id="TASK-01", kind=NodeKind.TASK, title="Initial Task", status=NodeStatus.NOT_STARTED)
+        Node(id="TASK-01", kind=NodeKind.TASK, title="Initial Task", status=Status.READY)
     )
 
     provider = MockEmbeddingProvider(dimensions=4)
@@ -109,10 +108,10 @@ def test_vector_search_kind_and_status_filtering(tmp_path: Path) -> None:
     repo = NodeRepository(db)
 
     nodes = [
-        Node(id="TASK-OPEN", kind=NodeKind.TASK, title="Task Open", status=NodeStatus.NOT_STARTED),
-        Node(id="TASK-DONE", kind=NodeKind.TASK, title="Task Done", status=NodeStatus.COMPLETED),
-        Node(id="PLAN-OPEN", kind=NodeKind.PLAN, title="Plan Open", status=NodeStatus.IMPLEMENTING),
-        Node(id="PLAN-DONE", kind=NodeKind.PLAN, title="Plan Done", status=NodeStatus.COMPLETED),
+        Node(id="TASK-OPEN", kind=NodeKind.TASK, title="Task Open", status=Status.READY),
+        Node(id="TASK-DONE", kind=NodeKind.TASK, title="Task Done", status=Status.COMPLETED),
+        Node(id="PLAN-OPEN", kind=NodeKind.PLAN, title="Plan Open", status=Status.IMPLEMENTING),
+        Node(id="PLAN-DONE", kind=NodeKind.PLAN, title="Plan Done", status=Status.COMPLETED),
     ]
     for n in nodes:
         repo.save_node(n)

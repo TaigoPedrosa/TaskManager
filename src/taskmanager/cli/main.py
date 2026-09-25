@@ -8,7 +8,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import typer
 from dishka import Container, make_container
@@ -1511,7 +1511,7 @@ def decision_list(
         rows = []
         for d in decisions:
             row = _node_row(d)
-            label = DECISION_STATUS_LABELS.get(d.status, d.status.value)
+            label = DECISION_STATUS_LABELS.get(cast("DecisionStatus", d.status), d.status.value)
             row["status"] = label
             row["state"] = label
             rows.append(row)
@@ -1523,7 +1523,7 @@ def decision_list(
     table.add_column("Status", style="yellow")
     table.add_column("Priority", justify="right")
     for d in decisions:
-        label = DECISION_STATUS_LABELS.get(d.status, d.status.value)
+        label = DECISION_STATUS_LABELS.get(cast("DecisionStatus", d.status), d.status.value)
         table.add_row(escape(d.id), escape(d.title), label, str(d.priority))
     print(table)
 
@@ -1543,7 +1543,7 @@ def decision_get(
         print(f"[red]Decision '{decision_id}' not found[/red]")
         raise typer.Exit(code=1)
     data = read_decision(node)
-    label = DECISION_STATUS_LABELS.get(node.status, node.status.value)
+    label = DECISION_STATUS_LABELS.get(cast("DecisionStatus", node.status), node.status.value)
     if json_output or yaml_output:
         doc = _node_row(node)
         doc["status"] = label

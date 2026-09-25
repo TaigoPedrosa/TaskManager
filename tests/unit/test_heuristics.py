@@ -5,7 +5,6 @@ import pytest
 
 from taskmanager.core.enums import (
     NodeKind,
-    NodeStatus,
     RelationType,
     VerificationType,
 )
@@ -16,28 +15,50 @@ from taskmanager.core.models import (
     NodeRelation,
     NodeVerification,
 )
+from taskmanager.core.status import Action, Status
 from taskmanager.db.connection import DatabaseManager
+from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
-from taskmanager.engine.graph import GraphEngine
 from taskmanager.engine.heuristics import RecommendationEngine, ScoredTask
+from taskmanager.engine.snapshot import SnapshotBuilder
 
 
 @pytest.fixture
 def env(
     tmp_path: Path,
-) -> tuple[NodeRepository, RuntimeRepository, GraphEngine, RecommendationEngine]:
+) -> tuple[NodeRepository, RuntimeRepository, SnapshotBuilder, RecommendationEngine]:
     db = DatabaseManager(tmp_path)
     db.init_all()
     node_repo = NodeRepository(db)
     runtime_repo = RuntimeRepository(db)
-    graph = GraphEngine(node_repo, runtime_repo)
-    engine = RecommendationEngine(node_repo, runtime_repo, graph)
-    return node_repo, runtime_repo, graph, engine
+    snapshots = SnapshotBuilder(node_repo, runtime_repo, JobRepository(db))
+    engine = RecommendationEngine(node_repo, runtime_repo, snapshots)
+    return node_repo, runtime_repo, snapshots, engine
+
+
+def _claim(
+    node_repo: NodeRepository, runtime_repo: RuntimeRepository, node_id: str, *files: str
+) -> None:
+    node = node_repo.get_node(node_id)
+    assert node is not None
+    node.status, node.claimed_from = Status.IMPLEMENTING, Status.READY
+    lease = Lease(
+        task_id=node_id,
+        agent_id="agent-1",
+        session_id="sess-1",
+        branch_name=f"tm/{node_id}",
+        action=Action.IMPLEMENT,
+        acquired_at=datetime.now(tz=UTC),
+        last_heartbeat=datetime.now(tz=UTC),
+        ttl_seconds=300,
+    )
+    locks = [FileLock(file_path=f, task_id=node_id) for f in files]
+    assert runtime_repo.claim(lease, locks, node)
 
 
 def test_recommendation_scoring_and_ranking_of_ready_tasks(
-    env: tuple[NodeRepository, RuntimeRepository, GraphEngine, RecommendationEngine],
+    env: tuple[NodeRepository, RuntimeRepository, SnapshotBuilder, RecommendationEngine],
 ) -> None:
     node_repo, _, _, engine = env
 
@@ -96,64 +117,50 @@ def test_recommendation_scoring_and_ranking_of_ready_tasks(
     assert scored_t1.score == 40.05
 
 
-def test_exclusion_of_blocked_in_flight_and_non_not_started_tasks(
-    env: tuple[NodeRepository, RuntimeRepository, GraphEngine, RecommendationEngine],
+def test_exclusion_of_blocked_claimed_and_already_implemented_tasks(
+    env: tuple[NodeRepository, RuntimeRepository, SnapshotBuilder, RecommendationEngine],
 ) -> None:
     node_repo, runtime_repo, _, engine = env
-
-    t1 = Node(id="T-01", kind=NodeKind.TASK, title="Prerequisite", priority=80)
-    t2 = Node(id="T-02", kind=NodeKind.TASK, title="Blocked", priority=90)
-    t3 = Node(id="T-03", kind=NodeKind.TASK, title="In Flight", priority=85)
-    t4 = Node(
-        id="T-04",
-        kind=NodeKind.TASK,
-        title="Already in review",
-        priority=70,
-        status=NodeStatus.WAITING_REVIEW,
+    node_repo.save_node(Node(id="T-01", kind=NodeKind.TASK, title="Prerequisite", priority=80))
+    node_repo.save_node(Node(id="T-02", kind=NodeKind.TASK, title="Blocked", priority=90))
+    node_repo.save_node(Node(id="T-03", kind=NodeKind.TASK, title="Claimed", priority=85))
+    node_repo.save_node(
+        Node(
+            id="T-04",
+            kind=NodeKind.TASK,
+            title="Already implemented",
+            priority=70,
+            status=Status.IMPLEMENTED,
+        )
     )
-    node_repo.save_node(t1)
-    node_repo.save_node(t2)
-    node_repo.save_node(t3)
-    node_repo.save_node(t4)
-
     node_repo.add_relation(
         NodeRelation(source_id="T-02", target_id="T-01", relation_type=RelationType.DEPENDS_ON)
     )
+    _claim(node_repo, runtime_repo, "T-03")
 
-    lease = Lease(
-        task_id="T-03",
-        agent_id="agent-1",
-        session_id="sess-1",
-        branch_name="feature/t3",
-        acquired_at=datetime.now(tz=UTC),
-        last_heartbeat=datetime.now(tz=UTC),
-        ttl_seconds=300,
-    )
-    runtime_repo.acquire_lease(lease, [])
-
-    ranked = engine.get_next_tasks(limit=10)
-    task_ids = [t.task_id for t in ranked]
-    assert task_ids == ["T-01"]
+    assert [t.task_id for t in engine.get_next_tasks(limit=10)] == ["T-01"]
 
 
 def test_exclusion_of_file_colliding_tasks(
-    env: tuple[NodeRepository, RuntimeRepository, GraphEngine, RecommendationEngine],
+    env: tuple[NodeRepository, RuntimeRepository, SnapshotBuilder, RecommendationEngine],
 ) -> None:
     node_repo, runtime_repo, _, engine = env
-
-    t1 = Node(id="TASK-VER", kind=NodeKind.TASK, title="Has Verification File", priority=80)
-    t2 = Node(
-        id="TASK-FM",
-        kind=NodeKind.TASK,
-        title="Has Frontmatter File",
-        priority=75,
-        frontmatter={"declared_files": ["src/db.py"]},
+    node_repo.save_node(
+        Node(id="TASK-VER", kind=NodeKind.TASK, title="Has Verification File", priority=80)
     )
-    t3 = Node(id="TASK-FREE", kind=NodeKind.TASK, title="Free of locks", priority=70)
-    node_repo.save_node(t1)
-    node_repo.save_node(t2)
-    node_repo.save_node(t3)
-
+    node_repo.save_node(
+        Node(
+            id="TASK-FM",
+            kind=NodeKind.TASK,
+            title="Has Frontmatter File",
+            priority=75,
+            frontmatter={"declared_files": ["src/db.py"]},
+        )
+    )
+    node_repo.save_node(
+        Node(id="TASK-FREE", kind=NodeKind.TASK, title="Free of locks", priority=70)
+    )
+    node_repo.save_node(Node(id="OTHER-TASK", kind=NodeKind.TASK, title="Holds files", priority=1))
     node_repo.add_verification(
         NodeVerification(
             node_id="TASK-VER",
@@ -162,32 +169,26 @@ def test_exclusion_of_file_colliding_tasks(
         )
     )
 
-    ranked_initial = engine.get_next_tasks(limit=5)
-    assert {t.task_id for t in ranked_initial} == {"TASK-VER", "TASK-FM", "TASK-FREE"}
+    assert {t.task_id for t in engine.get_next_tasks(limit=5)} == {
+        "TASK-VER",
+        "TASK-FM",
+        "TASK-FREE",
+        "OTHER-TASK",
+    }
 
-    lease = Lease(
-        task_id="OTHER-TASK",
-        agent_id="agent-worker",
-        session_id="sess-99",
-        branch_name="feature/other",
-        acquired_at=datetime.now(tz=UTC),
-        last_heartbeat=datetime.now(tz=UTC),
-        ttl_seconds=300,
-    )
-    lock1 = FileLock(file_path="src/auth/jwt.py", task_id="OTHER-TASK")
-    lock2 = FileLock(file_path="src/db.py", task_id="OTHER-TASK")
-    runtime_repo.acquire_lease(lease, [lock1, lock2])
-
-    ranked_colliding = engine.get_next_tasks(limit=5)
-    assert [t.task_id for t in ranked_colliding] == ["TASK-FREE"]
+    _claim(node_repo, runtime_repo, "OTHER-TASK", "src/auth/jwt.py", "src/db.py")
+    assert [t.task_id for t in engine.get_next_tasks(limit=5)] == ["TASK-FREE"]
 
     runtime_repo.release_lease("OTHER-TASK")
-    ranked_after_release = engine.get_next_tasks(limit=5)
-    assert {t.task_id for t in ranked_after_release} == {"TASK-VER", "TASK-FM", "TASK-FREE"}
+    assert {t.task_id for t in engine.get_next_tasks(limit=5)} == {
+        "TASK-VER",
+        "TASK-FM",
+        "TASK-FREE",
+    }
 
 
 def test_strategy_overrides(
-    env: tuple[NodeRepository, RuntimeRepository, GraphEngine, RecommendationEngine],
+    env: tuple[NodeRepository, RuntimeRepository, SnapshotBuilder, RecommendationEngine],
 ) -> None:
     node_repo, _, _, engine = env
 
@@ -233,7 +234,7 @@ def test_strategy_overrides(
         kind=NodeKind.TASK,
         title="Completed Subtask",
         priority=50,
-        status=NodeStatus.COMPLETED,
+        status=Status.COMPLETED,
     )
     task_finish = Node(id="TASK-FINISH", kind=NodeKind.TASK, title="Closing Task", priority=50)
     node_repo.save_node(task_c_done)
@@ -261,7 +262,7 @@ def test_strategy_overrides(
 
 
 def test_model_filtering(
-    env: tuple[NodeRepository, RuntimeRepository, GraphEngine, RecommendationEngine],
+    env: tuple[NodeRepository, RuntimeRepository, SnapshotBuilder, RecommendationEngine],
 ) -> None:
     node_repo, _, _, engine = env
 
@@ -308,7 +309,7 @@ def test_model_filtering(
 
 
 def test_plan_id_filter_and_limit(
-    env: tuple[NodeRepository, RuntimeRepository, GraphEngine, RecommendationEngine],
+    env: tuple[NodeRepository, RuntimeRepository, SnapshotBuilder, RecommendationEngine],
 ) -> None:
     node_repo, _, _, engine = env
 
@@ -340,7 +341,7 @@ def test_plan_id_filter_and_limit(
 
 
 def test_spec_id_filter(
-    env: tuple[NodeRepository, RuntimeRepository, GraphEngine, RecommendationEngine],
+    env: tuple[NodeRepository, RuntimeRepository, SnapshotBuilder, RecommendationEngine],
 ) -> None:
     node_repo, _, _, engine = env
 
@@ -383,7 +384,7 @@ def test_spec_id_filter(
 
 
 def test_spec_id_filter_walks_nested_plans(
-    env: tuple[NodeRepository, RuntimeRepository, GraphEngine, RecommendationEngine],
+    env: tuple[NodeRepository, RuntimeRepository, SnapshotBuilder, RecommendationEngine],
 ) -> None:
     """A plan `add`ed with another plan's id as its `--spec` nests under that plan instead of a
     spec (`Operations.add_plan` never checks the parent's kind); the filter has to walk past it."""
@@ -417,7 +418,7 @@ def test_spec_id_filter_walks_nested_plans(
 
 
 def test_get_next_tasks_never_offers_a_task_awaiting_decision(
-    env: tuple[NodeRepository, RuntimeRepository, GraphEngine, RecommendationEngine],
+    env: tuple[NodeRepository, RuntimeRepository, SnapshotBuilder, RecommendationEngine],
 ) -> None:
     node_repo, _runtime_repo, _graph, engine = env
     waiting = Node(id="T-WAIT", kind=NodeKind.TASK, title="Waiting")
@@ -437,7 +438,7 @@ def test_get_next_tasks_never_offers_a_task_awaiting_decision(
 
 
 def test_score_every_task_ignores_a_decision_node(
-    env: tuple[NodeRepository, RuntimeRepository, GraphEngine, RecommendationEngine],
+    env: tuple[NodeRepository, RuntimeRepository, SnapshotBuilder, RecommendationEngine],
 ) -> None:
     from taskmanager.engine.heuristics import score_every_task
 

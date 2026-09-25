@@ -18,9 +18,7 @@ from taskmanager.engine.decisions import (
     read_decision,
     stranded_dependents,
 )
-from taskmanager.engine.graph import GraphEngine
 from taskmanager.engine.operations import OperationError, Operations
-from taskmanager.engine.runtime import ExecutionCoordinator
 from taskmanager.engine.verification import VerificationEngine
 
 
@@ -32,16 +30,13 @@ class Kit:
         self.runtime = RuntimeRepository(db)
         self.jobs = JobRepository(db)
         self.ledger = LedgerRepository(db)
-        graph = GraphEngine(self.nodes, self.runtime)
         self.ops = Operations(
             self.nodes,
             self.runtime,
-            graph,
-            ExecutionCoordinator(self.nodes, self.runtime, graph),
             self.ledger,
             VerificationEngine(root),
+            self.jobs,
             actor="tester",
-            job_repo=self.jobs,
         )
 
     def add(
