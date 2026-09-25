@@ -700,3 +700,19 @@ def test_a_handed_over_job_resumes_only_for_the_agent_and_token_it_was_handed_to
     git(worktree, "commit", "-q", "--no-edit")
 
     assert landing.resume(job_id, agent="resolver", token=handed.token) == JobState.SUCCEEDED
+
+
+def test_a_job_stopped_again_after_each_resume_counts_resumes_under_the_key_tm_wave_reads(
+    tmp_path: Path,
+) -> None:
+    workflow = Path(__file__).resolve().parents[2] / "workflows" / "tm-wave.js"
+    assert "j.result && j.result.resumed" in workflow.read_text(encoding="utf-8")
+    claims, landing = estate_with(tmp_path, None)
+    reviewed_task(claims)
+    job_id, _ = land(claims, landing)
+
+    for resumes in (1, 2):
+        claims.start("T1", "agent", "s1")
+        assert landing.resume(job_id) == JobState.NEEDS_AGENT
+        job = claims.jobs.get(job_id)
+        assert job is not None and job.result["resumed"] == resumes
