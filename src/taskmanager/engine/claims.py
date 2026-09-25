@@ -462,7 +462,7 @@ class Claims:
         )
         try:
             return replace(self._begin(after, action, model, worktree_dir), token=lease.token)
-        except (OperationError, CalledProcessError, OSError) as exc:
+        except (OperationError, CalledProcessError, OSError, ValueError) as exc:
             self._unclaim(node)
             detail = getattr(exc, "stderr", None) or str(exc)
             raise OperationError(f"claim of {node.id} undone: {detail}".strip(), 409) from exc
@@ -939,7 +939,8 @@ class Claims:
             raise OperationError(f"verifications red on {target}:\n{report}", 409)
 
     def _retire_branch(self, node_id: str) -> None:
-        """Keeps the old branch as `<branch>@<n>` so the reopened node starts clean."""
+        """Keeps the old branch as `<branch>@<n>`, and its worktree beside the old path under the
+        same suffix, so the reopened node is cut clean where its worktree always goes."""
         branch = self.branch_of(node_id)
         for repo in self.repos_of(node_id):
             repo_dir = self.root / repo
@@ -948,7 +949,16 @@ class Claims:
             n = 1
             while gitops.rev_parse(repo_dir, f"refs/heads/{branch}@{n}"):
                 n += 1
-            gitops.rename_branch(repo_dir, branch, f"{branch}@{n}")
+            worktree = GitManager(repo_dir).find_worktree(branch)
+            try:
+                if worktree is not None:
+                    retired = worktree.with_name(f"{worktree.name}@{n}")
+                    gitops.move_worktree(repo_dir, worktree, retired)
+                gitops.rename_branch(repo_dir, branch, f"{branch}@{n}")
+            except CalledProcessError as exc:
+                raise OperationError(
+                    f"could not retire {branch} in {repo}: {exc.stderr or exc}".strip(), 409
+                ) from exc
 
     def _strand(self, node_id: str, status: Status) -> None:
         dependents = stranded_dependents(self.ops, node_id)

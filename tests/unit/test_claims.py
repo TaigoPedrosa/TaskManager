@@ -733,3 +733,41 @@ def test_a_handed_over_job_gets_a_new_token_and_the_parked_one_closes_nothing(
     with pytest.raises(OperationError, match="another claim"):
         claims.release("T1", token=merged.token)
     assert claims.release("T1", token=handed.token) == Status.REVIEWED
+
+
+def test_a_node_reopened_on_a_new_branch_is_cut_a_fresh_worktree_beside_the_retired_one(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path)
+    add(claims, "T1")
+    first = claims.start("T1", "agent", "s1")
+    assert first.worktree is not None
+    (Path(first.worktree) / "draft.py").write_text("unfinished\n")
+    claims.release("T1")
+    claims.defer("T1", "later")
+    claims.reopen("T1", "start clean", new_branch=True)
+
+    again = claims.start("T1", "agent", "s1")
+
+    assert again.action == Action.IMPLEMENT
+    assert again.worktree is not None
+    worktree = Path(again.worktree)
+    assert git(worktree, "rev-parse", "--abbrev-ref", "HEAD") == "tm/T1"
+    assert not (worktree / "draft.py").exists()
+    retired = Path(f"{first.worktree}@1")
+    assert git(retired, "rev-parse", "--abbrev-ref", "HEAD") == "tm/T1@1"
+    assert (retired / "draft.py").exists()
+
+
+def test_a_worktree_path_taken_by_another_branch_undoes_the_claim(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path)
+    add(claims, "T1")
+    taken = claims.root / claims.config.worktree_dir / "api-T1"
+    git(claims.root / "api", "worktree", "add", "-q", "-b", "other", str(taken), "origin/main")
+
+    with pytest.raises(OperationError, match="claim of T1 undone"):
+        claims.start("T1", "agent", "s1")
+
+    node = stored(claims, "T1")
+    assert (node.status, node.claimed_from) == (Status.READY, None)
+    assert claims.runtime.get_lease("T1") is None

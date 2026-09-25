@@ -168,6 +168,10 @@ def rename_branch(repo: Path, old: str, new: str) -> None:
     _run(repo, "branch", "-m", old, new)
 
 
+def move_worktree(repo: Path, old: Path, new: Path) -> None:
+    _run(repo, "worktree", "move", str(old), str(new))
+
+
 def merge_no_ff(worktree: Path, ref: str, subject: str) -> bool:
     """False on a conflict, leaving the merge in progress for an agent to resolve."""
     return _git(worktree, "merge", "--no-ff", "--no-edit", "-m", subject, ref).returncode == 0
