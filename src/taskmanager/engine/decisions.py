@@ -7,6 +7,7 @@ from taskmanager.core.enums import NodeKind, RelationType
 from taskmanager.core.lifecycle import LifecycleError, abandon, defer, reopen
 from taskmanager.core.models import Node
 from taskmanager.core.status import EXITS, DecisionEffect, DecisionStatus, Status
+from taskmanager.engine.gates import clear_red_targets
 from taskmanager.engine.snapshot import apply_cycle, cycle_of, roll_up_ancestors, stored_status
 
 if TYPE_CHECKING:
@@ -228,6 +229,7 @@ def apply_effect(ops: Operations, decision_id: str, effect: DecisionEffect) -> l
         if effect == DecisionEffect.REOPEN:
             updated.verdict = None
         ops.node_repo.save_node(updated)
+        clear_red_targets(ops.node_repo, node_id)
         ops.append_section(node_id, _NOTE_SECTION[effect], note)
         if cycle.status in (Status.ABANDONED, Status.DEFERRED) and (
             dependents := stranded_dependents(ops, node_id)

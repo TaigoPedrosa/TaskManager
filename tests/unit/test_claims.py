@@ -771,3 +771,44 @@ def test_a_worktree_path_taken_by_another_branch_undoes_the_claim(tmp_path: Path
     node = stored(claims, "T1")
     assert (node.status, node.claimed_from) == (Status.READY, None)
     assert claims.runtime.get_lease("T1") is None
+
+
+def test_an_investigate_answer_cannot_reopen_a_child_under_a_set_aside_container(
+    tmp_path: Path,
+) -> None:
+    from taskmanager.engine.decisions import open_failed_decision
+
+    claims = make_estate(tmp_path)
+    add(claims, "P", NodeKind.PLAN)
+    add(claims, "P-a", parent="P", status=Status.FAILED)
+    add(claims, "P-b", parent="P")
+    decision = open_failed_decision(claims.ops, "P-a", "its step failed", "")
+    claims.defer("P", "later")
+
+    with pytest.raises(OperationError, match="reopen P first"):
+        claims.ops.answer_decision(decision, option="investigate")
+
+    assert stored(claims, "P-a").status == Status.FAILED
+    assert stored(claims, decision).status == "OPEN"
+
+
+def test_an_investigate_answer_ends_a_parked_landing_s_red_target_wait(tmp_path: Path) -> None:
+    from taskmanager.engine.decisions import open_failed_decision
+
+    claims = make_estate(tmp_path)
+    add(claims, "T1", status=Status.FAILED)
+    claims.nodes.add_condition(
+        Condition(
+            node_id="T1",
+            idx=0,
+            needs="red-target: api main at abc fails the 1 test(s) this landing fails",
+            command="true",
+            stage=ConditionStage.LANDING,
+        )
+    )
+    decision = open_failed_decision(claims.ops, "T1", "its step failed", "")
+
+    claims.ops.answer_decision(decision, option="investigate")
+
+    assert stored(claims, "T1").status == Status.READY
+    assert claims.nodes.get_conditions("T1") == []
