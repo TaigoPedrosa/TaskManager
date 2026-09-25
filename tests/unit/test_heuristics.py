@@ -393,7 +393,9 @@ def test_spec_id_filter_walks_nested_plans(
     node_repo.save_node(Node(id="OUTER-PLAN", kind=NodeKind.PLAN, title="Outer"))
     node_repo.save_node(Node(id="INNER-PLAN", kind=NodeKind.PLAN, title="Inner"))
     node_repo.add_relation(
-        NodeRelation(source_id="SPEC-A", target_id="OUTER-PLAN", relation_type=RelationType.CONTAINS)
+        NodeRelation(
+            source_id="SPEC-A", target_id="OUTER-PLAN", relation_type=RelationType.CONTAINS
+        )
     )
     node_repo.add_relation(
         NodeRelation(

@@ -282,7 +282,9 @@ def test_node_repo_get_ancestor_of_kind_walks_nested_plans(tmp_path: Path) -> No
     repo.save_node(Node(id="PLAN-INNER", kind=NodeKind.PLAN, title="Inner Plan"))
     repo.save_node(Node(id="TASK-1", kind=NodeKind.TASK, title="Task"))
     repo.add_relation(
-        NodeRelation(source_id="SPEC-A", target_id="PLAN-OUTER", relation_type=RelationType.CONTAINS)
+        NodeRelation(
+            source_id="SPEC-A", target_id="PLAN-OUTER", relation_type=RelationType.CONTAINS
+        )
     )
     repo.add_relation(
         NodeRelation(
@@ -290,7 +292,9 @@ def test_node_repo_get_ancestor_of_kind_walks_nested_plans(tmp_path: Path) -> No
         )
     )
     repo.add_relation(
-        NodeRelation(source_id="PLAN-INNER", target_id="TASK-1", relation_type=RelationType.CONTAINS)
+        NodeRelation(
+            source_id="PLAN-INNER", target_id="TASK-1", relation_type=RelationType.CONTAINS
+        )
     )
 
     assert repo.get_ancestor_of_kind("TASK-1", NodeKind.SPEC) == "SPEC-A"

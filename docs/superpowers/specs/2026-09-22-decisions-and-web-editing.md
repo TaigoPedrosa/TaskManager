@@ -29,11 +29,21 @@ those, so the logic moves into `taskmanager/engine/operations.py`:
 ```python
 class OperationError(ValueError):
     """A refusal a user can act on; its message is shown verbatim by the CLI and the web."""
+
     status_code: int  # 400 invalid input, 404 unknown node, 409 conflict with current state
 
+
 class Operations:
-    def __init__(self, node_repo, runtime_repo, graph, coordinator, ledger_repo,
-                 verification_engine, actor: str = "cli") -> None: ...
+    def __init__(
+        self,
+        node_repo,
+        runtime_repo,
+        graph,
+        coordinator,
+        ledger_repo,
+        verification_engine,
+        actor: str = "cli",
+    ) -> None: ...
     def with_actor(self, actor: str) -> "Operations": ...
 ```
 
@@ -84,22 +94,24 @@ The structured part lives in `frontmatter["decision"]`, validated by pydantic mo
 
 ```python
 class DecisionOption(BaseModel):
-    key: str            # short, unique within the decision: "a", "b", "session-jwks"
-    label: str          # one line
-    description: str = ""   # markdown
+    key: str  # short, unique within the decision: "a", "b", "session-jwks"
+    label: str  # one line
+    description: str = ""  # markdown
     recommended: bool = False  # at most one option is recommended
 
+
 class DecisionAnswer(BaseModel):
-    option: str | None = None   # an option key, or None for a custom answer
-    text: str = ""              # the custom answer, or an optional note on a picked option
+    option: str | None = None  # an option key, or None for a custom answer
+    text: str = ""  # the custom answer, or an optional note on a picked option
     rationale: str = ""
     answered_by: str
     answered_at: datetime
 
+
 class DecisionData(BaseModel):
-    options: list[DecisionOption] = []   # may be empty: then only a custom answer is possible
+    options: list[DecisionOption] = []  # may be empty: then only a custom answer is possible
     allow_custom: bool = True
-    raised_by: str | None = None         # the node id that raised it
+    raised_by: str | None = None  # the node id that raised it
     answer: DecisionAnswer | None = None
     withdrawn_reason: str = ""
 ```
@@ -202,8 +214,8 @@ attachment entry therefore also carries:
 
 ```python
 class AttachmentSource(BaseModel):
-    uri: str | None          # "path/in/project.png", "figma:<fileKey>:<nodeId>", "https://..."
-    sha256: str | None       # of the source file at capture, for project-file sources only
+    uri: str | None  # "path/in/project.png", "figma:<fileKey>:<nodeId>", "https://..."
+    sha256: str | None  # of the source file at capture, for project-file sources only
     captured_at: datetime
     checked_at: datetime | None = None
     state: Literal["fresh", "stale", "missing", "unverifiable"] = "unverifiable"
