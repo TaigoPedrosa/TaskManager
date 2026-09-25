@@ -7,7 +7,7 @@ are folded in. Plan: `docs/superpowers/plans/2026-09-24-lifecycle-redesign.md`.
 This is sub-project 1 of 4. The others follow strictly after this one is implemented and published,
 each with its own spec and plan:
 
-1. **Lifecycle model and migration** (this spec).
+1. **Lifecycle model and cutover** (this spec).
 2. Data access: graph-query speed, API pagination, progressive loading, websocket deltas with a
    hash drift check.
 3. Web wave simulator, replacing the tree view.
@@ -29,8 +29,8 @@ each with its own spec and plan:
 6. **Nothing waits on an unnamed reason, and nothing loops.** A node waits on an edge, a decision or
    a checkable condition. Every kind of repeated failure is counted and ends in `FAILED` with a
    decision. Holds are removed.
-7. **The live SocialSrc estate is migrated with a backup, a dry run and the owner's go-ahead**, and a
-   pre-migration binary fails loudly against a migrated database, on reads and on writes.
+7. **The live SocialSrc estate moves by a fresh start**: the old estate is archived, not migrated, and
+   only the ongoing work is re-imported, on the owner's go-ahead (§9).
 
 Out of scope: graph-query performance, pagination and websocket protocol (sub-project 2); the wave
 simulator and the tree view's removal (sub-project 3); decisions UX beyond statuses, option effects
@@ -59,7 +59,6 @@ constraint:
 | `branch` | text | `tm/<id>` | the node's branch name in each repository it touches |
 | `requires` | text (JSON list) | `[]` | capabilities the executing agent needs, §5.5 |
 | `land_order` | text (JSON list), containers only | `[]` | repository order for a container's landing, §6.5 |
-| `schema_v` | int `NOT NULL`, no default | — | the schema generation that wrote the row, §9.1 |
 
 A **container** is a plan or a spec. **Decisions** keep their kind with their own statuses.
 
@@ -281,11 +280,10 @@ The refusal prints the cycle as a path, for example
 
 ### 5.1 Coordination state lives with the nodes
 
-`leases` and `file_locks` move from `runtime.db` into `spec.db`, beside two new tables, `branch_locks`
+`leases` and `file_locks` live in `state.db` with the nodes, beside two new tables, `branch_locks`
 and `jobs` (§6.2). A claim is one `BEGIN IMMEDIATE` transaction: it checks the status and flags,
 checks file locks, `INSERT`s the lease (a plain insert that fails on conflict, never an upsert),
 inserts the file locks, sets `status` and `claimed_from`. Two racing claims cannot both succeed.
-`runtime.db` becomes the cache database (§9.1).
 
 The lease row gains `action`, `review_hash` (for `review`), and a nullable `ttl` (null while a stopped
 job waits for an agent, §6.2).
@@ -389,7 +387,7 @@ the workflow routes it to an agent type that has the capability. `--release` is 
 
 A landing or a sync can outlast the command runner's 10-minute limit, so each runs as a detached
 **job**, a row of `jobs(id, kind, node_id, repo, target, state, step, worktree, pid, heartbeat,
-result)` in `spec.db`. `kind` is `land` or `sync`. `tm job status <job>` reports it;
+result)` in `state.db`. `kind` is `land` or `sync`. `tm job status <job>` reports it;
 `tm job resume <job>` continues it after an agent resolved what stopped it. The running process
 heartbeats the lease; a job stopped for an agent keeps its lease with `ttl` null, so sweep does not
 roll it back, and discovery offers it (§5.6).
@@ -543,92 +541,45 @@ repository with no `main` gate configured cannot land on `main`: the job stops a
 is absent. A node's `gate_lane` frontmatter stays what implement, review and fix briefs carry for
 their own gates.
 
-## 9. Migration
+## 9. Storage and cutover
 
-### 9.1 Versioning and fail-loud
+There is no in-place migration. The owner ruled (2026-09-24) that the ongoing SocialSrc work is
+re-imported strategically into a fresh estate instead.
 
-- The self-healing `ALTER`s become ordered migrations keyed by `PRAGMA user_version` on each
-  database. The new binary refuses to open an older version except through `tm migrate`, and refuses
-  a newer one.
-- A pre-migration binary cannot use a migrated database: it fails to parse every new status on read,
-  and every write it makes fails, because its `save_node` inserts no `schema_v` into a `NOT NULL`
-  column without a default (`UPSERT` does not intervene for `NOT NULL`). Its `tm run start/stop`
-  write through the same path. A test runs the current release against a migrated fixture and asserts
-  each of these fails.
-- `runtime.db` keeps only caches (`gate_baselines`, `condition_results`) after its leases and locks
-  move to `spec.db`.
+### 9.1 Fresh storage
 
-### 9.2 `tm migrate`
+- The new version stores its state in new files under `.taskmanager/`: `state.db` (nodes, sections,
+  relations, verifications, conditions, search indexes, leases, file locks, branch locks, jobs),
+  `cache.db` (`gate_baselines`, `condition_results`) and `ledger.db`, each created at its current
+  schema by `tm init` and versioned by `PRAGMA user_version` for future changes. The self-healing
+  `ALTER`s go.
+- Opened in a directory holding a pre-lifecycle estate (a SQLite `spec.db` present, no `state.db`),
+  every command except `tm init --archive` refuses with: "this directory holds a
+  pre-lifecycle estate: run `tm init --archive` to move it to `.taskmanager/archive-<timestamp>/`
+  and start fresh, then re-import the ongoing work". `tm init --archive` moves the old files, never
+  deletes them.
+- A pre-lifecycle binary fails loudly against the new estate: `tm init` writes `spec.db` and
+  `runtime.db` as plain-text tombstones naming the version that owns the directory, so the old
+  binary's first query fails with SQLite's "file is not a database" instead of quietly opening an
+  empty estate.
+- `tm restore` reads only the new export format and refuses an old one, naming the last
+  pre-lifecycle release (tagged `v0.2.0` before this work lands) as the version that reads it.
 
-- Refuses while any lease is live. Deletes expired lease and lock rows.
-- Backs up the three databases with SQLite's online backup, plus a `tm export`, into
-  `.taskmanager/backups/<timestamp>-v<from>/`, and prints the paths before writing anything.
-- Rebuilds `nodes` for the new columns and `CHECK`s with `PRAGMA foreign_keys = OFF`, copying with
-  explicit `rowid` so `nodes_fts` stays aligned, then `PRAGMA foreign_key_check` must return nothing
-  or the transaction rolls back.
-- `--dry-run` runs the whole migration on a temporary copy and prints the report (§9.4).
-- Writes one `migrate` ledger event per changed node.
-- Rollback is documented, not automated: restore the backup, reinstall the previous version.
-
-### 9.3 Mapping
-
-| Old | New |
-|---|---|
-| task `NOT_STARTED`, `IMPLEMENTING` | `READY` |
-| task `WAITING_REVIEW`, `REVIEWING` | `IMPLEMENTED` |
-| task `WAITING_FIXES`, `FIXING` | `REVIEWED`, outcome `reject` |
-| task `WAITING_MERGE`, `MERGING` | `REVIEWED`, outcome `approve` |
-| `COMPLETED`, `DEFERRED`, `ABANDONED`, `SUPERSEDED` | unchanged |
-| plan, spec | the §3.1 container rollup over its migrated children, so a plan with only `ABANDONED` children stays `ABANDONED` and a childless plan is `READY` |
-| decision `NOT_STARTED`, `COMPLETED`, `ABANDONED` | `OPEN`, `ANSWERED`, `WITHDRAWN` |
-| `review_gate` node | becomes a task (`review 0, fix 0, merge main`) keeping its edges and title: a review task, as the owner framed it |
-
-- **Flags.** Tasks: `review 1, fix 1, merge main`. Containers: `0, 0, main`. Nothing changes shape
-  until a planner opts in.
-- **`review_cycles`** is derived from the ledger: the number of `task_stop` events moving the node to
-  `WAITING_FIXES`, plus 1 when it is mapped to `REVIEWED`/`approve`, with a minimum of 1 for anything
-  mapped to `REVIEWED`. A `:fixrounds` section, where one exists, raises it to at least fix rounds + 1
-  and is removed. A node already past its cap becomes `FAILED` with its decision.
-- **Holds.** A `:hold` section on a node not `COMPLETED` becomes a decision blocking it, "Held:
-  `<text>`. Release, defer or abandon?", effects `none`, `defer`, `abandon`. Holds on completed
-  nodes stay as history sections.
-- **External blockers**, on nodes not in a terminal status (terminal nodes keep the frontmatter as
-  history):
-  - a structured entry `{needs, command}` whose command is executable → a condition, `stage: landing`
-    when its `needs` or the node's text says it gates the merge ("do not merge", "before merging"),
-    else `claim`;
-  - a plain string, or a command that is prose → a decision blocking the node, "Is `<text>`
-    satisfied?", effects `none`, `defer`, `abandon`;
-  - an entry matching `/\b(figma|storybook)\b.*\b(mcp|reachable)\b/i` → `requires: [figma]` or
-    `[storybook]`;
-  - a `needs` naming exactly one existing node id also gets an edge.
-  The key is removed from converted nodes.
-- **Edge gates** become plain edges.
-- **Frontmatter tm does not interpret** (`soft_depends_on`, `needs_origin`, `enables_origin`,
-  `blocked_by`, `gate_lane`) stays as it is. `branch` on an open node sets the `branch` column with
-  any `origin/` prefix stripped; on a terminal node it stays history.
-- **Old exports.** `tm restore` accepts the old export format by running it through this mapping, so
-  every committed `spec/tm/` snapshot stays restorable.
-
-### 9.4 Dry-run report
-
-Counts per mapping row, then every node the migration decided something about: each node made
-`FAILED`, each hold and string blocker made a decision, each condition with its stage, each
-`requires`, each gated edge, each ambiguous `needs`, each `branch` column set, each review gate
-converted, and each frontmatter key left uninterpreted with its count.
-
-### 9.5 Cutover runbook (in `tm guide overview`)
+### 9.2 Cutover runbook (in `tm guide overview`)
 
 Each step runs on the owner's go-ahead:
 
 1. Stop every dispatcher; wait for an empty `tm run list`.
-2. Install the new plugin and `tm`; replace any session-local copy of the old `tm-wave` script.
-3. Configure `repos.<repo>.gates` and `repo_order` for the estate.
-4. `tm migrate --dry-run`; the owner reads the report.
-5. `tm migrate`.
-6. Apply the prepared guide addendum and rules changes (§10.3).
-7. `tm export` into `spec/tm` and commit.
-8. Resume dispatching with the new `tm-wave`.
+2. With the old version: `tm export` into `spec/tm`, commit; that snapshot is the archive of record.
+3. Author the re-import: `tm import` documents for the specs, plans, tasks and open decisions still
+   ongoing, carrying their sections, verifications, edges, flags, conditions and `requires` in the new
+   shape. Completed work is not re-imported; edges to it are dropped, since it is on `main`.
+4. Install the new plugin and `tm`; replace any session-local copy of the old `tm-wave` script.
+5. `tm init --archive`; configure `repos.<repo>.gates` and `repo_order`.
+6. `tm import` the documents; `tm wave discover` shows what is claimable, for the owner to check.
+7. Apply the prepared guide addendum and rules changes (§10.3).
+8. `tm export` into `spec/tm` and commit.
+9. Resume dispatching with the new `tm-wave`.
 
 ## 10. Everything else that changes
 
@@ -666,7 +617,7 @@ agent's brief is the job's stopped state, its output and its worktree.
 - **SocialSrc, prepared ahead and applied at cutover:** `.claude/rules/35-taskmanager.md`,
   `85-reports-gates-copy.md` and their ledger entries on a `--no-track` worktree branch, pushed at
   cutover so the rules never describe an uninstalled tm; the project guide addendum (sections of the
-  `guide` node in the live database) as a file applied with `tm section set` after `tm migrate`; the
+  `guide` node in the live database) as a file applied with `tm section set` after the re-import; the
   owner's global `dispatcher` skill copy.
 
 ## 11. Testing
@@ -695,25 +646,22 @@ Test-first; the repository's gates (`uv run pytest`, `uv run ruff check`, `uv ru
   and its decision; unattributed red; post-landing verify red; a parent landing's compare-and-swap
   race; a container across repositories with a later one failing and then landing only what is left;
   claim-time sync with and without conflict; a killed job recovered.
-- **Migration:** a fixture estate built with the current release covering every status, hold, gate,
-  external-blocker shape (structured, string, prose command, capability), review gate, `branch`
-  frontmatter, childless and all-abandoned plans, and decision state; the mapping, the report, the
-  refusal under a live lease, the foreign-key check, and the current release failing on read and on
-  write against the migrated fixture; an old export restored.
+- **Storage:** a fresh `tm init`; refusal on a pre-lifecycle directory and `tm init --archive`
+  moving it intact; `tm restore` refusing an old export; the kind-aware `CHECK` refusing an old
+  status on write.
 - **CLI and web API:** integration tests for every verb and refusal.
 - **End to end, before publishing:** the new `tm-wave` on a scratch estate of toy repositories with
   real cheap agents, covering at least one landing on a parent branch, one container review, one
   refused cycle, one `FAILED` node and one reopen.
 
 The live SocialSrc database is not read by tests and not written by anything in this work until the
-owner authorises the rehearsal on a copy and, separately, the migration.
+owner authorises the cutover (§9.2).
 
 ## 12. Choices made without an explicit owner ruling
 
 Listed so the owner can overturn them:
 
-1. Decision options carry effects (§4.2), used by `FAILED`, stranded dependents, migrated holds and
-   string blockers.
+1. Decision options carry effects (§4.2), used by `FAILED` and stranded dependents.
 2. `investigate` on a `FAILED` decision reopens the node with the answer as the note.
 3. Edges on a container are inherited by every descendant (§4.1); today they gate nothing below.
 4. Container branches are local, never pushed (§6.4).
@@ -726,7 +674,8 @@ Listed so the owner can overturn them:
 9. `outcome` (closed, routes) and `verdict` (free text, never routes) are separate columns (§2.1).
 10. A review after a merge fix is not counted (§3.2).
 11. `step_failures` bounds agent deaths, transient releases and unresolved jobs (§3.2).
-12. Leases and locks move into `spec.db` so a claim is one transaction (§5.1).
+12. Leases and locks live in `state.db` with the nodes, so a claim is one transaction (§5.1).
 13. Children cannot be added under a `COMPLETED` container; a new plan is filed instead (§2.3).
 14. `holdMerge` stays a dispatcher argument rather than node state (§4.5).
-15. Plain-string external blockers become decisions at migration rather than being hand-converted.
+15. `tm init` writes plain-text tombstones at the old database paths so an old binary fails loudly
+    (§9.1).
