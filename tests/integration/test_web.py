@@ -516,6 +516,7 @@ def test_static_export_embeds_every_status_and_the_filter_ui(
         "repo-filter",
         "model-filter",
         "spec-filter",
+        "phase-filter",
         "score-filter",
         "clear-filters-btn",
         "legend-panel",

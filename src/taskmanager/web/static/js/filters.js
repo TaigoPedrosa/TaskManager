@@ -1,14 +1,15 @@
 // Filters (mirrored into the URL hash so a view is shareable)
 const NO_REPO = '(none)';
 const NO_SPEC = '(none)';
+const NO_PHASE = '(none)';
 // Every dimension below is tri-state: absent from the Map = no opinion (neutral),
 // 'include' or 'exclude' otherwise. Maps are mutated in place, never reassigned (except
 // statusMode, read fresh every time and never captured by reference elsewhere) -- the
 // popover controls below capture repoMode/modelMode/specMode by reference at init, so a
 // fresh Map here would silently desync from them.
 const filters = {
-  statusMode: new Map(), repoMode: new Map(), modelMode: new Map(), specMode: new Map(),
-  scoreMin: null, scoreMax: null, q: ''
+  statusMode: new Map(), phaseMode: new Map(), repoMode: new Map(), modelMode: new Map(),
+  specMode: new Map(), scoreMin: null, scoreMax: null, q: ''
 };
 let scoreBounds = { min: 0, max: 100 };
 
@@ -22,13 +23,14 @@ function dimensionPasses(modeMap, values) {
 }
 
 function structuralFilterActive() {
-  return filters.statusMode.size > 0 || filters.repoMode.size > 0 || filters.modelMode.size > 0 ||
-    filters.specMode.size > 0 || filters.scoreMin !== null || filters.scoreMax !== null;
+  return filters.statusMode.size > 0 || filters.phaseMode.size > 0 || filters.repoMode.size > 0 ||
+    filters.modelMode.size > 0 || filters.specMode.size > 0 ||
+    filters.scoreMin !== null || filters.scoreMax !== null;
 }
 
 function taskPasses(t) {
-  const status = t.virtual_status || t.status;
-  if (!dimensionPasses(filters.statusMode, [status])) return false;
+  if (!dimensionPasses(filters.statusMode, [displayOf(t)])) return false;
+  if (!dimensionPasses(filters.phaseMode, [t.phase || NO_PHASE])) return false;
   if (!dimensionPasses(filters.repoMode, [t.target_repo || NO_REPO])) return false;
   if (!dimensionPasses(filters.modelMode, t.acceptable_models || [])) return false;
   if (!dimensionPasses(filters.specMode, [t._specId])) return false;
@@ -56,6 +58,9 @@ function readHash() {
   filters.statusMode = new Map();
   (p.get('status') || '').split(',').filter(c => window.STATUS_THEMES[c]).forEach(c => filters.statusMode.set(c, 'include'));
   (p.get('xstatus') || '').split(',').filter(c => window.STATUS_THEMES[c]).forEach(c => filters.statusMode.set(c, 'exclude'));
+  filters.phaseMode.clear();
+  (p.get('phase') || '').split(',').filter(c => window.PHASE_THEMES[c]).forEach(c => filters.phaseMode.set(c, 'include'));
+  (p.get('xphase') || '').split(',').filter(c => window.PHASE_THEMES[c]).forEach(c => filters.phaseMode.set(c, 'exclude'));
   filters.repoMode.clear();
   (p.get('repo') || '').split(',').filter(Boolean).forEach(v => filters.repoMode.set(v, 'include'));
   (p.get('xrepo') || '').split(',').filter(Boolean).forEach(v => filters.repoMode.set(v, 'exclude'));
@@ -84,6 +89,9 @@ function writeHash() {
   const status = modeEntries(filters.statusMode);
   if (status.inc.length) p.set('status', status.inc.join(','));
   if (status.exc.length) p.set('xstatus', status.exc.join(','));
+  const phase = modeEntries(filters.phaseMode);
+  if (phase.inc.length) p.set('phase', phase.inc.join(','));
+  if (phase.exc.length) p.set('xphase', phase.exc.join(','));
   const repo = modeEntries(filters.repoMode);
   if (repo.inc.length) p.set('repo', repo.inc.join(','));
   if (repo.exc.length) p.set('xrepo', repo.exc.join(','));
@@ -163,8 +171,8 @@ function triStateHandlers(el, getMode, setMode) {
 
 // Status Digest Bar
 function passesOtherDimensions(t, exclude) {
-  const status = t.virtual_status || t.status;
-  if (exclude !== 'status' && !dimensionPasses(filters.statusMode, [status])) return false;
+  if (exclude !== 'status' && !dimensionPasses(filters.statusMode, [displayOf(t)])) return false;
+  if (exclude !== 'phase' && !dimensionPasses(filters.phaseMode, [t.phase || NO_PHASE])) return false;
   if (exclude !== 'repo' && !dimensionPasses(filters.repoMode, [t.target_repo || NO_REPO])) return false;
   if (exclude !== 'model' && !dimensionPasses(filters.modelMode, t.acceptable_models || [])) return false;
   if (exclude !== 'spec' && !dimensionPasses(filters.specMode, [t._specId])) return false;
@@ -196,7 +204,7 @@ function updateStatsDigest() {
     : null;
 
   statsDigest.innerHTML = '';
-  const counts = computeDimensionCounts('status', t => [t.virtual_status || t.status]);
+  const counts = computeDimensionCounts('status', t => [displayOf(t)]);
   const total = collectTasks(treeData).filter(t => passesOtherDimensions(t, 'status')).length;
   const allActive = filters.statusMode.size === 0;
   const totalChip = document.createElement('button');
@@ -218,11 +226,7 @@ function updateStatsDigest() {
       divider.className = 'w-px h-4 bg-zinc-800 mx-0.5 flex-shrink-0';
       statsDigest.appendChild(divider);
     }
-    // §3.2a: the web never displays NOT_STARTED -- it is a stored status, not a live state,
-    // and a task's own virtual_status is never literally that value (resolve_task_state
-    // always translates it into READY/BLOCKED/... instead), so the chip could only ever
-    // read a count of zero.
-    Object.keys(window.STATUS_THEMES).filter(code => code !== 'NOT_STARTED' && window.STATUS_THEMES[code].group === group.code).forEach(code => {
+    Object.keys(window.STATUS_THEMES).filter(code => window.STATUS_THEMES[code].group === group.code).forEach(code => {
       const theme = getTheme(code);
       const count = counts[code] || 0;
       const mode = filters.statusMode.get(code);
@@ -506,6 +510,18 @@ const specTriState = createTriStatePopover(specFilterEl, {
     return [...byId.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([value, label]) => ({ value, label, count: counts[value] || 0 }));
   },
 });
+const phaseTriState = createTriStatePopover(phaseFilterEl, {
+  label: 'Phase',
+  dimension: 'Phase',
+  modeMap: filters.phaseMode,
+  onChange: renderAll,
+  getOptions: () => {
+    const counts = computeDimensionCounts('phase', t => [t.phase || NO_PHASE]);
+    return Object.keys(window.PHASE_THEMES).map(code => ({
+      value: code, label: window.PHASE_THEMES[code].label, count: counts[code] || 0,
+    }));
+  },
+});
 const scoreFilter = createScoreFilter(scoreFilterEl);
 
 
@@ -521,8 +537,8 @@ function populateFilterOptions() {
 let filtersPanelOpen = false;
 
 function activeFilterCount() {
-  return filters.repoMode.size + filters.modelMode.size + filters.specMode.size +
-    (filters.scoreMin !== null || filters.scoreMax !== null ? 1 : 0);
+  return filters.phaseMode.size + filters.repoMode.size + filters.modelMode.size +
+    filters.specMode.size + (filters.scoreMin !== null || filters.scoreMax !== null ? 1 : 0);
 }
 
 function renderFiltersToggle() {
@@ -541,6 +557,7 @@ function renderFilterControls() {
   repoTriState.render();
   modelTriState.render();
   specTriState.render();
+  phaseTriState.render();
   scoreFilter.render();
   clearFiltersBtn.classList.toggle('hidden', !(structuralFilterActive() || filters.q !== ''));
   renderFiltersToggle();
@@ -548,6 +565,7 @@ function renderFilterControls() {
 
 clearFiltersBtn.addEventListener('click', () => {
   filters.statusMode.clear();
+  filters.phaseMode.clear();
   filters.repoMode.clear();
   filters.modelMode.clear();
   filters.specMode.clear();
@@ -561,8 +579,8 @@ clearFiltersBtn.addEventListener('click', () => {
 
 // Legend
 function renderLegend() {
-  legendBody.innerHTML = window.STATUS_GROUPS.map(group => {
-    const rows = Object.values(window.STATUS_THEMES).filter(t => t.code !== 'NOT_STARTED' && t.group === group.code).map(t => `
+  const statusRows = window.STATUS_GROUPS.map(group => {
+    const rows = Object.values(window.STATUS_THEMES).filter(t => t.group === group.code).map(t => `
       <div class="flex items-start gap-2 py-1">
         <div class="w-36 flex-shrink-0">${statusChip(t.code)}</div>
         <p class="text-xs text-zinc-300">${esc(t.description)}</p>
@@ -570,6 +588,13 @@ function renderLegend() {
     `).join('');
     return `<div><div class="text-[10px] uppercase tracking-wider text-zinc-400 mt-2">${esc(group.label)}</div>${rows}</div>`;
   }).join('');
+  const phaseRows = Object.values(window.PHASE_THEMES).map(t => `
+    <div class="flex items-start gap-2 py-1">
+      <div class="w-36 flex-shrink-0">${phaseChip(t.code)}</div>
+      <p class="text-xs text-zinc-300">${esc(t.description)}</p>
+    </div>
+  `).join('');
+  legendBody.innerHTML = `${statusRows}<div><div class="text-[10px] uppercase tracking-wider text-zinc-400 mt-2">Phases</div>${phaseRows}</div>`;
 }
 
 function setLegendOpen(open) {

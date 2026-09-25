@@ -12,7 +12,7 @@ function renderGraph(graph) {
   const container = document.getElementById('network-canvas');
 
   const visNodes = graph.nodes.map(n => {
-    const theme = getTheme(n.status);
+    const theme = getTheme(displayOf(n));
     return {
       id: n.id,
       label: `${n.id}\n${n.title}\n*${theme.label}*`,

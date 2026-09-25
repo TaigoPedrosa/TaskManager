@@ -16,9 +16,9 @@ const decisionsListEl = document.getElementById('decisions-list');
 const decisionsDetailEl = document.getElementById('decisions-detail');
 
 const DECISION_TABS = [
-  { key: 'open', label: 'Open', status: 'NOT_STARTED' },
-  { key: 'answered', label: 'Answered', status: 'COMPLETED' },
-  { key: 'withdrawn', label: 'Withdrawn', status: 'ABANDONED' },
+  { key: 'open', label: 'Open', status: 'OPEN' },
+  { key: 'answered', label: 'Answered', status: 'ANSWERED' },
+  { key: 'withdrawn', label: 'Withdrawn', status: 'WITHDRAWN' },
 ];
 
 function decisionTabFor(status) {
@@ -31,10 +31,9 @@ function decisionStatusLabel(status) {
   return tab ? tab.label : status;
 }
 
-// A decision dependency row (blockers/dependencies/dependents) used to fall through to
-// statusIcon(), which reads NodeStatus/VirtualStatus themes and has no entry that reads
-// "Open" -- an open decision showed the dashed "Not Started" icon instead.
-const DECISION_STATUS_ICON = { NOT_STARTED: 'help-circle', COMPLETED: 'check-circle-2', ABANDONED: 'x-circle' };
+// A decision dependency row (blockers/dependencies/dependents) reads its own status, not a
+// display theme: none of the display themes means Open, Answered or Withdrawn.
+const DECISION_STATUS_ICON = { OPEN: 'help-circle', ANSWERED: 'check-circle-2', WITHDRAWN: 'x-circle' };
 function decisionStatusIcon(status, size = 'w-3.5 h-3.5') {
   const icon = DECISION_STATUS_ICON[status] || 'help-circle';
   return `<span class="flex-shrink-0" title="${esc(decisionStatusLabel(status))}">${renderIcon(icon, size)}</span>`;
@@ -94,7 +93,7 @@ renderDecisionsToolbarButton();
 function updateDecisionsBadge() {
   const badge = document.getElementById('decisions-badge');
   if (!badge) return;
-  const openCount = decisionsData.filter(d => d.status === 'NOT_STARTED').length;
+  const openCount = decisionsData.filter(d => d.status === 'OPEN').length;
   if (openCount > 0) {
     badge.textContent = openCount > 99 ? '99+' : String(openCount);
     badge.classList.remove('hidden');
@@ -238,11 +237,15 @@ function optionCardHtml(opt, isChosen, selectable) {
   // At most one option is ever chosen at a time, so a selectable card is a radio, not a
   // plain toggle button -- a screen reader otherwise never announces which one is selected.
   const roleAttrs = selectable ? `type="button" role="radio" aria-checked="${isChosen}"` : '';
+  const effect = opt.effect && opt.effect !== 'none'
+    ? `<span class="px-1.5 py-0.5 rounded-full bg-amber-950/60 text-amber-300 border border-amber-800/60 text-[10px] font-medium">Then: ${esc(opt.effect.replace('_', ' '))} the blocked nodes</span>`
+    : '';
   return `
     <${tag} ${roleAttrs} class="dec-option-card ${cls}" data-option-key="${esc(opt.key)}">
       <div class="flex items-center gap-2">
         <span class="text-sm font-medium text-zinc-100">${esc(opt.label)}</span>
         ${opt.recommended ? '<span class="px-1.5 py-0.5 rounded-full bg-emerald-950/60 text-emerald-300 border border-emerald-800/60 text-[10px] font-medium">Recommended</span>' : ''}
+        ${effect}
         ${isChosen ? `<span class="ml-auto">${renderIcon('check-circle-2', 'w-4 h-4 text-emerald-400')}</span>` : ''}
       </div>
       ${opt.description ? `<div class="prose prose-invert prose-sm max-w-none text-xs text-zinc-400">${renderSectionBody(opt.description)}</div>` : ''}
@@ -260,8 +263,8 @@ function renderDecisionDetail(id) {
     }
     const node = detail.node;
     const data = (node.frontmatter && node.frontmatter.decision) || {};
-    const isOpen = node.status === 'NOT_STARTED';
-    const isAnswered = node.status === 'COMPLETED';
+    const isOpen = node.status === 'OPEN';
+    const isAnswered = node.status === 'ANSWERED';
     const editable = canEdit();
     const attachments = (node.frontmatter && node.frontmatter.attachments) || [];
 
@@ -306,7 +309,7 @@ function renderDecisionDetail(id) {
           <div class="text-[11px] text-zinc-400">by ${esc(data.answer.answered_by)} &middot; ${esc(new Date(data.answer.answered_at).toLocaleString())}</div>
         </div>
       `;
-    } else if (node.status === 'ABANDONED') {
+    } else if (node.status === 'WITHDRAWN') {
       answerHtml = `<div class="text-xs text-zinc-400">Withdrawn${data.withdrawn_reason ? `: ${esc(data.withdrawn_reason)}` : '.'}</div>`;
     }
 
@@ -332,7 +335,7 @@ function renderDecisionDetail(id) {
       `;
     } else if (isAnswered && editable) {
       answerFormHtml = `<button type="button" class="dec-reopen-btn h-8 px-3 rounded-lg text-xs font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 transition">Reopen</button>`;
-    } else if (node.status === 'ABANDONED' && editable) {
+    } else if (node.status === 'WITHDRAWN' && editable) {
       answerFormHtml = `<button type="button" class="dec-reopen-btn h-8 px-3 rounded-lg text-xs font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 transition">Reopen</button>`;
     }
 
@@ -346,7 +349,7 @@ function renderDecisionDetail(id) {
           <div class="flex items-center gap-2">
             <span class="px-2 py-0.5 rounded text-[11px] font-mono uppercase bg-amber-500/10 text-amber-300 border border-amber-500/30">decision</span>
             <span class="font-mono text-xs font-semibold text-zinc-400">${esc(node.id)}</span>
-            ${statusIcon(detail.virtual_status || node.status, 'w-4 h-4')}
+            ${decisionStatusIcon(node.status, 'w-4 h-4')}
             <span class="text-xs font-medium text-zinc-300">${esc(decisionStatusLabel(node.status))}</span>
             ${copyIdButton(node.id)}
           </div>

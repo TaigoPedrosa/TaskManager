@@ -13,8 +13,8 @@ function renderDependencies(details, status, node, editable) {
     return addControl ? `<div class="pt-2">${addControl}</div>` : '';
   }
   const unfinished = details.filter(d => !d.finished);
-  const why = status === 'BLOCKED' && unfinished.length > 0
-    ? `<div class="st-chip st-BLOCKED rounded-lg px-2.5 py-1.5 text-xs">Blocked by ${unfinished.map(d => esc(d.id)).join(', ')}: not completed or superseded yet.</div>`
+  const why = status === 'BLOCKED_BY_TASK' && unfinished.length > 0
+    ? `<div class="st-chip st-BLOCKED_BY_TASK rounded-lg px-2.5 py-1.5 text-xs">Waits for ${unfinished.map(d => esc(d.id)).join(', ')} to land where this node builds.</div>`
     : '';
   const rows = details.map(d => `
     <div class="flex items-center gap-2 px-2 py-1.5 bg-zinc-950/60">
@@ -151,30 +151,30 @@ function attachSectionEditControls(root, node, sections) {
 }
 
 
-// Action bar: create/edit, status transitions, supersede/move (task only) and lease release
-// (when one is held). A plan or spec only ever gets Edit and Status.
+// Verbs, never a status picker: each button is a transition the stored status allows, and
+// every one of them asks for the note it records.
+const REOPENABLE = ['FAILED', 'DEFERRED', 'ABANDONED'];
+const SETTABLE_ASIDE = ['READY', 'IMPLEMENTED', 'REVIEWED', 'FIXED', 'FAILED'];
+
 function renderActionBar(node, hasLease) {
   const btnCls = 'h-7 px-2.5 rounded-md text-[11px] font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 transition';
   const dangerCls = 'h-7 px-2.5 rounded-md text-[11px] font-medium bg-zinc-900 hover:bg-red-950 text-red-300 border border-red-900/60 transition';
-  // Each transition offers only where it changes something: Reopen showed on an already
-  // NOT_STARTED task, and Mark completed/Defer/Abandon each showed while already the status
-  // they claim to set.
   const buttons = [
     `<button type="button" class="ab-edit ${btnCls}">Edit</button>`,
   ];
-  if (node.status !== 'COMPLETED') {
-    buttons.push(`<button type="button" class="ab-complete ${btnCls}">Mark completed</button>`);
+  if (node.kind !== 'decision') {
+    buttons.push(`<button type="button" class="ab-flags ${btnCls}">Flags&hellip;</button>`);
   }
-  if (node.status !== 'DEFERRED') {
-    buttons.push(`<button type="button" class="ab-defer ${btnCls}">Defer</button>`);
+  if (REOPENABLE.includes(node.status)) {
+    buttons.push(`<button type="button" class="ab-reopen ${btnCls}">Reopen&hellip;</button>`);
   }
-  if (node.status !== 'NOT_STARTED') {
-    buttons.push(`<button type="button" class="ab-reopen ${btnCls}">Reopen</button>`);
+  if (!hasLease) {
+    buttons.push(`<button type="button" class="ab-reset ${btnCls}">Reset&hellip;</button>`);
   }
-  if (node.status !== 'ABANDONED') {
-    buttons.push(`<button type="button" class="ab-abandon ${dangerCls}">Abandon</button>`);
+  if (!hasLease && SETTABLE_ASIDE.includes(node.status)) {
+    buttons.push(`<button type="button" class="ab-defer ${btnCls}">Defer&hellip;</button>`);
+    buttons.push(`<button type="button" class="ab-abandon ${dangerCls}">Abandon&hellip;</button>`);
   }
-  buttons.push(`<button type="button" class="ab-other-status ${btnCls}">Other status&hellip;</button>`);
   if (node.kind === 'task') {
     buttons.push(`<button type="button" class="ab-supersede ${dangerCls}">Supersede&hellip;</button>`);
     buttons.push(`<button type="button" class="ab-move ${btnCls}">Move to plan&hellip;</button>`);
@@ -193,14 +193,67 @@ function wireActionBar(root, node) {
     if (el) el.addEventListener('click', fn);
   };
   on('.ab-edit', () => openEditNodeDialog(node));
-  on('.ab-complete', () => changeStatus(node, 'COMPLETED'));
-  on('.ab-defer', () => changeStatus(node, 'DEFERRED'));
-  on('.ab-reopen', () => changeStatus(node, 'NOT_STARTED'));
-  on('.ab-abandon', () => changeStatus(node, 'ABANDONED'));
-  on('.ab-other-status', () => openOtherStatusDialog(node, node.status));
+  on('.ab-flags', () => openFlagsDialog(node));
+  on('.ab-reopen', () => openVerbDialog(node, 'reopen'));
+  on('.ab-reset', () => openResetDialog(node));
+  on('.ab-defer', () => openVerbDialog(node, 'defer'));
+  on('.ab-abandon', () => openVerbDialog(node, 'abandon'));
   on('.ab-supersede', () => openSupersedeDialog(node));
   on('.ab-move', () => openMoveDialog(node));
   on('.ab-release', () => releaseLease(node));
+}
+
+
+// Where a node lands, read from its base chain: "on tm/P; waits for P → main".
+function landingChainText(node) {
+  const base = (node.base_chain || []).map(id => (id === 'MAIN' ? 'main' : id));
+  if (base.length === 0) return '';
+  if (base[0] === 'main') return 'lands on main';
+  return `on tm/${esc(base[0])}; waits for ${base.map(esc).join(' → ')}`;
+}
+
+function renderLifecycle(detail, editable) {
+  const n = detail.node;
+  if (n.kind === 'decision') return '';
+  const row = (label, value) => `
+    <div class="flex gap-2"><dt class="w-28 flex-shrink-0 text-zinc-500">${esc(label)}</dt><dd class="text-zinc-300 min-w-0 break-words">${value}</dd></div>`;
+  const rows = [
+    row('Stored status', `${esc(n.status)} ${phaseChip(detail.phase)}`),
+    row('Outcome', esc(n.outcome || '-')),
+    row('Verdict', esc(n.verdict || '-')),
+    row('Flags', `review ${n.review ? 'on' : 'off'} · fix ${n.fix ? 'on' : 'off'}`),
+    row('Lands', `${esc(n.merge)} · ${landingChainText(n)}`),
+    row('Counters', `reviews ${n.review_cycles} · merge attempts ${n.merge_attempts} · step failures ${n.step_failures}`),
+    row('Requires', esc((n.requires || []).join(', ') || '-')),
+  ];
+  if (n.land_order && n.land_order.length) rows.push(row('Land order', esc(n.land_order.join(' → '))));
+  const conditions = (detail.conditions || []).map(c => `
+    <div class="flex items-center gap-2 px-2 py-1.5 bg-zinc-950/60">
+      <span class="text-[11px] text-zinc-300 flex-1 min-w-0 truncate">${esc(c.needs)}</span>
+      <span class="text-[10px] uppercase text-zinc-500">${esc(c.stage)}</span>
+      <code class="text-[10px] text-zinc-400 truncate max-w-[40%]">${esc(c.command)}</code>
+      <span class="text-[10px] ${c.last_result === 0 ? 'text-emerald-400' : 'text-amber-400'}">${c.last_result === null || c.last_result === undefined ? 'not run' : (c.last_result === 0 ? 'holds' : `exit ${c.last_result}`)}</span>
+      ${editable ? `<button type="button" class="cond-remove-btn p-1 rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-800" data-idx="${c.idx}" data-needs="${esc(c.needs)}" aria-label="Remove condition ${esc(c.needs)}">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
+    </div>`).join('');
+  const jobs = (detail.jobs || []).map(j => `
+    <div class="px-2 py-1.5 bg-zinc-950/60 text-[11px] text-zinc-300">${esc(j.kind)} ${esc(j.repo || '')} → ${esc(j.target || '')}: <strong>${esc(j.state)}</strong>${j.step ? ` at ${esc(j.step)}` : ''}</div>`).join('');
+  return `
+    <div class="lc-panel space-y-2 pt-2 text-xs">
+      <dl class="space-y-1">${rows.join('')}</dl>
+      <div class="font-semibold text-zinc-400 uppercase tracking-wider text-[10px]">Conditions (${(detail.conditions || []).length})</div>
+      ${conditions ? `<div class="divide-y divide-zinc-800 rounded border border-zinc-800">${conditions}</div>` : ''}
+      ${editable ? '<button type="button" class="cond-add-btn h-7 px-2 rounded-md text-[11px] font-medium text-emerald-400 hover:text-emerald-300 hover:bg-zinc-800 border border-dashed border-zinc-700 transition">+ Add condition</button>' : ''}
+      ${jobs ? `<div class="font-semibold text-zinc-400 uppercase tracking-wider text-[10px]">Jobs</div><div class="divide-y divide-zinc-800 rounded border border-zinc-800">${jobs}</div>` : ''}
+    </div>
+  `;
+}
+
+function wireLifecycleControls(root, node) {
+  root.querySelectorAll('.cond-remove-btn').forEach(btn => {
+    btn.addEventListener('click', () => removeCondition(node, Number(btn.dataset.idx), btn.dataset.needs));
+  });
+  const add = root.querySelector('.cond-add-btn');
+  if (add) add.addEventListener('click', () => openAddConditionDialog(node));
 }
 
 
@@ -224,7 +277,7 @@ async function showGraphInspector(nodeId) {
   if (!detail) return;
 
   const n = detail.node;
-  const status = detail.virtual_status || n.status;
+  const status = detail.display || n.status;
   const editable = canEdit();
 
   document.getElementById('inspector-kind').textContent = n.kind;
@@ -237,11 +290,11 @@ async function showGraphInspector(nodeId) {
     leaseBanner = `
       <div class="p-2.5 bg-blue-950/40 border border-blue-800/80 rounded-lg text-xs space-y-1">
         <div class="text-blue-300 font-semibold flex items-center gap-1.5">
-          ${renderIcon('flame', 'w-3.5 h-3.5')}
-          <span>In-Flight Active Lease</span>
+          ${renderIcon('bot', 'w-3.5 h-3.5')}
+          <span>Live lease: ${esc(detail.lease.action || 'step')}</span>
         </div>
-        <div class="text-zinc-400 font-mono">Agent: ${detail.lease.agent_id}</div>
-        <div class="text-zinc-400 font-mono text-[11px]">${detail.lease.branch_name}</div>
+        <div class="text-zinc-400 font-mono">Agent: ${esc(detail.lease.agent_id)}</div>
+        <div class="text-zinc-400 font-mono text-[11px]">${esc(detail.lease.branch_name)}</div>
       </div>
     `;
   }
@@ -255,6 +308,7 @@ async function showGraphInspector(nodeId) {
       <span class="px-2 py-0.5 rounded bg-zinc-950 border border-zinc-800 font-mono text-zinc-400 text-xs">Prio: ${n.priority || 50}</span>
     </div>
     ${leaseBanner}
+    ${renderLifecycle(detail, editable)}
     ${renderVerifications(n, detail.verifications, editable)}
     ${renderDependencies(detail.dependency_details, status, n, editable)}
     ${renderAttachments(n, attachments, editable)}
@@ -265,6 +319,7 @@ async function showGraphInspector(nodeId) {
   wireAttachmentControls(body, n, attachments, editable, () => showGraphInspector(nodeId));
   if (editable) {
     wireActionBar(body, n);
+    wireLifecycleControls(body, n);
     wireVerificationControls(body, n);
     wireDependencyControls(body, n);
     attachSectionEditControls(body, n, detail.sections);
@@ -531,7 +586,7 @@ if (typeof renderSectionBody === 'function') {
 function decorateAwaitingDecisionBanners() {
   function walk(nodes) {
     (nodes || []).forEach(task => {
-      if (task.kind === 'task' && (task.virtual_status || task.status) === 'AWAITING_DECISION') {
+      if (task.kind === 'task' && displayOf(task) === 'AWAITING_DECISION') {
         const el = document.getElementById(`doc-node-${task.id}`);
         const cardBody = el && el.querySelector('.task-body');
         if (cardBody && !cardBody.querySelector('.awaiting-decision-banner')) {

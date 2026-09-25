@@ -191,6 +191,15 @@ class AppIcon(Enum):
         "minus",
         '<path d="M5 12h14"/>',
     )
+    # Status icons with no other meaning on the page: a sync merge and a failed node.
+    GIT_MERGE = IconData(
+        "git-merge",
+        '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/>',
+    )
+    OCTAGON_X = IconData(
+        "octagon-x",
+        '<path d="m15 9-6 6"/><path d="M2.586 16.726A2 2 0 0 1 2 15.312V8.688a2 2 0 0 1 .586-1.414l4.688-4.688A2 2 0 0 1 8.688 2h6.624a2 2 0 0 1 1.414.586l4.688 4.688A2 2 0 0 1 22 8.688v6.624a2 2 0 0 1-.586 1.414l-4.688 4.688a2 2 0 0 1-1.414.586H8.688a2 2 0 0 1-1.414-.586z"/><path d="m9 9 6 6"/>',
+    )
 
     def as_symbol(self) -> str:
         return (
@@ -208,7 +217,8 @@ class AppIcon(Enum):
 
 
 class StatusGroup(Enum):
-    NOT_STARTED = "Not started"
+    READY = "Ready"
+    BLOCKED = "Blocked"
     IN_PROGRESS = "In progress"
     WAITING = "Waiting"
     FINISHED = "Finished"
@@ -227,92 +237,62 @@ class StatusTheme(NamedTuple):
     light_bg: str
 
 
-class StatusVisual(Enum):
-    NOT_STARTED = StatusTheme(
-        "NOT_STARTED",
-        "Not Started",
-        AppIcon.CIRCLE_DASHED,
-        StatusGroup.NOT_STARTED,
-        "Recorded but not begun; shown as Ready or Blocked once its dependencies are checked.",
-        "#a1a1aa",
-        "#27272a",
-        "#52525b",
-        "#f4f4f5",
+def _theme_dict(theme: Any) -> dict[str, Any]:
+    return {
+        "code": theme.code,
+        "label": theme.label,
+        "icon": theme.icon.value.name,
+        "description": theme.description,
+        "dark_fg": theme.dark_fg,
+        "dark_bg": theme.dark_bg,
+        "light_fg": theme.light_fg,
+        "light_bg": theme.light_bg,
+        "graph_bg": theme.dark_bg,
+        "graph_border": theme.dark_fg,
+    }
+
+
+def _css(prefix: str, themes: list[Any]) -> str:
+    light = "".join(
+        f".{prefix}-{t.code}{{--st-fg:{t.light_fg};--st-bg:{t.light_bg}}}" for t in themes
     )
+    dark = "".join(
+        f".dark .{prefix}-{t.code}{{--st-fg:{t.dark_fg};--st-bg:{t.dark_bg}}}" for t in themes
+    )
+    return light + dark
+
+
+class StatusVisual(Enum):
+    """One theme per DisplayStatus, in its order."""
+
     READY = StatusTheme(
         "READY",
         "Ready",
         AppIcon.PLAY_CIRCLE,
-        StatusGroup.NOT_STARTED,
-        "Not started and every dependency is finished, so it can be claimed now.",
+        StatusGroup.READY,
+        "Nothing it waits on is open, so its next step can be claimed now.",
         "#bef264",
         "#365314",
         "#3f6212",
         "#ecfccb",
-    )
-    BLOCKED = StatusTheme(
-        "BLOCKED",
-        "Blocked",
-        AppIcon.LOCK,
-        StatusGroup.NOT_STARTED,
-        "Not started and at least one dependency is not yet completed or superseded.",
-        "#fca5a5",
-        "#7f1d1d",
-        "#b91c1c",
-        "#fee2e2",
-    )
-    BLOCKED_BY_LEASE = StatusTheme(
-        "BLOCKED_BY_LEASE",
-        "Blocked by Lease",
-        AppIcon.HOURGLASS,
-        StatusGroup.NOT_STARTED,
-        "Every dependency is satisfied, but a file this task declares is locked by another "
-        "task's active lease -- ready by the graph, not claimable until that lease clears.",
-        "#fda4af",
-        "#881337",
-        "#be123c",
-        "#ffe4e6",
-    )
-    AWAITING_DECISION = StatusTheme(
-        "AWAITING_DECISION",
-        "Awaiting Decision",
-        AppIcon.HELP_CIRCLE,
-        StatusGroup.NOT_STARTED,
-        "Not started and blocked on an open decision; answering or withdrawing it unblocks the "
-        "task.",
-        "#fbbf24",
-        "#451a03",
-        "#b45309",
-        "#fffbeb",
     )
     IMPLEMENTING = StatusTheme(
         "IMPLEMENTING",
         "Implementing",
         AppIcon.PLAY,
         StatusGroup.IN_PROGRESS,
-        "An agent is writing the change.",
+        "An agent holds the implement lease, or a container's children are under way.",
         "#a5b4fc",
         "#312e81",
         "#4338ca",
         "#e0e7ff",
-    )
-    IN_FLIGHT = StatusTheme(
-        "IN_FLIGHT",
-        "In Flight",
-        AppIcon.FLAME,
-        StatusGroup.IN_PROGRESS,
-        "An agent holds an active lease on it right now.",
-        "#7dd3fc",
-        "#0c4a6e",
-        "#0369a1",
-        "#e0f2fe",
     )
     REVIEWING = StatusTheme(
         "REVIEWING",
         "Reviewing",
         AppIcon.EYE,
         StatusGroup.IN_PROGRESS,
-        "A reviewer is reading the change.",
+        "A reviewer holds the review lease.",
         "#c4b5fd",
         "#4c1d95",
         "#6d28d9",
@@ -323,51 +303,18 @@ class StatusVisual(Enum):
         "Fixing",
         AppIcon.WRENCH,
         StatusGroup.IN_PROGRESS,
-        "An agent is fixing what the review found.",
+        "An agent holds the fix lease for a rejection or a failed landing.",
         "#f9a8d4",
         "#831843",
         "#be185d",
         "#fce7f3",
-    )
-    WAITING_REVIEW = StatusTheme(
-        "WAITING_REVIEW",
-        "Waiting Review",
-        AppIcon.CLOCK,
-        StatusGroup.WAITING,
-        "The change is done and waits for a reviewer.",
-        "#fcd34d",
-        "#78350f",
-        "#92400e",
-        "#fef3c7",
-    )
-    WAITING_FIXES = StatusTheme(
-        "WAITING_FIXES",
-        "Waiting Fixes",
-        AppIcon.ALERT_TRIANGLE,
-        StatusGroup.WAITING,
-        "The review found defects and the fixes wait for an agent.",
-        "#fdba74",
-        "#7c2d12",
-        "#9a3412",
-        "#ffedd5",
-    )
-    WAITING_MERGE = StatusTheme(
-        "WAITING_MERGE",
-        "Waiting Merge",
-        AppIcon.GIT_PULL_REQUEST,
-        StatusGroup.WAITING,
-        "The review is closed and the branch waits to be merged.",
-        "#5eead4",
-        "#134e4a",
-        "#115e59",
-        "#ccfbf1",
     )
     MERGING = StatusTheme(
         "MERGING",
         "Merging",
         AppIcon.GIT_BRANCH,
         StatusGroup.IN_PROGRESS,
-        "An agent is landing the branch on main.",
+        "A landing job is merging, gating and pushing the branch.",
         "#93c5fd",
         "#1e3a8a",
         "#1d4ed8",
@@ -378,44 +325,165 @@ class StatusVisual(Enum):
         "Completed",
         AppIcon.CHECK_CIRCLE_2,
         StatusGroup.FINISHED,
-        "Merged and verified; the only status that counts as done.",
+        "Landed on its target and verified there; the only status that counts as done.",
         "#86efac",
         "#14532d",
         "#166534",
         "#dcfce7",
     )
-    SUPERSEDED = StatusTheme(
-        "SUPERSEDED",
-        "Superseded",
-        AppIcon.ARCHIVE,
-        StatusGroup.SET_ASIDE,
-        "Replaced by another task; it unblocks dependents but is not counted as done.",
-        "#f0abfc",
-        "#701a75",
-        "#a21caf",
-        "#fae8ff",
-    )
-    ABANDONED = StatusTheme(
-        "ABANDONED",
-        "Abandoned",
-        AppIcon.X_CIRCLE,
-        StatusGroup.SET_ASIDE,
-        "Dropped for good and never counted as done.",
-        "#d6d3d1",
-        "#44403c",
-        "#57534e",
-        "#e7e5e4",
+    FAILED = StatusTheme(
+        "FAILED",
+        "Failed",
+        AppIcon.OCTAGON_X,
+        StatusGroup.FINISHED,
+        "A cap was reached; a decision asks whether to abandon or investigate.",
+        "#f87171",
+        "#450a0a",
+        "#991b1b",
+        "#fef2f2",
     )
     DEFERRED = StatusTheme(
         "DEFERRED",
         "Deferred",
         AppIcon.PAUSE_CIRCLE,
         StatusGroup.SET_ASIDE,
-        "Postponed to a later date and never counted as done.",
+        "Postponed with a note and never counted as done until reopened.",
         "#94a3b8",
         "#1e293b",
         "#475569",
         "#e2e8f0",
+    )
+    ABANDONED = StatusTheme(
+        "ABANDONED",
+        "Abandoned",
+        AppIcon.X_CIRCLE,
+        StatusGroup.SET_ASIDE,
+        "Dropped for good with a note and never counted as done.",
+        "#d6d3d1",
+        "#44403c",
+        "#57534e",
+        "#e7e5e4",
+    )
+    SUPERSEDED = StatusTheme(
+        "SUPERSEDED",
+        "Superseded",
+        AppIcon.ARCHIVE,
+        StatusGroup.SET_ASIDE,
+        "Replaced by another node; it satisfies dependents but is not counted as done.",
+        "#f0abfc",
+        "#701a75",
+        "#a21caf",
+        "#fae8ff",
+    )
+    WAITING_REVIEW = StatusTheme(
+        "WAITING_REVIEW",
+        "Waiting Review",
+        AppIcon.CLOCK,
+        StatusGroup.WAITING,
+        "Implemented or fixed, and its review waits for a reviewer.",
+        "#fcd34d",
+        "#78350f",
+        "#92400e",
+        "#fef3c7",
+    )
+    WAITING_FIX = StatusTheme(
+        "WAITING_FIX",
+        "Waiting Fix",
+        AppIcon.ALERT_TRIANGLE,
+        StatusGroup.WAITING,
+        "Its review rejected it or its landing found its own defect, and the fix waits for an agent.",
+        "#fdba74",
+        "#7c2d12",
+        "#9a3412",
+        "#ffedd5",
+    )
+    WAITING_MERGE = StatusTheme(
+        "WAITING_MERGE",
+        "Waiting Merge",
+        AppIcon.GIT_PULL_REQUEST,
+        StatusGroup.WAITING,
+        "Ready to land, and waits for a landing job.",
+        "#5eead4",
+        "#134e4a",
+        "#115e59",
+        "#ccfbf1",
+    )
+    WAITING_MERGE_AGENT = StatusTheme(
+        "WAITING_MERGE_AGENT",
+        "Waiting Merge Agent",
+        AppIcon.BOT,
+        StatusGroup.WAITING,
+        "Its landing job stopped on a conflict or an unattributed red, and waits for an agent.",
+        "#7dd3fc",
+        "#0c4a6e",
+        "#0369a1",
+        "#e0f2fe",
+    )
+    STALE = StatusTheme(
+        "STALE",
+        "Stale",
+        AppIcon.CIRCLE_DASHED,
+        StatusGroup.WAITING,
+        "A step was claimed but its lease expired or is missing; a sweep returns it.",
+        "#a1a1aa",
+        "#27272a",
+        "#52525b",
+        "#f4f4f5",
+    )
+    AWAITING_DECISION = StatusTheme(
+        "AWAITING_DECISION",
+        "Awaiting Decision",
+        AppIcon.HELP_CIRCLE,
+        StatusGroup.BLOCKED,
+        "An edge points at an open decision; answering or withdrawing it unblocks the node.",
+        "#fbbf24",
+        "#451a03",
+        "#b45309",
+        "#fffbeb",
+    )
+    BLOCKED_BY_TASK = StatusTheme(
+        "BLOCKED_BY_TASK",
+        "Blocked by Task",
+        AppIcon.LOCK,
+        StatusGroup.BLOCKED,
+        "A dependency's code has not landed where this node builds yet.",
+        "#fca5a5",
+        "#7f1d1d",
+        "#b91c1c",
+        "#fee2e2",
+    )
+    BLOCKED_BY_CONDITION = StatusTheme(
+        "BLOCKED_BY_CONDITION",
+        "Blocked by Condition",
+        AppIcon.TERMINAL,
+        StatusGroup.BLOCKED,
+        "A condition's command has not exited 0 yet.",
+        "#fde047",
+        "#422006",
+        "#854d0e",
+        "#fefce8",
+    )
+    BLOCKED_BY_SYNC = StatusTheme(
+        "BLOCKED_BY_SYNC",
+        "Blocked by Sync",
+        AppIcon.GIT_MERGE,
+        StatusGroup.BLOCKED,
+        "A sync of the branch it builds on is running or waits for an agent.",
+        "#67e8f9",
+        "#164e63",
+        "#0e7490",
+        "#ecfeff",
+    )
+    BLOCKED_BY_LEASE = StatusTheme(
+        "BLOCKED_BY_LEASE",
+        "Blocked by Lease",
+        AppIcon.HOURGLASS,
+        StatusGroup.BLOCKED,
+        "A file its next step would lock is held by another node's lease.",
+        "#fda4af",
+        "#881337",
+        "#be123c",
+        "#ffe4e6",
     )
 
     @classmethod
@@ -423,23 +491,10 @@ class StatusVisual(Enum):
         try:
             return cls[status.upper()]
         except KeyError:
-            return cls.NOT_STARTED
+            return cls.STALE
 
     def to_dict(self) -> dict[str, Any]:
-        theme = self.value
-        return {
-            "code": theme.code,
-            "label": theme.label,
-            "icon": theme.icon.value.name,
-            "group": theme.group.name,
-            "description": theme.description,
-            "dark_fg": theme.dark_fg,
-            "dark_bg": theme.dark_bg,
-            "light_fg": theme.light_fg,
-            "light_bg": theme.light_bg,
-            "graph_bg": theme.dark_bg,
-            "graph_border": theme.dark_fg,
-        }
+        return {**_theme_dict(self.value), "group": self.value.group.name}
 
     @classmethod
     def all_themes_dict(cls) -> dict[str, dict[str, Any]]:
@@ -451,12 +506,98 @@ class StatusVisual(Enum):
 
     @classmethod
     def css(cls) -> str:
-        light = "".join(
-            f".st-{t.code}{{--st-fg:{t.light_fg};--st-bg:{t.light_bg}}}"
-            for t in (m.value for m in cls)
-        )
-        dark = "".join(
-            f".dark .st-{t.code}{{--st-fg:{t.dark_fg};--st-bg:{t.dark_bg}}}"
-            for t in (m.value for m in cls)
-        )
-        return light + dark
+        return _css("st", [m.value for m in cls])
+
+
+class PhaseTheme(NamedTuple):
+    code: str
+    label: str
+    icon: AppIcon
+    description: str
+    dark_fg: str
+    dark_bg: str
+    light_fg: str
+    light_bg: str
+
+
+class PhaseVisual(Enum):
+    """One theme per Phase, in its order."""
+
+    QUEUED = PhaseTheme(
+        "QUEUED",
+        "Queued",
+        AppIcon.PLAY_CIRCLE,
+        "Waiting for its first claim.",
+        "#bef264",
+        "#365314",
+        "#3f6212",
+        "#ecfccb",
+    )
+    DISPATCHED = PhaseTheme(
+        "DISPATCHED",
+        "Dispatched",
+        AppIcon.PLAY,
+        "Claimed at least once and not yet landed.",
+        "#a5b4fc",
+        "#312e81",
+        "#4338ca",
+        "#e0e7ff",
+    )
+    COMPLETED = PhaseTheme(
+        "COMPLETED",
+        "Completed",
+        AppIcon.CHECK_CIRCLE_2,
+        "Landed and verified.",
+        "#86efac",
+        "#14532d",
+        "#166534",
+        "#dcfce7",
+    )
+    FAILED = PhaseTheme(
+        "FAILED",
+        "Failed",
+        AppIcon.OCTAGON_X,
+        "Stopped at a cap, waiting on its decision.",
+        "#f87171",
+        "#450a0a",
+        "#991b1b",
+        "#fef2f2",
+    )
+    DEFERRED = PhaseTheme(
+        "DEFERRED",
+        "Deferred",
+        AppIcon.PAUSE_CIRCLE,
+        "Postponed.",
+        "#94a3b8",
+        "#1e293b",
+        "#475569",
+        "#e2e8f0",
+    )
+    ABANDONED = PhaseTheme(
+        "ABANDONED",
+        "Abandoned",
+        AppIcon.X_CIRCLE,
+        "Dropped.",
+        "#d6d3d1",
+        "#44403c",
+        "#57534e",
+        "#e7e5e4",
+    )
+    SUPERSEDED = PhaseTheme(
+        "SUPERSEDED",
+        "Superseded",
+        AppIcon.ARCHIVE,
+        "Replaced by another node.",
+        "#f0abfc",
+        "#701a75",
+        "#a21caf",
+        "#fae8ff",
+    )
+
+    @classmethod
+    def all_themes_dict(cls) -> dict[str, dict[str, Any]]:
+        return {item.value.code: _theme_dict(item.value) for item in cls}
+
+    @classmethod
+    def css(cls) -> str:
+        return _css("ph", [m.value for m in cls])

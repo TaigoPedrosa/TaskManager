@@ -546,12 +546,16 @@ def test_frontmatter_value_kind_sends_json_not_object_object(tmp_path: Path) -> 
 
 def test_destructive_actions_confirm_before_writing() -> None:
     html = get_web_html()
-    for fn_name in ("removeDependency", "removeSection", "removeVerification", "releaseLease"):
+    for fn_name in (
+        "removeDependency",
+        "removeSection",
+        "removeVerification",
+        "releaseLease",
+        "removeCondition",
+    ):
         body = _function_body(html, fn_name)
         assert "confirmDialog(" in body, f"{fn_name} does not confirm before writing"
-    abandon = _function_body(html, "changeStatus")
-    assert "confirmDialog(" in abandon
-    assert "status === 'ABANDONED'" in abandon
+    assert "destructive: verb === 'abandon'" in _function_body(html, "openVerbDialog")
 
 
 def test_confirm_dialog_closes_before_the_reload_not_after() -> None:
@@ -572,38 +576,12 @@ def test_edit_dialog_only_offers_models_repo_and_frontmatter_for_tasks() -> None
     assert "isTask ? frontmatterEditorHtml(node.frontmatter) : ''" in body
 
 
-def test_status_digest_and_legend_never_render_not_started() -> None:
-    # §3.2a: NOT_STARTED is a stored status, never a live one a task's own virtual_status can
-    # equal, so a chip for it could only ever read a count of zero.
-    html = get_web_html()
-    digest = _function_body(html, "updateStatsDigest")
-    assert "code !== 'NOT_STARTED'" in digest
-    legend = _function_body(html, "renderLegend")
-    assert "t.code !== 'NOT_STARTED'" in legend
-
-
 def test_decision_dependency_row_uses_open_answered_withdrawn_not_node_status() -> None:
     html = get_web_html()
     table = _function_body(html, "renderRelationTable")
     assert "d.kind === 'decision'" in table
     assert "decisionStatusIcon(d.status)" in table
-    assert "NOT_STARTED: 'help-circle'" in html
-
-
-def test_action_bar_hides_a_transition_already_at_its_own_target() -> None:
-    # Reopen showed on an already NOT_STARTED task, Mark completed/Defer/Abandon each showed
-    # while already the status they claim to set.
-    body = _function_body(get_web_html(), "renderActionBar")
-    assert "node.status !== 'COMPLETED'" in body
-    assert "node.status !== 'DEFERRED'" in body
-    assert "node.status !== 'NOT_STARTED'" in body
-    assert "node.status !== 'ABANDONED'" in body
-
-
-def test_other_status_and_gate_pickers_omit_not_started() -> None:
-    html = get_web_html()
-    assert "'NOT_STARTED', 'IMPLEMENTING'" not in html
-    assert "REAL_NODE_STATUSES = [\n  'IMPLEMENTING'" in html
+    assert "OPEN: 'help-circle'" in html
 
 
 def test_remove_confirmations_name_the_thing_not_its_internal_id() -> None:
@@ -819,3 +797,107 @@ def test_toolbar_filters_collapse_behind_a_toggle_below_sm() -> None:
     assert "activeFilterCount()" in toggle
     assert "filterControlsGroup.classList.toggle('hidden', !filtersPanelOpen)" in toggle
     assert "aria-expanded" in toggle
+
+
+def test_the_page_names_no_pre_lifecycle_status_or_status_setter() -> None:
+    html = get_web_html()
+    for word in (
+        "NOT_STARTED",
+        "WAITING_FIXES",
+        "IN_FLIGHT",
+        "virtual_status",
+        "REAL_NODE_STATUSES",
+        "/status`",
+        "dep-gate",
+    ):
+        assert word not in html, word
+
+
+def test_the_page_carries_phase_themes_and_a_phase_filter() -> None:
+    html = get_web_html()
+    assert "window.PHASE_THEMES = " in html
+    assert '<div id="phase-filter" class="relative"></div>' in html
+    assert "createTriStatePopover(phaseFilterEl" in html
+    read_hash = _function_body(html, "readHash")
+    write_hash = _function_body(html, "writeHash")
+    for key in ("phase", "xphase"):
+        assert f"p.get('{key}')" in read_hash and f"p.set('{key}'" in write_hash
+
+
+def test_action_bar_offers_verbs_by_stored_status() -> None:
+    body = _function_body(get_web_html(), "renderActionBar")
+    assert "REOPENABLE.includes(node.status)" in body
+    assert "SETTABLE_ASIDE.includes(node.status)" in body
+    assert "ab-reset" in body and "ab-flags" in body
+    wire = _function_body(get_web_html(), "wireActionBar")
+    for verb in ("'reopen'", "'defer'", "'abandon'"):
+        assert f"openVerbDialog(node, {verb})" in wire
+    assert "openResetDialog(node)" in wire and "openFlagsDialog(node)" in wire
+
+
+def test_every_verb_collects_a_note_and_abandon_is_destructive() -> None:
+    body = _function_body(get_web_html(), "openVerbDialog")
+    assert "vb-note" in body and "A note is required." in body
+    assert "destructive: verb === 'abandon'" in body
+    assert "vb-new-branch" in body
+
+
+def test_the_inspector_shows_the_lifecycle_panel() -> None:
+    html = get_web_html()
+    panel = _function_body(html, "renderLifecycle")
+    for field in (
+        "n.status",
+        "n.outcome",
+        "n.verdict",
+        "n.review_cycles",
+        "n.merge_attempts",
+        "n.step_failures",
+        "n.requires",
+        "detail.conditions",
+        "detail.jobs",
+        "c.last_result",
+        "c.stage",
+        "landingChainText(n)",
+    ):
+        assert field in panel, field
+    assert "renderLifecycle(detail, editable)" in _function_body(html, "showGraphInspector")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is needed to exercise the JS")
+def test_landing_chain_text_reads_the_base_chain(tmp_path: Path) -> None:
+    fn = _function_body(get_web_html(), "landingChainText")
+    script = tmp_path / "check.js"
+    script.write_text(
+        "function esc(s) { return String(s); }\n"
+        f"function landingChainText(node) {{{fn}\n}}\n"
+        "const assert = require('node:assert');\n"
+        "assert.strictEqual(landingChainText({base_chain: ['MAIN']}), 'lands on main');\n"
+        "assert.strictEqual(landingChainText({base_chain: ['P', 'MAIN']}),"
+        " 'on tm/P; waits for P → main');\n"
+        "assert.strictEqual(landingChainText({base_chain: []}), '');\n"
+        "console.log('OK');\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(["node", str(script)], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert "OK" in result.stdout
+
+
+def test_decisions_read_open_answered_and_withdrawn_and_show_option_effects() -> None:
+    html = get_web_html()
+    assert "{ key: 'open', label: 'Open', status: 'OPEN' }" in html
+    assert "OPEN: 'help-circle'" in html
+    card = _function_body(html, "optionCardHtml")
+    assert "opt.effect && opt.effect !== 'none'" in card
+
+
+def test_static_export_themes_every_display_status(tmp_path: Path) -> None:
+    import json
+
+    from taskmanager.core.status import DisplayStatus, Phase
+
+    html = get_web_html(initial_data={"tree": []})
+    themes = json.loads(re.search(r"window.STATUS_THEMES = (\{.*?\});\n", html).group(1))  # type: ignore[union-attr]
+    phases = json.loads(re.search(r"window.PHASE_THEMES = (\{.*?\});\n", html).group(1))  # type: ignore[union-attr]
+    assert set(themes) == {d.value for d in DisplayStatus}
+    assert set(phases) == {p.value for p in Phase}

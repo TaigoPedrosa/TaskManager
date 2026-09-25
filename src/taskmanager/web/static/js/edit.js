@@ -14,15 +14,6 @@ if (typeof DOMPurify !== 'undefined' && typeof renderSectionBody === 'function')
   };
 }
 
-// Only the statuses a node can actually be set to (NodeStatus). window.STATUS_THEMES also
-// carries the virtual ones (READY, BLOCKED, BLOCKED_BY_LEASE, IN_FLIGHT) a write would 422 on.
-// NOT_STARTED is left out (§3.2a: the web never displays it) -- Reopen is that transition's
-// own button, and a dependency gated on it would be satisfied by every node immediately.
-const REAL_NODE_STATUSES = [
-  'IMPLEMENTING', 'WAITING_REVIEW', 'REVIEWING', 'WAITING_FIXES', 'FIXING',
-  'WAITING_MERGE', 'MERGING', 'COMPLETED', 'SUPERSEDED', 'ABANDONED', 'DEFERRED'
-];
-
 const INPUT_CLS = 'w-full h-8 px-2.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500';
 const SELECT_CLS = `${INPUT_CLS} appearance-none`;
 const TEXTAREA_CLS = 'w-full px-2.5 py-2 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-200 placeholder-zinc-500 font-mono leading-relaxed focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500';
@@ -311,7 +302,8 @@ async function openNewPlanDialog() {
         ${fieldRow('Priority', `<input type="number" min="1" max="100" class="np-priority ${INPUT_CLS}" value="50">`)}
         ${fieldRow('Order', `<input type="number" class="np-order ${INPUT_CLS}" value="0">`)}
       </div>
-      <label class="flex items-center gap-2 text-xs text-zinc-300"><input type="checkbox" class="np-review rounded border-zinc-600 bg-zinc-950 text-emerald-500 focus:ring-emerald-500">Require review</label>
+      <label class="flex items-center gap-2 text-xs text-zinc-300"><input type="checkbox" class="np-review rounded border-zinc-600 bg-zinc-950 text-emerald-500 focus:ring-emerald-500">A review step follows its tasks</label>
+      <label class="flex items-center gap-2 text-xs text-zinc-300"><input type="checkbox" class="np-fix rounded border-zinc-600 bg-zinc-950 text-emerald-500 focus:ring-emerald-500">The plan fixes what its review rejects</label>
     `,
     onSubmit: async (panel, close) => {
       const title = panel.querySelector('.np-title').value.trim();
@@ -322,7 +314,8 @@ async function openNewPlanDialog() {
         slug: panel.querySelector('.np-slug').value.trim() || undefined,
         priority: Number(panel.querySelector('.np-priority').value) || 50,
         order: Number(panel.querySelector('.np-order').value) || 0,
-        require_review: panel.querySelector('.np-review').checked,
+        review: panel.querySelector('.np-review').checked,
+        fix: panel.querySelector('.np-fix').checked,
       });
       toast(`Plan ${res.id} created.`, 'success');
       close();
@@ -419,40 +412,131 @@ function openEditNodeDialog(node) {
 }
 
 
-// Status ---------------------------------------------------------------------------------
+// Verbs -------------------------------------------------------------------------------------
 
-async function setNodeStatus(node, status, removeWorktree = false) {
-  await api('POST', `/api/nodes/${node.id}/status`, { status, remove_worktree: removeWorktree });
-  toast(`${node.id} is now ${status}.`, 'success');
+async function postVerb(node, verb, body) {
+  const res = await api('POST', `/api/nodes/${node.id}/${verb}`, body);
+  toast(`${node.id} is now ${res.status}.`, 'success');
   await afterWrite(node.id);
 }
 
-function changeStatus(node, status) {
-  if (status === 'ABANDONED') {
-    confirmDialog({
-      title: `Abandon ${node.id}?`,
-      message: `"${node.title}" will be marked ABANDONED and dropped for good.`,
-      confirmLabel: 'Abandon',
-      onConfirm: () => setNodeStatus(node, status),
-    });
-    return;
-  }
-  setNodeStatus(node, status).catch(e => toast(e.message, 'error'));
-}
+const VERB_COPY = {
+  reopen: { title: 'Reopen', label: 'What should the next attempt do differently?' },
+  defer: { title: 'Defer', label: 'Why, and until when?' },
+  abandon: { title: 'Abandon', label: 'Why is it dropped for good?' },
+};
 
-function openOtherStatusDialog(node, currentStatus) {
+function openVerbDialog(node, verb) {
+  const copy = VERB_COPY[verb];
   openDialog({
-    title: `Change status of ${node.id}`,
-    submitLabel: 'Set status',
+    title: `${copy.title} ${node.id}`,
+    submitLabel: copy.title,
+    destructive: verb === 'abandon',
     bodyHtml: `
-      ${fieldRow('Status', `<select class="st-select ${SELECT_CLS}">${REAL_NODE_STATUSES.map(s => `<option value="${s}" ${s === currentStatus ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select>`)}
-      ${node.kind === 'task' ? `<label class="flex items-center gap-2 text-xs text-zinc-300"><input type="checkbox" class="rm-worktree rounded border-zinc-600 bg-zinc-950">Remove worktree</label>` : ''}
+      ${fieldRow(copy.label, `<textarea required class="vb-note ${TEXTAREA_CLS}" rows="3"></textarea>`)}
+      ${verb === 'reopen' ? `<label class="flex items-center gap-2 text-xs text-zinc-300"><input type="checkbox" class="vb-new-branch rounded border-zinc-600 bg-zinc-950">Start on a new branch; the old one is kept as ${esc(node.branch || `tm/${node.id}`)}@n</label>` : ''}
     `,
     onSubmit: async (panel, close) => {
-      const status = panel.querySelector('.st-select').value;
-      const removeWt = panel.querySelector('.rm-worktree');
-      await setNodeStatus(node, status, removeWt ? removeWt.checked : false);
+      const note = panel.querySelector('.vb-note').value.trim();
+      if (!note) throw new Error('A note is required.');
+      const body = { note };
+      const newBranch = panel.querySelector('.vb-new-branch');
+      if (newBranch) body.new_branch = newBranch.checked;
+      await postVerb(node, verb, body);
       close();
+    }
+  });
+}
+
+const RESET_TARGETS = ['READY', 'IMPLEMENTED', 'REVIEWED', 'FIXED', 'COMPLETED'];
+const OUTCOMES = ['approve', 'reject', 'merge_failed'];
+
+function openResetDialog(node) {
+  openDialog({
+    title: `Reset ${node.id}`,
+    submitLabel: 'Reset',
+    bodyHtml: `
+      ${fieldRow('To', `<select class="rs-to ${SELECT_CLS}">${RESET_TARGETS.map(s => `<option value="${s}">${esc(s)}</option>`).join('')}</select>`)}
+      ${fieldRow('Outcome (for REVIEWED)', `<select class="rs-outcome ${SELECT_CLS}"><option value="">(none)</option>${OUTCOMES.map(o => `<option value="${o}">${esc(o)}</option>`).join('')}</select>`)}
+      ${fieldRow('Why the stored state was wrong', `<textarea required class="rs-note ${TEXTAREA_CLS}" rows="3"></textarea>`)}
+    `,
+    onSubmit: async (panel, close) => {
+      const note = panel.querySelector('.rs-note').value.trim();
+      if (!note) throw new Error('A note is required.');
+      const body = { to: panel.querySelector('.rs-to').value, note };
+      const outcome = panel.querySelector('.rs-outcome').value;
+      if (outcome) body.outcome = outcome;
+      await postVerb(node, 'reset', body);
+      close();
+    }
+  });
+}
+
+// Flags, merge, requires and land_order go through the same write rules as the CLI; a
+// refusal stays in the dialog to correct.
+function openFlagsDialog(node) {
+  const isContainer = node.kind === 'plan' || node.kind === 'spec';
+  const checkbox = (cls, checked, label) => `<label class="flex items-center gap-2 text-xs text-zinc-300"><input type="checkbox" class="${cls} rounded border-zinc-600 bg-zinc-950 text-emerald-500 focus:ring-emerald-500" ${checked ? 'checked' : ''}>${esc(label)}</label>`;
+  openDialog({
+    title: `Flags of ${node.id}`,
+    submitLabel: 'Save',
+    bodyHtml: `
+      ${checkbox('fl-review', node.review, 'A review step follows implement')}
+      ${checkbox('fl-fix', node.fix, 'This node fixes what its review rejects')}
+      ${fieldRow('Lands on', `<select class="fl-merge ${SELECT_CLS}"><option value="main" ${node.merge === 'main' ? 'selected' : ''}>main</option><option value="parent" ${node.merge === 'parent' ? 'selected' : ''}>the parent's branch</option></select>`)}
+      ${fieldRow('Requires (comma separated capabilities)', `<input type="text" class="fl-requires ${INPUT_CLS}" value="${esc((node.requires || []).join(', '))}">`)}
+      ${isContainer ? fieldRow('Land order (comma separated repositories)', `<input type="text" class="fl-land-order ${INPUT_CLS}" value="${esc((node.land_order || []).join(', '))}">`) : ''}
+    `,
+    onSubmit: async (panel, close) => {
+      const list = (selector) => panel.querySelector(selector).value.split(',').map(s => s.trim()).filter(Boolean);
+      const body = {
+        review: panel.querySelector('.fl-review').checked,
+        fix: panel.querySelector('.fl-fix').checked,
+        merge: panel.querySelector('.fl-merge').value,
+        requires: list('.fl-requires'),
+      };
+      if (isContainer) body.land_order = list('.fl-land-order');
+      await api('PATCH', `/api/nodes/${node.id}`, body);
+      toast(`${node.id} flags saved.`, 'success');
+      close();
+      await afterWrite(node.id);
+    }
+  });
+}
+
+
+// Conditions ---------------------------------------------------------------------------------
+
+function openAddConditionDialog(node) {
+  openDialog({
+    title: `Add a condition to ${node.id}`,
+    submitLabel: 'Add',
+    bodyHtml: `
+      ${fieldRow('Waits for (a state outside the corpus)', `<input type="text" required class="cd-needs ${INPUT_CLS}" placeholder="staging is up">`)}
+      ${fieldRow('Command that exits 0 once it holds', `<input type="text" required class="cd-command ${INPUT_CLS} font-mono" placeholder="curl -fsS https://staging.example/health">`)}
+      ${fieldRow('Holds', `<select class="cd-stage ${SELECT_CLS}"><option value="claim">every claim</option><option value="landing">only the landing</option></select>`)}
+    `,
+    onSubmit: async (panel, close) => {
+      const needs = panel.querySelector('.cd-needs').value.trim();
+      const command = panel.querySelector('.cd-command').value.trim();
+      if (!needs || !command) throw new Error('Name what it waits for and the command that checks it.');
+      await api('POST', `/api/nodes/${node.id}/conditions`, { needs, command, stage: panel.querySelector('.cd-stage').value });
+      toast(`Condition added to ${node.id}.`, 'success');
+      close();
+      await afterWrite(node.id);
+    }
+  });
+}
+
+function removeCondition(node, idx, needs) {
+  confirmDialog({
+    title: `Remove the condition "${needs}"?`,
+    message: `${node.id} will no longer wait for it.`,
+    confirmLabel: 'Remove',
+    onConfirm: async () => {
+      await api('DELETE', `/api/nodes/${node.id}/conditions/${idx}`);
+      toast(`Condition removed from ${node.id}.`, 'success');
+      await afterWrite(node.id);
     }
   });
 }
@@ -539,7 +623,6 @@ function openAddDependencyDialog(node, decisionsOnly = false) {
     submitLabel: 'Add',
     bodyHtml: `
       ${fieldRow(decisionsOnly ? 'Decision (id or title)' : 'Depends on (id or title)', `<input type="text" required list="${listId}" class="dep-id ${INPUT_CLS} font-mono" placeholder="${decisionsOnly ? 'decision-id' : 'task-id'}"><datalist id="${listId}">${optionsHtml}</datalist>`)}
-      ${decisionsOnly ? '' : fieldRow('Gate status', `<select class="dep-gate ${SELECT_CLS}">${REAL_NODE_STATUSES.map(s => `<option value="${s}" ${s === 'COMPLETED' ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select>`)}
     `,
     onSubmit: async (panel, close) => {
       const typed = panel.querySelector('.dep-id').value.trim();
@@ -548,9 +631,7 @@ function openAddDependencyDialog(node, decisionsOnly = false) {
       // picking "Which auth flow?" from the list works the same as typing the id directly.
       const match = candidates.find(n => n.id === typed || n.title === typed);
       const id = match ? match.id : typed;
-      const gateEl = panel.querySelector('.dep-gate');
-      const gate = gateEl ? gateEl.value : undefined;
-      await api('POST', `/api/nodes/${node.id}/dependencies`, { add: [{ id, gate }] });
+      await api('POST', `/api/nodes/${node.id}/dependencies`, { add: [{ id }] });
       toast(`${id} added as a dependency of ${node.id}.`, 'success');
       close();
       await afterWrite(node.id);
@@ -685,7 +766,7 @@ function removeVerification(node, verificationId, target) {
 function releaseLease(node) {
   confirmDialog({
     title: `Release lease on ${node.id}?`,
-    message: 'The active lease and its file locks are dropped. Status is unchanged.',
+    message: 'The step is given back: the node returns to the status it was claimed from and counts one step failure.',
     confirmLabel: 'Release',
     onConfirm: async () => {
       await api('DELETE', `/api/nodes/${node.id}/lease`);

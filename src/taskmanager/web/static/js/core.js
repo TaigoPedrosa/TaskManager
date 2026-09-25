@@ -41,6 +41,7 @@ const brandIconTitle = document.getElementById('brand-icon-title');
 const repoFilter = document.getElementById('repo-filter');
 const modelFilterEl = document.getElementById('model-filter');
 const specFilterEl = document.getElementById('spec-filter');
+const phaseFilterEl = document.getElementById('phase-filter');
 const scoreFilterEl = document.getElementById('score-filter');
 const clearFiltersBtn = document.getElementById('clear-filters-btn');
 const filtersToggleBtn = document.getElementById('filters-toggle-btn');
@@ -110,7 +111,18 @@ function renderIcon(iconName, classes = 'w-4 h-4') {
 }
 
 function getTheme(status) {
-  return window.STATUS_THEMES[status] || { ...window.STATUS_THEMES.NOT_STARTED, label: String(status) };
+  return window.STATUS_THEMES[status] || { ...window.STATUS_THEMES.STALE, label: String(status) };
+}
+
+// What a reader sees for a node: the derived display, else (a decision) its own status.
+function displayOf(n) {
+  return n.display || n.status;
+}
+
+function phaseChip(code, size = 'text-[10px]') {
+  const t = window.PHASE_THEMES[code];
+  if (!t) return '';
+  return `<span class="st-chip ph-${t.code} inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full font-medium ${size}" title="${esc(t.description)}">${renderIcon(t.icon, 'w-3 h-3')}<span>${esc(t.label)}</span></span>`;
 }
 
 

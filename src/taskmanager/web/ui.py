@@ -8,7 +8,7 @@ import json
 from importlib.resources import files
 from typing import Any
 
-from taskmanager.web.enums import AppIcon, StatusVisual, WebViewMode
+from taskmanager.web.enums import AppIcon, PhaseVisual, StatusVisual, WebViewMode
 
 # Load order matters: later files may reference functions defined in earlier ones at
 # top-level (e.g. main.js's Initialize block calls functions core.js/filters.js/tree.js
@@ -44,6 +44,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         "<script>\n"
         f"    window.STATUS_THEMES = {json.dumps(StatusVisual.all_themes_dict())};\n"
         f"    window.STATUS_GROUPS = {json.dumps(StatusVisual.groups_list())};\n"
+        f"    window.PHASE_THEMES = {json.dumps(PhaseVisual.all_themes_dict())};\n"
         "    window.VIEW_MODES = {\n"
         f"      DOCUMENT: '{WebViewMode.DOCUMENT.value}',\n"
         f"      GRAPH: '{WebViewMode.GRAPH.value}'\n"
@@ -51,7 +52,9 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         "  </script>"
     )
 
-    css = _read_static("app.css").replace("<!--slot:status-css-->", StatusVisual.css())
+    css = _read_static("app.css").replace(
+        "<!--slot:status-css-->", StatusVisual.css() + PhaseVisual.css()
+    )
 
     html = _read_static("index.html")
     html = html.replace("<!--slot:app-css-->", css)

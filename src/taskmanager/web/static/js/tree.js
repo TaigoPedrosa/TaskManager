@@ -99,7 +99,7 @@ function renderTree(nodes) {
     if (!nodeVisible(node, parentTextOk)) return;
     const textOk = textAccepts(node, parentTextOk);
 
-    const effectiveStatus = node.virtual_status || node.status;
+    const effectiveStatus = displayOf(node);
     const hasChildren = node.children && node.children.length > 0;
     const isCollapsed = collapsedNodes.has(node.id);
 
@@ -216,7 +216,7 @@ function renderUnifiedDocument() {
   }
 
   treeData.filter(root => nodeVisible(root)).forEach(spec => {
-    const specStatus = spec.virtual_status || spec.status;
+    const specStatus = displayOf(spec);
     const specTextOk = textAccepts(spec, false);
 
     const specCard = document.createElement('article');
@@ -288,7 +288,7 @@ function renderUnifiedDocument() {
 
 
 function renderPlanCard(plan, parentTextOk = false) {
-  const planStatus = plan.virtual_status || plan.status;
+  const planStatus = displayOf(plan);
   const isCollapsed = collapsedNodes.has(plan.id);
 
   const tasks = plan.children || [];
@@ -369,7 +369,7 @@ function renderRelationTable(ownerId, key, label, icon, rows, defaultCollapsed) 
 }
 
 function renderTaskCard(task) {
-  const taskStatus = task.virtual_status || task.status;
+  const taskStatus = displayOf(task);
   const isCollapsed = collapsedNodes.has(task.id);
 
   // Model pills
