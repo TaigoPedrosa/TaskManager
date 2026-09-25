@@ -21,9 +21,11 @@ def _no_estate_outside_the_test(
     """A tm call that names no root must never open the estate of the checkout the suite runs
     from: from a worktree, the root lookup follows git's common dir to the primary checkout and
     its live `.taskmanager`. Each test starts pinned to an empty directory and standing in it,
-    outside any repository, so a call that forgets `-C` fails with "no .taskmanager" instead."""
+    with git's repository search stopped at the temp tree, so a call that forgets `-C` fails
+    with "no .taskmanager" instead even when `--basetemp` sits inside a repository."""
     empty = tmp_path_factory.mktemp("no-estate")
     monkeypatch.setenv("TM_ROOT", str(empty))
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path_factory.getbasetemp().resolve()))
     for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.chdir(empty)

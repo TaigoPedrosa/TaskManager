@@ -18,6 +18,9 @@ def test_every_test_starts_pinned_to_an_empty_root_inside_the_temp_tree(
     assert pinned.is_relative_to(base)
     assert not (pinned / ".taskmanager").exists()
     assert Path.cwd().resolve().is_relative_to(base)
+    # The git fallback of the root lookup must stop at the temp tree even when it sits inside a
+    # repository, or it follows that repository's common dir to a live estate.
+    assert Path(os.environ["GIT_CEILING_DIRECTORIES"]).resolve() == base
 
 
 @pytest.mark.parametrize("unset_root", [False, True], ids=["pinned", "unpinned"])
