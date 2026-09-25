@@ -82,6 +82,19 @@ REFUSED = [
         doc({"id": "S-P-a", "title": "a", "status": "NOT_STARTED"}), "NOT_STARTED", id="old-status"
     ),
     pytest.param(
+        doc({"id": "S-P-a", "title": "a", "status": "IMPLEMENTING", "claimed_from": "READY"}),
+        "entered only by a claim",
+        id="in-step-status",
+    ),
+    pytest.param(
+        doc({"id": "S-P-a", "title": "a", "status": "REVIEWED"}), "outcome", id="no-outcome"
+    ),
+    pytest.param(
+        doc({"id": "S-P-a", "title": "a", "status": "FIXED", "outcome": "reject"}),
+        "fix_for",
+        id="no-fix-for",
+    ),
+    pytest.param(
         {"decisions": [{"id": "decision-x", "title": "Q", "status": "READY"}]},
         "READY",
         id="decision-with-a-cycle-status",
@@ -156,3 +169,18 @@ def test_a_decision_imports_with_its_own_status_and_defaults_to_open(
     x, y = repo.get_node("decision-x"), repo.get_node("decision-y")
     assert x is not None and y is not None
     assert (x.status, y.status) == (DecisionStatus.ANSWERED, DecisionStatus.OPEN)
+
+
+def test_reimporting_a_node_in_a_step_at_a_stable_status_ends_the_step(
+    repo: NodeRepository,
+) -> None:
+    importer = BulkImporter(repo)
+    importer.import_dict(doc({"id": "S-P-a", "title": "a"}))
+    node = repo.get_node("S-P-a")
+    assert node is not None
+    repo.save_node(
+        node.model_copy(update={"status": Status.IMPLEMENTING, "claimed_from": Status.READY})
+    )
+    importer.import_dict(doc({"id": "S-P-a", "title": "a", "status": "READY"}))
+    node = repo.get_node("S-P-a")
+    assert node is not None and (node.status, node.claimed_from) == (Status.READY, None)

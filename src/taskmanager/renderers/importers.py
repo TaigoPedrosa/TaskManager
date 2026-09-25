@@ -1,6 +1,8 @@
 from enum import StrEnum
 from typing import Any, cast
 
+from pydantic import ValidationError
+
 from taskmanager.core.enums import NodeKind, RelationType, VerificationType
 from taskmanager.core.models import (
     Condition,
@@ -9,7 +11,14 @@ from taskmanager.core.models import (
     NodeSection,
     NodeVerification,
 )
-from taskmanager.core.status import ConditionStage, DecisionStatus, Merge, Outcome, Status
+from taskmanager.core.status import (
+    IN_STEP,
+    ConditionStage,
+    DecisionStatus,
+    Merge,
+    Outcome,
+    Status,
+)
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
@@ -224,13 +233,19 @@ class BulkImporter:
             DecisionStatus if kind == NodeKind.DECISION else Status
         )
         try:
-            return allowed(value)
+            status = allowed(value)
         except ValueError:
             names = ", ".join(s.value for s in allowed)
             raise ValueError(
                 f"{REFUSED}node {node_id!r} has status {value!r}, which a {kind.value} cannot "
                 f"hold; one of: {names}"
             ) from None
+        if status in IN_STEP:
+            raise ValueError(
+                f"{REFUSED}node {node_id!r} has status {value!r}: a step is entered only by a "
+                "claim; import it at the status its step was claimed from"
+            )
+        return status
 
     @staticmethod
     def _parse_node(
@@ -265,30 +280,38 @@ class BulkImporter:
                 f"{REFUSED}node {node_id!r} sets fix without review: a rejection is fixed by "
                 "the node that was reviewed; set review or drop fix"
             )
-        return Node(
-            id=node_id,
-            kind=kind,
-            title=title,
-            status=status,
-            priority=pick("priority", 50),
-            ordinal=data.get("ordinal", existing.ordinal if existing is not None else 0),
-            target_repo=pick("target_repo", None),
-            acceptable_models=pick("acceptable_models", []),
-            frontmatter=pick("frontmatter", {}),
-            review=review,
-            fix=fix,
-            merge=Merge(pick("merge", Merge.MAIN)),
-            requires=list(pick("requires", [])),
-            land_order=list(pick("land_order", [])),
-            branch=pick("branch", None),
-            outcome=_optional(Outcome, pick("outcome", None)),
-            verdict=pick("verdict", None),
-            fix_for=_optional(Outcome, pick("fix_for", None)),
-            claimed_from=_optional(Status, pick("claimed_from", None)),
-            review_cycles=int(pick("review_cycles", 0)),
-            merge_attempts=int(pick("merge_attempts", 0)),
-            step_failures=int(pick("step_failures", 0)),
-        )
+        try:
+            return Node(
+                id=node_id,
+                kind=kind,
+                title=title,
+                status=status,
+                priority=pick("priority", 50),
+                ordinal=pick("ordinal", 0),
+                target_repo=pick("target_repo", None),
+                acceptable_models=pick("acceptable_models", []),
+                frontmatter=pick("frontmatter", {}),
+                review=review,
+                fix=fix,
+                merge=Merge(pick("merge", Merge.MAIN)),
+                requires=list(pick("requires", [])),
+                land_order=list(pick("land_order", [])),
+                branch=pick("branch", None),
+                outcome=_optional(Outcome, pick("outcome", None)),
+                verdict=pick("verdict", None),
+                fix_for=_optional(Outcome, pick("fix_for", None)),
+                # A stated status is never a step, so it ends any step the node was in.
+                claimed_from=_optional(
+                    Status,
+                    data.get("claimed_from") if "status" in data else pick("claimed_from", None),
+                ),
+                review_cycles=int(pick("review_cycles", 0)),
+                merge_attempts=int(pick("merge_attempts", 0)),
+                step_failures=int(pick("step_failures", 0)),
+            )
+        except ValidationError as exc:
+            reasons = "; ".join(str(e["msg"]).removeprefix("Value error, ") for e in exc.errors())
+            raise ValueError(f"{REFUSED}{reasons}") from None
 
     @staticmethod
     def _parse_sections(node_id: str, sections_data: Any) -> list[NodeSection]:

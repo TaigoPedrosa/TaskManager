@@ -278,3 +278,15 @@ def test_a_lease_write_joins_an_open_node_transaction(tmp_path: Path) -> None:
     assert not db.in_transaction
     assert nodes.get_node("T1") is None
     assert leases.get_lease("T1") is None
+
+
+def test_saving_a_node_whose_cycle_the_lifecycle_cannot_read_is_refused(tmp_path: Path) -> None:
+    from pydantic import ValidationError
+
+    repo = NodeRepository(_fresh(tmp_path))
+    bad = Node(id="T", kind=NodeKind.TASK, title="T").model_copy(
+        update={"status": Status.IMPLEMENTING}
+    )
+    with pytest.raises(ValidationError, match="claimed_from"):
+        repo.save_node(bad)
+    assert repo.get_node("T") is None

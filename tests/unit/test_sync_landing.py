@@ -46,7 +46,8 @@ def test_a_claim_on_a_lagging_parent_branch_syncs_main_in_before_implement_start
     assert first.action == Action.BLOCKED
     assert first.reason == "syncing tm/P"
     assert first.job is not None and first.job.startswith("sync-")
-    assert stored(claims, "X").status == Status.READY
+    held = stored(claims, "X")
+    assert (held.status, held.claimed_from) == (Status.READY, None)
     lease = claims.runtime.get_lease("X")
     assert lease is not None and lease.action == Action.SYNC
 

@@ -25,7 +25,7 @@ from taskmanager.core.models import (
     NodeSection,
     NodeVerification,
 )
-from taskmanager.core.status import DecisionStatus, Status
+from taskmanager.core.status import DecisionStatus, Outcome, Status
 
 
 def test_enums_values() -> None:
@@ -101,6 +101,7 @@ def test_node_instantiation_explicit() -> None:
         kind=NodeKind.TASK,
         title="Implement JWT token verification",
         status=Status.IMPLEMENTING,
+        claimed_from=Status.READY,
         priority=80,
         target_repo="auth-service",
         acceptable_models=["claude-3-7-sonnet", "gemini-3.8-flash"],
@@ -240,3 +241,43 @@ def test_ledger_event() -> None:
     assert event.payload == {"title": "Test"}
     assert event.diff == {"status": ["NOT_STARTED", "IMPLEMENTING"]}
     assert isinstance(event.timestamp, datetime)
+
+
+UNREADABLE_CYCLES = [
+    pytest.param({"status": Status.IMPLEMENTING}, "claimed_from", id="step-without-claimed-from"),
+    pytest.param(
+        {"status": Status.READY, "claimed_from": Status.READY},
+        "claimed_from",
+        id="claimed-from-outside-a-step",
+    ),
+    pytest.param({"status": Status.REVIEWED}, "outcome", id="reviewed-without-outcome"),
+    pytest.param(
+        {"status": Status.FIXED, "outcome": Outcome.REJECT}, "fix_for", id="fixed-without-fix-for"
+    ),
+    pytest.param(
+        {"status": Status.FIXED, "outcome": Outcome.APPROVE, "fix_for": Outcome.APPROVE},
+        "fix_for",
+        id="fixed-answering-approve",
+    ),
+]
+
+
+@pytest.mark.parametrize(("fields", "named"), UNREADABLE_CYCLES)
+def test_a_node_refuses_a_cycle_the_lifecycle_cannot_read(
+    fields: dict[str, object], named: str
+) -> None:
+    with pytest.raises(ValidationError, match=named):
+        Node(id="T", kind=NodeKind.TASK, title="T", **fields)  # type: ignore[arg-type]
+
+
+def test_every_readable_cycle_shape_is_accepted() -> None:
+    Node(id="T", kind=NodeKind.TASK, title="T", status=Status.REVIEWING, claimed_from=Status.FIXED)
+    Node(id="T", kind=NodeKind.TASK, title="T", status=Status.REVIEWED, outcome=Outcome.REJECT)
+    Node(
+        id="T",
+        kind=NodeKind.TASK,
+        title="T",
+        status=Status.FIXED,
+        outcome=Outcome.MERGE_FAILED,
+        fix_for=Outcome.MERGE_FAILED,
+    )

@@ -286,7 +286,8 @@ def test_only_dependents_with_work_ahead_are_stranded(kit: Kit) -> None:
         ("GONE", Status.ABANDONED),
         ("LATER", Status.DEFERRED),
     ]:
-        kit.add(node_id, status=status)
+        outcome = Outcome.REJECT if status == Status.REVIEWED else None
+        kit.add(node_id, status=status, outcome=outcome)
         kit.depend(node_id, "Y")
     assert stranded_dependents(kit.ops, "Y") == ["READY", "REVIEWED", "FAILED"]
 
@@ -362,3 +363,14 @@ def test_an_option_object_keeps_its_effect(kit: Kit) -> None:
         options=[DecisionOption(key="a", label="A", effect=DecisionEffect.DEFER)],
     )
     assert read_decision(kit.node(decision_id)).options[0].effect == DecisionEffect.DEFER
+
+
+def test_a_defer_answer_leaves_a_dependent_already_deferred_and_defers_the_rest(kit: Kit) -> None:
+    kit.add("Y", status=Status.ABANDONED)
+    kit.add("X1", status=Status.READY)
+    kit.add("X2", status=Status.READY)
+    decision_id = open_stranded_decision(kit.ops, "Y", Status.ABANDONED, ["X1", "X2"])
+    kit.nodes.save_node(kit.node("X1").model_copy(update={"status": Status.DEFERRED}))
+    kit.ops.answer_decision(decision_id, option="defer")
+    assert (kit.node("X1").status, kit.node("X2").status) == (Status.DEFERRED, Status.DEFERRED)
+    assert kit.section("X1", "deferral") == ""

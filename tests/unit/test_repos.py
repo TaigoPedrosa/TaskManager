@@ -102,6 +102,7 @@ def test_node_repo_crud(tmp_path: Path) -> None:
 
     node.title = "Updated Task Title"
     node.status = Status.IMPLEMENTING
+    node.claimed_from = Status.READY
     node.priority = 90
     repo.save_node(node)
 

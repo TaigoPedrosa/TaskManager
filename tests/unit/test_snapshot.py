@@ -289,8 +289,9 @@ def test_facts_see_an_unsatisfied_edge_own_or_inherited(
 ) -> None:
     estate.add("P", NodeKind.PLAN, status=Status.READY)
     estate.add("T", parent="P", status=Status.READY)
-    estate.add("Y", status=dependency_status)
-    estate.add("Z", status=dependency_status)
+    claimed_from = Status.IMPLEMENTED if dependency_status == Status.MERGING else None
+    estate.add("Y", status=dependency_status, claimed_from=claimed_from)
+    estate.add("Z", status=dependency_status, claimed_from=claimed_from)
     estate.depend("T", "Y")
     estate.depend("P", "Z")
     assert estate.facts("T").unsatisfied_edge is unsatisfied
@@ -328,7 +329,8 @@ def test_facts_see_a_declared_file_locked_only_when_the_next_action_locks_files(
     estate.add(
         "T",
         status=status,
-        outcome=Outcome.REJECT if status == Status.REVIEWED else None,
+        outcome=Outcome.REJECT if status in (Status.REVIEWED, Status.FIXED) else None,
+        fix_for=Outcome.REJECT if status == Status.FIXED else None,
         frontmatter={"declared_files": ["a.py"]},
     )
     estate.add("OTHER", status=Status.IMPLEMENTING, claimed_from=Status.READY)
@@ -361,5 +363,6 @@ def test_facts_see_a_container_whose_descendant_has_started(
     estate.add("S", NodeKind.SPEC, status=Status.READY)
     estate.add("P", NodeKind.PLAN, parent="S", status=Status.READY)
     for n, status in enumerate(child_statuses):
-        estate.add(f"T{n}", parent="P", status=status)
+        claimed_from = Status.READY if status == Status.IMPLEMENTING else None
+        estate.add(f"T{n}", parent="P", status=status, claimed_from=claimed_from)
     assert estate.facts("S").descendant_started is started

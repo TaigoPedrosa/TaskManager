@@ -110,7 +110,7 @@ def test_vector_search_kind_and_status_filtering(tmp_path: Path) -> None:
     nodes = [
         Node(id="TASK-OPEN", kind=NodeKind.TASK, title="Task Open", status=Status.READY),
         Node(id="TASK-DONE", kind=NodeKind.TASK, title="Task Done", status=Status.COMPLETED),
-        Node(id="PLAN-OPEN", kind=NodeKind.PLAN, title="Plan Open", status=Status.IMPLEMENTING),
+        Node(id="PLAN-OPEN", kind=NodeKind.PLAN, title="Plan Open", status=Status.IMPLEMENTED),
         Node(id="PLAN-DONE", kind=NodeKind.PLAN, title="Plan Done", status=Status.COMPLETED),
     ]
     for n in nodes:

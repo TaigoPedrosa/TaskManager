@@ -20,6 +20,9 @@ DECISION_STATUS_LABELS: dict[DecisionStatus, str] = {
     DecisionStatus.WITHDRAWN: "Withdrawn",
 }
 
+# A node already where an effect would put it is left as it is, not refused.
+_REACHES = {DecisionEffect.ABANDON: Status.ABANDONED, DecisionEffect.DEFER: Status.DEFERRED}
+
 # The section each effect appends its note to, beside the ledger entry.
 _NOTE_SECTION = {
     DecisionEffect.ABANDON: "abandonment",
@@ -204,7 +207,7 @@ def apply_effect(ops: Operations, decision_id: str, effect: DecisionEffect) -> l
             ops.node_repo.remove_relation(node_id, data.subject, RelationType.DEPENDS_ON)
             continue
         node = ops.node_repo.get_node(node_id)
-        if node is None:
+        if node is None or node.status == _REACHES.get(effect):
             continue
         if effect == DecisionEffect.REOPEN and (waiting := _open_decisions_on(ops, node_id)):
             raise OperationError(

@@ -12,6 +12,7 @@ from taskmanager.core.enums import (
     VerificationType,
 )
 from taskmanager.core.status import (
+    IN_STEP,
     Action,
     ConditionStage,
     DecisionStatus,
@@ -23,6 +24,7 @@ from taskmanager.core.status import (
 )
 
 _CONTAINERS = frozenset({NodeKind.PLAN, NodeKind.SPEC})
+_FIX_ANSWERS = frozenset({Outcome.REJECT, Outcome.MERGE_FAILED})
 
 # `blocked` exits `tm task start` with nothing written (spec §5.2): a lease never holds it.
 LeaseAction = Literal[Action.IMPLEMENT, Action.REVIEW, Action.FIX, Action.MERGE, Action.SYNC]
@@ -73,6 +75,33 @@ class Node(BaseModel):
         if isinstance(self.status, DecisionStatus) != is_decision:
             raise ValueError(f"a {self.kind.value} cannot hold status {self.status.value}")
         return self
+
+    @model_validator(mode="after")
+    def _cycle_is_readable(self) -> Self:
+        # Every reader runs the pure lifecycle over these fields; a shape it cannot read would
+        # stop every sweep, discovery and claim in the estate, so no writer may store one.
+        in_step = self.status in IN_STEP
+        if in_step and self.claimed_from is None:
+            raise ValueError(
+                f"{self.id}: {self.status.value} has no claimed_from; a step is entered only by "
+                "a claim, which records the status it was claimed from"
+            )
+        if not in_step and self.claimed_from is not None:
+            raise ValueError(
+                f"{self.id}: claimed_from is set on {self.status.value}, which is in no step"
+            )
+        if self.status == Status.REVIEWED and self.outcome is None:
+            raise ValueError(
+                f"{self.id}: REVIEWED needs an outcome: approve, reject or merge_failed"
+            )
+        if self.status == Status.FIXED and self.fix_for not in _FIX_ANSWERS:
+            raise ValueError(f"{self.id}: FIXED needs fix_for reject or merge_failed")
+        return self
+
+    def checked(self) -> Node:
+        """This node re-validated: `model_copy` skips the validators, so a writer calls this
+        before it stores a copy."""
+        return Node.model_validate(self.model_dump())
 
 
 class Condition(BaseModel):

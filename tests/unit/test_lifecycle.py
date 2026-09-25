@@ -357,9 +357,33 @@ def test_an_event_its_status_has_no_row_for_is_refused(status: Status, event: Ev
         advance(Cycle(status, claimed_from=claimed_from), event, CAPS)
 
 
-def test_a_release_with_no_claimed_from_is_refused_with_the_reset_fix() -> None:
-    with pytest.raises(LifecycleError, match="reset"):
+def test_a_release_with_no_claimed_from_is_refused_with_the_reimport_fix() -> None:
+    # A reset refuses a node in a step, so the message must not send anyone to it.
+    with pytest.raises(LifecycleError, match="re-import") as refused:
         advance(Cycle(S.IMPLEMENTING), E.RELEASE, CAPS)
+    assert "reset" not in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    ("review_cycles", "after"),
+    [(3, S.FAILED), (1, S.REVIEWED)],
+)
+def test_a_rejected_review_of_a_landing_fix_fails_only_at_the_cap_and_counts_no_round(
+    review_cycles: int, after: Status
+) -> None:
+    reviewing = Cycle(
+        S.REVIEWING,
+        outcome=MERGE_FAILED,
+        fix_for=MERGE_FAILED,
+        claimed_from=S.FIXED,
+        review_cycles=review_cycles,
+    )
+    rejected = advance(reviewing, E.REJECT, CAPS)
+    assert (rejected.status, rejected.outcome, rejected.review_cycles) == (
+        after,
+        REJECT,
+        review_cycles,
+    )
 
 
 def _walk(cycle: Cycle, *steps: Event | None) -> Cycle:
@@ -472,13 +496,26 @@ def test_defer_and_abandon_refuse_landed_code() -> None:
             verb(Cycle(S.COMPLETED))
 
 
-@pytest.mark.parametrize(
-    "status",
-    [S.IMPLEMENTING, S.REVIEWING, S.FIXING, S.MERGING, S.DEFERRED, S.ABANDONED, S.SUPERSEDED],
-)
-def test_defer_and_abandon_refuse_a_node_in_a_step_or_already_set_aside(status: Status) -> None:
+@pytest.mark.parametrize("status", [S.IMPLEMENTING, S.REVIEWING, S.FIXING, S.MERGING])
+def test_defer_and_abandon_refuse_a_node_in_a_step(status: Status) -> None:
     for verb in (defer, abandon):
-        with pytest.raises(LifecycleError, match="cannot become"):
+        with pytest.raises(LifecycleError, match="wait for its step to end"):
+            verb(Cycle(status, claimed_from=S.READY))
+
+
+@pytest.mark.parametrize(
+    ("status", "fix"),
+    [
+        (S.DEFERRED, "already DEFERRED; reopen it first"),
+        (S.ABANDONED, "already ABANDONED; reopen it first"),
+        (S.SUPERSEDED, "already SUPERSEDED; its replacement carries the work"),
+    ],
+)
+def test_defer_and_abandon_refuse_a_node_already_set_aside_and_say_what_to_do(
+    status: Status, fix: str
+) -> None:
+    for verb in (defer, abandon):
+        with pytest.raises(LifecycleError, match=fix):
             verb(Cycle(status))
 
 

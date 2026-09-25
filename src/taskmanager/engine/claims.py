@@ -5,6 +5,7 @@ with its lease change and the parents' rollup in one state.db transaction.
 """
 
 import hashlib
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -63,6 +64,7 @@ DEFAULT_TTL: dict[Action, int] = {
     Action.SYNC: 3600,
 }
 LIVE_JOBS = frozenset({JobState.RUNNING, JobState.NEEDS_AGENT})
+_log = logging.getLogger(__name__)
 CONTAINERS = frozenset({NodeKind.PLAN, NodeKind.SPEC})
 
 _STALLED = "max_step_failures steps in a row ended without progress"
@@ -593,7 +595,11 @@ class Claims:
                 continue
             expired = self._expire_jobs(node_id)
             if Status(found.status) in IN_STEP or expired:
-                self._advance(found, Event.EXPIRED, "lease sweep")
+                try:
+                    self._advance(found, Event.EXPIRED, "lease sweep")
+                except OperationError as exc:
+                    # One node the lifecycle refuses must not stop every other node's sweep.
+                    _log.warning("sweep left %s where it was: %s", node_id, exc)
         self._escalate_red_targets()
         return swept
 
@@ -927,9 +933,7 @@ class Claims:
         return node.model_copy(
             update={
                 "status": cycle.status,
-                # A sync hold claims a node without moving it, so a step failure counted on a
-                # stable status must still clear what the hold set.
-                "claimed_from": cycle.claimed_from if cycle.status in IN_STEP else None,
+                "claimed_from": cycle.claimed_from,
                 "outcome": cycle.outcome,
                 "fix_for": cycle.fix_for,
                 "review_cycles": cycle.review_cycles,
@@ -983,8 +987,8 @@ class Claims:
         """tm's own lease on the node while its sync runs: the node stays at its status and
         unclaimed, and the sync's agent, if one is needed, takes this lease over.
 
-        The claim names the node's own status as the one it is claimed from, so a racing claim
-        that moved the node, or already holds it, makes this one write nothing."""
+        The claim expects the node's own status, so a racing claim that moved the node, or
+        already holds it, makes this one write nothing."""
         node = self.node(node_id)
         lease = Lease(
             task_id=node_id,
@@ -994,13 +998,11 @@ class Claims:
             ttl_seconds=self.ttl_for(Action.SYNC),
             action=Action.SYNC,
         )
-        return self.runtime.claim(lease, [], node.model_copy(update={"claimed_from": node.status}))
+        return self.runtime.claim(lease, [], node, expected=Status(node.status))
 
     def sync_done(self, node_id: str) -> None:
-        node = self.node(node_id)
-        with self.nodes.transaction():
-            self.nodes.save_node(node.model_copy(update={"claimed_from": None}))
-            self.runtime.release_lease(node_id)
+        self.node(node_id)
+        self.runtime.release_lease(node_id)
         self._ledger("job sync", node_id, {"state": JobState.SUCCEEDED.value})
 
     def _section_text(self, node_id: str, key: str) -> str:

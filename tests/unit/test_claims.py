@@ -557,3 +557,34 @@ def test_reopen_with_a_new_branch_keeps_the_old_one_under_a_numbered_name(tmp_pa
 
     assert git(api, "rev-parse", "tm/T1@1") == old
     assert git(api, "branch", "--list", "tm/T1") == ""
+
+
+def test_a_node_the_lifecycle_refuses_to_expire_does_not_stop_the_sweep_for_its_siblings(
+    tmp_path: Path,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from taskmanager.core.models import Lease
+
+    claims = make_estate(tmp_path)
+    add(claims, "BAD", status=Status.FAILED)
+    add(claims, "OK", status=Status.IMPLEMENTING, claimed_from=Status.READY)
+    stale = datetime.now(tz=UTC) - timedelta(hours=1)
+    for node_id in ("BAD", "OK"):
+        claims.runtime.acquire_lease(
+            Lease(
+                task_id=node_id,
+                agent_id="gone",
+                session_id="s",
+                branch_name=f"tm/{node_id}",
+                ttl_seconds=60,
+                last_heartbeat=stale,
+            ),
+            [],
+        )
+    claims.jobs.create(Job(kind=JobKind.LAND, node_id="BAD", repo="api", target="main"))
+
+    assert sorted(claims.sweep()) == ["BAD", "OK"]
+
+    assert stored(claims, "OK").status == Status.READY
+    assert stored(claims, "BAD").status == Status.FAILED

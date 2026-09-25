@@ -42,6 +42,7 @@ class NodeRepository:
             yield
 
     def save_node(self, node: Node) -> None:
+        node.checked()
         with self.db.get_state_connection() as conn:
             conn.execute(
                 f"""

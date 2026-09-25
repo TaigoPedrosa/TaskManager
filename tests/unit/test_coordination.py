@@ -204,7 +204,9 @@ def test_a_claim_refuses_to_run_inside_an_open_transaction(db: DatabaseManager) 
 
 def test_a_claim_names_the_status_it_is_claimed_from(db: DatabaseManager) -> None:
     _task(db, "T1")
-    unnamed = Node(id="T1", kind=NodeKind.TASK, title="T1", status=Status.IMPLEMENTING)
+    unnamed = Node(id="T1", kind=NodeKind.TASK, title="T1").model_copy(
+        update={"status": Status.IMPLEMENTING}
+    )
     with pytest.raises(ValueError, match="names the status"):
         RuntimeRepository(db).claim(_lease("T1"), [], unnamed)
 

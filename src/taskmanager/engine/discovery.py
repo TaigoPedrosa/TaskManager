@@ -8,6 +8,7 @@ import json
 from dataclasses import dataclass
 
 from taskmanager.core.enums import NodeKind
+from taskmanager.core.lifecycle import LifecycleError
 from taskmanager.core.models import Node
 from taskmanager.core.status import IN_STEP, Action, JobKind, JobState, Status
 from taskmanager.engine.chains import satisfied
@@ -66,7 +67,12 @@ def _candidates(
             continue
         if Status(node.status) in IN_STEP:
             continue
-        action, model = claims.next_step(node)
+        try:
+            action, model = claims.next_step(node)
+        except LifecycleError as exc:
+            # One node the lifecycle cannot read must not stop the wave for every other node.
+            held.append(f"{node.id}: {exc}")
+            continue
         if action is None or model is None:
             continue
         reason = claims.blocked_reason(node, snap, action)

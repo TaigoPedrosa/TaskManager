@@ -246,3 +246,24 @@ def test_the_migration_chain_follows_migration_order_not_declared_priority(
 
     assert chosen(data) == [("B", "implement")]
     assert "A: api migration chain held by B" in data["held"]
+
+
+def test_a_node_the_lifecycle_cannot_read_is_held_and_its_siblings_are_still_chosen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from taskmanager.core.lifecycle import LifecycleError
+
+    claims = make_estate(tmp_path)
+    add(claims, "BAD")
+    add(claims, "OK")
+    real = Claims.next_step
+
+    def unreadable(self: Claims, node: Any) -> Any:
+        if node.id == "BAD":
+            raise LifecycleError("REVIEWED with no outcome")
+        return real(self, node)
+
+    monkeypatch.setattr(Claims, "next_step", unreadable)
+    data = batch(claims)
+    assert chosen(data) == [("OK", "implement")]
+    assert data["held"] == ["BAD: REVIEWED with no outcome"]

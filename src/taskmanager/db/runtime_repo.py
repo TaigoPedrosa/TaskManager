@@ -4,7 +4,7 @@ from typing import Any, cast
 
 from taskmanager.core.enums import LockType
 from taskmanager.core.models import FileLock, Lease, LeaseAction, Node
-from taskmanager.core.status import Action
+from taskmanager.core.status import Action, Status
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.utils import parse_db_datetime, to_db_timestamp
 
@@ -92,23 +92,28 @@ class RuntimeRepository:
                 )
             self.db.spec_commit(conn)
 
-    def claim(self, lease: Lease, locks: list[FileLock], node: Node) -> bool:
-        """Take `node` from the status named by its `claimed_from` to the status it carries,
-        with its lease and file locks, in one `BEGIN IMMEDIATE` transaction.
+    def claim(
+        self, lease: Lease, locks: list[FileLock], node: Node, expected: Status | None = None
+    ) -> bool:
+        """Take `node` from the stored status `expected` (by default its `claimed_from`) to the
+        status it carries, with its lease and file locks, in one `BEGIN IMMEDIATE` transaction.
+        A hold that leaves the node where it is names its own status as `expected`.
 
         False, with nothing written, when the stored status moved, a lease row exists for the
         node, or a lock row exists for one of the files. An expired lease still holds its rows
         until a sweep removes them, so callers sweep first.
         """
-        if node.claimed_from is None:
+        expected = expected or node.claimed_from
+        if expected is None:
             raise ValueError(f"a claim of '{node.id}' names the status it is claimed from")
+        node.checked()
         with self.db.get_state_connection() as conn:
             if self.db.in_transaction or conn.in_transaction:
                 raise RuntimeError("a claim is its own transaction and cannot join an open one")
             conn.execute("BEGIN IMMEDIATE")
             try:
                 row = conn.execute("SELECT status FROM nodes WHERE id = ?", (node.id,)).fetchone()
-                if row is None or row[0] != node.claimed_from.value:
+                if row is None or row[0] != expected.value:
                     conn.rollback()
                     return False
                 conn.execute(_INSERT_LEASE, _lease_row(lease))
@@ -124,7 +129,7 @@ class RuntimeRepository:
                     """,
                     (
                         node.status.value,
-                        node.claimed_from.value,
+                        node.claimed_from.value if node.claimed_from else None,
                         node.outcome.value if node.outcome else None,
                         node.fix_for.value if node.fix_for else None,
                         node.review_cycles,

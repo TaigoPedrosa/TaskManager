@@ -1,6 +1,6 @@
 from dataclasses import dataclass, replace
 
-from taskmanager.core.status import IN_STEP, STABLE, Action, Event, Outcome, Status
+from taskmanager.core.status import EXITS, IN_STEP, STABLE, Action, Event, Outcome, Status
 
 
 @dataclass(frozen=True)
@@ -133,7 +133,10 @@ def _without_progress(c: Cycle, caps: Caps, back_to: Status, counts_as_failure: 
 
 def _back(c: Cycle, caps: Caps, counts_as_failure: bool) -> Cycle:
     if c.claimed_from is None:
-        raise LifecycleError(f"{c.status} has no claimed_from to return to: run a reset")
+        raise LifecycleError(
+            f"{c.status} has no claimed_from to return to: re-import the node at the status its "
+            "step was claimed from"
+        )
     # A review that never delivered a verdict must not use up a fix round.
     uncounted = 1 if c.status == Status.REVIEWING and _counted(c) else 0
     returned = _without_progress(c, caps, c.claimed_from, counts_as_failure)
@@ -182,6 +185,10 @@ def reopen(c: Cycle, children_all_completed: bool) -> Cycle:
 def _set_aside(c: Cycle, to: Status) -> Cycle:
     if c.status == Status.COMPLETED:
         raise LifecycleError(f"a COMPLETED node is landed code and cannot become {to}")
+    if c.status == Status.SUPERSEDED:
+        raise LifecycleError("this node is already SUPERSEDED; its replacement carries the work")
+    if c.status in EXITS:
+        raise LifecycleError(f"this node is already {c.status}; reopen it first")
     if c.status not in STABLE:
         raise LifecycleError(
             f"a node at {c.status} cannot become {to}: wait for its step to end, or stop it"
