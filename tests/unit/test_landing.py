@@ -585,3 +585,29 @@ def test_a_repair_ends_a_parked_landing_s_red_target_wait(tmp_path: Path, repair
         claims.reopen("T1", "back")
 
     assert claims.nodes.get_conditions("T1") == []
+
+
+def test_a_handed_over_job_that_stops_again_counts_a_step_failure_until_the_node_fails(
+    tmp_path: Path,
+) -> None:
+    claims, landing = estate_with(tmp_path, None)
+    reviewed_task(claims)
+    job_id, state = land(claims, landing)
+    assert state == JobState.NEEDS_AGENT
+    assert stored(claims, "T1").step_failures == 0
+
+    for failures in (1, 2):
+        assert claims.start("T1", "agent", "s1").action == Action.MERGE
+        assert landing.resume(job_id) == JobState.NEEDS_AGENT
+        node = stored(claims, "T1")
+        assert (node.status, node.step_failures) == (Status.MERGING, failures)
+        lease = claims.runtime.get_lease("T1")
+        assert lease is not None and lease.ttl_seconds is None
+
+    assert claims.start("T1", "agent", "s1").action == Action.MERGE
+    landing.resume(job_id)
+    node = stored(claims, "T1")
+    assert (node.status, node.step_failures) == (Status.FAILED, 3)
+    assert claims.runtime.get_lease("T1") is None
+    job = claims.jobs.get(job_id)
+    assert job is not None and job.state == JobState.EXPIRED

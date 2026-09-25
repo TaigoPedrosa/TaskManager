@@ -678,6 +678,18 @@ class Claims:
         """A job stopped for an agent keeps its lease with no ttl, so sweep leaves it alone."""
         self.runtime.park(node_id)
 
+    def count_unresolved(self, node_id: str) -> Status:
+        """One step failure for a job an agent took over that stopped again: the job stays
+        parked for the next agent, and at the cap the node fails as a release would."""
+        node = self.node(node_id)
+        if node.step_failures + 1 >= self.caps.step_failures:
+            self._expire_jobs(node_id)
+            return self._advance(node, Event.RELEASE, "job stopped again")
+        with self.nodes.transaction():
+            self.nodes.save_node(node.model_copy(update={"step_failures": node.step_failures + 1}))
+        self._ledger("job stopped again", node_id, {"step_failures": node.step_failures + 1})
+        return Status(node.status)
+
     def _escalate_red_targets(self) -> list[str]:
         """One decision per red target that has held landings longer than
         red_target_decision_after, blocking every landing it holds. A node mid-step cannot take

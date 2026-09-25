@@ -147,6 +147,7 @@ class Landing:
         job.step = step
         job.state = JobState.RUNNING
         job.result.pop("push_tries", None)
+        job.result["resumed"] = int(job.result.get("resumed", 0)) + 1
         if not self.jobs.set_state(job, {JobState.NEEDS_AGENT}):
             raise OperationError(f"job {job_id} moved while it was being resumed", 409)
         self.claims.heartbeat(job.node_id)
@@ -402,6 +403,11 @@ class Landing:
         if not self._end(job, JobState.NEEDS_AGENT, reason=reason, **detail):
             return self._state(job)
         self.claims.park(job.node_id)
+        if job.result.get("resumed"):
+            # An agent took this job over and it stopped again unresolved; counting that is what
+            # bounds a stop no agent can resolve.
+            self.claims.count_unresolved(job.node_id)
+            return self._state(job)
         return JobState.NEEDS_AGENT
 
     def _own_defect(self, job: Job, finding: str) -> JobState:
