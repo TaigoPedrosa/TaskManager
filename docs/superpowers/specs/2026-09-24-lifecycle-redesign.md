@@ -550,18 +550,19 @@ re-imported strategically into a fresh estate instead.
 
 - The new version stores its state in new files under `.taskmanager/`: `state.db` (nodes, sections,
   relations, verifications, conditions, search indexes, leases, file locks, branch locks, jobs),
-  `cache.db` (`gate_baselines`, `condition_results`) and `ledger.db`, each created at its current
-  schema by `tm init` and versioned by `PRAGMA user_version` for future changes. The self-healing
-  `ALTER`s go.
+  `cache.db` (`gate_baselines`, `condition_results`) and `audit.db` (the ledger), each created at
+  its current schema by `tm init` and versioned by `PRAGMA user_version` for future changes. The
+  self-healing `ALTER`s go.
 - Opened in a directory holding a pre-lifecycle estate (a SQLite `spec.db` present, no `state.db`),
   every command except `tm init --archive` refuses with: "this directory holds a
   pre-lifecycle estate: run `tm init --archive` to move it to `.taskmanager/archive-<timestamp>/`
   and start fresh, then re-import the ongoing work". `tm init --archive` moves the old files, never
   deletes them.
-- A pre-lifecycle binary fails loudly against the new estate: `tm init` writes `spec.db` and
-  `runtime.db` as plain-text tombstones naming the version that owns the directory, so the old
-  binary's first query fails with SQLite's "file is not a database" instead of quietly opening an
-  empty estate.
+- A pre-lifecycle binary fails loudly against the new estate: `tm init` writes `spec.db`,
+  `runtime.db` and `ledger.db` as plain-text tombstones naming the version that owns the
+  directory, so the old binary's first query — including a bare `tm audit list`, which opens
+  `ledger.db` directly — fails with SQLite's "file is not a database" instead of quietly opening
+  an empty estate.
 - `tm restore` reads only the new export format and refuses an old one, naming the last
   pre-lifecycle release (tagged `v0.2.0` before this work lands) as the version that reads it.
 

@@ -64,7 +64,7 @@ def test_init_creates_state_and_ledger_at_the_current_schema_version(tmp_path: P
         assert "ledger_events" in _tables(conn)
 
 
-@pytest.mark.parametrize("name", ["spec.db", "runtime.db"])
+@pytest.mark.parametrize("name", ["spec.db", "runtime.db", "ledger.db"])
 def test_init_leaves_a_tombstone_an_old_binary_fails_to_open(tmp_path: Path, name: str) -> None:
     _fresh(tmp_path)
     tombstone = tmp_path / ".taskmanager" / name

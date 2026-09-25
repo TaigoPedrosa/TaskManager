@@ -20,6 +20,7 @@ def test_cli_lifecycle_spec_plan_task_render_next(tmp_path: Path) -> None:
     assert (tmp_path / ".taskmanager" / "spec.db").exists()
     assert (tmp_path / ".taskmanager" / "runtime.db").exists()
     assert (tmp_path / ".taskmanager" / "ledger.db").exists()
+    assert (tmp_path / ".taskmanager" / "audit.db").exists()
 
     # 2. spec add, list, get
     res = runner.invoke(

@@ -20,8 +20,10 @@ _SQLITE_HEADER = b"SQLite format 3\x00"
 # The database files a pre-lifecycle tm kept; an archive moves each with its WAL and shared memory.
 _LEGACY_FILES = ("spec.db", "runtime.db", "ledger.db")
 # Written as plain text where a pre-lifecycle tm looks for its databases, so it fails with "file is
-# not a database" instead of silently creating an empty estate beside this one.
-_TOMBSTONES = ("spec.db", "runtime.db")
+# not a database" instead of silently creating an empty estate beside this one. `ledger.db` is
+# tombstoned too: a pre-lifecycle `tm audit list` opens it directly by that name, and this estate's
+# own ledger lives at `audit.db` instead.
+_TOMBSTONES = ("spec.db", "runtime.db", "ledger.db")
 
 PRE_LIFECYCLE_MESSAGE = (
     "this directory holds a pre-lifecycle estate: run `tm init --archive` to move it to "
@@ -47,7 +49,9 @@ class DatabaseManager:
         self.taskmanager_dir = taskmanager_dir
         self.dir = taskmanager_dir
         self.state_db = taskmanager_dir / "state.db"
-        self.ledger_db = taskmanager_dir / "ledger.db"
+        # Not "ledger.db": that name is tombstoned so a pre-lifecycle tm's `tm audit list`
+        # fails loudly instead of reading this database as its own.
+        self.ledger_db = taskmanager_dir / "audit.db"
         self.cache_db = taskmanager_dir / "cache.db"
         # One connection per database *per thread*, reused for that thread's lifetime rather
         # than reopened on every get_*_connection() call (reopening, with its extension load,
