@@ -2,7 +2,9 @@ from pathlib import Path
 
 from dishka import Container, Provider, Scope, make_container, provide
 
+from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
+from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
@@ -40,6 +42,14 @@ class TaskManagerProvider(Provider):
     @provide(scope=Scope.APP)
     def ledger_repo(self, db_mgr: DatabaseManager) -> LedgerRepository:
         return LedgerRepository(db_mgr)
+
+    @provide(scope=Scope.APP)
+    def job_repo(self, db_mgr: DatabaseManager) -> JobRepository:
+        return JobRepository(db_mgr)
+
+    @provide(scope=Scope.APP)
+    def cache_repo(self, db_mgr: DatabaseManager) -> CacheRepository:
+        return CacheRepository(db_mgr)
 
     @provide(scope=Scope.APP)
     def graph_engine(
@@ -105,6 +115,8 @@ class TaskManagerProvider(Provider):
     get_node_repo = node_repo
     get_runtime_repo = runtime_repo
     get_ledger_repo = ledger_repo
+    get_job_repo = job_repo
+    get_cache_repo = cache_repo
     get_graph_engine = graph_engine
     get_git_mgr = git_mgr
     get_coordinator = coordinator

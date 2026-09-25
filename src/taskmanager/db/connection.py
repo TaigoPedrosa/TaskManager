@@ -9,6 +9,7 @@ import sqlite_vec  # type: ignore[import-untyped]
 
 import taskmanager
 from taskmanager.db.schema import (
+    CACHE_SCHEMA_SQL,
     LEDGER_SCHEMA_SQL,
     SCHEMA_VERSION,
     STATE_SCHEMA_SQL,
@@ -47,6 +48,7 @@ class DatabaseManager:
         self.dir = taskmanager_dir
         self.state_db = taskmanager_dir / "state.db"
         self.ledger_db = taskmanager_dir / "ledger.db"
+        self.cache_db = taskmanager_dir / "cache.db"
         # One connection per database *per thread*, reused for that thread's lifetime rather
         # than reopened on every get_*_connection() call (reopening, with its extension load,
         # dominated web load time). Per thread because the web server runs its database routes
@@ -154,6 +156,10 @@ class DatabaseManager:
     def get_ledger_connection(self) -> Generator[sqlite3.Connection]:
         yield self._thread_conn("ledger", self.ledger_db)
 
+    @contextmanager
+    def get_cache_connection(self) -> Generator[sqlite3.Connection]:
+        yield self._thread_conn("cache", self.cache_db)
+
     def close(self) -> None:
         """Close every thread's cached connections. Optional -- process exit does this too --
         but a long-lived caller (the web server) that wants to drop file handles explicitly can."""
@@ -172,6 +178,11 @@ class DatabaseManager:
 
         with self.get_ledger_connection() as conn:
             conn.executescript(LEDGER_SCHEMA_SQL)
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            conn.commit()
+
+        with self.get_cache_connection() as conn:
+            conn.executescript(CACHE_SCHEMA_SQL)
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             conn.commit()
 

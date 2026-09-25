@@ -49,6 +49,8 @@ class GraphEngine:
         self.runtime_repo = runtime_repo
 
     def _is_lease_active(self, lease: Lease) -> bool:
+        if lease.ttl_seconds is None:
+            return True
         last_hb = lease.last_heartbeat
         if last_hb.tzinfo is None:
             last_hb = last_hb.astimezone(UTC)

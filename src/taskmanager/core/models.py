@@ -1,4 +1,5 @@
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -11,7 +12,16 @@ from taskmanager.core.enums import (
     RelationType,
     VerificationType,
 )
-from taskmanager.core.status import ConditionStage, DecisionStatus, Merge, Outcome, Status
+from taskmanager.core.status import (
+    Action,
+    ConditionStage,
+    DecisionStatus,
+    JobKind,
+    JobState,
+    Merge,
+    Outcome,
+    Status,
+)
 
 _CONTAINERS = frozenset({NodeKind.PLAN, NodeKind.SPEC})
 
@@ -105,7 +115,42 @@ class Lease(BaseModel):
     branch_name: str
     acquired_at: datetime = Field(default_factory=datetime.now)
     last_heartbeat: datetime = Field(default_factory=datetime.now)
-    ttl_seconds: int = 300
+    ttl_seconds: int | None = 300
+    action: Action | None = None
+    review_hash: str | None = None
+    model: str | None = None
+
+
+class Job(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = ""
+    kind: JobKind
+    node_id: str
+    repo: str
+    target: str
+    state: JobState = JobState.RUNNING
+    step: str | None = None
+    worktree: str | None = None
+    pid: int | None = None
+    heartbeat: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+    result: dict[str, Any] = Field(default_factory=dict)
+
+
+class BranchLock(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repo: str
+    branch: str
+    holder: str
+    heartbeat: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+
+
+@dataclass(frozen=True)
+class GateRun:
+    exit_code: int
+    failing: frozenset[str] | None
+    tail: str
 
 
 class FileLock(BaseModel):

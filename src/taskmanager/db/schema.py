@@ -104,13 +104,67 @@ CREATE TABLE IF NOT EXISTS leases (
     branch_name TEXT NOT NULL,
     acquired_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_heartbeat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    ttl_seconds INTEGER NOT NULL DEFAULT 300
+    ttl_seconds INTEGER DEFAULT 300 CHECK (ttl_seconds IS NULL OR ttl_seconds > 0),
+    action TEXT CHECK (action IN ('implement', 'review', 'fix', 'merge', 'sync')),
+    review_hash TEXT,
+    model TEXT
 );
 
 CREATE TABLE IF NOT EXISTS file_locks (
     file_path TEXT PRIMARY KEY,
     task_id TEXT NOT NULL REFERENCES leases(task_id) ON DELETE CASCADE,
     lock_type TEXT NOT NULL DEFAULT 'write'
+);
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('land', 'sync')),
+    node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    repo TEXT NOT NULL,
+    target TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (
+        state IN (
+            'running', 'needs_agent', 'succeeded', 'own_defect', 'condition_unmet', 'expired'
+        )
+    ),
+    step TEXT,
+    worktree TEXT,
+    pid INTEGER,
+    heartbeat TIMESTAMP NOT NULL,
+    result_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_node ON jobs(node_id);
+
+CREATE TABLE IF NOT EXISTS branch_locks (
+    repo TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    holder TEXT NOT NULL,
+    heartbeat TIMESTAMP NOT NULL,
+    PRIMARY KEY (repo, branch)
+);
+"""
+
+# Derived results only: dropping this database loses time, never state.
+CACHE_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS gate_baselines (
+    repo TEXT NOT NULL,
+    target_sha TEXT NOT NULL,
+    template_hash TEXT NOT NULL,
+    exit_code INTEGER NOT NULL,
+    failing_json TEXT,
+    tail TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (repo, target_sha, template_hash)
+);
+
+CREATE TABLE IF NOT EXISTS condition_results (
+    node_id TEXT NOT NULL,
+    idx INTEGER NOT NULL,
+    command_hash TEXT NOT NULL,
+    exit_code INTEGER NOT NULL,
+    checked_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (node_id, idx)
 );
 """
 
