@@ -63,7 +63,7 @@ Two shapes cover most work:
 - **Each task reviewed and landed alone.** Tasks keep the defaults and land on `main`; the plan is a grouping only.
 - **One review for the whole plan.** Tasks carry `merge: parent`, the plan carries `review: true` and `fix: true`, and the plan's review reads its whole branch once every task has landed on it. A task may keep its own review with `fix: false`: a rejection then lands on the plan's branch unfixed, and the plan's review is where it gets fixed. tm refuses `review` without `fix` anywhere else, because a rejection nobody below fixes must land where a review above will see it.
 
-A plan or spec that touched several repositories lands them one at a time, in `land_order` (else the project's `repo_order`). A container whose tasks changed nothing completes without a review.
+A plan or spec that touched several repositories lands them one at a time, in `land_order` (else the project's `repo_order`). A container whose tasks changed nothing completes without a review. One whose counted tasks name no `target_repo` has no repository to show that in, so it stays `IMPLEMENTED` rather than complete on a claim nothing proves; once its verification passes, complete it by hand with `tm task reset <id> --to COMPLETED --note "<why nothing lands>"`.
 
 ## 5. What a node waits on
 
