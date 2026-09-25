@@ -4,7 +4,6 @@ import sqlite3
 import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -24,12 +23,12 @@ from taskmanager.core.models import (
     NodeSection,
     NodeVerification,
 )
-from taskmanager.core.rollup import rollup
 from taskmanager.core.status import ConditionStage, DecisionEffect, DecisionStatus, Merge, Status
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
+from taskmanager.engine import git as gitops
 from taskmanager.engine.assets import (
     AssetError,
     AttachmentSource,
@@ -50,8 +49,6 @@ from taskmanager.engine.decisions import (
 from taskmanager.engine.snapshot import (
     CONTAINERS,
     SnapshotBuilder,
-    apply_cycle,
-    cycle_of,
     node_busy,
     roll_up_ancestors,
     stored_status,
@@ -161,22 +158,6 @@ def validated_write(
             raise OperationError(prefix + "; ".join(r.message for r in refusals), code)
 
 
-def _roll_up_container(node_repo: NodeRepository, container_id: str) -> None:
-    """Re-derive a container that lost a child, then its ancestors."""
-    children = node_repo.get_children(container_id)
-    if children:
-        roll_up_ancestors(node_repo, children[0])
-        return
-    node = node_repo.get_node(container_id)
-    if node is None or node.kind not in CONTAINERS:
-        return
-    current = cycle_of(node)
-    derived = rollup(current.status, [])
-    if derived != current.status:
-        node_repo.save_node(apply_cycle(node, replace(current, status=derived)))
-    roll_up_ancestors(node_repo, container_id)
-
-
 class Operations:
     def __init__(
         self,
@@ -220,6 +201,34 @@ class Operations:
 
     def busy(self, node_id: str) -> bool:
         return node_busy(self.runtime_repo, self.job_repo, node_id)
+
+    def nothing_to_land(self, container_id: str) -> bool:
+        """True when the container's branch changes nothing against its landing target in every
+        repository its tasks name; a git error reads as a change."""
+        node = self.node_repo.get_node(container_id)
+        if node is None:
+            return False
+        parents = self.node_repo.get_parent_ids(container_id)
+        parent = self.node_repo.get_node(parents[0]) if parents else None
+        if node.merge == Merge.PARENT and parent is not None:
+            base = parent.branch or f"tm/{parent.id}"
+        else:
+            base = "origin/main"
+        branch = node.branch or f"tm/{container_id}"
+        repos: set[str] = set()
+        frontier = [container_id]
+        while frontier:
+            for child_id in self.node_repo.get_children(frontier.pop()):
+                child = self.node_repo.get_node(child_id)
+                if child is not None and child.target_repo:
+                    repos.add(child.target_repo)
+                frontier.append(child_id)
+        root = self._project_root()
+        return not any(
+            gitops.rev_parse(root / repo, f"refs/heads/{branch}")
+            and not gitops.diff_quiet(root / repo, base, branch)
+            for repo in sorted(repos)
+        )
 
     def _ledger(
         self,
@@ -338,7 +347,7 @@ class Operations:
             self.node_repo.add_relation(
                 NodeRelation(source_id=spec, target_id=plan_id, relation_type=RelationType.CONTAINS)
             )
-            roll_up_ancestors(self.node_repo, plan_id)
+            roll_up_ancestors(self, plan_id)
         self._ledger(
             LedgerCommand.PLAN_ADD,
             target_id=plan_id,
@@ -409,7 +418,7 @@ class Operations:
                         source_id=task_id, target_id=dep, relation_type=RelationType.DEPENDS_ON
                     )
                 )
-            roll_up_ancestors(self.node_repo, task_id)
+            roll_up_ancestors(self, task_id)
 
         self._ledger(
             LedgerCommand.TASK_ADD, target_id=task_id, payload={"title": title, "plan": plan}
@@ -543,7 +552,7 @@ class Operations:
                 self.node_repo.transfer_blocks(
                     old_id, new_id, TransferMode.CUSTOM, custom_ids=custom_ids
                 )
-            roll_up_ancestors(self.node_repo, old_id)
+            roll_up_ancestors(self, old_id)
 
         self._ledger(
             LedgerCommand.TASK_SUPERSEDE,
@@ -572,9 +581,9 @@ class Operations:
                     source_id=plan_id, target_id=task_id, relation_type=RelationType.CONTAINS
                 )
             )
-            roll_up_ancestors(self.node_repo, task_id)
+            roll_up_ancestors(self, task_id)
             if old_plan is not None:
-                _roll_up_container(self.node_repo, old_plan)
+                roll_up_ancestors(self, old_plan, include_self=True)
         self._ledger(
             LedgerCommand.TASK_MOVE, target_id=task_id, payload={"from": old_plan, "to": plan_id}
         )

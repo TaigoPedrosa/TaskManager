@@ -20,11 +20,13 @@ from taskmanager.core.status import (
     Status,
 )
 from taskmanager.db.job_repo import JobRepository
+from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine.conditions import is_executable
-from taskmanager.engine.operations import validated_write
-from taskmanager.engine.snapshot import SnapshotBuilder, roll_up_ancestors
+from taskmanager.engine.operations import Operations, validated_write
+from taskmanager.engine.snapshot import roll_up_ancestors
+from taskmanager.engine.verification import VerificationEngine
 
 REFUSED = "import refused, nothing written: "
 
@@ -34,11 +36,17 @@ def _optional[E: StrEnum](kind: type[E], value: Any) -> E | None:
 
 
 class BulkImporter:
-    def __init__(self, node_repo: NodeRepository) -> None:
+    def __init__(self, node_repo: NodeRepository, ops: Operations | None = None) -> None:
+        db = node_repo.db
         self.node_repo = node_repo
-        self.snapshots = SnapshotBuilder(
-            node_repo, RuntimeRepository(node_repo.db), JobRepository(node_repo.db)
+        self.ops = ops or Operations(
+            node_repo,
+            RuntimeRepository(db),
+            LedgerRepository(db),
+            VerificationEngine(db.taskmanager_dir.parent),
+            JobRepository(db),
         )
+        self.snapshots = self.ops.snapshots
 
     NODE_KEYS = frozenset(
         {
@@ -186,7 +194,7 @@ class BulkImporter:
                 for cond in conds:
                     self.node_repo.add_condition(cond)
             for node in nodes:
-                roll_up_ancestors(self.node_repo, node.id)
+                roll_up_ancestors(self.ops, node.id)
 
     @staticmethod
     def _parse_dep(dep: Any) -> str:

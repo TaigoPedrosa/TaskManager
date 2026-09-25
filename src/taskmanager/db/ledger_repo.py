@@ -10,6 +10,9 @@ class LedgerRepository:
         self.db = db_mgr
 
     def append(self, event: LedgerEvent) -> None:
+        self.db.after_commit(lambda: self._write(event))
+
+    def _write(self, event: LedgerEvent) -> None:
         now_str = to_db_timestamp(event.timestamp)
         with self.db.get_ledger_connection() as conn:
             cursor = conn.execute(

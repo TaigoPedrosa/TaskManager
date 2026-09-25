@@ -2,9 +2,12 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import app
+from taskmanager.di.container import create_container
+from taskmanager.engine.operations import Operations
 
 runner = CliRunner()
 
@@ -583,7 +586,7 @@ def test_cli_section_remove_deletes_a_section(tmp_path: Path) -> None:
 
 
 def test_spec_and_plan_list_and_get_show_the_display_beside_the_stored_status(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from taskmanager.core.status import Status
     from taskmanager.db.connection import DatabaseManager
@@ -603,7 +606,10 @@ def test_spec_and_plan_list_and_get_show_the_display_beside_the_stored_status(
     assert task is not None
     task.status = Status.COMPLETED
     node_repo.save_node(task)
-    roll_up_ancestors(node_repo, "S1-P1-t1")
+    ops = create_container(tmp_path).get(Operations)
+    # No repository here for the git check to read: the plan's code counts as still to land.
+    monkeypatch.setattr(ops, "nothing_to_land", lambda _container: False)
+    roll_up_ancestors(ops, "S1-P1-t1")
 
     res = runner.invoke(app, ["plan", "list", "--spec", "S1", "--path", str(tmp_path)])
     assert res.exit_code == 0 and "WAITING_MERGE" in res.stdout

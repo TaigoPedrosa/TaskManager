@@ -134,12 +134,20 @@ def test_importing_a_new_child_under_a_completed_plan_is_refused(repo: NodeRepos
     assert repo.get_node("S-P-b") is None
 
 
-def test_an_imported_plan_whose_tasks_are_all_completed_rolls_up_to_implemented(
+@pytest.mark.parametrize(
+    ("nothing_to_land", "rolled_up"), [(False, Status.IMPLEMENTED), (True, Status.COMPLETED)]
+)
+def test_an_imported_plan_whose_tasks_are_all_completed_waits_to_land_only_with_code_to_land(
     repo: NodeRepository,
+    monkeypatch: pytest.MonkeyPatch,
+    nothing_to_land: bool,
+    rolled_up: Status,
 ) -> None:
-    BulkImporter(repo).import_dict(doc({"id": "S-P-a", "title": "a", "status": "COMPLETED"}))
+    importer = BulkImporter(repo)
+    monkeypatch.setattr(importer.ops, "nothing_to_land", lambda _container: nothing_to_land)
+    importer.import_dict(doc({"id": "S-P-a", "title": "a", "status": "COMPLETED"}))
     plan = repo.get_node("S-P")
-    assert plan is not None and plan.status == Status.IMPLEMENTED
+    assert plan is not None and plan.status == rolled_up
 
 
 def test_a_document_that_states_conditions_replaces_the_set(repo: NodeRepository) -> None:

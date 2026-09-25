@@ -280,9 +280,10 @@ def test_moving_a_branch_onto_a_parent_forked_from_the_same_commit_is_allowed(
 
 
 def test_superseding_the_last_unfinished_child_rolls_the_plan_up_to_implemented(
-    env: Env,
+    env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     node_repo, _runtime, _ledger, ops = env
+    monkeypatch.setattr(ops, "nothing_to_land", lambda _container: False)
     _spec, plan, done = tree(ops)
     extra = ops.add_task("Extra", plan, slug="T2")
     set_status(node_repo, done, Status.COMPLETED)
@@ -292,9 +293,10 @@ def test_superseding_the_last_unfinished_child_rolls_the_plan_up_to_implemented(
 
 
 def test_moving_a_task_rolls_up_the_plan_it_leaves_and_reopens_the_one_it_joins(
-    env: Env,
+    env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     node_repo, _runtime, _ledger, ops = env
+    monkeypatch.setattr(ops, "nothing_to_land", lambda _container: False)
     spec, plan, done = tree(ops)
     moving = ops.add_task("Moving", plan, slug="T2")
     other = ops.add_plan("Other", spec, slug="P2")
@@ -379,3 +381,53 @@ def test_a_plans_brief_lists_the_children_whose_review_rejected(env: Env) -> Non
     assert f"`{approved}`" not in brief
     assert "Children whose review rejected" not in renderer.render(rejected, RenderView.SUBAGENT)
     assert "Children whose review rejected" not in renderer.render(plan, RenderView.FULL)
+
+
+def test_a_move_that_leaves_a_plan_only_deferred_children_strands_its_dependents(
+    env: Env,
+) -> None:
+    node_repo, _runtime, ledger, ops = env
+    spec, plan, deferred = tree(ops)
+    leaving = ops.add_task("Leaving", plan, slug="T2")
+    other = ops.add_plan("Other", spec, slug="P2")
+    waiting = ops.add_task("Waiting", other, slug="W", depends_on=[plan])
+    set_status(node_repo, deferred, Status.DEFERRED)
+
+    ops.move_task(leaving, other)
+
+    assert get(node_repo, plan).status == Status.DEFERRED
+    decisions = [
+        d
+        for d in node_repo.get_dependencies(waiting)
+        if get(node_repo, d).kind == NodeKind.DECISION
+    ]
+    assert [get(node_repo, d).title for d in decisions] == [
+        f"{plan} was DEFERRED: drop the edge, defer, or abandon the dependents?"
+    ]
+    rolled = [e for e in ledger.list_events(limit=10_000) if e.command == "rollup"]
+    assert [(e.target_id, e.payload["to"]) for e in rolled] == [(plan, Status.DEFERRED)]
+
+
+def test_a_move_completes_a_plan_left_with_nothing_to_land_and_keeps_one_with_code(
+    env: Env, tmp_path: Path
+) -> None:
+    node_repo, _runtime, _ledger, ops = env
+    work = repo_with_origin(tmp_path, "core")
+    spec = ops.add_spec("S", slug="S1")
+    empty, full = ops.add_plan("Empty", spec, slug="E"), ops.add_plan("Full", spec, slug="F")
+    parked = ops.add_plan("Parked", spec, slug="Z")
+    for plan in (empty, full):
+        for slug in ("done", "moving"):
+            ops.update_node(ops.add_task(slug, plan, slug=slug), repo="core")
+        set_status(node_repo, f"{plan}-done", Status.COMPLETED)
+    git(work, "checkout", "-q", "-b", f"tm/{full}", "origin/main")
+    (work / "code.py").write_text("x = 1\n")
+    git(work, "add", "code.py")
+    git(work, "commit", "-q", "-m", "container work")
+    git(work, "checkout", "-q", "--detach")
+
+    ops.move_task(f"{empty}-moving", parked)
+    ops.move_task(f"{full}-moving", parked)
+
+    assert get(node_repo, empty).status == Status.COMPLETED
+    assert get(node_repo, full).status == Status.IMPLEMENTED

@@ -229,10 +229,9 @@ def apply_effect(ops: Operations, decision_id: str, effect: DecisionEffect) -> l
             updated.verdict = None
         ops.node_repo.save_node(updated)
         ops.append_section(node_id, _NOTE_SECTION[effect], note)
-        moved = [(node_id, cycle.status), *roll_up_ancestors(ops.node_repo, node_id)]
-        for moved_id, status in moved:
-            if status in (Status.ABANDONED, Status.DEFERRED) and (
-                dependents := stranded_dependents(ops, moved_id)
-            ):
-                open_stranded_decision(ops, moved_id, status, dependents)
+        if cycle.status in (Status.ABANDONED, Status.DEFERRED) and (
+            dependents := stranded_dependents(ops, node_id)
+        ):
+            open_stranded_decision(ops, node_id, cycle.status, dependents)
+        roll_up_ancestors(ops, node_id)
     return blocked

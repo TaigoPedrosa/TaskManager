@@ -25,7 +25,6 @@ from taskmanager.core.models import (
     Node,
     NodeRelation,
 )
-from taskmanager.core.rollup import rollup
 from taskmanager.core.status import (
     EXITS,
     IN_STEP,
@@ -47,12 +46,16 @@ from taskmanager.engine import git as gitops
 from taskmanager.engine.chains import MAIN, satisfied, sync_pairs
 from taskmanager.engine.conditions import ConditionRunner, is_executable
 from taskmanager.engine.config import ConfigStore, ProjectConfig
-from taskmanager.engine.decisions import open_failed_decision, open_stranded_decision
+from taskmanager.engine.decisions import (
+    open_failed_decision,
+    open_stranded_decision,
+    stranded_dependents,
+)
 from taskmanager.engine.gates import RED_TARGET
 from taskmanager.engine.git import GitManager
 from taskmanager.engine.operations import OperationError, Operations
 from taskmanager.engine.routing import model_for
-from taskmanager.engine.snapshot import SnapshotBuilder, stored_status
+from taskmanager.engine.snapshot import SnapshotBuilder, roll_up_ancestors, stored_status
 from taskmanager.engine.stepgraph import Snapshot
 from taskmanager.engine.validation import Refusal, validate
 
@@ -711,7 +714,7 @@ class Claims:
             if nxt.status == Status.FAILED and node.status != Status.FAILED:
                 reason = _FAILED_BECAUSE.get(event, "its step failed")
                 open_failed_decision(self.ops, node.id, reason, evidence)
-            self._propagate(node.id)
+            roll_up_ancestors(self.ops, node.id)
         self._ledger(
             command, node.id, {"event": event.value, "from": node.status, "to": nxt.status}
         )
@@ -842,7 +845,7 @@ class Claims:
             self.note(node.id, *note)
             if nxt.status in (Status.DEFERRED, Status.ABANDONED):
                 self._strand(node.id, nxt.status)
-            self._propagate(node.id)
+            roll_up_ancestors(self.ops, node.id)
         self._ledger(command, node.id, {"from": node.status, "to": nxt.status})
         return nxt.status
 
@@ -877,11 +880,7 @@ class Claims:
             gitops.rename_branch(repo_dir, branch, f"{branch}@{n}")
 
     def _strand(self, node_id: str, status: Status) -> None:
-        dependents = [
-            d
-            for d in self.nodes.get_blocked_by(node_id)
-            if (dep := self.nodes.get_node(d)) is not None and dep.kind != NodeKind.DECISION
-        ]
+        dependents = stranded_dependents(self.ops, node_id)
         if dependents:
             open_stranded_decision(self.ops, node_id, status, dependents)
 
@@ -893,38 +892,6 @@ class Claims:
             for kid_id in self.nodes.get_children(node_id)
             if (kid := self.nodes.get_node(kid_id)) is not None and kid.kind != NodeKind.DECISION
         ]
-
-    def _propagate(self, node_id: str) -> None:
-        """Re-derives every ancestor container's status from its children, inside the caller's
-        transaction."""
-        child = node_id
-        while (parent_id := self._parent(child)) is not None:
-            parent = self.node(parent_id)
-            current = Status(parent.status)
-            derived = rollup(current, self._child_statuses(parent_id))
-            if derived == Status.IMPLEMENTED and self._nothing_to_land(parent_id):
-                # Code already on its target is never reviewed again.
-                derived = Status.COMPLETED
-            if derived == current:
-                return
-            self.nodes.save_node(
-                parent.model_copy(update={"status": derived, "updated_at": datetime.now(tz=UTC)})
-            )
-            if derived in (Status.DEFERRED, Status.ABANDONED):
-                self._strand(parent_id, derived)
-            self._ledger("rollup", parent_id, {"from": current, "to": derived})
-            child = parent_id
-
-    def _nothing_to_land(self, container_id: str) -> bool:
-        branch = self.branch_of(container_id)
-        ref = self.target_ref(self.target_of(container_id))
-        for repo in self.repos_of(container_id):
-            repo_dir = self.root / repo
-            if gitops.rev_parse(repo_dir, f"refs/heads/{branch}") and not gitops.diff_quiet(
-                repo_dir, ref, branch
-            ):
-                return False
-        return True
 
     # -- writing helpers ----------------------------------------------------------------------
 

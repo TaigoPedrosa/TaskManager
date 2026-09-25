@@ -88,8 +88,8 @@ class TaskManagerProvider(Provider):
         return MarkdownRenderer(node_repo)
 
     @provide(scope=Scope.APP)
-    def importer(self, node_repo: NodeRepository) -> BulkImporter:
-        return BulkImporter(node_repo)
+    def importer(self, node_repo: NodeRepository, operations: Operations) -> BulkImporter:
+        return BulkImporter(node_repo, operations)
 
     @provide(scope=Scope.APP)
     def search_engine(self, db_mgr: DatabaseManager) -> SearchEngine:

@@ -1,6 +1,6 @@
 import sqlite3
 import threading
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -131,9 +131,20 @@ class DatabaseManager:
         if self._spec_tx_depth == 0:
             conn.commit()
 
+    def after_commit(self, action: Callable[[], None]) -> None:
+        """Runs `action` once this thread's open `spec_transaction()` commits, and never if it
+        rolls back; at once outside one. The ledger is another database, so an entry written
+        inside a write that is then refused would otherwise outlive it."""
+        if self._spec_tx_depth == 0:
+            action()
+        else:
+            self._local.after_commit.append(action)
+
     @contextmanager
     def spec_transaction(self) -> Generator[sqlite3.Connection]:
         with self.get_state_connection() as conn:
+            if self._spec_tx_depth == 0:
+                self._local.after_commit = []
             self._spec_tx_depth += 1
             try:
                 yield conn
@@ -146,6 +157,10 @@ class DatabaseManager:
                     conn.commit()
             finally:
                 self._spec_tx_depth -= 1
+            if self._spec_tx_depth == 0:
+                pending, self._local.after_commit = self._local.after_commit, []
+                for action in pending:
+                    action()
 
     @contextmanager
     def get_ledger_connection(self) -> Generator[sqlite3.Connection]:

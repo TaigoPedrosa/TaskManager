@@ -12,9 +12,19 @@ from taskmanager.core.status import Status
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
+from taskmanager.di.container import create_container
+from taskmanager.engine.operations import Operations
 from taskmanager.renderers.importers import BulkImporter
 
 runner = CliRunner()
+
+
+def ops_with_code_to_land(root: Path, monkeypatch: pytest.MonkeyPatch) -> Operations:
+    """Operations on the estate at `root` that read every container as having code to land:
+    these estates have no repositories for the git check to read."""
+    ops = create_container(root).get(Operations)
+    monkeypatch.setattr(ops, "nothing_to_land", lambda _container: False)
+    return ops
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -603,7 +613,9 @@ def test_next_returns_a_batch_whose_tasks_share_no_file(tmp_path: Path) -> None:
     assert sorted(files) == ["x", "y"]
 
 
-def test_plan_list_reports_the_state_its_tasks_add_up_to(tmp_path: Path) -> None:
+def test_plan_list_reports_the_state_its_tasks_add_up_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from taskmanager.core.status import Status
     from taskmanager.engine.snapshot import roll_up_ancestors
 
@@ -616,7 +628,7 @@ def test_plan_list_reports_the_state_its_tasks_add_up_to(tmp_path: Path) -> None
         assert node is not None
         node.status = Status.COMPLETED
         node_repo.save_node(node)
-    roll_up_ancestors(node_repo, "S1-P1-a")
+    roll_up_ancestors(ops_with_code_to_land(tmp_path, monkeypatch), "S1-P1-a")
     rows = json.loads(runner.invoke(app, ["plan", "list", "--json", "-C", str(tmp_path)]).stdout)
     assert rows[0]["status"] == "IMPLEMENTED" and rows[0]["state"] == "WAITING_MERGE"
 
@@ -808,7 +820,7 @@ def test_an_import_with_a_key_nothing_reads_is_refused_before_anything_is_writte
 
 
 def test_a_specs_state_rolls_up_from_its_plans_the_way_a_plans_does_from_its_tasks(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from taskmanager.core.status import Status
     from taskmanager.engine.snapshot import roll_up_ancestors
@@ -821,6 +833,7 @@ def test_a_specs_state_rolls_up_from_its_plans_the_way_a_plans_does_from_its_tas
     runner.invoke(app, ["task", "add", "a", "--plan", "S1-P1", "--slug", "a", "-C", root])
     runner.invoke(app, ["task", "add", "b", "--plan", "S1-P2", "--slug", "b", "-C", root])
     node_repo = NodeRepository(DatabaseManager(tmp_path / ".taskmanager"))
+    ops = ops_with_code_to_land(tmp_path, monkeypatch)
 
     def spec_row() -> dict[str, str]:
         rows = json.loads(runner.invoke(app, ["spec", "list", "--json", "-C", root]).stdout)
@@ -837,11 +850,11 @@ def test_a_specs_state_rolls_up_from_its_plans_the_way_a_plans_does_from_its_tas
     assert (spec_row()["status"], spec_row()["state"]) == ("READY", "IMPLEMENTING")
     for task_id in ("S1-P1-a", "S1-P2-b"):
         set_status(task_id, Status.COMPLETED)
-        roll_up_ancestors(node_repo, task_id)
+        roll_up_ancestors(ops, task_id)
     assert (spec_row()["status"], spec_row()["state"]) == ("READY", "IMPLEMENTING")
     for plan_id in ("S1-P1", "S1-P2"):
         set_status(plan_id, Status.COMPLETED)
-    roll_up_ancestors(node_repo, "S1-P1")
+    roll_up_ancestors(ops, "S1-P1")
     assert (spec_row()["status"], spec_row()["state"]) == ("IMPLEMENTED", "WAITING_MERGE")
     get_out = runner.invoke(app, ["spec", "get", "S1", "-C", root]).stdout
     assert "Status: IMPLEMENTED" in get_out and "State: WAITING_MERGE" in get_out
