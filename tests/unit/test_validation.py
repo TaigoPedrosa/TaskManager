@@ -107,6 +107,25 @@ def test_changing_where_a_node_lands_needs_its_branch_cut_from_the_new_target(
     assert rules(before, after, {"T"}, branches) == ([("T", 4)] if refused else [])
 
 
+@pytest.mark.parametrize(
+    ("status", "steps"),
+    [
+        (Status.IMPLEMENTED, "defer it, then reopen it with --new-branch"),
+        (Status.FAILED, "reopen it with --new-branch"),
+        (Status.DEFERRED, "reopen it with --new-branch"),
+    ],
+)
+def test_a_refused_retarget_names_the_steps_that_set_the_branch_aside_from_its_status(
+    status: Status, steps: str
+) -> None:
+    before = snap(PLAN_P, SnapNode("T", TASK, parent="P", status=status))
+    after = with_node(before, SnapNode("T", TASK, parent="P", merge=PARENT, status=status))
+    branches = Branches(existing={"T"}, cut_from={"T": MAIN})
+    [refusal] = validate(before, after, {"T"}, branches)
+    assert f"{steps} before changing where it lands" in refusal.message
+    assert refusal.message.count("defer") == steps.count("defer")
+
+
 def test_moving_a_node_whose_branch_exists_to_another_parent_branch_is_refused() -> None:
     q = SnapNode("Q", PLAN)
     before = snap(PLAN_P, q, SnapNode("T", TASK, parent="P", merge=PARENT))

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from taskmanager.core.enums import NodeKind
+from taskmanager.core.lifecycle import REOPENABLE
 from taskmanager.core.status import EXITS, IN_STEP, Merge, Status
 from taskmanager.engine.chains import MAIN, landing_target
 from taskmanager.engine.stepgraph import SnapNode, Snapshot, find_cycle, format_cycle
@@ -72,11 +73,13 @@ def _retarget(
         return []
     # A branch cut from a container's branch would carry that container's unreviewed code.
     where = "main" if new_target == MAIN else new_target
+    # Only a node already set aside or failed can be reopened.
+    steps = "" if n.status in REOPENABLE else "defer it, then "
     return [
         Refusal(
             n.id,
             4,
-            f"{n.id}: its branch exists and was not cut from {where}; reopen it with "
+            f"{n.id}: its branch exists and was not cut from {where}; {steps}reopen it with "
             "--new-branch before changing where it lands",
         )
     ]

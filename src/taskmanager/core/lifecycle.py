@@ -35,7 +35,7 @@ _STEP_OF = {
     Action.FIX: Status.FIXING,
     Action.MERGE: Status.MERGING,
 }
-_REOPENABLE = frozenset({Status.FAILED, Status.DEFERRED, Status.ABANDONED})
+REOPENABLE = frozenset({Status.FAILED, Status.DEFERRED, Status.ABANDONED})
 # Stable statuses a job's agent can still hold a lease over without a claim: a sync job runs
 # for a node its claim left where it was.
 _UNCLAIMED_WITH_A_JOB = STABLE - {Status.COMPLETED, Status.FAILED}
@@ -176,7 +176,7 @@ def fix_round(c: Cycle) -> int:
 
 
 def reopen(c: Cycle, children_all_completed: bool) -> Cycle:
-    if c.status not in _REOPENABLE:
+    if c.status not in REOPENABLE:
         raise LifecycleError(f"only FAILED, DEFERRED or ABANDONED reopen; this node is {c.status}")
     ready = Status.IMPLEMENTED if c.container and children_all_completed else Status.READY
     return Cycle(status=ready, container=c.container, review=c.review, fix=c.fix)
