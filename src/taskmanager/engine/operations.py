@@ -207,36 +207,59 @@ class Operations:
     def busy(self, node_id: str) -> bool:
         return node_busy(self.runtime_repo, self.job_repo, node_id)
 
+    # Where a node lands, read the same way by claims, landing and the rollup's completion.
+
+    def branch_of(self, node_id: str) -> str:
+        node = self.node_repo.get_node(node_id)
+        return (node.branch if node is not None else None) or f"tm/{node_id}"
+
+    def target_of(self, node_id: str) -> str:
+        """The branch `node_id` lands on: `main`, or its parent's branch."""
+        node = self.node_repo.get_node(node_id)
+        parents = self.node_repo.get_parent_ids(node_id)
+        if node is not None and node.merge == Merge.PARENT and parents:
+            return self.branch_of(parents[0])
+        return "main"
+
+    @staticmethod
+    def target_ref(target: str) -> str:
+        """The ref a landing target is read at: `main` only through the fetched `origin/main`;
+        container branches are local refs in the shared clones."""
+        return "origin/main" if target == "main" else target
+
+    def counted_descendants(self, node_id: str) -> list[str]:
+        """The descendants a container still counts: a set-aside node never lands, so neither it
+        nor anything under it adds a repository, a lock or a verification to the container's."""
+        found: list[str] = []
+        frontier = self.node_repo.get_children(node_id)
+        while frontier:
+            child = frontier.pop(0)
+            node = self.node_repo.get_node(child)
+            if node is None or node.status in SET_ASIDE:
+                continue
+            found.append(child)
+            frontier.extend(self.node_repo.get_children(child))
+        return found
+
     def nothing_to_land(self, container_id: str) -> bool:
         """True when the container's branch changes nothing against its landing target in every
-        repository its counted tasks name (a set-aside subtree never lands); a git error, or a
-        repository not cloned here, reads as a change."""
-        node = self.node_repo.get_node(container_id)
-        if node is None:
+        repository its counted tasks name. No repository named, a git error, or a repository
+        not cloned here reads as a change: nothing then proves the code is on its target."""
+        if self.node_repo.get_node(container_id) is None:
             return False
-        parents = self.node_repo.get_parent_ids(container_id)
-        parent = self.node_repo.get_node(parents[0]) if parents else None
-        if node.merge == Merge.PARENT and parent is not None:
-            base = parent.branch or f"tm/{parent.id}"
-        else:
-            base = "origin/main"
-        branch = node.branch or f"tm/{container_id}"
-        repos: set[str] = set()
-        frontier = [container_id]
-        while frontier:
-            for child_id in self.node_repo.get_children(frontier.pop()):
-                child = self.node_repo.get_node(child_id)
-                if child is None or child.status in SET_ASIDE:
-                    continue
-                if child.target_repo:
-                    repos.add(child.target_repo)
-                frontier.append(child_id)
+        repos = {
+            node.target_repo
+            for d in self.counted_descendants(container_id)
+            if (node := self.node_repo.get_node(d)) is not None and node.target_repo
+        }
+        base = self.target_ref(self.target_of(container_id))
+        branch = self.branch_of(container_id)
         root = self._project_root()
-        return not any(
-            not (root / repo / ".git").exists()
-            or (
-                gitops.rev_parse(root / repo, f"refs/heads/{branch}")
-                and not gitops.diff_quiet(root / repo, base, branch)
+        return bool(repos) and all(
+            (root / repo / ".git").exists()
+            and (
+                not gitops.rev_parse(root / repo, f"refs/heads/{branch}")
+                or gitops.diff_quiet(root / repo, base, branch)
             )
             for repo in sorted(repos)
         )

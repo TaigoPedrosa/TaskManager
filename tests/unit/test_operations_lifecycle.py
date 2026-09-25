@@ -446,6 +446,17 @@ def test_a_plan_whose_repository_is_not_cloned_is_not_read_as_having_nothing_to_
     assert get(node_repo, plan).status == Status.IMPLEMENTED
 
 
+def test_a_plan_whose_tasks_name_no_repository_is_not_read_as_having_nothing_to_land(
+    env: Env,
+) -> None:
+    node_repo, _runtime, _ledger, ops = env
+    _spec, plan, task = tree(ops)
+    extra = ops.add_task("Extra", plan, slug="T2")
+    set_status(node_repo, task, Status.COMPLETED)
+    ops.supersede(extra, task, "none")
+    assert get(node_repo, plan).status == Status.IMPLEMENTED
+
+
 def test_an_update_racing_a_claim_keeps_the_claim_s_status(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -33,7 +33,6 @@ from taskmanager.core.models import (
 from taskmanager.core.status import (
     EXITS,
     IN_STEP,
-    SET_ASIDE,
     Action,
     ConditionStage,
     DecisionStatus,
@@ -206,7 +205,7 @@ class Claims:
         return node.kind in CONTAINERS
 
     def branch_of(self, node_id: str) -> str:
-        return self.node(node_id).branch or f"tm/{node_id}"
+        return self.ops.branch_of(self.node(node_id).id)
 
     def _parent(self, node_id: str) -> str | None:
         parents = self.nodes.get_parent_ids(node_id)
@@ -214,30 +213,9 @@ class Claims:
 
     def target_of(self, node_id: str) -> str:
         """The branch `node_id` lands on: `main`, or its parent's branch."""
-        parent = self._parent(node_id)
-        if self.node(node_id).merge == Merge.PARENT and parent is not None:
-            return self.branch_of(parent)
-        return "main"
+        return self.ops.target_of(self.node(node_id).id)
 
-    @staticmethod
-    def target_ref(target: str) -> str:
-        """The ref a landing target is read at: `main` only through the fetched `origin/main`;
-        container branches are local refs in the shared clones."""
-        return "origin/main" if target == "main" else target
-
-    def _descendants(self, node_id: str) -> list[str]:
-        """The descendants a container still counts: a set-aside node never lands, so neither it
-        nor anything under it adds a repository, a lock or a verification to the container's."""
-        found: list[str] = []
-        frontier = self.nodes.get_children(node_id)
-        while frontier:
-            child = frontier.pop(0)
-            found_node = self.nodes.get_node(child)
-            if found_node is None or found_node.status in SET_ASIDE:
-                continue
-            found.append(child)
-            frontier.extend(self.nodes.get_children(child))
-        return found
+    target_ref = staticmethod(Operations.target_ref)
 
     def repos_of(self, node_id: str) -> list[str]:
         """A task's target repository; a container's, the repositories of its descendant tasks
@@ -246,7 +224,7 @@ class Claims:
         if not self.is_container(node):
             return [node.target_repo] if node.target_repo else []
         found: set[str] = set()
-        for descendant in self._descendants(node_id):
+        for descendant in self.ops.counted_descendants(node_id):
             child = self.nodes.get_node(descendant)
             if child is not None and child.target_repo:
                 found.add(child.target_repo)
@@ -272,7 +250,9 @@ class Claims:
             return own
         return list(
             dict.fromkeys(
-                f for d in self._descendants(node.id) for f in self.nodes.declared_files(d)
+                f
+                for d in self.ops.counted_descendants(node.id)
+                for f in self.nodes.declared_files(d)
             )
         )
 
@@ -334,7 +314,7 @@ class Claims:
         `repo` when given. An empty set passes and says so."""
         node = self.node(node_id)
         ids = (
-            [d for d in self._descendants(node_id) if self.node(d).kind == NodeKind.TASK]
+            [d for d in self.ops.counted_descendants(node_id) if self.node(d).kind == NodeKind.TASK]
             if self.is_container(node)
             else [node_id]
         )
