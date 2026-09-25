@@ -33,8 +33,14 @@ def lagging_parent(tmp_path: Path, config: ProjectConfig | None = None) -> tuple
     add(claims, "Y", status=Status.COMPLETED)
     add(claims, "X", parent="P", merge=Merge.PARENT, depends=("Y",))
     branch_at(api, "tm/P")
-    push_main(api, "y.py", "y = 1\n")
+    landed(api, "Y", "y.py")
     return claims, attach_landing(claims)
+
+
+def landed(repo: Path, node_id: str, path: str, content: str = "landed\n") -> None:
+    """`node_id`'s branch, merged onto main as its landing would leave it."""
+    push_main(repo, path, content)
+    branch_at(repo, f"tm/{node_id}")
 
 
 def test_a_claim_on_a_lagging_parent_branch_syncs_main_in_before_implement_starts(
@@ -71,7 +77,7 @@ def test_a_sync_conflict_is_handed_to_an_agent_who_resolves_and_resumes(tmp_path
     add(claims, "Y", status=Status.COMPLETED)
     add(claims, "X", parent="P", merge=Merge.PARENT, depends=("Y",))
     on_branch(api, "tm/P", "app.py", "parent\n")
-    push_main(api, "app.py", "main\n")
+    landed(api, "Y", "app.py", "main\n")
     landing = attach_landing(claims)
     first = claims.start("X", "implementer", "s1")
     assert first.job is not None
@@ -111,7 +117,7 @@ def test_a_sync_its_agent_abandons_counts_one_step_failure(tmp_path: Path) -> No
     add(claims, "Y", status=Status.COMPLETED)
     add(claims, "X", parent="P", merge=Merge.PARENT, depends=("Y",))
     on_branch(api, "tm/P", "app.py", "parent\n")
-    push_main(api, "app.py", "main\n")
+    landed(api, "Y", "app.py", "main\n")
     landing = attach_landing(claims)
     first = claims.start("X", "implementer", "s1")
     assert first.job is not None
@@ -244,3 +250,33 @@ def test_a_later_repository_whose_landing_errors_stops_its_own_job_for_an_agent(
     lease = claims.runtime.get_lease("P")
     assert lease is not None and lease.ttl_seconds is None
     assert stored(claims, "P").status == Status.MERGING
+
+
+def test_main_moving_after_a_sync_starts_no_second_sync_for_the_same_dependency(
+    tmp_path: Path,
+) -> None:
+    claims, landing = lagging_parent(tmp_path)
+    add(claims, "X2", parent="P", merge=Merge.PARENT, depends=("Y",))
+    first = claims.start("X", "implementer", "s1")
+    assert first.job is not None
+    assert landing.run(first.job) == JobState.SUCCEEDED
+
+    push_main(claims.root / "api", "unrelated.py", "u = 1\n")
+
+    assert claims.start("X2", "implementer", "s1").action == Action.IMPLEMENT
+
+
+def test_a_dependency_landed_in_one_repository_syncs_no_other(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path, repos=("api", "web"))
+    api, web = claims.root / "api", claims.root / "web"
+    add(claims, "P", NodeKind.PLAN, review=True, fix=True)
+    add(claims, "Y", status=Status.COMPLETED)
+    add(claims, "X", parent="P", merge=Merge.PARENT, repo="web", depends=("Y",))
+    branch_at(web, "tm/P")
+    branch_at(api, "tm/P")
+    landed(api, "Y", "y.py")
+    push_main(web, "w.py", "w = 1\n")
+
+    units = claims.sync_units(claims._sync_pairs("X", claims.snapshots.build()))
+
+    assert units == [("origin/main", "tm/P", "api")]

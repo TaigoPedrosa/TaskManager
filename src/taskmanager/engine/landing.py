@@ -23,7 +23,7 @@ from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.engine import gates
 from taskmanager.engine import git as gitops
-from taskmanager.engine.claims import Claims
+from taskmanager.engine.claims import Claims, SyncPair
 from taskmanager.engine.config import Gate, ProjectConfig
 from taskmanager.engine.gates import GateRun
 from taskmanager.engine.git import GitManager
@@ -78,7 +78,7 @@ class Landing:
         self._launch(job)
         return job.id
 
-    def start_sync(self, node_id: str, pairs: list[tuple[str, str]]) -> str:
+    def start_sync(self, node_id: str, pairs: list[SyncPair]) -> str:
         units = self.claims.sync_units(pairs)
         if not units:
             raise OperationError(f"{node_id} needs no sync", 409)

@@ -30,7 +30,7 @@ class FakeLanding:
         self.started.append(node_id)
         return "job-1"
 
-    def start_sync(self, node_id: str, pairs: list[tuple[str, str]]) -> str:
+    def start_sync(self, node_id: str, pairs: list[tuple[str, str, str]]) -> str:
         raise AssertionError("no sync is expected here")
 
 

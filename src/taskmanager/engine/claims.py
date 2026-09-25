@@ -49,7 +49,7 @@ from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.di.container import create_container
 from taskmanager.engine import git as gitops
-from taskmanager.engine.chains import MAIN, satisfied, sync_pairs
+from taskmanager.engine.chains import MAIN, meeting, satisfied, sync_pairs
 from taskmanager.engine.conditions import ConditionRunner, is_executable
 from taskmanager.engine.config import ConfigStore, ProjectConfig
 from taskmanager.engine.decisions import (
@@ -73,6 +73,8 @@ DEFAULT_TTL: dict[Action, int] = {
     Action.SYNC: 3600,
 }
 LIVE_JOBS = frozenset({JobState.RUNNING, JobState.NEEDS_AGENT})
+# (source, base, carrier): see Claims._sync_pairs.
+SyncPair = tuple[str, str, str]
 _log = logging.getLogger(__name__)
 
 _STALLED = "max_step_failures steps in a row ended without progress"
@@ -138,7 +140,7 @@ class ClaimResult:
 class LandingJobs(Protocol):
     def start_land(self, node_id: str) -> str: ...
 
-    def start_sync(self, node_id: str, pairs: list[tuple[str, str]]) -> str: ...
+    def start_sync(self, node_id: str, pairs: list[SyncPair]) -> str: ...
 
 
 class _UnmovedBranches:
@@ -988,35 +990,44 @@ class Claims:
         ]
         return [r for r in dict.fromkeys(names) if (self.root / r / ".git").exists()]
 
-    def _sync_pairs(self, node_id: str, snap: Snapshot) -> list[tuple[str, str]]:
-        pairs: list[tuple[str, str]] = []
+    def _sync_pairs(self, node_id: str, snap: Snapshot) -> list[SyncPair]:
+        """(source, base, carrier) per merge a claim of `node_id` may need: the carrier is the
+        node whose landing put the dependency's code on the source."""
+        pairs: list[SyncPair] = []
         for dep in snap.inherited_edges(node_id):
             if not isinstance(snap.status(dep), Status):
                 continue
-            for pair in sync_pairs(snap, node_id, dep):
-                if pair not in pairs:
-                    pairs.append(pair)
+            carrier = meeting(snap, node_id, dep)
+            for source, base in sync_pairs(snap, node_id, dep):
+                if (source, base, carrier) not in pairs:
+                    pairs.append((source, base, carrier))
         return pairs
 
-    def sync_units(self, pairs: list[tuple[str, str]]) -> list[tuple[str, str, str]]:
-        """(source ref, base branch, repository) for each pair and repository where both exist
-        and the base lacks the source. Across repositories there is nothing to sync."""
+    def sync_units(self, pairs: list[SyncPair]) -> list[tuple[str, str, str]]:
+        """(source ref, base branch, repository) for each pair and repository where the base
+        lacks the carrier's landed branch. Only the dependency's code triggers a sync, never the
+        source merely moving on; a repository without the carrier's branch has nothing to sync."""
         units: list[tuple[str, str, str]] = []
         fetched: set[str] = set()
-        for source, base in pairs:
+        for source, base, carrier in pairs:
             source_ref = self.target_ref("main" if source == MAIN else self.branch_of(source))
-            base_branch = self.branch_of(base)
+            base_branch, carried = self.branch_of(base), self.branch_of(carrier)
             for repo in self.known_repos():
                 repo_dir = self.root / repo
                 if source == MAIN and repo not in fetched:
                     gitops.fetch(repo_dir)
                     fetched.add(repo)
-                if not gitops.rev_parse(repo_dir, f"refs/heads/{base_branch}"):
-                    continue
-                if not gitops.rev_parse(repo_dir, source_ref):
-                    continue
-                if not gitops.is_ancestor(repo_dir, source_ref, base_branch):
-                    units.append((source_ref, base_branch, repo))
+                present = all(
+                    gitops.rev_parse(repo_dir, ref)
+                    for ref in (f"refs/heads/{base_branch}", f"refs/heads/{carried}", source_ref)
+                )
+                unit = (source_ref, base_branch, repo)
+                if (
+                    present
+                    and not gitops.is_ancestor(repo_dir, carried, base_branch)
+                    and unit not in units
+                ):
+                    units.append(unit)
         return units
 
     def hold_for_sync(self, node_id: str) -> bool:
