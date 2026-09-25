@@ -24,7 +24,14 @@ from taskmanager.core.models import (
     NodeSection,
     NodeVerification,
 )
-from taskmanager.core.status import ConditionStage, DecisionEffect, DecisionStatus, Merge, Status
+from taskmanager.core.status import (
+    SET_ASIDE,
+    ConditionStage,
+    DecisionEffect,
+    DecisionStatus,
+    Merge,
+    Status,
+)
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
@@ -204,8 +211,8 @@ class Operations:
 
     def nothing_to_land(self, container_id: str) -> bool:
         """True when the container's branch changes nothing against its landing target in every
-        repository its tasks name; a git error, or a repository not cloned here, reads as a
-        change."""
+        repository its counted tasks name (a set-aside subtree never lands); a git error, or a
+        repository not cloned here, reads as a change."""
         node = self.node_repo.get_node(container_id)
         if node is None:
             return False
@@ -221,7 +228,9 @@ class Operations:
         while frontier:
             for child_id in self.node_repo.get_children(frontier.pop()):
                 child = self.node_repo.get_node(child_id)
-                if child is not None and child.target_repo:
+                if child is None or child.status in SET_ASIDE:
+                    continue
+                if child.target_repo:
                     repos.add(child.target_repo)
                 frontier.append(child_id)
         root = self._project_root()

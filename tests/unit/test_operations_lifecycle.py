@@ -485,3 +485,19 @@ def test_an_open_write_transaction_holds_the_write_lock_before_its_first_write(
     with db.spec_transaction(), pytest.raises(sqlite3.OperationalError, match="locked"):
         other.execute("BEGIN IMMEDIATE")
     other.close()
+
+
+def test_a_set_aside_child_s_repository_does_not_keep_its_plan_from_completing(
+    env: Env, tmp_path: Path
+) -> None:
+    node_repo, _runtime, _ledger, ops = env
+    repo_with_origin(tmp_path, "core")
+    _spec, plan, task = tree(ops)
+    ops.update_node(task, repo="core")
+    ghost = ops.add_task("Ghost", plan, slug="T2")
+    ops.update_node(ghost, repo="ghost")
+    extra = ops.add_task("Extra", plan, slug="T3")
+    set_status(node_repo, task, Status.COMPLETED)
+    set_status(node_repo, ghost, Status.ABANDONED)
+    ops.supersede(extra, task, "none")
+    assert get(node_repo, plan).status == Status.COMPLETED
