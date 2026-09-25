@@ -895,3 +895,22 @@ def test_main_and_a_container_branch_red_at_one_sha_each_get_their_own_decision(
     for node_id, target in (("T1", "main"), ("T2", "tm/P")):
         [decision] = [d for d in opened if d in claims.nodes.get_dependencies(node_id)]
         assert stored(claims, decision).title.startswith(f"{target} of api is red")
+
+
+def test_counting_a_stopped_job_keeps_an_edit_that_committed_after_the_count_began(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claims = make_estate(tmp_path)
+    add(claims, "T1")
+    real = claims.nodes.transaction
+
+    def renamed_first() -> Any:
+        monkeypatch.setattr(claims.nodes, "transaction", real)
+        claims.ops.update_node("T1", title="Renamed")
+        return real()
+
+    monkeypatch.setattr(claims.nodes, "transaction", renamed_first)
+    claims.count_unresolved("T1")
+
+    node = stored(claims, "T1")
+    assert (node.title, node.step_failures) == ("Renamed", 1)

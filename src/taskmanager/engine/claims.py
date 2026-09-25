@@ -657,8 +657,11 @@ class Claims:
             self._expire_jobs(node_id)
             return self._advance(node, Event.RELEASE, "job stopped again")
         with self.nodes.transaction():
-            self.nodes.save_node(node.model_copy(update={"step_failures": node.step_failures + 1}))
-        self._ledger("job stopped again", node_id, {"step_failures": node.step_failures + 1})
+            # Read again under the write lock: the whole row is written back.
+            node = self.node(node_id)
+            failures = node.step_failures + 1
+            self.nodes.save_node(node.model_copy(update={"step_failures": failures}))
+        self._ledger("job stopped again", node_id, {"step_failures": failures})
         return Status(node.status)
 
     def _escalate_red_targets(self) -> list[str]:
