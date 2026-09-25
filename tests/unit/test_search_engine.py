@@ -356,7 +356,9 @@ def test_a_search_in_a_stale_index_still_answers_and_status_counts_it(kit: Kit) 
 
 
 def _cli(root: Path, *args: str) -> tuple[int, str]:
-    res = runner.invoke(app, [*args, "-C", str(root)])
+    # Everything after `--` is a query word, so -C has to come before it.
+    cut = args.index("--") if "--" in args else len(args)
+    res = runner.invoke(app, [*args[:cut], "-C", str(root), *args[cut:]])
     return res.exit_code, res.stdout
 
 
