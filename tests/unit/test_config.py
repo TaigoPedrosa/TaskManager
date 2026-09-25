@@ -9,9 +9,20 @@ from typer.testing import CliRunner
 from taskmanager.cli.main import app
 from taskmanager.core.enums import NodeKind
 from taskmanager.core.models import Node
+from taskmanager.core.status import Action
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
-from taskmanager.engine.config import KEYS, ConfigError, ConfigStore, Resolved
+from taskmanager.engine.config import (
+    KEYS,
+    LEASE_TTL_DEFAULTS,
+    ConfigError,
+    ConfigStore,
+    FixRounds,
+    Gate,
+    ProjectConfig,
+    RepoConfig,
+    Resolved,
+)
 
 runner = CliRunner()
 
@@ -44,7 +55,7 @@ def tm(root: Path, *args: str) -> tuple[int, str]:
 @pytest.mark.parametrize(
     ("key", "env", "flag", "from_env", "from_file", "expected"),
     [
-        ("lease_ttl", "TM_LEASE_TTL", 900, "700", "500", (900, 700, 500, 300)),
+        ("lease_ttl", "TM_LEASE_TTL", 900, "700", "500", (900, 700, 500, LEASE_TTL_DEFAULTS)),
         (
             "worktree_dir",
             "TM_WORKTREES",
@@ -104,9 +115,9 @@ def test_config_list_says_where_every_value_came_from(
 
 
 def test_get_prints_the_effective_value(root: Path) -> None:
-    assert tm(root, "config", "get", "lease_ttl") == (0, "300\n")
-    tm(root, "config", "set", "lease_ttl", "45")
-    assert tm(root, "config", "get", "lease_ttl") == (0, "45\n")
+    assert tm(root, "config", "get", "condition_ttl") == (0, "300\n")
+    tm(root, "config", "set", "condition_ttl", "45")
+    assert tm(root, "config", "get", "condition_ttl") == (0, "45\n")
 
 
 @pytest.mark.parametrize(
@@ -120,6 +131,19 @@ def test_get_prints_the_effective_value(root: Path) -> None:
         ("set", "embeddings.provider", "gemini"),
         ("set", "embeddings.dimensions", "-3"),
         ("set", "embeddings.api_key_env", "sk-proj-abc123"),
+        ("set", "lease_ttl", "{deploy: 60}"),
+        ("set", "lease_ttl", "{review: 0}"),
+        ("set", "lease_ttl", "{review: ["),
+        ("set", "max_fix_rounds.task", "-1"),
+        ("set", "max_merge_attempts", "0"),
+        ("set", "max_step_failures", "0"),
+        ("set", "condition_ttl", "-5"),
+        ("set", "condition_timeout", "0"),
+        ("set", "red_target_decision_after", "0"),
+        ("set", "repo_order", "core"),
+        ("set", "repos", "{core: {gates: {staging: {command: make}}}}"),
+        ("set", "repos", "{core: {gates: {main: {timeout: 60}}}}"),
+        ("set", "repos", "{core: {gates: {main: {command: make, retries: 2}}}}"),
     ],
 )
 def test_an_unknown_key_or_a_bad_value_is_one_line_and_exit_1(
@@ -206,7 +230,7 @@ def test_run_start_takes_its_worktree_directory_and_ttl_through_the_precedence(
         )
         return Path(lease["worktree_path"]).parent, lease["ttl_seconds"]
 
-    assert start("T-1") == (root / ".worktrees", 300)
+    assert start("T-1") == (root / ".worktrees", LEASE_TTL_DEFAULTS["implement"])
 
     tm(root, "config", "set", "worktree_dir", "in-file")
     tm(root, "config", "set", "lease_ttl", "500")
@@ -223,4 +247,90 @@ def test_run_start_takes_its_worktree_directory_and_ttl_through_the_precedence(
     monkeypatch.delenv("TM_LEASE_TTL")
     tm(root, "config", "unset", "worktree_dir")
     tm(root, "config", "unset", "lease_ttl")
-    assert start("T-5") == (root / ".worktrees", 300)
+    assert start("T-5") == (root / ".worktrees", LEASE_TTL_DEFAULTS["implement"])
+
+
+def test_the_lifecycle_settings_default_to_the_documented_values() -> None:
+    config = ProjectConfig()
+    assert config.max_fix_rounds == FixRounds(task=2, container=3)
+    assert (config.max_merge_attempts, config.max_step_failures) == (3, 3)
+    assert (config.condition_ttl, config.condition_timeout) == (300, 60)
+    assert config.red_target_decision_after == 3600
+    assert config.lease_ttl == {
+        "implement": 10800,
+        "review": 3600,
+        "fix": 7200,
+        "merge": 3600,
+        "sync": 3600,
+    }
+    assert (config.repo_order, config.repos) == ([], {})
+
+
+@pytest.mark.parametrize(
+    ("lease_ttl", "action", "seconds"),
+    [
+        (None, Action.IMPLEMENT, 10800),
+        (None, Action.REVIEW, 3600),
+        (None, Action.FIX, 7200),
+        (None, Action.MERGE, 3600),
+        (None, Action.SYNC, 3600),
+        (500, Action.IMPLEMENT, 500),
+        (500, Action.REVIEW, 3600),
+        ({"review": 1800}, Action.REVIEW, 1800),
+        ({"review": 1800}, Action.IMPLEMENT, 10800),
+    ],
+)
+def test_each_action_has_its_lease_ttl_and_a_single_number_is_the_implementers(
+    lease_ttl: dict[str, int] | int | None, action: Action, seconds: int
+) -> None:
+    config = ProjectConfig() if lease_ttl is None else ProjectConfig(lease_ttl=lease_ttl)
+    assert config.lease_ttl_for(action) == seconds
+
+
+def test_a_lease_ttl_flag_beats_every_stored_value(root: Path) -> None:
+    store = ConfigStore(root)
+    store.set("lease_ttl", "{implement: 100, review: 200}")
+    assert store.lease_ttl(Action.REVIEW) == 200
+    assert store.lease_ttl(Action.REVIEW, 50) == 50
+
+
+def test_whole_valued_keys_are_set_as_yaml_and_stored_nested(root: Path) -> None:
+    store = ConfigStore(root)
+    store.set("lease_ttl", "{review: 1800}")
+    store.set("repo_order", "[core, api, web]")
+    store.set("repos", "{core: {gates: {main: {command: 'make ci', junit: 'out/*.xml'}}}}")
+    store.set("max_fix_rounds.container", "4")
+    assert yaml.safe_load(store.path.read_text()) == {
+        "lease_ttl": {"review": 1800},
+        "max_fix_rounds": {"container": 4},
+        "repo_order": ["core", "api", "web"],
+        "repos": {
+            "core": {
+                "gates": {"main": {"command": "make ci", "junit": "out/*.xml", "timeout": 3600}}
+            }
+        },
+    }
+    project = store.project()
+    assert project.lease_ttl_for(Action.REVIEW) == 1800
+    assert project.max_fix_rounds == FixRounds(task=2, container=4)
+    assert project.repo_order == ["core", "api", "web"]
+    assert project.repos == {
+        "core": RepoConfig(gates={"main": Gate(command="make ci", junit="out/*.xml")})
+    }
+
+
+def test_a_hand_written_repos_block_reads_back_whole(root: Path) -> None:
+    ConfigStore(root).path.write_text(
+        "repos:\n"
+        "  web:\n"
+        "    gates:\n"
+        "      main: {command: 'npm test', timeout: 900}\n"
+        "      parent: {command: 'npm run lint'}\n",
+        encoding="utf-8",
+    )
+    code, out = tm(root, "config", "get", "repos")
+    assert code == 0 and "npm run lint" in out
+    assert ConfigStore(root).project().repos["web"].gates == {
+        "main": Gate(command="npm test", timeout=900),
+        "parent": Gate(command="npm run lint"),
+    }

@@ -1,12 +1,13 @@
 import os
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Final, NamedTuple
+from typing import Any, Final, Literal, NamedTuple
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from taskmanager.core.enums import EmbeddingProviderType
+from taskmanager.core.status import Action
 
 DEFAULT_KEY_ENV: Final = "TASKMANAGER_OPENAI_API_KEY"
 
@@ -18,7 +19,28 @@ KEYS: Final = (
     "embeddings.dimensions",
     "worktree_dir",
     "lease_ttl",
+    "max_fix_rounds.task",
+    "max_fix_rounds.container",
+    "max_merge_attempts",
+    "max_step_failures",
+    "condition_ttl",
+    "condition_timeout",
+    "red_target_decision_after",
+    "repo_order",
+    "repos",
 )
+
+# Keys whose value is a whole mapping or list: stored and set as one value, never split into
+# dotted keys, and parsed from YAML when set from the command line.
+_WHOLE: Final = frozenset({"lease_ttl", "repos", "repo_order"})
+
+LEASE_TTL_DEFAULTS: Final = {
+    "implement": 10800,
+    "review": 3600,
+    "fix": 7200,
+    "merge": 3600,
+    "sync": 3600,
+}
 
 ENV_VARS: Final = {
     "embeddings.model": "TASKMANAGER_OPENAI_MODEL",
@@ -48,10 +70,58 @@ class EmbeddingsConfig(BaseModel):
         return value
 
 
+class FixRounds(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task: int = Field(default=2, ge=0)
+    container: int = Field(default=3, ge=0)
+
+
+class Gate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command: str = Field(min_length=1)
+    junit: str | None = None
+    timeout: int = Field(default=3600, gt=0)
+
+
+class RepoConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    gates: dict[Literal["main", "parent"], Gate] = Field(default_factory=dict)
+
+
 class ProjectConfig(BaseModel):
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
     worktree_dir: str = Field(default=".worktrees", min_length=1)
-    lease_ttl: int = Field(default=300, gt=0)
+    lease_ttl: dict[str, int] | int = Field(default_factory=lambda: dict(LEASE_TTL_DEFAULTS))
+    max_fix_rounds: FixRounds = Field(default_factory=FixRounds)
+    max_merge_attempts: int = Field(default=3, ge=1)
+    max_step_failures: int = Field(default=3, ge=1)
+    condition_ttl: int = Field(default=300, ge=0)
+    condition_timeout: int = Field(default=60, gt=0)
+    red_target_decision_after: int = Field(default=3600, gt=0)
+    repo_order: list[str] = Field(default_factory=list)
+    repos: dict[str, RepoConfig] = Field(default_factory=dict)
+
+    @field_validator("lease_ttl")
+    @classmethod
+    def _positive_per_known_action(cls, value: dict[str, int] | int) -> dict[str, int] | int:
+        seconds = [value] if isinstance(value, int) else list(value.values())
+        if any(s <= 0 for s in seconds):
+            raise ValueError("every TTL must be greater than 0")
+        unknown = sorted(set(value) - set(LEASE_TTL_DEFAULTS)) if isinstance(value, dict) else []
+        if unknown:
+            raise ValueError(
+                f"unknown action {', '.join(unknown)} (actions: {', '.join(LEASE_TTL_DEFAULTS)})"
+            )
+        return value
+
+    def lease_ttl_for(self, action: Action) -> int:
+        if isinstance(self.lease_ttl, int):
+            # A single number is the implementer's lease; every other action keeps its default.
+            return self.lease_ttl if action == Action.IMPLEMENT else LEASE_TTL_DEFAULTS[action]
+        return self.lease_ttl.get(action, LEASE_TTL_DEFAULTS[action])
 
 
 class Resolved(NamedTuple):
@@ -72,7 +142,7 @@ def _nest(flat: dict[str, Any]) -> dict[str, Any]:
 
 def _flatten(nested: dict[str, Any], prefix: str = "") -> Iterator[tuple[str, Any]]:
     for key, value in nested.items():
-        if isinstance(value, dict):
+        if isinstance(value, dict) and f"{prefix}{key}" not in _WHOLE:
             yield from _flatten(value, f"{prefix}{key}.")
         else:
             yield f"{prefix}{key}", value
@@ -93,6 +163,11 @@ def _require_key(key: str) -> None:
 def _typed(key: str, raw: Any) -> Any:
     """`raw` validated as `key`'s type and dumped JSON-ready; every message names the valid keys."""
     _require_key(key)
+    if key in _WHOLE and isinstance(raw, str):
+        try:
+            raw = yaml.safe_load(raw)
+        except yaml.YAMLError as exc:
+            raise ConfigError(f"{key}: not valid YAML (valid keys: {', '.join(KEYS)})") from exc
     try:
         model = ProjectConfig.model_validate(_nest({key: raw}))
     except ValidationError as exc:
@@ -157,9 +232,18 @@ class ConfigStore:
     def effective(self) -> dict[str, Resolved]:
         return {key: self.resolve(key) for key in KEYS}
 
-    def embeddings(self) -> EmbeddingsConfig:
+    def project(self) -> ProjectConfig:
         values = {key: r.value for key, r in self.effective().items()}
-        return ProjectConfig.model_validate(_nest(values)).embeddings
+        return ProjectConfig.model_validate(_nest(values))
+
+    def embeddings(self) -> EmbeddingsConfig:
+        return self.project().embeddings
+
+    def lease_ttl(self, action: Action, flag: int | None = None) -> int:
+        """`flag` is this claim's own TTL and wins outright; otherwise the action's stored TTL."""
+        if flag is not None:
+            return int(_typed("lease_ttl", flag))
+        return ProjectConfig(lease_ttl=self.resolve("lease_ttl").value).lease_ttl_for(action)
 
     def document(self) -> dict[str, Any] | None:
         """The stored keys as a nested mapping, or None when nothing was ever set."""

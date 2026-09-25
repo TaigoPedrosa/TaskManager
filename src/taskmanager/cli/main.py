@@ -28,6 +28,7 @@ from taskmanager.core.enums import (
 )
 from taskmanager.core.models import LedgerEvent
 from taskmanager.core.naming import QualifiedPath
+from taskmanager.core.status import Action
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
@@ -826,7 +827,7 @@ def run_start(
     worktree_base: Path | None = None
     with _user_errors():
         config = ConfigStore(root)
-        lease_ttl = config.resolve("lease_ttl", ttl).value
+        lease_ttl = config.lease_ttl(Action.IMPLEMENT, ttl)
         if worktree:
             chosen = config.resolve("worktree_dir", str(worktree_dir) if worktree_dir else None)
             worktree_base = (
