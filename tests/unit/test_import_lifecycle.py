@@ -70,7 +70,8 @@ REFUSED = [
             {"id": "S-P-a", "title": "a", "depends_on": ["S-P-b"]},
             {"id": "S-P-b", "title": "b", "depends_on": ["S-P-a"]},
         ),
-        "←",
+        "S-P-a.start ← S-P-b.landed ← S-P-b.implemented ← S-P-b.start ← S-P-a.landed "
+        "← S-P-a.implemented ← S-P-a.start",
         id="cycle",
     ),
     pytest.param(
