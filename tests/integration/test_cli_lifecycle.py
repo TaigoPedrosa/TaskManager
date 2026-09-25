@@ -270,7 +270,9 @@ def test_task_update_sets_flags_merge_requires_and_land_order(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize("verb", ["start", "stop", "release", "heartbeat"])
-def test_the_old_run_verbs_are_gone(tmp_path: Path, verb: str) -> None:
+def test_tm_run_takes_no_start_stop_release_or_heartbeat_subcommand(
+    tmp_path: Path, verb: str
+) -> None:
     assert tm(tmp_path, "init").exit_code == 0
     res = tm(tmp_path, "run", verb, "X")
     assert res.exit_code == 2 and "No such command" in res.output

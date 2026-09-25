@@ -29,10 +29,9 @@ from taskmanager.db.runtime_repo import RuntimeRepository
 
 
 def test_spec_connection_is_reused_not_reopened(tmp_path: Path) -> None:
-    # get_state_connection() used to open a fresh sqlite3 connection (extension load and all) on
-    # every single call -- with hundreds of NodeRepository calls per web request, that dominated
-    # load time (14s -> 0.15s measured on a 342-task DB after this fix). One connection per
-    # DatabaseManager, reused, is what actually gets it.
+    # A fresh sqlite3 connection per call (extension load and all) dominates load time under
+    # hundreds of NodeRepository calls per web request: one connection per DatabaseManager,
+    # reused, keeps that cost paid once.
     db = DatabaseManager(tmp_path)
     db.init_all()
     with db.get_state_connection() as first:

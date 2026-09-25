@@ -549,8 +549,8 @@ test('a loop that never settles stops at the step cap and says so', async () => 
 })
 
 // op() names the estate by exporting TM_ROOT ahead of the command it runs, so the runner's own
-// cwd never has to agree with args.root, and the instructions no longer say "from <root>" (a
-// sentence a runner with a different cwd could not satisfy anyway).
+// cwd never has to agree with args.root: an instruction naming "from <root>" could not be
+// satisfied by a runner with a different cwd.
 test('every op exports TM_ROOT for the estate instead of naming it in the instructions', async () => {
   const tm = makeTm({ chosen: [T1], nodes: { T1: node('FAILED', null) } })
   const { calls } = await runWave({ args: ARGS, tm })

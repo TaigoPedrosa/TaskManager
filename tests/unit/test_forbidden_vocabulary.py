@@ -1,4 +1,4 @@
-"""Nothing in the package names the pre-lifecycle vocabulary once the switch is done."""
+"""Nothing in the package names the pre-lifecycle vocabulary."""
 
 import re
 from pathlib import Path
@@ -44,6 +44,6 @@ def test_the_package_names_no_pre_lifecycle_vocabulary() -> None:
     assert hits == []
 
 
-def test_the_old_engine_modules_are_gone() -> None:
+def test_the_engine_package_has_no_graph_runtime_or_wave_module() -> None:
     root = Path(taskmanager.__file__).parent / "engine"
     assert [name for name in ("graph.py", "runtime.py", "wave.py") if (root / name).exists()] == []

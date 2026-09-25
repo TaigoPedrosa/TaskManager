@@ -240,8 +240,8 @@ def test_an_export_restores_into_a_fresh_root_and_exports_identically(tmp_path: 
         runner.invoke(app, ["plan", "add", plan, "--spec", "S1", "--slug", plan, "-C", str(source)])
     runner.invoke(app, ["task", "add", "a", "--plan", "S1-P1", "--slug", "a", "-C", str(source)])
     # A sibling that stays READY, so deferring "a" below doesn't leave the plan with no counted
-    # child: `stop_task` (outside this task's scope) never re-derives the plan's own stored
-    # status the way `tm import` does, and an all-set-aside plan would round-trip differently.
+    # child: `task defer` never re-derives the plan's own stored status the way `tm import`
+    # does, and an all-set-aside plan would round-trip differently.
     runner.invoke(app, ["task", "add", "c", "--plan", "S1-P1", "--slug", "c", "-C", str(source)])
     # A dependency across plans: restoring one plan at a time would refuse it.
     runner.invoke(
