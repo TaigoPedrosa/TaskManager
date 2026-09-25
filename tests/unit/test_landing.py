@@ -229,7 +229,7 @@ def test_landings_parked_on_one_red_main_past_the_threshold_reach_the_owner_as_o
     for node_id in ("T1", "T2"):
         for job in claims.jobs.for_node(node_id):
             job.result["red_target"]["since"] = two_hours_ago
-            claims.jobs.update(job)
+            claims.jobs.set_state(job)
 
     claims.sweep()
     claims.sweep()
@@ -434,3 +434,89 @@ def test_a_parent_branch_that_moves_before_the_swap_is_merged_in_and_gated_again
     tip = git(api, "rev-parse", "tm/P")
     git(api, "merge-base", "--is-ancestor", side, tip)
     git(api, "merge-base", "--is-ancestor", "tm/T1", tip)
+
+
+def release_from_the_gate(root: Path) -> Gate:
+    """A green gate that first releases T1 from another process, as an agent's release that
+    lands while the gate runs would."""
+    script = (
+        "from pathlib import Path; from taskmanager.engine.claims import Claims; "
+        f"Claims.open(Path({str(root)!r})).release('T1')"
+    )
+    return Gate(command=f'{sys.executable} -c "{script}"', junit=None, timeout=60)
+
+
+def test_a_landing_released_mid_gate_stays_expired_and_pushes_nothing(tmp_path: Path) -> None:
+    claims, landing = estate_with(tmp_path, None)
+    claims.config.repos["api"] = RepoConfig(gates={"main": release_from_the_gate(claims.root)})
+    api = claims.root / "api"
+    reviewed_task(claims)
+    before = git(api, "ls-remote", "origin", "refs/heads/main")
+
+    job_id, state = land(claims, landing)
+
+    assert state == JobState.EXPIRED
+    job = claims.jobs.get(job_id)
+    assert job is not None and job.state == JobState.EXPIRED
+    assert git(api, "ls-remote", "origin", "refs/heads/main") == before
+    node = stored(claims, "T1")
+    assert (node.status, node.step_failures) == (Status.REVIEWED, 1)
+
+
+def _running(pid: int) -> bool:
+    import subprocess
+
+    stat = subprocess.run(
+        ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, check=False
+    ).stdout.strip()
+    return bool(stat) and not stat.startswith("Z")
+
+
+def test_releasing_a_running_landing_stops_its_process(tmp_path: Path) -> None:
+    claims = make_estate(
+        tmp_path,
+        config=ProjectConfig(
+            repos={"api": RepoConfig(gates={"main": Gate(command="sleep 3", timeout=60)})}
+        ),
+    )
+    attach_landing(claims, detach=True)
+    api = claims.root / "api"
+    reviewed_task(claims)
+    before = git(api, "ls-remote", "origin", "refs/heads/main")
+    result = claims.start("T1", "merger", "s1")
+    assert result.job is not None
+    deadline = time.monotonic() + 30
+    job = claims.jobs.get(result.job)
+    while job is not None and job.step != "gate" and time.monotonic() < deadline:
+        time.sleep(0.1)
+        job = claims.jobs.get(result.job)
+    assert job is not None and job.step == "gate" and job.pid is not None
+
+    claims.release("T1")
+
+    deadline = time.monotonic() + 10
+    while _running(job.pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert not _running(job.pid)
+    stopped = claims.jobs.get(result.job)
+    assert stopped is not None and stopped.state == JobState.EXPIRED
+    assert git(api, "ls-remote", "origin", "refs/heads/main") == before
+
+
+def test_a_landing_that_cannot_be_launched_undoes_the_claim_and_expires_its_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claims, landing = estate_with(tmp_path, TRUE)
+    reviewed_task(claims)
+
+    def unlaunchable(job: object) -> None:
+        raise OSError("fork failed")
+
+    monkeypatch.setattr(landing, "_launch", unlaunchable)
+    with pytest.raises(OperationError, match="undone"):
+        claims.start("T1", "merger", "s1")
+
+    assert [j.state for j in claims.jobs.for_node("T1")] == [JobState.EXPIRED]
+    assert stored(claims, "T1").status == Status.REVIEWED
+    monkeypatch.undo()
+    assert land(claims, landing)[1] == JobState.SUCCEEDED

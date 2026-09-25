@@ -1,5 +1,6 @@
 import json
 import uuid
+from collections.abc import Collection
 from typing import Any
 
 from taskmanager.core.models import Job
@@ -8,6 +9,7 @@ from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.utils import parse_db_datetime, to_db_timestamp
 
 _COLUMNS = "id, kind, node_id, repo, target, state, step, worktree, pid, heartbeat, result_json"
+_LIVE = (JobState.RUNNING, JobState.NEEDS_AGENT)
 
 
 def _row_to_job(row: tuple[Any, ...]) -> Job:
@@ -67,27 +69,48 @@ class JobRepository:
             ).fetchall()
         return [_row_to_job(r) for r in rows]
 
-    def update(self, job: Job) -> None:
+    def update(self, job: Job) -> bool:
+        """Writes a live job's progress (step, worktree, pid, heartbeat, result), never its
+        state: a job expired under its running process stays expired and records nothing more.
+        False when the job is missing or no longer live."""
         with self.db.get_state_connection() as conn:
             cursor = conn.execute(
                 """
+                UPDATE jobs SET step = ?, worktree = ?, pid = ?, heartbeat = ?, result_json = ?
+                WHERE id = ? AND state IN (?, ?)
+                """,
+                (*self._progress(job), job.id, *(s.value for s in _LIVE)),
+            )
+            self.db.spec_commit(conn)
+            return cursor.rowcount > 0
+
+    def set_state(self, job: Job, expected: Collection[JobState] | None = None) -> bool:
+        """Writes `job` whole, its state included, only while the stored state is one of
+        `expected` (any state when None): the one write that moves a job's state, so two writers
+        racing to end a job cannot both win. False when nothing was written."""
+        allowed = list(expected) if expected is not None else list(JobState)
+        placeholders = ", ".join("?" for _ in allowed)
+        with self.db.get_state_connection() as conn:
+            cursor = conn.execute(
+                f"""
                 UPDATE jobs SET state = ?, step = ?, worktree = ?, pid = ?, heartbeat = ?,
                     result_json = ?
-                WHERE id = ?
+                WHERE id = ? AND state IN ({placeholders})
                 """,
-                (
-                    job.state.value,
-                    job.step,
-                    job.worktree,
-                    job.pid,
-                    to_db_timestamp(job.heartbeat),
-                    json.dumps(job.result),
-                    job.id,
-                ),
+                (job.state.value, *self._progress(job), job.id, *(s.value for s in allowed)),
             )
-            if cursor.rowcount == 0:
-                raise KeyError(f"no job '{job.id}'")
             self.db.spec_commit(conn)
+            return cursor.rowcount > 0
+
+    @staticmethod
+    def _progress(job: Job) -> tuple[object, ...]:
+        return (
+            job.step,
+            job.worktree,
+            job.pid,
+            to_db_timestamp(job.heartbeat),
+            json.dumps(job.result),
+        )
 
     def waiting_for_agent(self) -> list[Job]:
         with self.db.get_state_connection() as conn:

@@ -355,7 +355,7 @@ def test_task_get_names_the_next_action_the_lifecycle_gives(tmp_path: Path) -> N
     node_repo.save_node(node)
     job = jobs.create(Job(kind=JobKind.LAND, node_id="S1-P1-b", repo="core", target="main"))
     assert get(tmp_path, "S1-P1-b")["next_action"] is None
-    jobs.update(job.model_copy(update={"state": JobState.NEEDS_AGENT}))
+    jobs.set_state(job.model_copy(update={"state": JobState.NEEDS_AGENT}))
     assert get(tmp_path, "S1-P1-b")["next_action"] == "merge"
 
 
@@ -399,7 +399,7 @@ def test_job_status_waits_while_the_job_runs_and_returns_once_it_leaves_running(
     def finish() -> None:
         time.sleep(0.5)
         own = JobRepository(DatabaseManager(tmp_path / ".taskmanager"))
-        own.update(job.model_copy(update={"state": JobState.SUCCEEDED}))
+        own.set_state(job.model_copy(update={"state": JobState.SUCCEEDED}))
 
     worker = threading.Thread(target=finish)
     worker.start()

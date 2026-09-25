@@ -257,17 +257,36 @@ def test_a_job_gets_an_id_and_reads_back_whole(db: DatabaseManager) -> None:
     assert jobs.get("land-missing") is None
 
 
-def test_a_job_update_moves_its_state_and_result(db: DatabaseManager) -> None:
+def test_a_job_update_records_progress_and_only_a_state_move_changes_its_state(
+    db: DatabaseManager,
+) -> None:
     _task(db, "T1")
     jobs = JobRepository(db)
     job = jobs.create(Job(kind=JobKind.SYNC, node_id="T1", repo="core", target="tm/P"))
     stopped = job.model_copy(
         update={"state": JobState.NEEDS_AGENT, "step": "build", "result": {"reason": "conflict"}}
     )
-    jobs.update(stopped)
+    assert jobs.update(stopped) is True
+    assert jobs.get(job.id) == stopped.model_copy(update={"state": JobState.RUNNING})
+    assert jobs.set_state(stopped, {JobState.RUNNING}) is True
     assert jobs.get(job.id) == stopped
-    with pytest.raises(KeyError):
-        jobs.update(job.model_copy(update={"id": "sync-missing"}))
+    assert jobs.update(job.model_copy(update={"id": "sync-missing"})) is False
+
+
+def test_a_job_that_left_the_live_states_takes_no_more_progress_or_racing_state(
+    db: DatabaseManager,
+) -> None:
+    _task(db, "T1")
+    jobs = JobRepository(db)
+    job = jobs.create(Job(kind=JobKind.LAND, node_id="T1", repo="core", target="main"))
+    live = {JobState.RUNNING, JobState.NEEDS_AGENT}
+    assert jobs.set_state(job.model_copy(update={"state": JobState.EXPIRED}), live) is True
+
+    assert jobs.update(job.model_copy(update={"step": "push"})) is False
+    assert jobs.set_state(job.model_copy(update={"state": JobState.SUCCEEDED}), live) is False
+    stored_job = jobs.get(job.id)
+    assert stored_job is not None
+    assert (stored_job.state, stored_job.step) == (JobState.EXPIRED, job.step)
 
 
 def test_jobs_are_listed_per_node_and_by_waiting_for_an_agent(db: DatabaseManager) -> None:
@@ -334,7 +353,7 @@ def test_a_branch_lock_held_by_a_job_no_longer_running_is_taken_over(
     dead = jobs.create(Job(kind=JobKind.LAND, node_id="T1", repo="core", target="tm/P"))
     live = jobs.create(Job(kind=JobKind.LAND, node_id="T1", repo="core", target="tm/P"))
     assert jobs.acquire_branch("core", "tm/P", dead.id)
-    jobs.update(dead.model_copy(update={"state": JobState.NEEDS_AGENT}))
+    jobs.set_state(dead.model_copy(update={"state": JobState.NEEDS_AGENT}))
     assert jobs.acquire_branch("core", "tm/P", live.id) is True
 
 

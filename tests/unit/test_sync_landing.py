@@ -1,6 +1,7 @@
 import time
 from pathlib import Path
 
+import pytest
 from lifecycle_estate import (
     add,
     attach_landing,
@@ -16,6 +17,7 @@ from lifecycle_estate import (
 
 from taskmanager.core.enums import NodeKind
 from taskmanager.core.status import Action, JobState, Merge, Outcome, Status
+from taskmanager.engine import git as gitops
 from taskmanager.engine.claims import Claims
 from taskmanager.engine.config import Gate, ProjectConfig, RepoConfig
 from taskmanager.engine.landing import Landing
@@ -208,3 +210,37 @@ def test_land_order_overrides_the_configured_repository_order(tmp_path: Path) ->
     assert merge.job is not None
     job = claims.jobs.get(merge.job)
     assert job is not None and job.repo == "web"
+
+
+def test_a_later_repository_whose_landing_errors_stops_its_own_job_for_an_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claims, landing = two_repo_container(tmp_path)
+    api, web = claims.root / "api", claims.root / "web"
+    on_branch(api, "tm/P", "a.py", "a = 1\n")
+    on_branch(web, "tm/P", "b.py", "b = 1\n")
+    real = gitops.add_detached_worktree
+
+    def unwritable_in_web(repo_dir: Path, path: Path, ref: str) -> None:
+        if repo_dir == web:
+            raise OSError("no space left on device")
+        real(repo_dir, path, ref)
+
+    monkeypatch.setattr(gitops, "add_detached_worktree", unwritable_in_web)
+
+    merge = claims.start("P", "merger", "s1")
+    assert merge.job is not None
+    assert landing.run(merge.job) == JobState.NEEDS_AGENT
+
+    first = claims.jobs.get(merge.job)
+    assert first is not None and first.state == JobState.SUCCEEDED
+    following = claims.jobs.get(str(first.result["next"]))
+    assert following is not None
+    assert (following.repo, following.state, following.result["reason"]) == (
+        "web",
+        JobState.NEEDS_AGENT,
+        "error",
+    )
+    lease = claims.runtime.get_lease("P")
+    assert lease is not None and lease.ttl_seconds is None
+    assert stored(claims, "P").status == Status.MERGING

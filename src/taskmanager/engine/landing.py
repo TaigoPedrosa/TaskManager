@@ -100,7 +100,8 @@ class Landing:
         if job.state != JobState.RUNNING:
             return job.state
         job.pid = os.getpid()
-        self.jobs.update(job)
+        if not self.jobs.update(job):
+            return self._state(job)
         with self._beating(job.node_id):
             try:
                 return self._sync(job) if job.kind == JobKind.SYNC else self._land(job)
@@ -146,7 +147,8 @@ class Landing:
         job.step = step
         job.state = JobState.RUNNING
         job.result.pop("push_tries", None)
-        self.jobs.update(job)
+        if not self.jobs.set_state(job, {JobState.NEEDS_AGENT}):
+            raise OperationError(f"job {job_id} moved while it was being resumed", 409)
         self.claims.heartbeat(job.node_id)
         if self.detach:
             self._launch(job)
@@ -169,7 +171,8 @@ class Landing:
                 return nxt
             job.step = nxt
             job.heartbeat = datetime.now(tz=UTC)
-            self.jobs.update(job)
+            if not self.jobs.update(job):
+                return self._state(job)
 
     def _build(self, job: Job) -> str | JobState:
         repo_dir, branch = self._dir(job), self.claims.branch_of(job.node_id)
@@ -251,6 +254,8 @@ class Landing:
                     return self._needs_agent(job, "conflict")
                 job.result["base_sha"] = gitops.rev_parse(repo_dir, "origin/main")
                 return "gate"
+            if not self._running(job):
+                return self._state(job)
             if remote and gitops.push(worktree, "main"):
                 return "verify"
             job.result["push_tries"] = int(job.result.get("push_tries", 0)) + 1
@@ -267,6 +272,8 @@ class Landing:
         ref = f"refs/heads/{job.target}"
         repo_dir = self._dir(job)
         try:
+            if not self._running(job):
+                return self._state(job)
             head = gitops.rev_parse(worktree, "HEAD")
             if gitops.update_ref_cas(repo_dir, ref, head, str(job.result["base_sha"])):
                 return done
@@ -302,11 +309,17 @@ class Landing:
         # never rolled back, so a later repository's failure leaves this one landed.
         following = self._new_job(JobKind.LAND, job.node_id, later[0], job.target, {})
         job.result["next"] = following.id
-        self.jobs.update(job)
+        self.jobs.set_state(job, {JobState.SUCCEEDED})
         self.claims.note(job.node_id, "merge", summary)
-        following.pid = os.getpid()
-        self.jobs.update(following)
-        return self._land(following)
+        # The next repository runs as its own job, so whatever stops it is ended against it,
+        # not against this one, which has already succeeded.
+        if not self.detach:
+            return self.run(following.id)
+        try:
+            self._launch(following)
+        except OSError as exc:
+            return self._needs_agent(following, "error", error=str(exc))
+        return JobState.SUCCEEDED
 
     def _sync(self, job: Job) -> JobState:
         units = job.result["units"]
@@ -319,7 +332,8 @@ class Landing:
             job.result["done"] = int(job.result["done"]) + 1
             job.result.pop("push_tries", None)
             job.step = "start"
-            self.jobs.update(job)
+            if not self.jobs.update(job):
+                return self._state(job)
         if not self._end(job, JobState.SUCCEEDED):
             return self._state(job)
         self.claims.sync_done(job.node_id)
@@ -362,25 +376,27 @@ class Landing:
                     return None
                 job.step = moved
             job.heartbeat = datetime.now(tz=UTC)
-            self.jobs.update(job)
+            if not self.jobs.update(job):
+                return self._state(job)
 
     # -- how a job ends -----------------------------------------------------------------------
 
     def _end(self, job: Job, state: JobState, **result: Any) -> bool:
         """False when the job was expired under us (its lease swept or released): the node is no
         longer this job's to move."""
-        current = self.jobs.get(job.id)
-        if current is None or current.state not in LIVE:
-            return False
         job.state = state
         job.result.update(result)
         job.heartbeat = datetime.now(tz=UTC)
-        self.jobs.update(job)
-        return True
+        return self.jobs.set_state(job, LIVE)
 
     def _state(self, job: Job) -> JobState:
         current = self.jobs.get(job.id)
         return current.state if current is not None else job.state
+
+    def _running(self, job: Job) -> bool:
+        """Read just before a write nothing rolls back (a push, a branch swap): a job released
+        or swept meanwhile must not land."""
+        return self._state(job) == JobState.RUNNING
 
     def _needs_agent(self, job: Job, reason: str, **detail: str) -> JobState:
         if not self._end(job, JobState.NEEDS_AGENT, reason=reason, **detail):

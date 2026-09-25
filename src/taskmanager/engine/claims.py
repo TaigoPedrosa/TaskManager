@@ -6,6 +6,9 @@ with its lease change and the parents' rollup in one state.db transaction.
 
 import hashlib
 import logging
+import os
+import signal
+import subprocess
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -20,6 +23,7 @@ from taskmanager.core.lifecycle import Caps, Cycle, LifecycleError
 from taskmanager.core.models import (
     Condition,
     FileLock,
+    Job,
     Lease,
     LeaseAction,
     LedgerEvent,
@@ -78,6 +82,25 @@ _FAILED_BECAUSE: dict[Event, str] = {
     Event.RELEASE: _STALLED,
     Event.EXPIRED: _STALLED,
 }
+
+
+def _stop_process(job: Job) -> None:
+    """Stops the detached process running `job`, with its git children, so a job expired under
+    it cannot push or keep heartbeating a lease it no longer owns. The pid is matched against
+    the job's own command line first: a pid recorded long ago may name an unrelated process."""
+    if job.pid is None or job.pid == os.getpid():
+        return
+    try:
+        command = subprocess.run(
+            ["ps", "-ww", "-o", "command=", "-p", str(job.pid)],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
+        if f"taskmanager.engine.landing run {job.id}" in command:
+            os.killpg(job.pid, signal.SIGTERM)
+    except OSError as exc:
+        _log.warning("could not stop job %s (pid %s): %s", job.id, job.pid, exc)
 
 
 @dataclass(frozen=True)
@@ -511,6 +534,8 @@ class Claims:
         return parent_branch
 
     def _unclaim(self, original: Node) -> None:
+        # A landing job created before the failure would otherwise hold the node forever.
+        self._expire_jobs(original.id)
         with self.nodes.transaction():
             self.nodes.save_node(original)
             self.runtime.release_lease(original.id)
@@ -706,7 +731,8 @@ class Claims:
     def _expire_jobs(self, node_id: str) -> int:
         live = [j for j in self.jobs.for_node(node_id) if j.state in LIVE_JOBS]
         for job in live:
-            self.jobs.update(job.model_copy(update={"state": JobState.EXPIRED}))
+            if self.jobs.set_state(job.model_copy(update={"state": JobState.EXPIRED}), LIVE_JOBS):
+                _stop_process(job)
             self.jobs.release_branch(job.repo, job.target, job.id)
         return len(live)
 
