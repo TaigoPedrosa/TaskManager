@@ -43,7 +43,7 @@ from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.di.container import create_container
 from taskmanager.engine import git as gitops
-from taskmanager.engine.chains import satisfied
+from taskmanager.engine.chains import MAIN, satisfied, sync_pairs
 from taskmanager.engine.conditions import ConditionRunner, is_executable
 from taskmanager.engine.config import ConfigStore, ProjectConfig
 from taskmanager.engine.decisions import open_failed_decision, open_stranded_decision
@@ -349,6 +349,14 @@ class Claims:
         reason = self.blocked_reason(node, snap, action)
         if reason is not None or action is None:
             return ClaimResult(Action.BLOCKED, reason)
+        pairs = self._sync_pairs(node.id, snap)
+        units = self.sync_units(pairs) if pairs else []
+        if units:
+            # A dependency landed below a branch this node builds on: that branch catches up
+            # before any step starts on it, never after.
+            job = self._landing().start_sync(node.id, pairs)
+            branches = ", ".join(dict.fromkeys(base for _, base, _ in units))
+            return ClaimResult(Action.BLOCKED, f"syncing {branches}", job=job)
         return self._claim(node, cycle, action, agent, session, ttl, worktree_dir)
 
     def _hand_over(
@@ -919,7 +927,9 @@ class Claims:
         return node.model_copy(
             update={
                 "status": cycle.status,
-                "claimed_from": cycle.claimed_from,
+                # A sync hold claims a node without moving it, so a step failure counted on a
+                # stable status must still clear what the hold set.
+                "claimed_from": cycle.claimed_from if cycle.status in IN_STEP else None,
                 "outcome": cycle.outcome,
                 "fix_for": cycle.fix_for,
                 "review_cycles": cycle.review_cycles,
@@ -928,6 +938,70 @@ class Claims:
                 "updated_at": datetime.now(tz=UTC),
             }
         )
+
+    def known_repos(self) -> list[str]:
+        """Every repository the estate names that is cloned under the root."""
+        names = [
+            *self.config.repo_order,
+            *self.config.repos,
+            *(n.target_repo for n in self.nodes.list_nodes() if n.target_repo),
+        ]
+        return [r for r in dict.fromkeys(names) if (self.root / r / ".git").exists()]
+
+    def _sync_pairs(self, node_id: str, snap: Snapshot) -> list[tuple[str, str]]:
+        pairs: list[tuple[str, str]] = []
+        for dep in snap.inherited_edges(node_id):
+            if not isinstance(snap.status(dep), Status):
+                continue
+            for pair in sync_pairs(snap, node_id, dep):
+                if pair not in pairs:
+                    pairs.append(pair)
+        return pairs
+
+    def sync_units(self, pairs: list[tuple[str, str]]) -> list[tuple[str, str, str]]:
+        """(source ref, base branch, repository) for each pair and repository where both exist
+        and the base lacks the source. Across repositories there is nothing to sync."""
+        units: list[tuple[str, str, str]] = []
+        fetched: set[str] = set()
+        for source, base in pairs:
+            source_ref = self.target_ref("main" if source == MAIN else self.branch_of(source))
+            base_branch = self.branch_of(base)
+            for repo in self.known_repos():
+                repo_dir = self.root / repo
+                if source == MAIN and repo not in fetched:
+                    gitops.fetch(repo_dir)
+                    fetched.add(repo)
+                if not gitops.rev_parse(repo_dir, f"refs/heads/{base_branch}"):
+                    continue
+                if not gitops.rev_parse(repo_dir, source_ref):
+                    continue
+                if not gitops.is_ancestor(repo_dir, source_ref, base_branch):
+                    units.append((source_ref, base_branch, repo))
+        return units
+
+    def hold_for_sync(self, node_id: str) -> bool:
+        """tm's own lease on the node while its sync runs: the node stays at its status and
+        unclaimed, and the sync's agent, if one is needed, takes this lease over.
+
+        The claim names the node's own status as the one it is claimed from, so a racing claim
+        that moved the node, or already holds it, makes this one write nothing."""
+        node = self.node(node_id)
+        lease = Lease(
+            task_id=node_id,
+            agent_id="tm",
+            session_id="tm",
+            branch_name=self.branch_of(node_id),
+            ttl_seconds=self.ttl_for(Action.SYNC),
+            action=Action.SYNC,
+        )
+        return self.runtime.claim(lease, [], node.model_copy(update={"claimed_from": node.status}))
+
+    def sync_done(self, node_id: str) -> None:
+        node = self.node(node_id)
+        with self.nodes.transaction():
+            self.nodes.save_node(node.model_copy(update={"claimed_from": None}))
+            self.runtime.release_lease(node_id)
+        self._ledger("job sync", node_id, {"state": JobState.SUCCEEDED.value})
 
     def _section_text(self, node_id: str, key: str) -> str:
         found = self.nodes.get_section(node_id, key)

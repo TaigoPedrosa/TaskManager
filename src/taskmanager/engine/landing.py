@@ -79,7 +79,21 @@ class Landing:
         return job.id
 
     def start_sync(self, node_id: str, pairs: list[tuple[str, str]]) -> str:
-        raise NotImplementedError("a container's cross-repository sync has no job kind yet")
+        units = self.claims.sync_units(pairs)
+        if not units:
+            raise OperationError(f"{node_id} needs no sync", 409)
+        if not self.claims.hold_for_sync(node_id):
+            raise OperationError(f"{node_id} is held: its sync was not started", 409)
+        source, target, repo = units[0]
+        job = self._new_job(
+            JobKind.SYNC,
+            node_id,
+            repo,
+            target,
+            {"units": [list(unit) for unit in units], "done": 0, "source": source},
+        )
+        self._launch(job)
+        return job.id
 
     def run(self, job_id: str) -> JobState:
         job = self._job(job_id)
@@ -89,7 +103,7 @@ class Landing:
         self.jobs.update(job)
         with self._beating(job.node_id):
             try:
-                return self._land(job)
+                return self._sync(job) if job.kind == JobKind.SYNC else self._land(job)
             except (subprocess.CalledProcessError, OSError, OperationError) as exc:
                 detail = f"{exc}\n{getattr(exc, 'stderr', '') or ''}".strip()
                 return self._needs_agent(job, "error", error=detail)
@@ -278,8 +292,77 @@ class Landing:
     def _succeed(self, job: Job, report: str) -> JobState:
         if not self._end(job, JobState.SUCCEEDED, verify=report):
             return self._state(job)
-        self.claims.landed(job.node_id, f"{job.repo}: landed on {job.target}\n{report}")
+        summary = f"{job.repo}: landed on {job.target}\n{report}"
+        repos = self.claims.repos_of(job.node_id)
+        later = repos[repos.index(job.repo) + 1 :] if job.repo in repos else []
+        if not later:
+            self.claims.landed(job.node_id, summary)
+            return JobState.SUCCEEDED
+        # One landing job per repository, in order, under the same lease; a pushed main is
+        # never rolled back, so a later repository's failure leaves this one landed.
+        following = self._new_job(JobKind.LAND, job.node_id, later[0], job.target, {})
+        job.result["next"] = following.id
+        self.jobs.update(job)
+        self.claims.note(job.node_id, "merge", summary)
+        following.pid = os.getpid()
+        self.jobs.update(following)
+        return self._land(following)
+
+    def _sync(self, job: Job) -> JobState:
+        units = job.result["units"]
+        while int(job.result["done"]) < len(units):
+            source, target, repo = units[int(job.result["done"])]
+            job.repo, job.target, job.result["source"] = repo, target, source
+            stopped = self._sync_unit(job)
+            if stopped is not None:
+                return stopped
+            job.result["done"] = int(job.result["done"]) + 1
+            job.result.pop("push_tries", None)
+            job.step = "start"
+            self.jobs.update(job)
+        if not self._end(job, JobState.SUCCEEDED):
+            return self._state(job)
+        self.claims.sync_done(job.node_id)
         return JobState.SUCCEEDED
+
+    def _sync_unit(self, job: Job) -> JobState | None:
+        """Merges the source into one container branch in one repository, gates it with the
+        repository's `parent` gate when one is configured, and moves the branch by
+        compare-and-swap. None when the unit is done."""
+        repo_dir, source = self._dir(job), str(job.result["source"])
+        while True:
+            if job.step == "start":
+                if gitops.is_ancestor(repo_dir, source, job.target):
+                    return None
+                base = gitops.rev_parse(repo_dir, f"refs/heads/{job.target}")
+                worktree = self._worktree_path(job)
+                gitops.add_detached_worktree(repo_dir, worktree, base)
+                job.worktree = str(worktree)
+                job.result["base_sha"] = base
+                subject = f"merge({job.node_id}): sync {source} into {job.target}"
+                if not gitops.merge_no_ff(worktree, source, subject):
+                    return self._needs_agent(job, "conflict")
+                job.step = "gate"
+            elif job.step == "gate":
+                gate = self._gate_config(job.repo, "parent")
+                if gate is not None:
+                    worktree = Path(self._require_worktree(job))
+                    run = gates.run_gate(
+                        self._render(gate, job, worktree), worktree, gate.timeout, gate.junit
+                    )
+                    if run.exit_code != 0:
+                        return self._needs_agent(job, "red", tip=run.tail)
+                job.step = "push"
+            else:
+                moved = self._move_branch(job, Path(self._require_worktree(job)), "done")
+                if isinstance(moved, JobState):
+                    return moved
+                if moved == "done":
+                    self._remove_worktree(job)
+                    return None
+                job.step = moved
+            job.heartbeat = datetime.now(tz=UTC)
+            self.jobs.update(job)
 
     # -- how a job ends -----------------------------------------------------------------------
 
