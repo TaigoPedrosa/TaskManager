@@ -9,6 +9,7 @@ from taskmanager.core.enums import (
     VerificationType,
 )
 from taskmanager.core.models import (
+    Condition,
     FileLock,
     Lease,
     Node,
@@ -16,6 +17,7 @@ from taskmanager.core.models import (
     NodeVerification,
 )
 from taskmanager.core.status import Action, Status
+from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.node_repo import NodeRepository
@@ -448,3 +450,20 @@ def test_score_every_task_ignores_a_decision_node(
 
     scores = score_every_task(node_repo)
     assert set(scores) == {"T1"}
+
+
+def test_a_task_whose_claim_condition_last_failed_is_not_recommended(tmp_path: Path) -> None:
+    db = DatabaseManager(tmp_path)
+    db.init_all()
+    node_repo, runtime_repo, cache = NodeRepository(db), RuntimeRepository(db), CacheRepository(db)
+    snapshots = SnapshotBuilder(node_repo, runtime_repo, JobRepository(db))
+    node_repo.save_node(Node(id="T1", kind=NodeKind.TASK, title="waits"))
+    node_repo.save_node(Node(id="T2", kind=NodeKind.TASK, title="free"))
+    added = node_repo.add_condition(
+        Condition(node_id="T1", idx=0, needs="staging up", command="false")
+    )
+    cache.put_condition("T1", added.idx, "false", 1)
+
+    engine = RecommendationEngine(node_repo, runtime_repo, snapshots, cache, 3600)
+
+    assert [t.task_id for t in engine.get_next_tasks()] == ["T2"]

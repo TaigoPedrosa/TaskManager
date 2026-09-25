@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from taskmanager.core.enums import NodeKind, RecommendationStrategy
 from taskmanager.core.status import DisplayStatus, Status
+from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder
@@ -105,10 +106,14 @@ class RecommendationEngine:
         node_repo: NodeRepository,
         runtime_repo: RuntimeRepository,
         snapshots: SnapshotBuilder,
+        cache: CacheRepository | None = None,
+        condition_ttl: int = 0,
     ) -> None:
         self.node_repo = node_repo
         self.runtime_repo = runtime_repo
         self.snapshots = snapshots
+        self.cache = cache
+        self.condition_ttl = condition_ttl
 
     def get_next_tasks(
         self,
@@ -120,7 +125,7 @@ class RecommendationEngine:
     ) -> list[ScoredTask]:
         weights = _STRATEGY_WEIGHTS[_resolve_strategy(strategy)]
 
-        view = DisplayView(self.snapshots)
+        view = DisplayView(self.snapshots, self.cache, self.condition_ttl)
         all_tasks = self.node_repo.list_nodes(kind=NodeKind.TASK)
         plans = self.node_repo.list_nodes(kind=NodeKind.PLAN)
         plan_children = {p.id: set(self.node_repo.get_children(p.id)) for p in plans}

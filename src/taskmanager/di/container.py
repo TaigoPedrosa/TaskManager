@@ -76,8 +76,10 @@ class TaskManagerProvider(Provider):
         node_repo: NodeRepository,
         runtime_repo: RuntimeRepository,
         snapshots: SnapshotBuilder,
+        cache_repo: CacheRepository,
     ) -> RecommendationEngine:
-        return RecommendationEngine(node_repo, runtime_repo, snapshots)
+        condition_ttl = ConfigStore(self.root).project().condition_ttl
+        return RecommendationEngine(node_repo, runtime_repo, snapshots, cache_repo, condition_ttl)
 
     @provide(scope=Scope.APP)
     def verification_engine(self) -> VerificationEngine:
