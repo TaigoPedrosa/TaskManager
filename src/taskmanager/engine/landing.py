@@ -44,6 +44,7 @@ RESUME_AT = {
     "push_failed": "push",
     "branch_locked": "push",
     "error": "start",
+    "no branch": "start",
 }
 
 
@@ -178,8 +179,14 @@ class Landing:
     def _build(self, job: Job) -> str | JobState:
         repo_dir, branch = self._dir(job), self.claims.branch_of(job.node_id)
         target = self._target_ref(job)
+        exists = bool(gitops.rev_parse(repo_dir, f"refs/heads/{branch}"))
+        if not exists and not self.claims.is_container(self.claims.node(job.node_id)):
+            # A task always has a branch by now; landing nothing would complete it untested.
+            return self._needs_agent(
+                job, "no branch", detail=f"{branch} does not exist in {job.repo}"
+            )
         if (
-            not gitops.rev_parse(repo_dir, f"refs/heads/{branch}")
+            not exists
             or gitops.is_ancestor(repo_dir, branch, target)
             or gitops.diff_quiet(repo_dir, target, branch)
         ):

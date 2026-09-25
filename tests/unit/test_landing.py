@@ -611,3 +611,17 @@ def test_a_handed_over_job_that_stops_again_counts_a_step_failure_until_the_node
     assert claims.runtime.get_lease("T1") is None
     job = claims.jobs.get(job_id)
     assert job is not None and job.state == JobState.EXPIRED
+
+
+def test_a_task_whose_branch_is_missing_stops_for_an_agent_instead_of_completing(
+    tmp_path: Path,
+) -> None:
+    claims, landing = estate_with(tmp_path, TRUE)
+    add(claims, "T1", status=Status.REVIEWED, outcome=Outcome.APPROVE, review_cycles=1)
+
+    job_id, state = land(claims, landing)
+
+    assert state == JobState.NEEDS_AGENT
+    job = claims.jobs.get(job_id)
+    assert job is not None and job.result["reason"] == "no branch"
+    assert stored(claims, "T1").status == Status.MERGING
