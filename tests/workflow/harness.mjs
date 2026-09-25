@@ -1,0 +1,120 @@
+import { readFileSync } from 'node:fs'
+
+const SOURCE = readFileSync(new URL('../../workflows/tm-wave.js', import.meta.url), 'utf8')
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
+const META_START = 'export const meta = '
+
+// The Workflow tool reads meta without running the script, so it has to evaluate on its own.
+export function meta() {
+  const start = SOURCE.indexOf(META_START) + META_START.length
+  const end = SOURCE.indexOf('\n}\n', start) + 2
+  return Function(`"use strict"; return (${SOURCE.slice(start, end)})`)()
+}
+
+// Independent of the script's own djb2: it hashes Buffer bytes, the script a percent-decoded string.
+export function djb2(text) {
+  let h = 5381
+  for (const byte of Buffer.from(text, 'utf8')) h = (Math.imul(h, 33) + byte) >>> 0
+  return h
+}
+
+export const json = (value, exit = 0) => ({ text: JSON.stringify(value), exit })
+
+export function discovery(chosen, extra = {}) {
+  const payload = JSON.stringify({ chosen, held: [], waiting_for_slot: 0, mine: 0, ...extra })
+  return `${payload}\n__CHECK n=${chosen.length} h=${djb2(payload)}`
+}
+
+// A scripted reply list is served in order and its last entry repeats, so a test writes only the
+// replies that change; an entry that is a function runs when served, for replies with effects.
+function queue(list) {
+  const items = [...list]
+  return () => {
+    const entry = items.length > 1 ? items.shift() : items[0]
+    return typeof entry === 'function' ? entry() : entry
+  }
+}
+
+export function makeTm({ chosen = [], nodes = {}, start = {}, job = {}, releaseExit = 0, discover, corrupt = () => false } = {}) {
+  const state = structuredClone(nodes)
+  const starts = Object.fromEntries(Object.entries(start).map(([id, list]) => [id, queue(list)]))
+  const jobs = Object.fromEntries(Object.entries(job).map(([id, list]) => [id, queue(list)]))
+  function answer(inner) {
+    let m = inner.match(/^\S+ task get (\S+) --json$/)
+    if (m) return state[m[1]] ? json(state[m[1]]) : { text: `Task '${m[1]}' not found`, exit: 1 }
+    m = inner.match(/^\S+ task start (\S+) --agent wf-\S+ --session \S+ --worktree-dir \S+ --json$/)
+    if (m && starts[m[1]]) return starts[m[1]]()
+    m = inner.match(/^\S+ job status (\S+)(?: --wait \d+)?$/)
+    if (m && jobs[m[1]]) return jobs[m[1]]()
+    throw new Error(`the fake tm has no reply for: ${inner}`)
+  }
+  return {
+    set(id, patch) {
+      state[id] = { ...state[id], ...patch }
+    },
+    reply(cmd) {
+      if (/^\S+ wave discover\b/.test(cmd)) {
+        return { stdout: `${discover ? discover(cmd) : discovery(chosen)}\n__EXIT:0\n` }
+      }
+      const m = cmd.match(/^out=\$\((.*) 2>&1\); rc=\$\?; /)
+      if (m) {
+        const { text, exit } = answer(m[1])
+        const h = corrupt(m[1]) ? djb2(text) + 1 : djb2(text)
+        return { stdout: `${text}\n__CHECK h=${h}\n__EXIT:${exit}\n` }
+      }
+      if (/^\S+ task release \S+ --agent wf-\S+ >\/dev\/null 2>&1$/.test(cmd)) {
+        return { stdout: `__EXIT:${releaseExit}\n` }
+      }
+      throw new Error(`the fake tm has no reply for: ${cmd}`)
+    },
+  }
+}
+
+const RUNNER = /^\( (.*) \); echo "__EXIT:\$\?"$/m
+// op() names the estate by exporting TM_ROOT ahead of its command rather than in the instructions
+// text, so the fake tm is answered on the command with that export stripped back off.
+const TM_ROOT = /^export TM_ROOT=(\S+); (.*)$/
+
+export async function runWave({ args, tm, agents = () => 'done' }) {
+  const calls = []
+  const logs = []
+  const errors = []
+  const agent = async (prompt, opts = {}) => {
+    const m = prompt.match(RUNNER)
+    if (m) {
+      const rooted = m[1].match(TM_ROOT)
+      const cmd = rooted ? rooted[2] : m[1]
+      calls.push({ kind: 'op', cmd, prompt, opts })
+      return tm.reply(cmd)
+    }
+    calls.push({ kind: 'agent', prompt, opts })
+    return agents(prompt, opts)
+  }
+  const pipeline = (items, ...stages) =>
+    Promise.all(
+      items.map(async (item, index) => {
+        let value = item
+        for (const stage of stages) {
+          try {
+            value = await stage(value, item, index)
+          } catch (error) {
+            errors.push(error)
+            return null
+          }
+        }
+        return value
+      }),
+    )
+  const parallel = thunks => Promise.all(thunks.map(t => t().catch(error => (errors.push(error), null))))
+  const body = SOURCE.replace(META_START, 'const meta = ')
+  const script = new AsyncFunction('args', 'agent', 'pipeline', 'parallel', 'log', 'phase', body)
+  const result = await script(args, agent, pipeline, parallel, message => logs.push(message), () => {})
+  return {
+    result,
+    logs,
+    errors,
+    calls,
+    ops: calls.filter(c => c.kind === 'op').map(c => c.cmd),
+    work: calls.filter(c => c.kind === 'agent'),
+  }
+}
