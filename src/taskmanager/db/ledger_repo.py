@@ -1,4 +1,6 @@
 import json
+import logging
+import sqlite3
 
 from taskmanager.core.models import LedgerEvent
 from taskmanager.db.connection import DatabaseManager
@@ -13,6 +15,14 @@ class LedgerRepository:
         self.db.after_commit(lambda: self._write(event))
 
     def _write(self, event: LedgerEvent) -> None:
+        # The ledger records a write that has already committed, so failing here would report
+        # that write as failed and drop every entry queued after this one.
+        try:
+            self._insert(event)
+        except (sqlite3.Error, OSError) as exc:
+            logging.getLogger(__name__).warning("ledger entry %s lost: %s", event.command, exc)
+
+    def _insert(self, event: LedgerEvent) -> None:
         now_str = to_db_timestamp(event.timestamp)
         with self.db.get_ledger_connection() as conn:
             cursor = conn.execute(

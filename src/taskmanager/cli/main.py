@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import sqlite3
 import subprocess
 import sys
 import time
@@ -297,19 +296,15 @@ def _record_ledger(
     payload: dict[str, Any] | None = None,
     diff: dict[str, Any] | None = None,
 ) -> None:
-    try:
-        ledger_repo = container.get(LedgerRepository)
-        ledger_repo.append(
-            LedgerEvent(
-                actor_id=actor_id,
-                command=command,
-                target_id=target_id,
-                payload=payload or {},
-                diff=diff or {},
-            )
+    container.get(LedgerRepository).append(
+        LedgerEvent(
+            actor_id=actor_id,
+            command=command,
+            target_id=target_id,
+            payload=payload or {},
+            diff=diff or {},
         )
-    except (sqlite3.Error, OSError) as exc:
-        logging.getLogger(__name__).debug("Failed to append ledger event: %s", exc)
+    )
 
 
 def _resolve_task_id(runtime_repo: RuntimeRepository, task_id: str | None) -> str:

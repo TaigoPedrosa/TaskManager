@@ -1,6 +1,7 @@
 """Operations on the lifecycle model: nodes start READY with their kind's flags, containers
 roll up from their children, and every write passes the write rules before it commits."""
 
+import sqlite3
 import subprocess
 from pathlib import Path
 
@@ -501,3 +502,28 @@ def test_a_set_aside_child_s_repository_does_not_keep_its_plan_from_completing(
     set_status(node_repo, ghost, Status.ABANDONED)
     ops.supersede(extra, task, "none")
     assert get(node_repo, plan).status == Status.COMPLETED
+
+
+def test_a_ledger_write_failing_after_its_transaction_commits_neither_fails_it_nor_drops_the_next(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    node_repo, _runtime, ledger, ops = env
+    _spec, _plan, task = tree(ops)
+    count = events(ledger)
+    real = ledger.db.get_ledger_connection
+    calls: list[int] = []
+
+    def full_disk() -> object:
+        calls.append(1)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("database or disk is full")
+        return real()
+
+    monkeypatch.setattr(ledger.db, "get_ledger_connection", full_disk)
+    with node_repo.transaction():
+        ops.update_node(task, title="first")
+        ops.update_node(task, title="second")
+
+    assert get(node_repo, task).title == "second"
+    assert len(calls) == 2
+    assert events(ledger) == count + 1

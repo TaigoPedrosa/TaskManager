@@ -1,6 +1,4 @@
 import hashlib
-import logging
-import sqlite3
 import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -250,18 +248,15 @@ class Operations:
         payload: dict[str, Any] | None = None,
         diff: dict[str, Any] | None = None,
     ) -> None:
-        try:
-            self.ledger_repo.append(
-                LedgerEvent(
-                    actor_id=self.actor,
-                    command=command,
-                    target_id=target_id,
-                    payload=payload or {},
-                    diff=diff or {},
-                )
+        self.ledger_repo.append(
+            LedgerEvent(
+                actor_id=self.actor,
+                command=command,
+                target_id=target_id,
+                payload=payload or {},
+                diff=diff or {},
             )
-        except (sqlite3.Error, OSError) as exc:
-            logging.getLogger(__name__).debug("Failed to append ledger event: %s", exc)
+        )
 
     # -- spec / plan / task creation -------------------------------------------------------
 
