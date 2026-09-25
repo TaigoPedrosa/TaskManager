@@ -139,10 +139,10 @@ def test_foreign_key_cascade_deletion(tmp_path: Path) -> None:
     with db_mgr.get_state_connection() as conn:
         conn.execute(
             """
-            INSERT INTO leases (task_id, agent_id, session_id, branch_name)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO leases (task_id, agent_id, session_id, branch_name, token)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            ("TASK-01", "agent-1", "sess-1", "feat/auth"),
+            ("TASK-01", "agent-1", "sess-1", "feat/auth", "token-1"),
         )
         conn.execute(
             """

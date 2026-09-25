@@ -10,9 +10,11 @@ from taskmanager.db.utils import parse_db_datetime, to_db_timestamp
 
 _LEASE_COLUMNS = (
     "task_id, agent_id, session_id, account_id, worktree_path, branch_name, acquired_at, "
-    "last_heartbeat, ttl_seconds, action, review_hash, model"
+    "last_heartbeat, ttl_seconds, action, review_hash, model, token"
 )
-_INSERT_LEASE = f"INSERT INTO leases ({_LEASE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+_INSERT_LEASE = (
+    f"INSERT INTO leases ({_LEASE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
 
 
 def lease_alive(ttl: int | None, last_heartbeat: datetime, now: datetime) -> bool:
@@ -34,6 +36,7 @@ def _lease_row(lease: Lease) -> tuple[object, ...]:
         lease.action.value if lease.action else None,
         lease.review_hash,
         lease.model,
+        lease.token,
     )
 
 
@@ -52,6 +55,7 @@ def _row_to_lease(row: tuple[Any, ...]) -> Lease:
         action=cast(LeaseAction, Action(row[9])) if row[9] else None,
         review_hash=row[10],
         model=row[11],
+        token=row[12],
     )
 
 
@@ -74,7 +78,8 @@ class RuntimeRepository:
                     ttl_seconds=excluded.ttl_seconds,
                     action=excluded.action,
                     review_hash=excluded.review_hash,
-                    model=excluded.model;
+                    model=excluded.model,
+                    token=excluded.token;
                 """,
                 _lease_row(lease),
             )
@@ -176,18 +181,20 @@ class RuntimeRepository:
             conn.execute("UPDATE leases SET ttl_seconds = NULL WHERE task_id = ?", (node_id,))
             self.db.spec_commit(conn)
 
-    def take_over(self, node_id: str, agent: str, session: str, ttl: int, model: str) -> bool:
-        """Hand a parked lease to `agent` in one conditional write. A release followed by a new
-        claim would let two agents each believe they hold the stopped job; here only the first
-        writer finds the TTL still NULL."""
+    def take_over(
+        self, node_id: str, agent: str, session: str, ttl: int, model: str, token: str
+    ) -> bool:
+        """Hand a parked lease to `agent` under a new claim `token`, in one conditional write. A
+        release followed by a new claim would let two agents each believe they hold the stopped
+        job; here only the first writer finds the TTL still NULL."""
         with self.db.get_state_connection() as conn:
             cursor = conn.execute(
                 """
                 UPDATE leases SET agent_id = ?, session_id = ?, ttl_seconds = ?, model = ?,
-                    last_heartbeat = ?
+                    last_heartbeat = ?, token = ?
                 WHERE task_id = ? AND ttl_seconds IS NULL
                 """,
-                (agent, session, ttl, model, to_db_timestamp(None), node_id),
+                (agent, session, ttl, model, to_db_timestamp(None), token, node_id),
             )
             self.db.spec_commit(conn)
             return cursor.rowcount > 0

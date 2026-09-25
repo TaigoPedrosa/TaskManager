@@ -120,19 +120,20 @@ def test_a_parked_lease_outlives_its_ttl_until_one_agent_takes_it_over(
     )
     repo.park("T1")
     assert repo.sweep_expired_leases() == []
-    assert repo.take_over("T1", "agent-b", "s2", 900, "sonnet") is True
+    assert repo.take_over("T1", "agent-b", "s2", 900, "sonnet", "tok-b") is True
     lease = repo.get_lease("T1")
     assert lease is not None
-    assert (lease.agent_id, lease.session_id, lease.ttl_seconds, lease.model, lease.action) == (
-        "agent-b",
-        "s2",
-        900,
-        "sonnet",
-        Action.MERGE,
-    )
+    assert (
+        lease.agent_id,
+        lease.session_id,
+        lease.ttl_seconds,
+        lease.model,
+        lease.action,
+        lease.token,
+    ) == ("agent-b", "s2", 900, "sonnet", Action.MERGE, "tok-b")
     assert repo.get_conflicting_tasks(["a.py"]) == {"a.py": "Task: T1, Agent: agent-b"}
-    assert repo.take_over("T1", "agent-c", "s3", 900, "opus") is False
-    assert repo.take_over("T9", "agent-c", "s3", 900, "opus") is False
+    assert repo.take_over("T1", "agent-c", "s3", 900, "opus", "tok-c") is False
+    assert repo.take_over("T9", "agent-c", "s3", 900, "opus", "tok-c") is False
 
 
 def test_an_expired_ttl_lease_is_swept_and_frees_its_files(db: DatabaseManager) -> None:

@@ -681,3 +681,55 @@ def test_a_container_lands_locks_and_verifies_only_the_descendants_it_still_coun
         "api/README.md",
         "api/a.py",
     }
+
+
+def test_a_step_closes_only_under_the_token_its_claim_returned(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path)
+    add(claims, "T1")
+    add(claims, "T2", status=Status.IMPLEMENTED)
+    first = claims.start("T1", "worker", "s1")
+    review = claims.start("T2", "worker", "s1")
+    claims.ops.set_section("T2", "review", "fine")
+    assert first.token and review.token and first.token != review.token
+    lease = claims.runtime.get_lease("T1")
+    assert lease is not None and lease.token == first.token
+
+    for close in (
+        lambda: claims.complete("T1", agent="worker", token=review.token),
+        lambda: claims.release("T1", agent="worker", token=review.token),
+        lambda: claims.review("T2", approve=True, agent="worker", token=first.token),
+    ):
+        with pytest.raises(OperationError, match="another claim") as refused:
+            close()
+        assert refused.value.status_code == 409
+
+    assert claims.complete("T1", agent="worker", token=first.token) == Status.IMPLEMENTED
+    assert claims.review("T2", approve=True, token=review.token) == Status.REVIEWED
+
+
+def test_a_handed_over_job_gets_a_new_token_and_the_parked_one_closes_nothing(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path)
+    add(claims, "T1", status=Status.REVIEWED, outcome=Outcome.APPROVE, review_cycles=1)
+    claims.landing = FakeLanding()
+    merged = claims.start("T1", "merger", "s1")
+    claims.jobs.create(
+        Job(
+            kind=JobKind.LAND,
+            node_id="T1",
+            repo="api",
+            target="main",
+            state=JobState.NEEDS_AGENT,
+            step="gate",
+            result={"reason": "conflict"},
+        )
+    )
+    claims.runtime.park("T1")
+
+    handed = claims.start("T1", "merger", "s1")
+
+    assert handed.token and handed.token != merged.token
+    with pytest.raises(OperationError, match="another claim"):
+        claims.release("T1", token=merged.token)
+    assert claims.release("T1", token=handed.token) == Status.REVIEWED

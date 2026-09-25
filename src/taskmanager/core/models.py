@@ -1,3 +1,4 @@
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, Self
@@ -158,6 +159,9 @@ class Lease(BaseModel):
     action: LeaseAction | None = None
     review_hash: str | None = None
     model: str | None = None
+    # Names one claim, not an agent: a dispatcher reuses agent names, so only this tells a
+    # step's closer from an earlier claim of the same node under the same name.
+    token: str = Field(default_factory=lambda: uuid.uuid4().hex)
 
 
 class Job(BaseModel):

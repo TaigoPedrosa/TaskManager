@@ -6,6 +6,7 @@ with its lease change and the parents' rollup in one state.db transaction.
 
 import hashlib
 import logging
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -107,6 +108,8 @@ class ClaimResult:
     worktree: str | None = None
     # Repository name to the worktree the step works in there.
     worktrees: dict[str, str] = field(default_factory=dict)
+    # The claim's own name, which closes its step; absent when nothing was claimed.
+    token: str | None = None
 
 
 class LandingJobs(Protocol):
@@ -381,7 +384,9 @@ class Claims:
             return None
         action = Action.MERGE if job.kind == JobKind.LAND else Action.SYNC
         model = model_for(action, node, 0)
-        if not self.runtime.take_over(node.id, agent, session, ttl or self.ttl_for(action), model):
+        token = uuid.uuid4().hex
+        ttl = ttl or self.ttl_for(action)
+        if not self.runtime.take_over(node.id, agent, session, ttl, model, token):
             return ClaimResult(Action.BLOCKED, f"job {job.id} was handed to another agent first")
         self._ledger("job handover", node.id, {"job": job.id, "agent": agent})
         if action == Action.SYNC:
@@ -398,6 +403,7 @@ class Claims:
             base,
             job.worktree,
             {job.repo: job.worktree} if job.worktree else {},
+            token,
         )
 
     def _claim(
@@ -430,7 +436,7 @@ class Claims:
             "task start", node.id, {"action": action.value, "agent": agent, "from": node.status}
         )
         try:
-            return self._begin(after, action, model, worktree_dir)
+            return replace(self._begin(after, action, model, worktree_dir), token=lease.token)
         except (OperationError, CalledProcessError, OSError) as exc:
             self._unclaim(node)
             detail = getattr(exc, "stderr", None) or str(exc)
@@ -513,7 +519,11 @@ class Claims:
     # -- closing a step -----------------------------------------------------------------------
 
     def _held(
-        self, node_id: str, statuses: tuple[Status, ...], agent: str | None
+        self,
+        node_id: str,
+        statuses: tuple[Status, ...],
+        agent: str | None,
+        token: str | None,
     ) -> tuple[Node, Lease]:
         node = self.node(node_id)
         if Status(node.status) not in statuses:
@@ -522,19 +532,24 @@ class Claims:
         lease = self.runtime.get_lease(node_id)
         if lease is None:
             raise OperationError(f"{node_id} holds no lease: it was swept or released", 409)
-        self._own(node_id, lease, agent)
+        self._own(node_id, lease, agent, token)
         return node, lease
 
-    def _own(self, node_id: str, lease: Lease, agent: str | None) -> None:
-        """A named agent closes only its own live step: an agent whose lease expired and was
-        claimed again must not close its successor's."""
+    def _own(self, node_id: str, lease: Lease, agent: str | None, token: str | None) -> None:
+        """A named agent, or a claim's token, closes only its own live step: an agent whose lease
+        expired and was claimed again must not close its successor's."""
         if agent is not None and (lease.agent_id != agent or not self._live(lease)):
             raise OperationError(
                 f"{agent} holds no live lease on {node_id}; {lease.agent_id} does", 409
             )
+        if token is not None and (lease.token != token or not self._live(lease)):
+            raise OperationError(
+                f"token {token} holds no live lease on {node_id}: another claim holds it now",
+                409,
+            )
 
-    def complete(self, node_id: str, agent: str | None = None) -> Status:
-        node, _ = self._held(node_id, (Status.IMPLEMENTING, Status.FIXING), agent)
+    def complete(self, node_id: str, agent: str | None = None, token: str | None = None) -> Status:
+        node, _ = self._held(node_id, (Status.IMPLEMENTING, Status.FIXING), agent, token)
         return self._advance(node, Event.COMPLETE, "task complete")
 
     def review(
@@ -543,8 +558,9 @@ class Claims:
         approve: bool,
         verdict: str | None = None,
         agent: str | None = None,
+        token: str | None = None,
     ) -> Status:
-        node, lease = self._held(node_id, (Status.REVIEWING,), agent)
+        node, lease = self._held(node_id, (Status.REVIEWING,), agent, token)
         if self._review_hash(node_id) == lease.review_hash:
             raise OperationError(
                 f"{node_id}:review is unchanged since the claim: write the findings with "
@@ -556,13 +572,17 @@ class Claims:
         return self._advance(node, event, "task review", verdict=verdict, evidence=evidence)
 
     def release(
-        self, node_id: str, blocked: Blocker | None = None, agent: str | None = None
+        self,
+        node_id: str,
+        blocked: Blocker | None = None,
+        agent: str | None = None,
+        token: str | None = None,
     ) -> Status:
         node = self.node(node_id)
         lease = self.runtime.get_lease(node_id)
         if lease is None:
             raise OperationError(f"{node_id} holds no lease to release", 409)
-        self._own(node_id, lease, agent)
+        self._own(node_id, lease, agent, token)
         if blocked is not None:
             if not (blocked.depends or blocked.decision or blocked.condition):
                 raise OperationError(

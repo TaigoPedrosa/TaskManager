@@ -121,7 +121,8 @@ CREATE TABLE IF NOT EXISTS leases (
     ttl_seconds INTEGER DEFAULT 300 CHECK (ttl_seconds IS NULL OR ttl_seconds > 0),
     action TEXT CHECK (action IN ('implement', 'review', 'fix', 'merge', 'sync')),
     review_hash TEXT,
-    model TEXT
+    model TEXT,
+    token TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS file_locks (
