@@ -28,6 +28,46 @@ _NODE_COLUMNS = (
 )
 
 
+# Every column an existing row's save replaces; `created_at` is kept from the first save.
+_UPDATED_COLUMNS = (
+    "kind",
+    "title",
+    "status",
+    "priority",
+    "ordinal",
+    "target_repo",
+    "acceptable_models",
+    "frontmatter_json",
+    "claimed_from",
+    "review",
+    "fix",
+    "merge",
+    "outcome",
+    "verdict",
+    "fix_for",
+    "review_cycles",
+    "merge_attempts",
+    "step_failures",
+    "branch",
+    "requires",
+    "land_order",
+    "updated_at",
+)
+# The node's position in the dispatch cycle, which only the lifecycle's writers move.
+_CYCLE_COLUMNS = frozenset(
+    {
+        "status",
+        "claimed_from",
+        "outcome",
+        "verdict",
+        "fix_for",
+        "review_cycles",
+        "merge_attempts",
+        "step_failures",
+    }
+)
+
+
 class NodeRepository:
     def __init__(self, db_mgr: DatabaseManager) -> None:
         self.db = db_mgr
@@ -41,36 +81,19 @@ class NodeRepository:
         with self.db.spec_transaction():
             yield
 
-    def save_node(self, node: Node) -> None:
+    def save_node(self, node: Node, keep_cycle: bool = False) -> None:
+        """Inserts or replaces `node`. With `keep_cycle`, an existing row keeps its stored
+        position in the cycle: a writer that edits other fields from a node it read earlier
+        cannot put back a status a claim has moved since."""
         node.checked()
+        updated = [c for c in _UPDATED_COLUMNS if not (keep_cycle and c in _CYCLE_COLUMNS)]
+        assignments = ",\n".join(f"{c}=excluded.{c}" for c in updated)
         with self.db.get_state_connection() as conn:
             conn.execute(
                 f"""
                 INSERT INTO nodes ({_NODE_COLUMNS})
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    kind=excluded.kind,
-                    title=excluded.title,
-                    status=excluded.status,
-                    priority=excluded.priority,
-                    ordinal=excluded.ordinal,
-                    target_repo=excluded.target_repo,
-                    acceptable_models=excluded.acceptable_models,
-                    frontmatter_json=excluded.frontmatter_json,
-                    claimed_from=excluded.claimed_from,
-                    review=excluded.review,
-                    fix=excluded.fix,
-                    merge=excluded.merge,
-                    outcome=excluded.outcome,
-                    verdict=excluded.verdict,
-                    fix_for=excluded.fix_for,
-                    review_cycles=excluded.review_cycles,
-                    merge_attempts=excluded.merge_attempts,
-                    step_failures=excluded.step_failures,
-                    branch=excluded.branch,
-                    requires=excluded.requires,
-                    land_order=excluded.land_order,
-                    updated_at=excluded.updated_at;
+                ON CONFLICT(id) DO UPDATE SET {assignments};
                 """,
                 (
                     node.id,

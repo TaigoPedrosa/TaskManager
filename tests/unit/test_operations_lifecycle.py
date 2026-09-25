@@ -443,3 +443,45 @@ def test_a_plan_whose_repository_is_not_cloned_is_not_read_as_having_nothing_to_
     set_status(node_repo, task, Status.COMPLETED)
     ops.supersede(extra, task, "none")
     assert get(node_repo, plan).status == Status.IMPLEMENTED
+
+
+def test_an_update_racing_a_claim_keeps_the_claim_s_status(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    node_repo, runtime_repo, _ledger, ops = env
+    _spec, _plan, task = tree(ops)
+    real = node_repo.transaction
+
+    def claimed_first() -> object:
+        monkeypatch.setattr(node_repo, "transaction", real)
+        claimed = get(node_repo, task).model_copy(
+            update={"status": Status.IMPLEMENTING, "claimed_from": Status.READY}
+        )
+        lease = Lease(
+            task_id=task, agent_id="a", session_id="s", branch_name=f"tm/{task}", ttl_seconds=600
+        )
+        assert runtime_repo.claim(lease, [], claimed)
+        return real()
+
+    monkeypatch.setattr(node_repo, "transaction", claimed_first)
+    ops.update_node(task, title="Renamed")
+
+    node = get(node_repo, task)
+    assert (node.title, node.status, node.claimed_from) == (
+        "Renamed",
+        Status.IMPLEMENTING,
+        Status.READY,
+    )
+
+
+def test_an_open_write_transaction_holds_the_write_lock_before_its_first_write(
+    tmp_path: Path,
+) -> None:
+    import sqlite3
+
+    db = DatabaseManager(tmp_path / ".taskmanager")
+    db.init_all()
+    other = sqlite3.connect(str(db.state_db), timeout=0)
+    with db.spec_transaction(), pytest.raises(sqlite3.OperationalError, match="locked"):
+        other.execute("BEGIN IMMEDIATE")
+    other.close()

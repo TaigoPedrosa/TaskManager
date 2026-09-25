@@ -145,6 +145,10 @@ class DatabaseManager:
         with self.get_state_connection() as conn:
             if self._spec_tx_depth == 0:
                 self._local.after_commit = []
+                if not conn.in_transaction:
+                    # Reads inside the transaction decide its writes, so they run under the
+                    # write lock: a claim cannot commit between a writer's read and its write.
+                    conn.execute("BEGIN IMMEDIATE")
             self._spec_tx_depth += 1
             try:
                 yield conn

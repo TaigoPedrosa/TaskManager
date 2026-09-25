@@ -496,7 +496,7 @@ class Operations:
         self._refuse_fix_without_review(node)
         node.updated_at = datetime.now(tz=UTC)
         with self._checked({node_id}):
-            self.node_repo.save_node(node)
+            self.node_repo.save_node(node, keep_cycle=True)
         self._ledger(LedgerCommand.TASK_UPDATE, target_id=node_id, payload=changed)
         return changed
 
@@ -1027,7 +1027,7 @@ class Operations:
             attachments.append(entry)
         node.frontmatter["attachments"] = attachments
         node.updated_at = datetime.now(tz=UTC)
-        self.node_repo.save_node(node)
+        self.node_repo.save_node(node, keep_cycle=True)
         self._ledger(LedgerCommand.ATTACH, target_id=node_id, payload={"asset": asset_name})
         return entry
 
@@ -1049,7 +1049,7 @@ class Operations:
         del attachments[idx]
         node.frontmatter["attachments"] = attachments
         node.updated_at = datetime.now(tz=UTC)
-        self.node_repo.save_node(node)
+        self.node_repo.save_node(node, keep_cycle=True)
         self._ledger(LedgerCommand.DETACH, target_id=node_id, payload={"asset": asset})
         # `save_node` above already persisted `node_id`'s attachments with the entry removed,
         # so checking every node (this one included) is correct: a second entry on `node_id`
@@ -1086,6 +1086,6 @@ class Operations:
         if changed:
             node.frontmatter["attachments"] = attachments
             node.updated_at = datetime.now(tz=UTC)
-            self.node_repo.save_node(node)
+            self.node_repo.save_node(node, keep_cycle=True)
             self._ledger(LedgerCommand.ATTACHMENT_CHECK, target_id=node_id)
         return attachments
