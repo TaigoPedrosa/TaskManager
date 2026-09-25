@@ -77,7 +77,7 @@ tm refuses either one while the `:review` section is unchanged since your claim:
 - **Rejected, and the node fixes its own rejections**: it goes to a fix round while it has rounds left; with none left it is `FAILED`, and the owner decides.
 - **Rejected, and the node does not fix** (`fix` off): it lands its branch on its parent unfixed, and the parent's review is where the findings are fixed.
 
-A judgement call the brief itself cannot settle — not a defect, a genuine open question — is raised rather than left in prose: `tm task release <node-id> --agent <name> --blocked --decision "<question>" --option "a|Do X|why" --recommend a`. Run `tm task heartbeat <node-id>` if the read runs long.
+A judgement call the brief itself cannot settle — not a defect, a genuine open question — is raised rather than left in prose: `tm task release <node-id> --agent <name> --token <token> --blocked --decision "<question>" --option "a|Do X|why" --recommend a`. Run `tm task heartbeat <node-id>` if the read runs long.
 
 ## 7. Report
 

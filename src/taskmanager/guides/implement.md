@@ -82,11 +82,11 @@ Never end your turn to wait on a background run "until notified." A background c
 
 Release the step and name what it waits on, in one call; the task returns to `READY` with its branch and worktree intact, and becomes claimable again the moment the named thing clears:
 
-- Another node must land first: `tm task release <task-id> --agent <name> --blocked --depends <other-id>`.
-- Only the owner can answer: `tm task release <task-id> --agent <name> --blocked --decision "<question>" --option "a|Do X|why" --option "b|Do Y|why" --recommend a`. Name the options you considered and the one you recommend.
-- A state outside the corpus: `tm task release <task-id> --agent <name> --blocked --needs "<what must hold>" --command "<a command that exits 0 once it holds>"`.
+- Another node must land first: `tm task release <task-id> --agent <name> --token <token> --blocked --depends <other-id>`.
+- Only the owner can answer: `tm task release <task-id> --agent <name> --token <token> --blocked --decision "<question>" --option "a|Do X|why" --option "b|Do Y|why" --recommend a`. Name the options you considered and the one you recommend.
+- A state outside the corpus: `tm task release <task-id> --agent <name> --token <token> --blocked --needs "<what must hold>" --command "<a command that exits 0 once it holds>"`.
 
-`--blocked` with nothing named is refused. `tm task release <task-id> --agent <name>` alone is a failed step, counted towards `FAILED`: use it only when you cannot go on and nothing names why, and say why in the report. A release or close refused for `--agent` means the lease is no longer yours: stop and report.
+`--blocked` with nothing named is refused. `tm task release <task-id> --agent <name> --token <token>` alone is a failed step, counted towards `FAILED`: use it only when you cannot go on and nothing names why, and say why in the report. A release or close refused for `--agent` or `--token` means the step is no longer yours: stop and report.
 
 ## 6. Report
 

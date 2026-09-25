@@ -228,3 +228,25 @@ def test_doc_command_exists(doc: str, command: str) -> None:
 def test_doc_carries_no_retired_lifecycle_vocabulary(doc: str) -> None:
     text = _doc_text(doc)
     assert [word for word in RETIRED if word in text] == []
+
+
+_OWNED_VERBS = ("tm task complete", "tm task review", "tm task release", "tm job resume")
+_OWNED_CASES = [
+    (where, cmd)
+    for where, text in [
+        *((f"{t}.md", _guide_text(t)) for t in _topics()),
+        *((d, _doc_text(d)) for d in DOCS),
+    ]
+    for cmd in _tm_commands(text)
+    if cmd.startswith(_OWNED_VERBS) and "--agent" in cmd
+]
+
+
+def test_the_docs_show_enough_owned_closes_to_be_worth_checking() -> None:
+    assert len(_OWNED_CASES) >= 15, f"only {len(_OWNED_CASES)} closes naming --agent found"
+
+
+@pytest.mark.parametrize("where,command", _OWNED_CASES, ids=[f"{w}:{c}" for w, c in _OWNED_CASES])
+def test_a_close_that_names_its_agent_names_its_claim_s_token(where: str, command: str) -> None:
+    """An agent name repeats across claims of one node; only the token tells this claim apart."""
+    assert "--token" in command, f"{where} shows `{command}`"

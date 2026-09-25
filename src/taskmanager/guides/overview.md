@@ -32,7 +32,7 @@ set by a verb, from any stable status but COMPLETED: DEFERRED, ABANDONED, SUPERS
 | `sync` | a container branch behind its base | no | nothing: tm merges it as a job, and hands the job to an agent only when it stops |
 | `blocked` | nothing is claimed; exit 3 | | the printed `reason` says what it waits on |
 
-The printout also names the `model` family the step runs on (`haiku`, `sonnet`, `opus` or `fable`), the `repos` it touches, the `branch`, its `base` (`main`, or the container branch it lands on), and for `implement` and `fix` the `worktree`, with `worktrees` naming one per repository when a plan or spec spans several. It also prints the claim's `token`. `--agent <name>` on a closing verb is refused unless the live lease is that agent's, and `--token <token>` unless it is that claim's, so a step closes only for whoever holds it, even when a later claim reuses the agent name. A step that cannot go on ends with `tm task release <id> --agent <name> --blocked` naming what it now waits on; `tm task release <id> --agent <name>` alone ends it as a failed step. `tm task heartbeat <id>` renews the lease, which lasts `lease_ttl.<action>` seconds.
+The printout also names the `model` family the step runs on (`haiku`, `sonnet`, `opus` or `fable`), the `repos` it touches, the `branch`, its `base` (`main`, or the container branch it lands on), and for `implement` and `fix` the `worktree`, with `worktrees` naming one per repository when a plan or spec spans several. It also prints the claim's `token`. `--agent <name>` on a closing verb is refused unless the live lease is that agent's, and `--token <token>` unless it is that claim's, so a step closes only for whoever holds it, even when a later claim reuses the agent name. A step that cannot go on ends with `tm task release <id> --agent <name> --token <token> --blocked` naming what it now waits on; `tm task release <id> --agent <name> --token <token>` alone ends it as a failed step. `tm task heartbeat <id>` renews the lease, which lasts `lease_ttl.<action>` seconds.
 
 Three flags on every node decide the path through the cycle: `review` (a review follows implement), `fix` (this node fixes its own rejections; it needs `review`) and `merge` (`main`, or `parent` to land on the branch of the plan or spec above it). A task has `review` and `fix` on and lands on `main` unless its plan says otherwise; a plan or spec has both off.
 
@@ -87,7 +87,7 @@ None of these touches a node mid-step: wait for the step to end, or stop it.
 
 ## Reading
 
-- `tm wave discover --session <id> --slots <n> --max-strong <n>`: every claimable node with its next action and model, a JSON line then a `__CHECK` line.
+- `tm wave discover --session <id> --slots <n> --max-strong <n>`: every claimable node with its next action and model, a JSON line then a `__CHECK` line. `--hold-merge <node-id>`, repeatable, passes over that node's merge step and lists it under `held`, so a held landing takes no slot.
 - `tm task list --yaml` and `tm task get <id> --yaml` are the compact reads (`--json` is the same data); `tm task get` accepts a plan or spec id too.
 - `tm render <id> --view subagent` is a node's full brief; `--recursive` (`-r`) adds every child. `tm section get <id>:<key>` reads one section.
 - `tm run list --yaml` is every lease, locked file and job in flight; `tm job status <job>` is one job, and `tm job status <job> --wait 540` blocks until it leaves `running` or the seconds pass.
@@ -107,7 +107,7 @@ None of these touches a node mid-step: wait for the step to end, or stop it.
 
 Add new work with `tm import` (an import that names an unknown id, breaks a flag rule or closes a cycle writes nothing and exits 1, printing the cycle as a path). Change a node with `tm task update`, `tm section set`, `tm verify add`, `tm task depends` and `tm task condition add`. `tm export <dir>` writes the whole database as sorted text for version control.
 
-A question nobody in the loop can answer is not a reason to stop and ask: release the step with `tm task release <id> --agent <name> --blocked --decision "<question>" --option "a|Do X|why" --option "b|Do Y|why" --recommend a`, or, outside a step, `tm decision add "<question>" --option "a|Label" --recommend a --blocks <id>`. `tm decision answer <id> --option a` or `tm decision withdraw <id>` lets the node move again.
+A question nobody in the loop can answer is not a reason to stop and ask: release the step with `tm task release <id> --agent <name> --token <token> --blocked --decision "<question>" --option "a|Do X|why" --option "b|Do Y|why" --recommend a`, or, outside a step, `tm decision add "<question>" --option "a|Label" --recommend a --blocks <id>`. `tm decision answer <id> --option a` or `tm decision withdraw <id>` lets the node move again.
 
 ## Messages you will meet
 

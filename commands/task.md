@@ -1,6 +1,6 @@
 ---
 description: Claim, inspect, heartbeat, close or release the step you hold on a task.
-argument-hint: "[start <task-id> | heartbeat <task-id> | verify <task-id> | complete <task-id> | review <task-id> | release <task-id>]"
+argument-hint: "[start <task-id> | heartbeat <task-id> | verify <task-id> | complete <task-id> | review <task-id> | resume <job> | release <task-id>]"
 ---
 
 Run `tm guide implement` (or `review`, `fix`, `merge` for your role) before the first command of a
@@ -17,6 +17,8 @@ task: it names what each command refuses and the verb that closes your step.
 - `review <task-id>`: close a review step once its findings are in the `:review` section, approving or rejecting:
   `tm task review <task-id> --agent <name> --token <token> --approve`
   `tm task review <task-id> --agent <name> --token <token> --reject --verdict "<one line>"`
+- `resume <job>`: finish a landing or sync tm stopped for an agent, once a merge claim has handed you its job; refused unless the lease is `<name>`'s and this claim's:
+  `tm job resume <job> --agent <name> --token <token>`
 - `release <task-id>`: hand the step back naming what it waits on:
   `tm task release <task-id> --agent <name> --token <token> --blocked --depends <other-id>`
 - no arguments: show every lease, locked file and job in flight:
