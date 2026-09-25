@@ -28,7 +28,7 @@ from taskmanager.core.enums import (
 )
 from taskmanager.core.models import LedgerEvent
 from taskmanager.core.naming import QualifiedPath
-from taskmanager.core.status import Action
+from taskmanager.core.status import Action, DecisionStatus
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
@@ -41,6 +41,7 @@ from taskmanager.engine.heuristics import RecommendationEngine
 from taskmanager.engine.operations import GUIDE_NODE, OperationError, Operations
 from taskmanager.engine.runtime import ExecutionCoordinator
 from taskmanager.engine.search import SearchEngine, SearchError
+from taskmanager.engine.snapshot import stored_status
 from taskmanager.engine.wave import discover_batch, djb2
 from taskmanager.renderers.importers import BulkImporter
 from taskmanager.renderers.markdown import MarkdownRenderer
@@ -103,6 +104,11 @@ def _emit(data: Any, as_yaml: bool = False) -> None:
         )
         return
     sys.stdout.write(json.dumps(data, indent=2, ensure_ascii=False, default=str) + "\n")
+
+
+# A restore reads only exports carrying this marker; an export without it came from a
+# pre-lifecycle tm, whose statuses and gated edges this version does not store.
+EXPORT_FORMAT: dict[str, Any] = {"format": "tm-lifecycle", "version": 1}
 
 
 def _task_spec_id(node_repo: NodeRepository, task_id: str) -> str | None:
@@ -330,11 +336,14 @@ def plan_add(
     root = _get_root(path)
     container = _get_container(root)
     ops = container.get(Operations)
-    plan_id, gate_id = ops.add_plan(title, spec, slug, priority, order, require_review)
-    if gate_id:
-        print(f"[green]Added plan {plan_id} with review gate {gate_id}[/green]")
-    else:
-        print(f"[green]Added plan {plan_id}[/green]")
+    try:
+        plan_id = ops.add_plan(
+            title, spec, slug, priority, order, review=require_review, fix=require_review
+        )
+    except OperationError as exc:
+        print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(code=1) from exc
+    print(f"[green]Added plan {plan_id}[/green]")
 
 
 @plan_app.command("list")
@@ -505,10 +514,8 @@ def task_depends(
         typer.Option(
             "--add",
             help=(
-                "Comma-separated ids this task now depends on. An id alone gates on the "
-                "dependency reaching COMPLETED, same as always; 'id:STATUS' (e.g. "
-                "'AUTH-T01:WAITING_REVIEW') gates on it reaching STATUS or later in the "
-                "lifecycle instead."
+                "Comma-separated ids this node now depends on; an edge is satisfied once the "
+                "dependency's code lands where this node builds"
             ),
         ),
     ] = None,
@@ -517,7 +524,7 @@ def task_depends(
     ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
-    """Add or remove dependency edges on an existing task; nothing is written if any is refused."""
+    """Add or remove dependency edges; nothing is written if any is refused."""
     root = _get_root(path)
     container = _get_container(root)
     ops = container.get(Operations)
@@ -525,33 +532,21 @@ def task_depends(
     def ids(raw: str | None) -> list[str]:
         return [x.strip() for x in (raw or "").split(",") if x.strip()]
 
-    def parse_add(raw: str | None) -> list[tuple[str, NodeStatus | None]]:
-        parsed: list[tuple[str, NodeStatus | None]] = []
-        for item in ids(raw):
-            dep_id, sep, gate_raw = item.partition(":")
-            if not sep:
-                parsed.append((dep_id, None))
-                continue
-            try:
-                parsed.append((dep_id, NodeStatus(gate_raw)))
-            except ValueError:
-                valid = ", ".join(s.value for s in NodeStatus)
-                raise typer.BadParameter(f"'{gate_raw}' is not a status; one of: {valid}") from None
-        return parsed
-
-    to_add, to_remove = parse_add(add), ids(remove)
+    to_add, to_remove = ids(add), ids(remove)
     if not to_add and not to_remove:
         raise typer.BadParameter("give --add and/or --remove")
+    gated = [x for x in to_add if ":" in x]
+    if gated:
+        raise typer.BadParameter(
+            f"{', '.join(gated)}: a dependency is a bare id; an edge waits for the "
+            "dependency's code to land, so it carries no status gate"
+        )
     try:
-        edges = ops.set_dependencies(task_id, to_add, to_remove)
+        deps = ops.set_dependencies(task_id, to_add, to_remove)
     except OperationError as exc:
-        print(f"[red]{exc}[/red]")
+        print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(code=1) from exc
-    shown = [
-        f"{dep_id}:{gate.value}" if gate != NodeStatus.COMPLETED else dep_id
-        for dep_id, gate in edges
-    ]
-    print(f"[green]{task_id} depends on: {', '.join(shown) or '-'}[/green]")
+    print(f"[green]{task_id} depends on: {escape(', '.join(deps)) or '-'}[/green]")
 
 
 @task_app.command("update")
@@ -669,7 +664,7 @@ def task_get(
             for dep_id, _gate in dep_edges
             if (dn := node_repo.get_node(dep_id)) is not None
             and dn.kind == NodeKind.DECISION
-            and dn.status not in (NodeStatus.COMPLETED, NodeStatus.ABANDONED)
+            and stored_status(dn) == DecisionStatus.OPEN
         ]
         doc["declared_files"] = node_repo.declared_files(task_id)
         doc["sections"] = [s.section_key for s in node_repo.get_all_sections(task_id)]
@@ -1224,15 +1219,15 @@ def decision_list(
     node_repo = container.get(NodeRepository)
     decisions = node_repo.list_nodes(kind=NodeKind.DECISION)
     status_map = {
-        "open": NodeStatus.NOT_STARTED,
-        "answered": NodeStatus.COMPLETED,
-        "withdrawn": NodeStatus.ABANDONED,
+        "open": DecisionStatus.OPEN,
+        "answered": DecisionStatus.ANSWERED,
+        "withdrawn": DecisionStatus.WITHDRAWN,
     }
     if status:
         wanted = status_map.get(status.lower())
         if wanted is None:
             raise typer.BadParameter("--status is one of: open, answered, withdrawn")
-        decisions = [d for d in decisions if d.status == wanted]
+        decisions = [d for d in decisions if stored_status(d) == wanted]
     if json_output or yaml_output:
         rows = []
         for d in decisions:
@@ -1646,9 +1641,23 @@ def _export_node(node_repo: NodeRepository, node: Any) -> dict[str, Any]:
         "target_repo": node.target_repo,
         "acceptable_models": node.acceptable_models,
         "frontmatter": node.frontmatter,
-        "depends_on": [
-            {"id": dep_id, "gate": gate.value} if gate != NodeStatus.COMPLETED else dep_id
-            for dep_id, gate in sorted(node_repo.get_dependency_edges(node.id))
+        "review": node.review,
+        "fix": node.fix,
+        "merge": node.merge.value,
+        "requires": node.requires,
+        "land_order": node.land_order,
+        "branch": node.branch,
+        "outcome": node.outcome.value if node.outcome else None,
+        "verdict": node.verdict,
+        "fix_for": node.fix_for.value if node.fix_for else None,
+        "claimed_from": node.claimed_from.value if node.claimed_from else None,
+        "review_cycles": node.review_cycles,
+        "merge_attempts": node.merge_attempts,
+        "step_failures": node.step_failures,
+        "depends_on": sorted(node_repo.get_dependencies(node.id)),
+        "conditions": [
+            {"needs": c.needs, "command": c.command, "stage": c.stage.value}
+            for c in node_repo.get_conditions(node.id)
         ],
         "sections": [
             {"key": s.section_key, "ordinal": s.ordinal, "header": s.header, "content": s.content}
@@ -1685,6 +1694,7 @@ def export_cmd(
         )
 
     directory.mkdir(parents=True, exist_ok=True)
+    dump("_format.json", EXPORT_FORMAT)
     specs = {n.id: n for n in node_repo.list_nodes(kind=NodeKind.SPEC)}
     tasks = node_repo.list_nodes(kind=NodeKind.TASK)
     plans = node_repo.list_nodes(kind=NodeKind.PLAN)
@@ -1728,6 +1738,14 @@ def restore_cmd(
     import copy
 
     root = _get_root(path, must_exist=False)
+    marker = directory / "_format.json"
+    if not marker.is_file() or json.loads(marker.read_text(encoding="utf-8")) != EXPORT_FORMAT:
+        print(
+            f"[red]{escape(str(directory))} is a pre-lifecycle export: tm v0.2.0 is the last "
+            "release that restores it. Re-import the ongoing work into this version with "
+            "`tm import`.[/red]"
+        )
+        raise typer.Exit(code=1)
     container = _get_container(root)
     container.get(DatabaseManager).init_all()
     importer = _RefusingImporter(container.get(BulkImporter))
@@ -1743,7 +1761,7 @@ def restore_cmd(
     files = [
         f
         for f in sorted(directory.glob("*.json"))
-        if f.name not in ("_config.json", "_decisions.json")
+        if f.name not in ("_config.json", "_decisions.json", "_format.json")
     ]
     docs = [json.loads(f.read_text(encoding="utf-8")) for f in files]
     decisions_file = directory / "_decisions.json"
@@ -1759,16 +1777,12 @@ def restore_cmd(
     plan_docs = [d for d in docs if d.get("plans")]
     spec_docs = [d for d in docs if not d.get("plans")]
 
-    def _dep_id(dep: Any) -> str:
-        # A gated dependency exports as {"id": ..., "gate": ...}, not a bare id string.
-        return str(dep["id"]) if isinstance(dep, dict) else str(dep)
-
     for doc in plan_docs:
         first = copy.deepcopy(doc)
         own = {n["id"] for p in first["plans"] for n in [p, *p.get("tasks", [])]}
         for p in first["plans"]:
             for n in [p, *p.get("tasks", [])]:
-                n["depends_on"] = [d for d in n.get("depends_on", []) if _dep_id(d) in own]
+                n["depends_on"] = [d for d in n.get("depends_on", []) if d in own]
         importer.import_dict(first)
     if decisions_doc is not None:
         importer.import_dict(decisions_doc)

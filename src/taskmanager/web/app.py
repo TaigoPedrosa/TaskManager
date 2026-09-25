@@ -24,6 +24,7 @@ from taskmanager.core.enums import (
     VerificationType,
     VirtualStatus,
 )
+from taskmanager.core.status import DecisionStatus
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
@@ -35,6 +36,7 @@ from taskmanager.engine.graph import GraphEngine
 from taskmanager.engine.heuristics import score_every_task
 from taskmanager.engine.operations import OperationError, Operations
 from taskmanager.engine.runtime import ExecutionCoordinator
+from taskmanager.engine.snapshot import stored_status
 from taskmanager.engine.verification import VerificationEngine
 from taskmanager.renderers.markdown import MarkdownRenderer
 from taskmanager.web.ui import get_web_html
@@ -81,7 +83,6 @@ class StatusUpdate(BaseModel):
 
 class DependencyAdd(BaseModel):
     id: str
-    gate: NodeStatus | None = None
 
 
 class DependenciesUpdate(BaseModel):
@@ -352,7 +353,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         # Withdrawn (COMPLETED or ABANDONED -- an open question no longer needs an answer to
         # stop holding work), while every other dependency is met by COMPLETED or SUPERSEDED.
         if rel.kind == NodeKind.DECISION:
-            return bool(rel.status in (NodeStatus.COMPLETED, NodeStatus.ABANDONED))
+            return stored_status(rel) != DecisionStatus.OPEN
         return bool(rel.status in (NodeStatus.COMPLETED, NodeStatus.SUPERSEDED))
 
     def _relation_details(
@@ -669,10 +670,16 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     @app.post("/api/plans", status_code=201)
     def create_plan(body: PlanCreate, actor: Actor) -> dict[str, Any]:
         with _refusals():
-            plan_id, gate_id = operations.with_actor(actor).add_plan(
-                body.title, body.spec, body.slug, body.priority, body.order, body.require_review
+            plan_id = operations.with_actor(actor).add_plan(
+                body.title,
+                body.spec,
+                body.slug,
+                body.priority,
+                body.order,
+                review=body.require_review,
+                fix=body.require_review,
             )
-        return {"id": plan_id, "review_gate": gate_id}
+        return {"id": plan_id}
 
     @app.post("/api/tasks", status_code=201)
     def create_task(body: TaskCreate, actor: Actor) -> dict[str, str]:
@@ -717,10 +724,11 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     def post_dependencies(
         node_id: str, body: DependenciesUpdate, actor: Actor
     ) -> list[dict[str, Any]]:
-        add = [(d.id, d.gate) for d in body.add]
         with _refusals():
-            edges = operations.with_actor(actor).set_dependencies(node_id, add, body.remove)
-        return [{"id": dep_id, "gate": gate.value} for dep_id, gate in edges]
+            deps = operations.with_actor(actor).set_dependencies(
+                node_id, [d.id for d in body.add], body.remove
+            )
+        return [{"id": dep_id} for dep_id in deps]
 
     @app.post("/api/nodes/{node_id}/supersede")
     def post_supersede(node_id: str, body: SupersedeRequest, actor: Actor) -> dict[str, str]:
@@ -800,9 +808,9 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     # -- decisions (§3, §5) ------------------------------------------------------------------
 
     _DECISION_TAB_STATUS = {
-        "open": NodeStatus.NOT_STARTED,
-        "answered": NodeStatus.COMPLETED,
-        "withdrawn": NodeStatus.ABANDONED,
+        "open": DecisionStatus.OPEN,
+        "answered": DecisionStatus.ANSWERED,
+        "withdrawn": DecisionStatus.WITHDRAWN,
     }
 
     @app.get("/api/decisions")
@@ -812,12 +820,12 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             wanted = _DECISION_TAB_STATUS.get(status.lower())
             if wanted is None:
                 raise HTTPException(400, "status is one of: open, answered, withdrawn")
-            decisions = [d for d in decisions if d.status == wanted]
+            decisions = [d for d in decisions if stored_status(d) == wanted]
         return [
             {
                 "id": d.id,
                 "title": d.title,
-                "status": d.status.value,
+                "status": stored_status(d).value,
                 "priority": d.priority,
                 "created_at": d.created_at.isoformat(),
                 "waiting_count": len(node_repo.get_blocked_by(d.id)),

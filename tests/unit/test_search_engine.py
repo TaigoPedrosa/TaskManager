@@ -379,7 +379,7 @@ def test_search_prints_text_by_default_and_names_the_mode_on_the_last_line(proje
     code, out = _cli(project, "search", "rotate", "keys")
     lines = out.strip().splitlines()
     assert code == 0
-    assert lines[0].startswith("S1-P1-keys  task  NOT_STARTED plan S1-P1")
+    assert lines[0].startswith("S1-P1-keys  task  READY plan S1-P1")
     assert lines[-1] == "2 results, mode: fts"
 
     _cli(project, "config", "set", "embeddings.provider", "mock")

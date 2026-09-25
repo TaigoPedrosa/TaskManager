@@ -1,6 +1,10 @@
 import hashlib
 import logging
 import sqlite3
+import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -14,13 +18,15 @@ from taskmanager.core.enums import (
     VerificationType,
 )
 from taskmanager.core.models import (
+    Condition,
     LedgerEvent,
     Node,
     NodeRelation,
     NodeSection,
     NodeVerification,
 )
-from taskmanager.core.status import DecisionEffect
+from taskmanager.core.rollup import rollup
+from taskmanager.core.status import ConditionStage, DecisionEffect, DecisionStatus, Merge, Status
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
@@ -31,6 +37,8 @@ from taskmanager.engine.assets import (
     is_project_relative,
     store_asset,
 )
+from taskmanager.engine.chains import MAIN, landing_target
+from taskmanager.engine.conditions import is_executable
 from taskmanager.engine.decisions import (
     DecisionAnswer,
     DecisionData,
@@ -42,7 +50,17 @@ from taskmanager.engine.decisions import (
 )
 from taskmanager.engine.graph import GraphEngine
 from taskmanager.engine.runtime import ExecutionCoordinator
-from taskmanager.engine.snapshot import node_busy
+from taskmanager.engine.snapshot import (
+    CONTAINERS,
+    SnapshotBuilder,
+    apply_cycle,
+    cycle_of,
+    node_busy,
+    roll_up_ancestors,
+    stored_status,
+)
+from taskmanager.engine.stepgraph import Snapshot
+from taskmanager.engine.validation import validate
 from taskmanager.engine.verification import VerificationEngine, VerificationResult
 
 # The section a project bootstraps once and every `tm guide` overlay hangs off; `section set`
@@ -66,6 +84,110 @@ class OperationError(ValueError):
         self.status_code = status_code
 
 
+# Refusals that conflict with the tree's current state rather than with the request itself.
+_CONFLICT_RULES = frozenset({4, 6, 7, 8})
+
+
+class GitBranchFacts:
+    """What the write rules need to know about a node's branches, read from git.
+
+    A branch's recorded base is where it forks from its current landing target, so a new
+    target keeps the base exactly when the branch forks from the new target at the same commit.
+    """
+
+    def __init__(self, root: Path, node_repo: NodeRepository, tree: Snapshot) -> None:
+        self.root = root
+        self.node_repo = node_repo
+        self.tree = tree
+
+    def _branch(self, node_id: str) -> str:
+        node = self.node_repo.get_node(node_id)
+        return node.branch if node is not None and node.branch else f"tm/{node_id}"
+
+    def _repos(self, node_id: str) -> list[Path]:
+        ids = [node_id, *self.tree.descendants(node_id)] if node_id in self.tree.nodes else []
+        names = sorted(
+            {repo for i in ids if (snap := self.tree.nodes.get(i)) and (repo := snap.repo)}
+        )
+        dirs = [self.root / name for name in names] or [self.root]
+        return [d for d in dirs if (d / ".git").exists()]
+
+    @staticmethod
+    def _git(repo: Path, *args: str) -> str | None:
+        res = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=False)
+        return res.stdout.strip() if res.returncode == 0 else None
+
+    def _has(self, repo: Path, ref: str) -> bool:
+        return self._git(repo, "rev-parse", "--verify", "--quiet", ref) is not None
+
+    def _ref(self, repo: Path, target: str) -> str:
+        # A container branch not yet cut in this repository would be cut from its own base.
+        while target != MAIN:
+            branch = self._branch(target)
+            if self._has(repo, f"refs/heads/{branch}"):
+                return branch
+            target = landing_target(self.tree, target)
+        return "origin/main" if self._has(repo, "origin/main") else "main"
+
+    def branch_exists(self, node_id: str) -> bool:
+        ref = f"refs/heads/{self._branch(node_id)}"
+        return any(self._has(repo, ref) for repo in self._repos(node_id))
+
+    def base_matches(self, node_id: str, new_target: str) -> bool:
+        branch = self._branch(node_id)
+        current = landing_target(self.tree, node_id)
+        for repo in self._repos(node_id):
+            if not self._has(repo, f"refs/heads/{branch}"):
+                continue
+            recorded = self._git(repo, "merge-base", branch, self._ref(repo, current))
+            proposed = self._git(repo, "merge-base", branch, self._ref(repo, new_target))
+            if recorded is None or recorded != proposed:
+                return False
+        return True
+
+
+@contextmanager
+def validated_write(
+    node_repo: NodeRepository,
+    snapshots: SnapshotBuilder,
+    touched: set[str],
+    prefix: str = "Nothing changed: ",
+) -> Iterator[None]:
+    """One transaction whose result is checked against every write rule before it commits.
+
+    The writes run first so the check reads the tree they produce; a refusal raises inside the
+    transaction, which rolls every write back.
+    """
+    root = node_repo.db.taskmanager_dir.parent
+    with node_repo.transaction():
+        before = snapshots.build()
+        yield
+        after = snapshots.build()
+        scope = {n for n in touched if n in after.nodes}
+        for node_id in list(scope):
+            scope.update(after.children(node_id))
+        refusals = validate(before, after, scope, GitBranchFacts(root, node_repo, before))
+        if refusals:
+            code = 409 if any(r.rule in _CONFLICT_RULES for r in refusals) else 400
+            raise OperationError(prefix + "; ".join(r.message for r in refusals), code)
+
+
+def _roll_up_container(node_repo: NodeRepository, container_id: str) -> None:
+    """Re-derive a container that lost a child, then its ancestors."""
+    children = node_repo.get_children(container_id)
+    if children:
+        roll_up_ancestors(node_repo, children[0])
+        return
+    node = node_repo.get_node(container_id)
+    if node is None or node.kind not in CONTAINERS:
+        return
+    current = cycle_of(node)
+    derived = rollup(current.status, [])
+    if derived != current.status:
+        node_repo.save_node(apply_cycle(node, replace(current, status=derived)))
+    roll_up_ancestors(node_repo, container_id)
+
+
 class Operations:
     def __init__(
         self,
@@ -86,6 +208,9 @@ class Operations:
         self.verification_engine = verification_engine
         self.actor = actor
         self.job_repo = job_repo
+        self.snapshots = SnapshotBuilder(
+            node_repo, runtime_repo, job_repo or JobRepository(node_repo.db)
+        )
 
     def with_actor(self, actor: str) -> Operations:
         return Operations(
@@ -98,6 +223,19 @@ class Operations:
             actor=actor,
             job_repo=self.job_repo,
         )
+
+    def _checked(self, touched: set[str]) -> Any:
+        return validated_write(self.node_repo, self.snapshots, touched)
+
+    @staticmethod
+    def _refuse_fix_without_review(node: Node) -> None:
+        # The column CHECK would fire before the snapshot check could explain it.
+        if node.fix and not node.review:
+            raise OperationError(
+                f"{node.id}: fix needs review: a rejection is fixed by the node that was "
+                "reviewed; turn review on or fix off",
+                400,
+            )
 
     def busy(self, node_id: str) -> bool:
         return node_busy(self.runtime_repo, self.job_repo, node_id)
@@ -130,7 +268,13 @@ class Operations:
             raise OperationError("priority is 1-100", 400)
 
     def add_spec(
-        self, title: str, slug: str | None = None, priority: int = 50, order: int = 0
+        self,
+        title: str,
+        slug: str | None = None,
+        priority: int = 50,
+        order: int = 0,
+        review: bool = False,
+        fix: bool = False,
     ) -> str:
         self._validate_priority(priority)
         if slug:
@@ -144,12 +288,30 @@ class Operations:
                 counter += 1
             spec_id = f"S{counter}"
 
-        node = Node(id=spec_id, kind=NodeKind.SPEC, title=title, priority=priority, ordinal=order)
-        self.node_repo.save_node(node)
+        node = Node(
+            id=spec_id,
+            kind=NodeKind.SPEC,
+            title=title,
+            priority=priority,
+            ordinal=order,
+            status=Status.READY,
+            review=review,
+            fix=fix,
+            merge=Merge.MAIN,
+        )
+        self._refuse_fix_without_review(node)
+        with self._checked({spec_id}):
+            self.node_repo.save_node(node)
         self._ledger(
             LedgerCommand.SPEC_ADD,
             target_id=spec_id,
-            payload={"title": title, "priority": priority, "ordinal": order},
+            payload={
+                "title": title,
+                "priority": priority,
+                "ordinal": order,
+                "review": review,
+                "fix": fix,
+            },
         )
         return spec_id
 
@@ -160,8 +322,10 @@ class Operations:
         slug: str | None = None,
         priority: int = 50,
         order: int = 0,
-        require_review: bool = False,
-    ) -> tuple[str, str | None]:
+        review: bool = False,
+        fix: bool = False,
+        merge: Merge = Merge.MAIN,
+    ) -> str:
         self._validate_priority(priority)
         if self.node_repo.get_node(spec) is None:
             raise OperationError(f"spec '{spec}' not found", 404)
@@ -177,30 +341,36 @@ class Operations:
             plan_id = f"{spec}-P{counter}"
 
         plan_node = Node(
-            id=plan_id, kind=NodeKind.PLAN, title=title, priority=priority, ordinal=order
+            id=plan_id,
+            kind=NodeKind.PLAN,
+            title=title,
+            priority=priority,
+            ordinal=order,
+            status=Status.READY,
+            review=review,
+            fix=fix,
+            merge=merge,
         )
-        with self.node_repo.transaction():
+        self._refuse_fix_without_review(plan_node)
+        with self._checked({plan_id}):
             self.node_repo.save_node(plan_node)
             self.node_repo.add_relation(
                 NodeRelation(source_id=spec, target_id=plan_id, relation_type=RelationType.CONTAINS)
             )
-            if require_review:
-                gate_id = self.graph.inject_plan_review_gate(plan_id)
-
-        if require_review:
-            self._ledger(
-                LedgerCommand.PLAN_REVIEW_GATE,
-                target_id=plan_id,
-                payload={"title": title, "spec": spec, "review_gate": gate_id, "ordinal": order},
-            )
-            return plan_id, gate_id
-
+            roll_up_ancestors(self.node_repo, plan_id)
         self._ledger(
             LedgerCommand.PLAN_ADD,
             target_id=plan_id,
-            payload={"title": title, "spec": spec, "ordinal": order},
+            payload={
+                "title": title,
+                "spec": spec,
+                "ordinal": order,
+                "review": review,
+                "fix": fix,
+                "merge": merge.value,
+            },
         )
-        return plan_id, None
+        return plan_id
 
     def add_task(
         self,
@@ -211,6 +381,10 @@ class Operations:
         order: int = 0,
         depends_on: list[str] | None = None,
         models: list[str] | None = None,
+        review: bool = True,
+        fix: bool = True,
+        merge: Merge = Merge.MAIN,
+        requires: list[str] | None = None,
     ) -> str:
         self._validate_priority(priority)
         if self.node_repo.get_node(plan) is None:
@@ -236,8 +410,14 @@ class Operations:
             priority=priority,
             ordinal=order,
             acceptable_models=models or [],
+            status=Status.READY,
+            review=review,
+            fix=fix,
+            merge=merge,
+            requires=requires or [],
         )
-        with self.node_repo.transaction():
+        self._refuse_fix_without_review(task_node)
+        with self._checked({task_id}):
             self.node_repo.save_node(task_node)
             self.node_repo.add_relation(
                 NodeRelation(source_id=plan, target_id=task_id, relation_type=RelationType.CONTAINS)
@@ -248,6 +428,7 @@ class Operations:
                         source_id=task_id, target_id=dep, relation_type=RelationType.DEPENDS_ON
                     )
                 )
+            roll_up_ancestors(self.node_repo, task_id)
 
         self._ledger(
             LedgerCommand.TASK_ADD, target_id=task_id, payload={"title": title, "plan": plan}
@@ -265,6 +446,11 @@ class Operations:
         repo: str | None = None,
         frontmatter_set: dict[str, Any] | None = None,
         frontmatter_unset: list[str] | None = None,
+        review: bool | None = None,
+        fix: bool | None = None,
+        merge: Merge | None = None,
+        requires: list[str] | None = None,
+        land_order: list[str] | None = None,
     ) -> dict[str, Any]:
         node = self.node_repo.get_node(node_id)
         if node is None:
@@ -290,51 +476,61 @@ class Operations:
         for key in frontmatter_unset or []:
             node.frontmatter.pop(key, None)
             changed[f"frontmatter.{key}"] = None
+        if review is not None:
+            node.review = review
+            changed["review"] = review
+        if fix is not None:
+            node.fix = fix
+            changed["fix"] = fix
+        if merge is not None:
+            node.merge = merge
+            changed["merge"] = merge.value
+        if requires is not None:
+            node.requires = requires
+            changed["requires"] = requires
+        if land_order is not None:
+            if node.kind not in CONTAINERS:
+                raise OperationError(
+                    "land_order orders a plan's or a spec's repositories; a task lands in its "
+                    "one target_repo",
+                    400,
+                )
+            node.land_order = land_order
+            changed["land_order"] = land_order
         if not changed:
             raise OperationError("nothing to update", 400)
+        self._refuse_fix_without_review(node)
         node.updated_at = datetime.now(tz=UTC)
-        self.node_repo.save_node(node)
+        with self._checked({node_id}):
+            self.node_repo.save_node(node)
         self._ledger(LedgerCommand.TASK_UPDATE, target_id=node_id, payload=changed)
         return changed
 
-    def set_dependencies(
-        self,
-        task_id: str,
-        add: list[tuple[str, NodeStatus | None]],
-        remove: list[str],
-    ) -> list[tuple[str, NodeStatus]]:
-        if self.node_repo.get_node(task_id) is None:
-            raise OperationError(f"Task '{task_id}' not found", 404)
-        current = set(self.node_repo.get_dependencies(task_id))
-        problems: list[str] = []
-        for dep, _gate in add:
-            if self.node_repo.get_node(dep) is None:
-                problems.append(f"'{dep}' does not exist")
-            elif dep not in current and self.graph.would_cause_cycle(task_id, dep):
-                problems.append(f"'{dep}' would make a cycle")
-        for dep in remove:
-            if dep not in current:
-                problems.append(f"'{dep}' is not a dependency")
+    def set_dependencies(self, node_id: str, add: list[str], remove: list[str]) -> list[str]:
+        if self.node_repo.get_node(node_id) is None:
+            raise OperationError(f"Task '{node_id}' not found", 404)
+        current = set(self.node_repo.get_dependencies(node_id))
+        problems = [
+            f"'{dep}' does not exist" for dep in add if self.node_repo.get_node(dep) is None
+        ]
+        problems += [f"'{dep}' is not a dependency" for dep in remove if dep not in current]
         if problems:
             raise OperationError(f"Nothing changed: {'; '.join(problems)}", 409)
-        with self.node_repo.transaction():
-            for dep, gate in add:
+        with self._checked({node_id}):
+            for dep in add:
                 self.node_repo.add_relation(
                     NodeRelation(
-                        source_id=task_id,
-                        target_id=dep,
-                        relation_type=RelationType.DEPENDS_ON,
-                        metadata={"gate": gate.value} if gate is not None else {},
+                        source_id=node_id, target_id=dep, relation_type=RelationType.DEPENDS_ON
                     )
                 )
             for dep in remove:
-                self.node_repo.remove_relation(task_id, dep, RelationType.DEPENDS_ON)
+                self.node_repo.remove_relation(node_id, dep, RelationType.DEPENDS_ON)
         self._ledger(
             LedgerCommand.TASK_DEPENDS,
-            target_id=task_id,
-            payload={"add": [d for d, _ in add], "remove": remove},
+            target_id=node_id,
+            payload={"add": add, "remove": remove},
         )
-        return self.node_repo.get_dependency_edges(task_id)
+        return self.node_repo.get_dependencies(node_id)
 
     def supersede(
         self, old_id: str, new_id: str, transfer_blocks: str = TransferMode.ALL.value
@@ -345,13 +541,11 @@ class Operations:
         if new_id == old_id or self.node_repo.get_node(new_id) is None:
             raise OperationError(f"Replacement task '{new_id}' not found; nothing was changed", 400)
 
-        # A replaced task is not being worked on: its lease and file locks go with it. The
-        # lease lives in a separate database from the node writes below, so it is released
-        # ahead of, and independent of, the transaction guarding those.
-        self.runtime_repo.release_lease(old_id)
-        old_node.status = NodeStatus.SUPERSEDED
-
-        with self.node_repo.transaction():
+        old_node.status = Status.SUPERSEDED
+        old_node.claimed_from = None
+        old_node.updated_at = datetime.now(tz=UTC)
+        touched = {old_id, new_id, *self.node_repo.get_blocked_by(old_id)}
+        with self._checked(touched):
             self.node_repo.save_node(old_node)
             self.node_repo.add_relation(
                 NodeRelation(
@@ -368,6 +562,7 @@ class Operations:
                 self.node_repo.transfer_blocks(
                     old_id, new_id, TransferMode.CUSTOM, custom_ids=custom_ids
                 )
+            roll_up_ancestors(self.node_repo, old_id)
 
         self._ledger(
             LedgerCommand.TASK_SUPERSEDE,
@@ -386,14 +581,9 @@ class Operations:
             raise OperationError(f"Plan '{plan_id}' not found", 404)
         if plan_node.kind != NodeKind.PLAN:
             raise OperationError(f"'{plan_id}' is not a plan", 400)
-        with self.node_repo.transaction():
-            with self.node_repo.db.get_spec_connection() as conn:
-                row = conn.execute(
-                    "SELECT source_id FROM node_relations "
-                    "WHERE target_id = ? AND relation_type = ?",
-                    (task_id, RelationType.CONTAINS.value),
-                ).fetchone()
-            old_plan = row[0] if row else None
+        parents = self.node_repo.get_parent_ids(task_id)
+        old_plan = parents[0] if parents else None
+        with self._checked({task_id}):
             if old_plan is not None:
                 self.node_repo.remove_relation(old_plan, task_id, RelationType.CONTAINS)
             self.node_repo.add_relation(
@@ -401,6 +591,9 @@ class Operations:
                     source_id=plan_id, target_id=task_id, relation_type=RelationType.CONTAINS
                 )
             )
+            roll_up_ancestors(self.node_repo, task_id)
+            if old_plan is not None:
+                _roll_up_container(self.node_repo, old_plan)
         self._ledger(
             LedgerCommand.TASK_MOVE, target_id=task_id, payload={"from": old_plan, "to": plan_id}
         )
@@ -564,6 +757,45 @@ class Operations:
         )
         return all_passed, results
 
+    # -- conditions ---------------------------------------------------------------------
+
+    def add_condition(
+        self,
+        node_id: str,
+        needs: str,
+        command: str,
+        stage: ConditionStage = ConditionStage.CLAIM,
+    ) -> Condition:
+        node = self.node_repo.get_node(node_id)
+        if node is None:
+            raise OperationError(f"node '{node_id}' not found", 404)
+        if node.kind == NodeKind.DECISION:
+            raise OperationError(
+                f"'{node_id}' is a decision; a condition holds a task, plan or spec", 400
+            )
+        if not needs.strip():
+            raise OperationError("a condition names the state it waits for in --needs", 400)
+        if not command.strip() or not is_executable(command):
+            raise OperationError(
+                f"'{command}' is not a command that exits 0 once '{needs}' holds; a wait nobody "
+                f'can check is a decision: `tm decision add "..." --blocks {node_id}`',
+                400,
+            )
+        stored = self.node_repo.add_condition(
+            Condition(node_id=node_id, idx=0, needs=needs, command=command, stage=stage)
+        )
+        self._ledger(
+            LedgerCommand.CONDITION_ADD,
+            target_id=node_id,
+            payload={"idx": stored.idx, "needs": needs, "stage": stage.value},
+        )
+        return stored
+
+    def remove_condition(self, node_id: str, idx: int) -> None:
+        if not self.node_repo.remove_condition(node_id, idx):
+            raise OperationError(f"'{node_id}' has no condition {idx}", 404)
+        self._ledger(LedgerCommand.CONDITION_REMOVE, target_id=node_id, payload={"idx": idx})
+
     # -- decisions ------------------------------------------------------------------------------
 
     @staticmethod
@@ -656,6 +888,7 @@ class Operations:
             id=decision_id,
             kind=NodeKind.DECISION,
             title=question,
+            status=DecisionStatus.OPEN,
             priority=priority,
             frontmatter={"decision": data.model_dump(mode="json")},
         )
@@ -693,7 +926,7 @@ class Operations:
         by: str = "cli",
     ) -> None:
         node = self._get_decision(decision_id)
-        if node.status != NodeStatus.NOT_STARTED:
+        if stored_status(node) != DecisionStatus.OPEN:
             raise OperationError(f"decision '{decision_id}' is not open; reopen it first", 409)
         data = read_decision(node)
         if option is not None:
@@ -712,7 +945,7 @@ class Operations:
             answered_at=datetime.now(tz=UTC),
         )
         write_decision(node, data)
-        node.status = NodeStatus.COMPLETED
+        node.status = DecisionStatus.ANSWERED
         node.updated_at = datetime.now(tz=UTC)
         effect = chosen_effect(data)
         with self.node_repo.transaction():
@@ -726,13 +959,13 @@ class Operations:
 
     def reopen_decision(self, decision_id: str) -> None:
         node = self._get_decision(decision_id)
-        if node.status == NodeStatus.NOT_STARTED:
+        if stored_status(node) == DecisionStatus.OPEN:
             raise OperationError(f"decision '{decision_id}' is already open", 409)
         data = read_decision(node)
         data.answer = None
         data.withdrawn_reason = ""
         write_decision(node, data)
-        node.status = NodeStatus.NOT_STARTED
+        node.status = DecisionStatus.OPEN
         node.updated_at = datetime.now(tz=UTC)
         self.node_repo.save_node(node)
         self._ledger(LedgerCommand.DECISION_REOPEN, target_id=decision_id)
@@ -742,7 +975,7 @@ class Operations:
         data = read_decision(node)
         data.withdrawn_reason = reason
         write_decision(node, data)
-        node.status = NodeStatus.ABANDONED
+        node.status = DecisionStatus.WITHDRAWN
         node.updated_at = datetime.now(tz=UTC)
         self.node_repo.save_node(node)
         self._ledger(

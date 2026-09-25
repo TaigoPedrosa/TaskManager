@@ -79,7 +79,7 @@ def test_cli_lifecycle_spec_plan_task_render_next(tmp_path: Path) -> None:
         ],
     )
     assert res.exit_code == 0
-    assert "review gate" in res.stdout.lower()
+    assert "Added plan AUTH-REVPLAN" in res.stdout
 
     # 4. task add, list, get
     res = runner.invoke(
@@ -347,89 +347,29 @@ def test_cli_task_supersede(tmp_path: Path) -> None:
     assert "SUPERSEDED" in res.stdout
 
 
-def test_cli_task_depends_gated_edge(tmp_path: Path) -> None:
-    runner.invoke(app, ["init", "--path", str(tmp_path)])
-    runner.invoke(app, ["spec", "add", "Gate Spec", "--slug", "GAT", "--path", str(tmp_path)])
+def test_cli_task_depends_takes_bare_ids_and_refuses_a_status_gate(tmp_path: Path) -> None:
+    runner.invoke(app, ["init", "-C", str(tmp_path)])
+    runner.invoke(app, ["spec", "add", "Gate Spec", "--slug", "GAT", "-C", str(tmp_path)])
     runner.invoke(
-        app, ["plan", "add", "Gate Plan", "--spec", "GAT", "--slug", "P1", "--path", str(tmp_path)]
+        app, ["plan", "add", "Gate Plan", "--spec", "GAT", "--slug", "P1", "-C", str(tmp_path)]
     )
-    runner.invoke(
+    for slug in ("IMPL", "REV"):
+        runner.invoke(
+            app, ["task", "add", slug, "--plan", "GAT-P1", "--slug", slug, "-C", str(tmp_path)]
+        )
+
+    gated = runner.invoke(
         app,
-        ["task", "add", "Implement", "--plan", "GAT-P1", "--slug", "IMPL", "--path", str(tmp_path)],
+        ["task", "depends", "GAT-P1-REV", "--add", "GAT-P1-IMPL:REVIEWED", "-C", str(tmp_path)],
     )
-    runner.invoke(
-        app,
-        ["task", "add", "Review", "--plan", "GAT-P1", "--slug", "REV", "--path", str(tmp_path)],
-    )
+    assert gated.exit_code != 0
+    assert "bare id" in gated.output
 
     res = runner.invoke(
-        app,
-        [
-            "task",
-            "depends",
-            "GAT-P1-REV",
-            "--add",
-            "GAT-P1-IMPL:WAITING_REVIEW",
-            "--path",
-            str(tmp_path),
-        ],
+        app, ["task", "depends", "GAT-P1-REV", "--add", "GAT-P1-IMPL", "-C", str(tmp_path)]
     )
-    assert res.exit_code == 0
-    assert "GAT-P1-IMPL:WAITING_REVIEW" in res.stdout
-
-    doc = json.loads(
-        runner.invoke(app, ["task", "get", "GAT-P1-REV", "--json", "--path", str(tmp_path)]).stdout
-    )
-    assert doc["state"] == "BLOCKED"
-    assert doc["depends_on"] == [
-        {"id": "GAT-P1-IMPL", "status": "NOT_STARTED", "gate": "WAITING_REVIEW"}
-    ]
-
-    runner.invoke(
-        app,
-        [
-            "run",
-            "start",
-            "GAT-P1-IMPL",
-            "--agent",
-            "agent-a",
-            "--session",
-            "sess-a",
-            "--path",
-            str(tmp_path),
-        ],
-    )
-    runner.invoke(
-        app,
-        [
-            "run",
-            "stop",
-            "GAT-P1-IMPL",
-            "--status",
-            "WAITING_REVIEW",
-            "--path",
-            str(tmp_path),
-        ],
-    )
-
-    doc = json.loads(
-        runner.invoke(app, ["task", "get", "GAT-P1-REV", "--json", "--path", str(tmp_path)]).stdout
-    )
-    assert doc["state"] == "READY"
-
-    res = runner.invoke(
-        app,
-        [
-            "task",
-            "depends",
-            "GAT-P1-REV",
-            "--add",
-            "GAT-P1-IMPL:NOT_A_STATUS",
-            "--path",
-            str(tmp_path),
-        ],
-    )
-    assert res.exit_code != 0
+    assert res.exit_code == 0, res.output
+    assert "GAT-P1-REV depends on: GAT-P1-IMPL" in res.stdout
 
 
 def test_cli_verification_and_audit(tmp_path: Path) -> None:
@@ -740,6 +680,7 @@ def test_spec_and_plan_list_and_get_show_derived_state_not_stored_status(
     # §3.2a: "A plan's and a spec's status is always derived from their children, everywhere
     # it is shown ... `tm plan list`, `tm spec list`, `tm plan get`, `tm spec get`."
     from taskmanager.core.enums import NodeStatus
+    from taskmanager.core.status import Status
     from taskmanager.db.connection import DatabaseManager
     from taskmanager.db.node_repo import NodeRepository
 
@@ -763,8 +704,8 @@ def test_spec_and_plan_list_and_get_show_derived_state_not_stored_status(
     # rolled up from the (now-completed) task instead.
     plan_stored = node_repo.get_node("S1-P1")
     spec_stored = node_repo.get_node("S1")
-    assert plan_stored is not None and plan_stored.status == NodeStatus.NOT_STARTED
-    assert spec_stored is not None and spec_stored.status == NodeStatus.NOT_STARTED
+    assert plan_stored is not None and plan_stored.status == Status.READY
+    assert spec_stored is not None and spec_stored.status == Status.READY
 
     res = runner.invoke(app, ["plan", "list", "--spec", "S1", "--path", str(tmp_path)])
     assert res.exit_code == 0
@@ -773,7 +714,7 @@ def test_spec_and_plan_list_and_get_show_derived_state_not_stored_status(
 
     res = runner.invoke(app, ["plan", "get", "S1-P1", "--path", str(tmp_path)])
     assert res.exit_code == 0
-    assert "Status: NOT_STARTED" in res.stdout
+    assert "Status: READY" in res.stdout
     assert "State: COMPLETED" in res.stdout
 
     res = runner.invoke(app, ["spec", "list", "--path", str(tmp_path)])
@@ -783,7 +724,7 @@ def test_spec_and_plan_list_and_get_show_derived_state_not_stored_status(
 
     res = runner.invoke(app, ["spec", "get", "S1", "--path", str(tmp_path)])
     assert res.exit_code == 0
-    assert "Status: NOT_STARTED" in res.stdout
+    assert "Status: READY" in res.stdout
     assert "State: COMPLETED" in res.stdout
 
 

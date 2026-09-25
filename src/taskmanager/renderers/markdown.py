@@ -1,9 +1,11 @@
 import json
 from typing import Any
 
-from taskmanager.core.enums import NodeKind, NodeStatus, RelationType, RenderView
+from taskmanager.core.enums import NodeKind, RelationType, RenderView
+from taskmanager.core.status import DecisionStatus, Outcome
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.engine.decisions import read_decision
+from taskmanager.engine.snapshot import CONTAINERS, stored_status
 
 
 class MarkdownRenderer:
@@ -83,6 +85,21 @@ class MarkdownRenderer:
                     v_lines.append(f"- {ver.verification_type.value}: `{ver.target_path}`{pat_str}")
                 out.append("\n".join(v_lines))
 
+            rejected = self._rejected_children(node)
+            if rejected:
+                out.append(
+                    "\n".join(
+                        [
+                            "### Children whose review rejected",
+                            (
+                                "Each landed on this branch with its findings unfixed; they "
+                                "are this container's to fix:"
+                            ),
+                            *rejected,
+                        ]
+                    )
+                )
+
             return "\n\n".join(out) + "\n"
 
         if v == RenderView.FULL:
@@ -114,6 +131,17 @@ class MarkdownRenderer:
             parts.append(self.render_recursive(child_id, view, seen))
         return "\n\n---\n\n".join(parts)
 
+    def _rejected_children(self, node: Any) -> list[str]:
+        # Read from each child's stored outcome on every render, never copied into a section.
+        if node.kind not in CONTAINERS:
+            return []
+        lines: list[str] = []
+        for child_id in self.node_repo.get_children(node.id):
+            child = self.node_repo.get_node(child_id)
+            if child is not None and child.outcome == Outcome.REJECT:
+                lines.append(f"- `{child.id}` ({child.title}): `tm section get {child.id}:review`")
+        return lines
+
     def _render_decision(self, node: Any, sections: list[Any]) -> str:
         data = read_decision(node)
         parts = [f"# Decision: {node.title}", f"Status: {node.status.value}"]
@@ -138,7 +166,7 @@ class MarkdownRenderer:
                 lines.append(f"Rationale: {answer.rationale}")
             lines.append(f"Answered by {answer.answered_by} at {answer.answered_at.isoformat()}")
             parts.append("\n".join(lines))
-        elif node.status == NodeStatus.ABANDONED:
+        elif stored_status(node) == DecisionStatus.WITHDRAWN:
             body = f"\n\n{data.withdrawn_reason}" if data.withdrawn_reason else ""
             parts.append(f"## Withdrawn{body}")
         return "\n\n".join(parts) + "\n"

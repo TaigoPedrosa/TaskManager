@@ -6,6 +6,7 @@ import pytest
 
 from taskmanager.core.enums import NodeKind, NodeStatus, VerificationType
 from taskmanager.core.models import Lease
+from taskmanager.core.status import DecisionStatus, Status
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
@@ -43,7 +44,7 @@ def ops_setup(
 
 def _seed_task(ops: Operations) -> tuple[str, str, str]:
     spec_id = ops.add_spec("Spec", slug="S1")
-    plan_id, _ = ops.add_plan("Plan", spec_id, slug="P1")
+    plan_id = ops.add_plan("Plan", spec_id, slug="P1")
     task_id = ops.add_task("Task", plan_id, slug="T1")
     return spec_id, plan_id, task_id
 
@@ -65,15 +66,6 @@ def test_add_spec_creates_node_and_ledger_event(ops_setup: tuple) -> None:
     assert node.title == "My Spec"
     assert node.priority == 70
     assert _last_event_actor(ledger_repo) == "tester"
-
-
-def test_add_plan_with_review_gate_injects_gate_and_records_it(ops_setup: tuple) -> None:
-    node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
-    spec_id = ops.add_spec("S", slug="S1")
-    plan_id, gate_id = ops.add_plan("P", spec_id, slug="P1", require_review=True)
-    assert gate_id == f"{plan_id}-REV"
-    assert node_repo.get_node(gate_id) is not None
-    assert plan_id in node_repo.get_children(spec_id)
 
 
 def test_add_task_wires_deps_and_parent(ops_setup: tuple) -> None:
@@ -145,15 +137,13 @@ def test_update_node_nothing_to_update_refuses(ops_setup: tuple) -> None:
 # -- set_dependencies ------------------------------------------------------------------------
 
 
-def test_set_dependencies_adds_and_removes_with_gate(ops_setup: tuple) -> None:
+def test_set_dependencies_adds_and_removes_bare_ids(ops_setup: tuple) -> None:
     node_repo, _runtime_repo, ledger_repo, ops = ops_setup
     _spec_id, plan_id, first = _seed_task(ops)
     second = ops.add_task("Second", plan_id, slug="T2")
-    edges = ops.set_dependencies(second, [(first, NodeStatus.WAITING_REVIEW)], [])
-    assert edges == [(first, NodeStatus.WAITING_REVIEW)]
+    assert ops.set_dependencies(second, [first], []) == [first]
     assert _last_event_actor(ledger_repo) == "tester"
-    edges = ops.set_dependencies(second, [], [first])
-    assert edges == []
+    assert ops.set_dependencies(second, [], [first]) == []
     assert node_repo.get_dependencies(second) == []
 
 
@@ -170,7 +160,7 @@ def test_set_dependencies_cycle_refuses_and_writes_nothing(ops_setup: tuple) -> 
     second = ops.add_task("Second", plan_id, slug="T2", depends_on=[first])
     before = len(ledger_repo.list_events(limit=1000))
     with pytest.raises(OperationError) as exc:
-        ops.set_dependencies(first, [(second, None)], [])
+        ops.set_dependencies(first, [second], [])
     assert exc.value.status_code == 409
     assert node_repo.get_dependencies(first) == []
     assert len(ledger_repo.list_events(limit=1000)) == before
@@ -204,7 +194,7 @@ def test_supersede_missing_new_refuses_and_writes_nothing(ops_setup: tuple) -> N
     with pytest.raises(OperationError) as exc:
         ops.supersede(old, "NOPE")
     assert exc.value.status_code == 400
-    assert node_repo.get_node(old).status == NodeStatus.NOT_STARTED
+    assert node_repo.get_node(old).status == Status.READY
     assert len(ledger_repo.list_events(limit=1000)) == before
 
 
@@ -214,7 +204,7 @@ def test_supersede_missing_new_refuses_and_writes_nothing(ops_setup: tuple) -> N
 def test_move_task_reparents(ops_setup: tuple) -> None:
     node_repo, _runtime_repo, ledger_repo, ops = ops_setup
     spec_id, plan_id, task_id = _seed_task(ops)
-    other_plan, _ = ops.add_plan("Other", spec_id, slug="P2")
+    other_plan = ops.add_plan("Other", spec_id, slug="P2")
     ops.move_task(task_id, other_plan)
     assert task_id not in node_repo.get_children(plan_id)
     assert task_id in node_repo.get_children(other_plan)
@@ -263,7 +253,7 @@ def test_release_lease_drops_lease_without_changing_status(ops_setup: tuple) -> 
     )
     ops.release_lease(task_id)
     assert runtime_repo.get_lease(task_id) is None
-    assert node_repo.get_node(task_id).status == NodeStatus.NOT_STARTED
+    assert node_repo.get_node(task_id).status == Status.READY
     assert _last_event_actor(ledger_repo) == "tester"
 
 
@@ -497,7 +487,7 @@ def test_add_decision_creates_node_with_options_and_context(ops_setup: tuple) ->
     node = node_repo.get_node(decision_id)
     assert node is not None
     assert node.kind == NodeKind.DECISION
-    assert node.status == NodeStatus.NOT_STARTED
+    assert node.status == DecisionStatus.OPEN
     data = read_decision(node)
     assert [o.key for o in data.options] == ["a", "b"]
     assert data.options[0].recommended is True
@@ -546,7 +536,7 @@ def test_answer_decision_with_option_completes_it(ops_setup: tuple) -> None:
     decision_id = ops.add_decision("Q", slug="q1", options=["a|A", "b|B"])
     ops.answer_decision(decision_id, option="a", rationale="because", by="owner")
     node = node_repo.get_node(decision_id)
-    assert node.status == NodeStatus.COMPLETED
+    assert node.status == DecisionStatus.ANSWERED
     data = read_decision(node)
     assert data.answer is not None
     assert data.answer.option == "a"
@@ -595,17 +585,17 @@ def test_reopen_decision_clears_answer_and_returns_to_open(ops_setup: tuple) -> 
     ops.answer_decision(decision_id, option="a")
     ops.reopen_decision(decision_id)
     node = node_repo.get_node(decision_id)
-    assert node.status == NodeStatus.NOT_STARTED
+    assert node.status == DecisionStatus.OPEN
     assert read_decision(node).answer is None
     assert _last_event_actor(ledger_repo) == "tester"
 
 
-def test_withdraw_decision_sets_abandoned_with_reason(ops_setup: tuple) -> None:
+def test_withdraw_decision_sets_withdrawn_with_reason(ops_setup: tuple) -> None:
     node_repo, _runtime_repo, ledger_repo, ops = ops_setup
     decision_id = ops.add_decision("Q", slug="q1")
     ops.withdraw_decision(decision_id, reason="no longer relevant")
     node = node_repo.get_node(decision_id)
-    assert node.status == NodeStatus.ABANDONED
+    assert node.status == DecisionStatus.WITHDRAWN
     assert read_decision(node).withdrawn_reason == "no longer relevant"
     assert _last_event_actor(ledger_repo) == "tester"
 
@@ -907,8 +897,8 @@ def test_add_verification_missing_task_refuses(ops_setup: tuple) -> None:
 def test_move_task_source_not_a_task_refuses(ops_setup: tuple) -> None:
     _node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
     spec_id = ops.add_spec("S", slug="S1")
-    plan_id, _ = ops.add_plan("P", spec_id, slug="P1")
-    other_plan_id, _ = ops.add_plan("P2", spec_id, slug="P2")
+    plan_id = ops.add_plan("P", spec_id, slug="P1")
+    other_plan_id = ops.add_plan("P2", spec_id, slug="P2")
     with pytest.raises(OperationError) as exc:
         ops.move_task(spec_id, other_plan_id)  # a spec, not a task
     assert exc.value.status_code == 400
@@ -952,7 +942,7 @@ def test_set_status_refuses_a_decision_node(ops_setup: tuple) -> None:
     with pytest.raises(OperationError) as exc:
         ops.set_status(decision_id, NodeStatus.COMPLETED)
     assert exc.value.status_code == 409
-    assert node_repo.get_node(decision_id).status == NodeStatus.NOT_STARTED
+    assert node_repo.get_node(decision_id).status == DecisionStatus.OPEN
     assert node_repo.get_node(decision_id).frontmatter["decision"]["answer"] is None
     assert len(ledger_repo.list_events(limit=1000)) == before
 
@@ -1058,7 +1048,7 @@ def test_set_dependencies_second_add_failure_leaves_first_unadded(ops_setup: tup
 
     node_repo.add_relation = boom  # type: ignore[method-assign]
     with pytest.raises(RuntimeError):
-        ops.set_dependencies(task_id, add=[(dep_a, None), (dep_b, None)], remove=[])
+        ops.set_dependencies(task_id, add=[dep_a, dep_b], remove=[])
     assert node_repo.get_dependencies(task_id) == []
     assert len(ledger_repo.list_events(limit=1000)) == before
 
@@ -1075,14 +1065,14 @@ def test_supersede_second_write_failure_leaves_old_status_unchanged(ops_setup: t
     node_repo.add_relation = boom  # type: ignore[method-assign]
     with pytest.raises(RuntimeError):
         ops.supersede(old, new)
-    assert node_repo.get_node(old).status == NodeStatus.NOT_STARTED
+    assert node_repo.get_node(old).status == Status.READY
     assert len(ledger_repo.list_events(limit=1000)) == before
 
 
 def test_move_task_second_write_failure_leaves_old_parent_intact(ops_setup: tuple) -> None:
     node_repo, _runtime_repo, ledger_repo, ops = ops_setup
     spec_id, plan_id, task_id = _seed_task(ops)
-    other_plan, _ = ops.add_plan("Other", spec_id, slug="P2")
+    other_plan = ops.add_plan("Other", spec_id, slug="P2")
     before = len(ledger_repo.list_events(limit=1000))
 
     def boom(*_a: object, **_kw: object) -> None:
@@ -1189,7 +1179,7 @@ def test_set_status_with_section_second_write_failure_leaves_status_unchanged(
     node_repo.save_section = boom  # type: ignore[method-assign]
     with pytest.raises(RuntimeError):
         ops.set_status(task_id, NodeStatus.COMPLETED, section=("ruling", "text", None))
-    assert node_repo.get_node(task_id).status == NodeStatus.NOT_STARTED
+    assert node_repo.get_node(task_id).status == Status.READY
     assert node_repo.get_section(task_id, "ruling") is None
     assert len(ledger_repo.list_events(limit=1000)) == before
 
@@ -1207,6 +1197,6 @@ def test_answer_decision_write_failure_leaves_decision_unanswered(ops_setup: tup
         ops.answer_decision(decision_id, option="a")
     node = node_repo.get_node(decision_id)
     assert node is not None
-    assert node.status == NodeStatus.NOT_STARTED
+    assert node.status == DecisionStatus.OPEN
     assert read_decision(node).answer is None
     assert len(ledger_repo.list_events(limit=1000)) == before

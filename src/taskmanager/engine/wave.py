@@ -3,12 +3,13 @@ import logging
 import sqlite3
 
 from taskmanager.core.enums import NodeKind, NodeStatus
+from taskmanager.core.status import DecisionStatus
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine.discovery import djb2
 from taskmanager.engine.heuristics import RecommendationEngine
 from taskmanager.engine.operations import Operations
-from taskmanager.engine.snapshot import writes_migration
+from taskmanager.engine.snapshot import stored_status, writes_migration
 
 __all__ = ["djb2"]
 
@@ -44,7 +45,7 @@ def _awaiting_decisions(node_repo: NodeRepository, task_id: str) -> list[str]:
         if (
             dep is not None
             and dep.kind == NodeKind.DECISION
-            and dep.status not in (NodeStatus.COMPLETED, NodeStatus.ABANDONED)
+            and stored_status(dep) == DecisionStatus.OPEN
         ):
             awaiting.append(dep_id)
     return awaiting

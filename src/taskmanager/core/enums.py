@@ -113,6 +113,8 @@ class LedgerCommand(StrEnum):
     ATTACH = "attach"
     DETACH = "detach"
     ATTACHMENT_CHECK = "attachment_check"
+    CONDITION_ADD = "condition_add"
+    CONDITION_REMOVE = "condition_remove"
 
 
 class SearchTargetType(StrEnum):

@@ -240,7 +240,6 @@ def test_bulk_importer_json(tmp_path: Path) -> None:
 
     t2_deps = repo.get_dependencies("AUTH-T2")
     assert "AUTH-T1" in t2_deps
-    assert repo.get_dependency_edges("AUTH-T2") == [("AUTH-T1", NodeStatus.COMPLETED)]
 
 
 def test_markdown_renderer_renders_a_decision(tmp_path: Path) -> None:
@@ -286,28 +285,6 @@ def test_markdown_renderer_renders_a_decision(tmp_path: Path) -> None:
     assert "Chosen: a" in rendered
     assert "Rationale: because" in rendered
     assert "owner" in rendered
-
-
-def test_bulk_importer_gated_dependency(tmp_path: Path) -> None:
-    db = DatabaseManager(tmp_path)
-    db.init_all()
-    repo = NodeRepository(db)
-    importer = BulkImporter(repo)
-
-    importer.import_dict(
-        {
-            "tasks": [
-                {"id": "AUTH-T1", "title": "Implement"},
-                {
-                    "id": "AUTH-T2",
-                    "title": "Review",
-                    "depends_on": [{"id": "AUTH-T1", "gate": "WAITING_REVIEW"}],
-                },
-            ]
-        }
-    )
-
-    assert repo.get_dependency_edges("AUTH-T2") == [("AUTH-T1", NodeStatus.WAITING_REVIEW)]
 
 
 def test_bulk_importer_top_level_decisions_key(tmp_path: Path) -> None:

@@ -6,6 +6,7 @@ from taskmanager.core.models import Lease, Node, NodeRelation
 from taskmanager.core.status import DecisionStatus, Status
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
+from taskmanager.engine.snapshot import stored_status
 
 # A task's forward progress through one lease cycle. SUPERSEDED, ABANDONED and DEFERRED are
 # side-exits, not positions on this line, and are handled separately by `gate_satisfied`.
@@ -29,6 +30,9 @@ _BLOCKED_STATES = {
     VirtualStatus.BLOCKED_BY_LEASE,
     VirtualStatus.AWAITING_DECISION,
 }
+# Nodes written through Operations or import start at READY; the old readers treat it as the
+# unclaimed start their NOT_STARTED was.
+_UNSTARTED = frozenset({NodeStatus.NOT_STARTED.value, Status.READY.value})
 
 
 def gate_satisfied(status: str, gate: str) -> bool:
@@ -62,14 +66,14 @@ class GraphEngine:
         return lease is not None and self._is_lease_active(lease)
 
     def _has_open_decision(self, deps: list[tuple[str, NodeStatus]]) -> bool:
-        # A decision's own status is Open=NOT_STARTED, Answered=COMPLETED,
-        # Withdrawn=ABANDONED -- met by either terminal state, never by the edge's gate.
+        # A decision holds its dependents only while it is open; stored_status also reads the
+        # old names.
         for dep_id, _gate in deps:
             dep_node = self.node_repo.get_node(dep_id)
             if (
                 dep_node is not None
                 and dep_node.kind == NodeKind.DECISION
-                and dep_node.status not in (NodeStatus.COMPLETED, NodeStatus.ABANDONED)
+                and stored_status(dep_node) == DecisionStatus.OPEN
             ):
                 return True
         return False
@@ -91,7 +95,7 @@ class GraphEngine:
         # already claimed past NOT_STARTED (WAITING_REVIEW, WAITING_FIXES, WAITING_MERGE) still
         # has nothing to do while the owner hasn't ruled, and falls back to the stored status
         # the moment the decision is answered or withdrawn.
-        if node.status != NodeStatus.NOT_STARTED:
+        if node.status not in _UNSTARTED:
             return VirtualStatus.AWAITING_DECISION if self._has_open_decision(deps) else node.status
 
         for dep_id, gate in deps:
@@ -166,10 +170,7 @@ class GraphEngine:
         return self._rollup(
             [self.resolve_task_state(cn.id) for cn in counted],
             set_aside_statuses,
-            all(
-                cn.status == NodeStatus.NOT_STARTED and not self._is_task_in_flight(cn.id)
-                for cn in counted
-            ),
+            all(cn.status in _UNSTARTED and not self._is_task_in_flight(cn.id) for cn in counted),
         )
 
     def resolve_spec_status(

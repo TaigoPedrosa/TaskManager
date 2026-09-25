@@ -8,9 +8,11 @@ from fastapi.testclient import TestClient
 
 from taskmanager.core.enums import NodeKind, NodeStatus, RelationType, VerificationType
 from taskmanager.core.models import Node, NodeRelation, NodeVerification
+from taskmanager.core.status import DecisionStatus
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
+from taskmanager.engine.snapshot import stored_status
 from taskmanager.web.app import create_app
 
 SAME_ORIGIN = "http://testserver"
@@ -227,12 +229,9 @@ def test_post_dependencies_add_and_remove(
     api: tuple[TestClient, NodeRepository, LedgerRepository],
 ) -> None:
     client, node_repo, _ledger_repo = api
-    res = client.post(
-        "/api/nodes/SPEC-P1-T2/dependencies",
-        json={"add": [{"id": "SPEC-P1-T1", "gate": "WAITING_REVIEW"}]},
-    )
+    res = client.post("/api/nodes/SPEC-P1-T2/dependencies", json={"add": [{"id": "SPEC-P1-T1"}]})
     assert res.status_code == 200
-    assert res.json() == [{"id": "SPEC-P1-T1", "gate": "WAITING_REVIEW"}]
+    assert res.json() == [{"id": "SPEC-P1-T1"}]
     assert node_repo.get_dependencies("SPEC-P1-T2") == ["SPEC-P1-T1"]
 
     res2 = client.post("/api/nodes/SPEC-P1-T2/dependencies", json={"remove": ["SPEC-P1-T1"]})
@@ -478,7 +477,7 @@ def test_answer_decision_unblocks_dependent_task(
     assert res.status_code == 200
     node = node_repo.get_node("decision-D1")
     assert node is not None
-    assert node.status == NodeStatus.COMPLETED
+    assert node.status == DecisionStatus.ANSWERED
     assert node.frontmatter["decision"]["answer"]["answered_by"] == "owner"
 
 
@@ -491,7 +490,7 @@ def test_answer_decision_unknown_option_refused_and_writes_nothing(
     assert res.status_code == 400
     node = node_repo.get_node("decision-D1")
     assert node is not None
-    assert node.status == NodeStatus.NOT_STARTED
+    assert stored_status(node) == DecisionStatus.OPEN
 
 
 def test_reopen_and_withdraw_decision(
@@ -504,13 +503,13 @@ def test_reopen_and_withdraw_decision(
     assert res.status_code == 200
     node = node_repo.get_node("decision-D1")
     assert node is not None
-    assert node.status == NodeStatus.NOT_STARTED
+    assert node.status == DecisionStatus.OPEN
 
     res2 = client.post("/api/decisions/decision-D1/withdraw", json={"reason": "no longer relevant"})
     assert res2.status_code == 200
     node2 = node_repo.get_node("decision-D1")
     assert node2 is not None
-    assert node2.status == NodeStatus.ABANDONED
+    assert node2.status == DecisionStatus.WITHDRAWN
 
 
 def test_decision_blocks_add_and_remove(

@@ -18,6 +18,9 @@ DECISION_STATUS_LABELS: dict[str, str] = {
     "NOT_STARTED": "Open",
     "COMPLETED": "Answered",
     "ABANDONED": "Withdrawn",
+    DecisionStatus.OPEN.value: "Open",
+    DecisionStatus.ANSWERED.value: "Answered",
+    DecisionStatus.WITHDRAWN.value: "Withdrawn",
 }
 
 # The section each effect appends its note to, beside the ledger entry.

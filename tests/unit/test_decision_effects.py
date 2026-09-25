@@ -3,9 +3,9 @@ from pathlib import Path
 
 import pytest
 
-from taskmanager.core.enums import NodeKind, NodeStatus, RelationType
+from taskmanager.core.enums import NodeKind, RelationType
 from taskmanager.core.models import Job, Lease, Node, NodeRelation
-from taskmanager.core.status import DecisionEffect, JobKind, Outcome, Status
+from taskmanager.core.status import DecisionEffect, DecisionStatus, JobKind, Outcome, Status
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
@@ -334,7 +334,7 @@ def test_an_effect_the_node_cannot_take_refuses_the_whole_answer(
     with pytest.raises(OperationError) as refused:
         kit.ops.answer_decision(decision_id, option="go")
     assert refused.value.status_code == 409
-    assert kit.node(decision_id).status == NodeStatus.NOT_STARTED
+    assert kit.node(decision_id).status == DecisionStatus.OPEN
     assert (kit.node("T").status, kit.node("U").status) == (status, Status.FAILED)
     assert kit.nodes.get_all_sections("U") == []
     assert len(kit.ledger.list_events(limit=1000)) == before
@@ -348,7 +348,7 @@ def test_an_effect_waits_for_a_step_that_started_after_the_link(kit: Kit) -> Non
         kit.ops.answer_decision(decision_id, option="go")
     assert refused.value.status_code == 409
     assert kit.node("T").status == Status.READY
-    assert kit.node(decision_id).status == NodeStatus.NOT_STARTED
+    assert kit.node(decision_id).status == DecisionStatus.OPEN
 
 
 def test_a_reopen_waits_while_another_decision_is_open_on_the_node(kit: Kit) -> None:
