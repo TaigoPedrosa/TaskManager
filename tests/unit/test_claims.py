@@ -837,3 +837,19 @@ def test_an_investigate_answer_ends_a_parked_landing_s_red_target_wait(tmp_path:
 
     assert stored(claims, "T1").status == Status.READY
     assert claims.nodes.get_conditions("T1") == []
+
+
+def test_reopening_a_container_on_a_new_branch_retires_it_where_only_a_set_aside_child_worked(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path, repos=("api", "web"))
+    add(claims, "P", NodeKind.PLAN, status=Status.DEFERRED)
+    add(claims, "P-a", parent="P", repo="api", status=Status.DEFERRED)
+    add(claims, "P-b", parent="P", repo="web")
+    for repo in ("api", "web"):
+        branch_at(claims.root / repo, "tm/P")
+
+    claims.reopen("P", "start over", new_branch=True)
+
+    for repo in ("api", "web"):
+        assert git(claims.root / repo, "branch", "--list", "tm/P*").split() == ["tm/P@1"]

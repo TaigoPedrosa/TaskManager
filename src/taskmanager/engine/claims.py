@@ -914,9 +914,11 @@ class Claims:
 
     def _retire_branch(self, node_id: str) -> None:
         """Keeps the old branch as `<branch>@<n>`, and its worktree beside the old path under the
-        same suffix, so the reopened node is cut clean where its worktree always goes."""
+        same suffix, so the reopened node is cut clean where its worktree always goes. Every
+        cloned repository is swept: a set-aside child that later comes back would otherwise build
+        on the old branch in a repository only it touched."""
         branch = self.branch_of(node_id)
-        for repo in self.repos_of(node_id):
+        for repo in self.known_repos():
             repo_dir = self.root / repo
             if not gitops.rev_parse(repo_dir, f"refs/heads/{branch}"):
                 continue
