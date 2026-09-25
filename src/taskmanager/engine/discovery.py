@@ -89,11 +89,18 @@ def discover(
     slots: int,
     max_strong: int,
     exclude: list[str] | None = None,
+    hold_merge: list[str] | None = None,
 ) -> tuple[str, int]:
     claims.sweep()
     snap = claims.snapshots.build()
     excluded = set(exclude or [])
-    mine = [lease for lease in claims.runtime.list_leases() if lease.session_id == session]
+    merge_held = set(hold_merge or [])
+    # A lease parked for an agent (no TTL) is a stopped job nobody runs, so it fills no slot.
+    mine = [
+        lease
+        for lease in claims.runtime.list_leases()
+        if lease.session_id == session and lease.ttl_seconds is not None
+    ]
     free = slots - len(mine)
     strong_free = max_strong - sum(lease.model in STRONG for lease in mine)
     held: list[str] = []
@@ -105,6 +112,9 @@ def discover(
         node = cand.node
         if node.id in excluded:
             held.append(f"{node.id}: excluded by args")
+            continue
+        if cand.action == Action.MERGE and node.id in merge_held:
+            held.append(f"{node.id}: merge held by the dispatcher")
             continue
         repo = node.target_repo or ""
         migration = snap.nodes[node.id].writes_migration

@@ -267,3 +267,33 @@ def test_a_node_the_lifecycle_cannot_read_is_held_and_its_siblings_are_still_cho
     data = batch(claims)
     assert chosen(data) == [("OK", "implement")]
     assert data["held"] == ["BAD: REVIEWED with no outcome"]
+
+
+def test_a_held_merge_is_skipped_while_the_same_nodes_other_steps_are_offered(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path)
+    add(claims, "T1", status=Status.REVIEWED, outcome=Outcome.APPROVE)
+    add(claims, "T2", status=Status.IMPLEMENTED)
+    add(claims, "T3")
+    add(claims, "T4", status=Status.REVIEWED, outcome=Outcome.APPROVE)
+    hold(claims, "T4", "other", Status.MERGING, Action.MERGE)
+    waiting_job(claims, "T4", JobKind.LAND)
+
+    data = batch(claims, hold_merge=["T1", "T2", "T3", "T4"])
+
+    assert chosen(data) == [("T2", "review"), ("T3", "implement")]
+    assert "T1: merge held by the dispatcher" in data["held"]
+    assert "T4: merge held by the dispatcher" in data["held"]
+
+
+def test_a_job_parked_for_an_agent_takes_no_slot_of_its_session(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path)
+    add(claims, "T0", status=Status.REVIEWED, outcome=Outcome.APPROVE)
+    hold(claims, "T0", "s1", Status.MERGING, Action.MERGE)
+    waiting_job(claims, "T0", JobKind.LAND)
+    add(claims, "T1")
+
+    data = batch(claims, slots=1)
+
+    assert (chosen(data), data["waiting_for_slot"], data["mine"]) == ([("T0", "merge")], 1, 0)
