@@ -118,8 +118,7 @@ def test_the_guides_show_enough_commands_to_be_worth_checking() -> None:
         assert _tm_commands(_guide_text(topic)), f"guide '{topic}' shows no `tm` command"
 
 
-@pytest.mark.parametrize("topic,command", _CASES, ids=[f"{t}:{c}" for t, c in _CASES])
-def test_guide_command_exists(topic: str, command: str) -> None:
+def _assert_command_exists(where: str, command: str) -> None:
     tokens = _tokens(command)
     if not tokens:
         return
@@ -129,7 +128,12 @@ def test_guide_command_exists(topic: str, command: str) -> None:
         if not token.startswith("-"):
             continue
         flag = token.split("=", 1)[0]
-        assert flag in accepted, f"`{name}` has no flag {flag} ({topic}.md shows `{command}`)"
+        assert flag in accepted, f"`{name}` has no flag {flag} ({where} shows `{command}`)"
+
+
+@pytest.mark.parametrize("topic,command", _CASES, ids=[f"{t}:{c}" for t, c in _CASES])
+def test_guide_command_exists(topic: str, command: str) -> None:
+    _assert_command_exists(f"{topic}.md", command)
 
 
 RETIRED = (
@@ -183,3 +187,44 @@ def test_dispatch_guide_names_every_argument_tm_wave_reads() -> None:
     assert read, "no argument found in the workflow script"
     text = _guide_text("dispatch")
     assert sorted(arg for arg in read if f"`{arg}`" not in text) == []
+
+
+REPO = Path(__file__).resolve().parents[2]
+DOCS = (
+    "README.md",
+    "agents/tm-op.md",
+    "commands/board.md",
+    "commands/task.md",
+    "commands/tm.md",
+    "skills/dispatcher/SKILL.md",
+    "skills/taskmanager/SKILL.md",
+    "src/taskmanager/skills/dispatcher/SKILL.md",
+    "src/taskmanager/skills/taskmanager/SKILL.md",
+)
+
+
+def _doc_text(doc: str) -> str:
+    return (REPO / doc).read_text(encoding="utf-8")
+
+
+_DOC_CASES = [
+    (doc, cmd)
+    for doc in DOCS
+    for cmd in _tm_commands(_doc_text(doc))
+    if not _tokens(cmd)[:1] or not _tokens(cmd)[0].startswith("$")
+]
+
+
+def test_the_docs_show_enough_commands_to_be_worth_checking() -> None:
+    assert len(_DOC_CASES) >= 15, f"only {len(_DOC_CASES)} `tm` commands found in the shipped docs"
+
+
+@pytest.mark.parametrize("doc,command", _DOC_CASES, ids=[f"{d}:{c}" for d, c in _DOC_CASES])
+def test_doc_command_exists(doc: str, command: str) -> None:
+    _assert_command_exists(doc, command)
+
+
+@pytest.mark.parametrize("doc", DOCS)
+def test_doc_carries_no_retired_lifecycle_vocabulary(doc: str) -> None:
+    text = _doc_text(doc)
+    assert [word for word in RETIRED if word in text] == []

@@ -14,4 +14,4 @@ Show the task graph and dashboard. Neither form changes anything in the database
   in the background only with its PID recorded, and stop that PID before going idle.
 
 For a state you want to read rather than look at, no server is needed:
-`tm next -n 5 --yaml`, `tm task list --yaml`, `tm run list --yaml`.
+`tm task list --yaml`, `tm run list --yaml`, `tm decision list --status open`.

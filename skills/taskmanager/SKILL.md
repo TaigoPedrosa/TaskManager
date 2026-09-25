@@ -5,7 +5,7 @@ description: Use when about to claim, build, review, fix, merge or hand off a ta
 
 # TaskManager
 
-`tm` is a local CLI over a SQLite task graph: it holds the specs, plans and tasks, claims a task with a lease, cuts the worktree and branch the work happens in, runs the task's verifications, and moves it through the lifecycle. It is the only record of what is planned, claimed, built and finished, and the only thing that writes it.
+`tm` is a local CLI over a SQLite task graph: it holds the specs, plans and tasks, claims each step of one with a lease and tells you which step it is, cuts the worktree the work happens in, lands the branch on its parent's branch or on `main`, and verifies it there. It is the only record of what is planned, claimed, built and finished, and the only thing that writes it.
 
 The instructions ship with the tool and are printed on demand, so nothing here repeats them.
 
@@ -18,10 +18,10 @@ tm guide <topic>    # the built-in guidance, then this project's addendum
 
 | Doing | Topic |
 |:--|:--|
-| building a `READY` task | `tm guide implement` |
-| reviewing a `WAITING_REVIEW` task | `tm guide review` |
-| closing findings on a `WAITING_FIXES` task | `tm guide fix` |
-| landing a `WAITING_MERGE` task | `tm guide merge` |
+| a step `tm task start` printed as `action: implement` | `tm guide implement` |
+| a step printed as `action: review` | `tm guide review` |
+| a step printed as `action: fix` | `tm guide fix` |
+| a landing or a sync tm stopped for an agent | `tm guide merge` |
 | anything else, or first contact with `tm` | `tm guide overview` |
 
-Run it before your first `tm` command, not after: it names the flags, what each refusal means, and the handoff you owe. A project's own conventions are appended to the same output, so the guide you read is the one that applies here.
+Run it before your first `tm` command, not after: it names the flags, what each refusal means, and the verb that closes your step. A project's own conventions are appended to the same output, so the guide you read is the one that applies here.

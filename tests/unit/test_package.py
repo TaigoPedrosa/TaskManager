@@ -1,6 +1,36 @@
+import json
+import tomllib
+from pathlib import Path
+
 import taskmanager
+
+RELEASE = "0.3.0"
 
 
 def test_version_defined() -> None:
     assert hasattr(taskmanager, "__version__")
     assert isinstance(taskmanager.__version__, str)
+
+
+def test_every_manifest_carries_the_release_version() -> None:
+    def read_json(path: str) -> dict[str, object]:
+        loaded: dict[str, object] = json.loads(Path(path).read_text(encoding="utf-8"))
+        return loaded
+
+    marketplace = read_json(".claude-plugin/marketplace.json")["plugins"]
+    assert isinstance(marketplace, list)
+    project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]
+    versions = {
+        "pyproject": project["version"],
+        "package": taskmanager.__version__,
+        "plugin": read_json(".claude-plugin/plugin.json")["version"],
+        "marketplace": [plugin["version"] for plugin in marketplace],
+        "gemini": read_json("gemini-extension.json")["version"],
+    }
+    assert versions == {
+        "pyproject": RELEASE,
+        "package": RELEASE,
+        "plugin": RELEASE,
+        "marketplace": [RELEASE],
+        "gemini": RELEASE,
+    }

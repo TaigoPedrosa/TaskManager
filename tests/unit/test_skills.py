@@ -1,6 +1,8 @@
 import re
 from pathlib import Path
 
+import pytest
+
 
 def _parse_frontmatter(text: str) -> dict[str, str]:
     match = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
@@ -53,21 +55,23 @@ def test_taskmanager_skill_sends_the_agent_to_the_guides() -> None:
     assert len(content.splitlines()) <= 60, "the skill is restating what the guides already print"
 
 
-def test_the_bundled_skill_matches_the_plugin_skill() -> None:
+@pytest.mark.parametrize("skill", ["taskmanager", "dispatcher"])
+def test_the_bundled_skill_matches_the_plugin_skill(skill: str) -> None:
     """Two copies ship: the plugin reads one and the package the other."""
-    plugin = Path("skills/taskmanager/SKILL.md").read_text(encoding="utf-8")
-    bundled = Path("src/taskmanager/skills/taskmanager/SKILL.md").read_text(encoding="utf-8")
+    plugin = Path(f"skills/{skill}/SKILL.md").read_text(encoding="utf-8")
+    bundled = Path(f"src/taskmanager/skills/{skill}/SKILL.md").read_text(encoding="utf-8")
     assert plugin == bundled
 
 
-def test_dispatcher_skill_cli_instructions() -> None:
-    dispatcher_skill = Path("src/taskmanager/skills/dispatcher/SKILL.md")
-    assert dispatcher_skill.exists()
-    content = dispatcher_skill.read_text(encoding="utf-8")
-
-    assert "disjoint" in content.lower()
-    assert "tm next" in content
-    assert "--strategy balanced" in content
-    assert "acceptable_models" in content
-    assert "review" in content.lower()
-    assert "supersede" in content.lower()
+def test_dispatcher_skill_runs_waves_through_tm_wave() -> None:
+    content = Path("src/taskmanager/skills/dispatcher/SKILL.md").read_text(encoding="utf-8")
+    for needle in (
+        "tm guide dispatch",
+        "tm-wave",
+        "tm wave discover",
+        "tm task start",
+        "holdMerge",
+        "acceptable_models",
+        "disjoint",
+    ):
+        assert needle in content, needle
