@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -24,6 +24,9 @@ from taskmanager.core.status import (
 )
 
 _CONTAINERS = frozenset({NodeKind.PLAN, NodeKind.SPEC})
+
+# `blocked` exits `tm task start` with nothing written (spec §5.2): a lease never holds it.
+LeaseAction = Literal[Action.IMPLEMENT, Action.REVIEW, Action.FIX, Action.MERGE, Action.SYNC]
 
 
 class Node(BaseModel):
@@ -116,7 +119,7 @@ class Lease(BaseModel):
     acquired_at: datetime = Field(default_factory=datetime.now)
     last_heartbeat: datetime = Field(default_factory=datetime.now)
     ttl_seconds: int | None = 300
-    action: Action | None = None
+    action: LeaseAction | None = None
     review_hash: str | None = None
     model: str | None = None
 

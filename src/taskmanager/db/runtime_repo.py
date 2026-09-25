@@ -1,9 +1,9 @@
 import sqlite3
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from taskmanager.core.enums import LockType
-from taskmanager.core.models import FileLock, Lease, Node
+from taskmanager.core.models import FileLock, Lease, LeaseAction, Node
 from taskmanager.core.status import Action
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.utils import parse_db_datetime, to_db_timestamp
@@ -48,7 +48,8 @@ def _row_to_lease(row: tuple[Any, ...]) -> Lease:
         acquired_at=parse_db_datetime(row[6]),
         last_heartbeat=parse_db_datetime(row[7]),
         ttl_seconds=row[8],
-        action=Action(row[9]) if row[9] else None,
+        # the CHECK constraint on `leases.action` already excludes 'blocked'
+        action=cast(LeaseAction, Action(row[9])) if row[9] else None,
         review_hash=row[10],
         model=row[11],
     )
