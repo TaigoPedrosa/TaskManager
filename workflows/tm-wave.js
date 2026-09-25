@@ -254,7 +254,9 @@ async function work(n, c, s, trail) {
       ? `Scope: every finding in tm section ${n.id}:review not yet recorded as closed, against the fix commits on ${c.branch} and the fixer's latest :report entry, and, when the last landing failed, the failure its latest :merge entry names. Establish each closure by mutation.`
       : `Scope: the whole diff of ${c.branch} from its base, in each repository it touched: ${repos.map(r => `git -C ${ROOT}/${r} diff ${base}...${c.branch}`).join('; ')}.${container ? ' This is a container review: read what is true only between its children, and every child tm render lists as rejected by its own review.' : ''}`
     body += `\nFindings: append numbered findings to tm section ${n.id}:review, one line each; write it even when nothing is open, saying so.`
-    body += `\nScratch: a worktree you cut to execute the code goes at ${WT}/${n.id}-review, detached, and you remove it with git worktree remove before you close the step.`
+    // One scratch path per repository: a container review may execute code in several.
+    const scratch = repos.map(r => `${WT}/${r}-${n.id}-review`).join(' or ') || `${WT}/<repo>-${n.id}-review`
+    body += `\nScratch: a worktree you cut to execute the code goes at ${scratch}, the one named for its repository, detached, and you remove it with git worktree remove before you close the step.`
   } else {
     // A container's step spans repositories, and tm cuts one worktree of its branch in each.
     const trees = Object.entries(c.worktrees || {})

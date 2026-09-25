@@ -35,8 +35,8 @@ git -C <repo> show <branch>:<path>
 Read only. Do not check the branch out in the project's own checkout, do not edit a file, do not run a formatter. If you must execute the code, cut a detached worktree where the workflow's prompt says (on your own, under your session's scratch directory), never inside the project, and remove it before you close the step:
 
 ```
-git -C <repo> worktree add --detach <scratch>/<node-id>-review <branch>
-git -C <repo> worktree remove <scratch>/<node-id>-review
+git -C <repo> worktree add --detach <scratch>/<repo>-<node-id>-review <branch>
+git -C <repo> worktree remove <scratch>/<repo>-<node-id>-review
 ```
 
 Say in the review that you executed it, and where.

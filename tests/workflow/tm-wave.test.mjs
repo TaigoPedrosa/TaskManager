@@ -465,6 +465,7 @@ for (const [base, from] of [['main', 'origin/main'], ['tm/S1', 'tm/S1']]) {
     assert.ok(work[0].prompt.includes(`git -C /est/core diff ${from}...tm/P1`))
     assert.ok(work[0].prompt.includes(`git -C /est/web diff ${from}...tm/P1`))
     assert.ok(work[0].prompt.includes('container review'))
+    assert.ok(work[0].prompt.includes('/wt/core-P1-review') && work[0].prompt.includes('/wt/web-P1-review'))
   })
 }
 
@@ -482,7 +483,7 @@ test('a review after a fix is scoped to the open findings, on the re-reviewer', 
   assert.ok(!work[0].prompt.includes('diff origin/main'))
   assert.ok(work[0].prompt.includes('tm task review T1 --agent wf-s1-T1 --token k1 --approve or --reject'))
   assert.ok(work[0].prompt.includes('git worktree remove'))
-  assert.ok(work[0].prompt.includes('/wt/T1-review'))
+  assert.ok(work[0].prompt.includes('/wt/core-T1-review'))
 })
 
 test('a container fix across repositories names the worktree tm cut in each', async () => {
