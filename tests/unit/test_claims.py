@@ -42,6 +42,23 @@ def decisions_blocking(claims: Claims, node_id: str) -> list[str]:
     ]
 
 
+def test_a_containers_locked_files_are_the_same_set_the_display_builds_from_its_snapshot(
+    tmp_path: Path,
+) -> None:
+    """A set-aside child's files are excluded from both: one walk, read two ways."""
+    claims = make_estate(tmp_path)
+    add(claims, "P1", kind=NodeKind.PLAN)
+    add(claims, "T1", parent="P1", files=["api/a.py"])
+    add(claims, "T2", parent="P1", files=["api/b.py"], status=Status.SUPERSEDED)
+    node = stored(claims, "P1")
+    snap = claims.snapshots.build()
+
+    locked = claims._locked_files(node, Action.FIX, snap)
+
+    assert locked == ["api/a.py"]
+    assert locked == claims.snapshots.lock_set("P1", snap)
+
+
 def test_an_implement_claim_cuts_the_branch_from_origin_main_and_locks_declared_files(
     tmp_path: Path,
 ) -> None:

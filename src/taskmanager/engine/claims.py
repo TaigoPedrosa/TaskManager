@@ -231,19 +231,12 @@ class Claims:
         age = (datetime.now(tz=UTC) - lease.last_heartbeat).total_seconds()
         return age <= lease.ttl_seconds
 
-    def _locked_files(self, node: Node, action: Action | None) -> list[str]:
+    def _locked_files(self, node: Node, action: Action | None, snap: Snapshot) -> list[str]:
+        """The same union a claim locks and the display's `files_conflict` reads: one walk over
+        the snapshot, through `SnapshotBuilder.lock_set`, so the two can never drift apart."""
         if action not in (Action.IMPLEMENT, Action.FIX):
             return []
-        own = self.nodes.declared_files(node.id)
-        if own or not self.is_container(node):
-            return own
-        return list(
-            dict.fromkeys(
-                f
-                for d in self.ops.counted_descendants(node.id)
-                for f in self.nodes.declared_files(d)
-            )
-        )
+        return self.snapshots.lock_set(node.id, snap)
 
     def blocked_reason(self, node: Node, snap: Snapshot, action: Action | None) -> str | None:
         """Why `node` cannot be claimed now, the first reason in claimability order; None when
@@ -282,7 +275,7 @@ class Claims:
             return "no target_repo: a task is cut and landed in its target repository"
         if action == Action.MERGE and not self.repos_of(node.id):
             return "nothing to land: no task under it names a target_repo"
-        conflicts = self.runtime.get_conflicting_tasks(self._locked_files(node, action))
+        conflicts = self.runtime.get_conflicting_tasks(self._locked_files(node, action, snap))
         if conflicts:
             return f"declared files locked: {', '.join(sorted(conflicts))}"
         return None
@@ -353,7 +346,7 @@ class Claims:
             job = self._landing().start_sync(node.id, pairs)
             branches = ", ".join(dict.fromkeys(base for _, base, _ in units))
             return ClaimResult(Action.BLOCKED, f"syncing {branches}", job=job)
-        return self._claim(node, cycle, action, agent, session, ttl, worktree_dir)
+        return self._claim(node, cycle, action, agent, session, ttl, worktree_dir, snap)
 
     def _hand_over(
         self, node: Node, agent: str, session: str, ttl: int | None
@@ -398,6 +391,7 @@ class Claims:
         session: str,
         ttl: int | None,
         worktree_dir: Path | None,
+        snap: Snapshot,
     ) -> ClaimResult:
         claimed = lifecycle.claim(cycle)
         after = self._with_cycle(node, claimed)
@@ -412,7 +406,9 @@ class Claims:
             review_hash=self._review_hash(node.id) if action == Action.REVIEW else None,
             model=model,
         )
-        locks = [FileLock(file_path=f, task_id=node.id) for f in self._locked_files(node, action)]
+        locks = [
+            FileLock(file_path=f, task_id=node.id) for f in self._locked_files(node, action, snap)
+        ]
         if not self.runtime.claim(lease, locks, after):
             return ClaimResult(Action.BLOCKED, "claimed by another session at the same instant")
         self._ledger(
