@@ -218,18 +218,7 @@ class Claims:
     target_ref = staticmethod(Operations.target_ref)
 
     def repos_of(self, node_id: str) -> list[str]:
-        """A task's target repository; a container's, the repositories of its descendant tasks
-        in landing order (`land_order`, then config `repo_order`, then by name)."""
-        node = self.node(node_id)
-        if not self.is_container(node):
-            return [node.target_repo] if node.target_repo else []
-        found: set[str] = set()
-        for descendant in self.ops.counted_descendants(node_id):
-            child = self.nodes.get_node(descendant)
-            if child is not None and child.target_repo:
-                found.add(child.target_repo)
-        order = [*node.land_order, *self.config.repo_order]
-        return sorted(found, key=lambda r: (order.index(r) if r in order else len(order), r))
+        return self.ops.repos_of(self.node(node_id).id, self.config.repo_order)
 
     def ttl_for(self, action: Action) -> int:
         return self.config.lease_ttl_for(action)

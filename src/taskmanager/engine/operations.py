@@ -1,6 +1,6 @@
 import hashlib
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -241,17 +241,27 @@ class Operations:
             frontier.extend(self.node_repo.get_children(child))
         return found
 
+    def repos_of(self, node_id: str, repo_order: Sequence[str] = ()) -> list[str]:
+        """A task's target repository; a container's, the repositories of its counted
+        descendants in landing order (`land_order`, then `repo_order`, then by name)."""
+        node = self.node_repo.get_node(node_id)
+        if node is None:
+            return []
+        if node.kind not in CONTAINERS:
+            return [node.target_repo] if node.target_repo else []
+        found = {
+            child.target_repo
+            for d in self.counted_descendants(node_id)
+            if (child := self.node_repo.get_node(d)) is not None and child.target_repo
+        }
+        order = [*node.land_order, *repo_order]
+        return sorted(found, key=lambda r: (order.index(r) if r in order else len(order), r))
+
     def nothing_to_land(self, container_id: str) -> bool:
         """True when the container's branch changes nothing against its landing target in every
         repository its counted tasks name. No repository named, a git error, or a repository
         not cloned here reads as a change: nothing then proves the code is on its target."""
-        if self.node_repo.get_node(container_id) is None:
-            return False
-        repos = {
-            node.target_repo
-            for d in self.counted_descendants(container_id)
-            if (node := self.node_repo.get_node(d)) is not None and node.target_repo
-        }
+        repos = self.repos_of(container_id)
         base = self.target_ref(self.target_of(container_id))
         branch = self.branch_of(container_id)
         root = self._project_root()
@@ -261,7 +271,7 @@ class Operations:
                 not gitops.rev_parse(root / repo, f"refs/heads/{branch}")
                 or gitops.diff_quiet(root / repo, base, branch)
             )
-            for repo in sorted(repos)
+            for repo in repos
         )
 
     def _ledger(
