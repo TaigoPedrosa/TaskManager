@@ -11,7 +11,7 @@ from taskmanager.web.ui import get_web_html
 
 
 def _task(status: str) -> dict[str, Any]:
-    return {"kind": "task", "virtual_status": status, "children": []}
+    return {"kind": "task", "display": status, "children": []}
 
 
 def test_add_progress_counts_set_aside_work_apart_from_completed() -> None:

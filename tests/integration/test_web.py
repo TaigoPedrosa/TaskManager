@@ -5,19 +5,14 @@ import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import _find_available_port, app
-from taskmanager.core.enums import (
-    NodeKind,
-    NodeStatus,
-    RelationType,
-    VerificationType,
-    VirtualStatus,
-)
+from taskmanager.core.enums import NodeKind, RelationType, VerificationType
 from taskmanager.core.models import (
     FileLock,
     Lease,
@@ -26,6 +21,7 @@ from taskmanager.core.models import (
     NodeSection,
     NodeVerification,
 )
+from taskmanager.core.status import Action, DecisionStatus, DisplayStatus, Outcome, Phase, Status
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
@@ -52,7 +48,7 @@ def test_web_api_endpoints_and_ui(tmp_path: Path) -> None:
             id="AUTH-T1",
             kind=NodeKind.TASK,
             title="Implement Token Verification",
-            status=NodeStatus.NOT_STARTED,
+            status=Status.READY,
             priority=85,
             acceptable_models=["claude-3-7-sonnet"],
         )
@@ -105,7 +101,7 @@ def test_web_api_endpoints_and_ui(tmp_path: Path) -> None:
     node_detail = res_node.json()
     assert node_detail["node"]["id"] == "AUTH-T1"
     assert node_detail["node"]["priority"] == 85
-    assert node_detail["virtual_status"] == "READY"
+    assert node_detail["display"] == "READY"
     assert len(node_detail["sections"]) == 1
     assert "## Steps" in node_detail["rendered_markdown"]
     assert len(node_detail["verifications"]) == 1
@@ -119,7 +115,7 @@ def test_web_api_endpoints_and_ui(tmp_path: Path) -> None:
     assert res_stats.status_code == 200
     stats = res_stats.json()
     assert stats["total"] >= 1
-    assert stats["READY"] >= 1
+    assert stats["display"]["READY"] >= 1
 
     # 7. WebSocket connection
     with client.websocket_connect("/ws") as ws:
@@ -202,65 +198,91 @@ def test_cli_web_uninitialized_error(tmp_path: Path) -> None:
     assert "not initialized" in res.stdout
 
 
-ALL_STATUS_CODES = {s.value for s in NodeStatus} | {v.value for v in VirtualStatus}
+SEEDED_DISPLAY = {
+    "T-READY": "READY",
+    "T-IMPLEMENTING": "IMPLEMENTING",
+    "T-STALE": "STALE",
+    "T-WAITING-REVIEW": "WAITING_REVIEW",
+    "T-WAITING-FIX": "WAITING_FIX",
+    "T-WAITING-MERGE": "WAITING_MERGE",
+    "T-COMPLETED": "COMPLETED",
+    "T-FAILED": "FAILED",
+    "T-DEFERRED": "DEFERRED",
+    "T-ABANDONED": "ABANDONED",
+    "T-SUPERSEDED": "SUPERSEDED",
+    "T-AWAITING-DECISION": "AWAITING_DECISION",
+    "T-BLOCKED": "BLOCKED_BY_TASK",
+    "T-BLOCKED-BY-LEASE": "BLOCKED_BY_LEASE",
+}
+DISPLAY_CODES = {d.value for d in DisplayStatus}
 
 
 @pytest.fixture
-def every_status_project(tmp_path: Path) -> Path:
+def every_display_project(tmp_path: Path) -> Path:
     db_mgr = DatabaseManager(tmp_path / ".taskmanager")
     db_mgr.init_all()
     node_repo = NodeRepository(db_mgr)
-    node_repo.save_node(Node(id="SPEC", kind=NodeKind.SPEC, title="Spec"))
-    node_repo.save_node(Node(id="PLAN", kind=NodeKind.PLAN, title="Plan"))
+    for node_id, kind in (("SPEC", NodeKind.SPEC), ("PLAN", NodeKind.PLAN)):
+        node_repo.save_node(
+            Node(
+                id=node_id,
+                kind=kind,
+                title=node_id.title(),
+                status=Status.READY,
+                review=False,
+                fix=False,
+            )
+        )
     node_repo.add_relation(
         NodeRelation(source_id="SPEC", target_id="PLAN", relation_type=RelationType.CONTAINS)
     )
+    shared_path = "src/shared/module.py"
 
-    def add_task(task_id: str, status: NodeStatus, repo: str = "core") -> None:
+    def add_task(task_id: str, status: Status, repo: str = "core", **fields: Any) -> None:
         node_repo.save_node(
             Node(
                 id=task_id,
                 kind=NodeKind.TASK,
                 title=f"Task {task_id}",
                 status=status,
+                review=True,
+                fix=True,
                 target_repo=repo,
                 acceptable_models=["claude-opus-5"] if repo == "core" else ["gemini-flash"],
+                **fields,
             )
         )
         node_repo.add_relation(
             NodeRelation(source_id="PLAN", target_id=task_id, relation_type=RelationType.CONTAINS)
         )
 
-    for status in NodeStatus:
-        if status is not NodeStatus.NOT_STARTED:
-            add_task(
-                f"T-{status.value}",
-                status,
-                repo="web" if status is NodeStatus.IMPLEMENTING else "core",
-            )
-    add_task("T-READY", NodeStatus.NOT_STARTED)
-    add_task("T-BLOCKED", NodeStatus.NOT_STARTED)
-    add_task("T-INFLIGHT", NodeStatus.NOT_STARTED)
-    add_task("T-BLOCKED-BY-LEASE", NodeStatus.NOT_STARTED)
-    add_task("T-AWAITING-DECISION", NodeStatus.NOT_STARTED)
-    node_repo.save_node(Node(id="DECISION", kind=NodeKind.DECISION, title="Which way?"))
-    node_repo.add_relation(
-        NodeRelation(
-            source_id="T-AWAITING-DECISION",
-            target_id="DECISION",
-            relation_type=RelationType.DEPENDS_ON,
-        )
+    add_task("T-READY", Status.READY)
+    add_task(
+        "T-IMPLEMENTING", Status.READY, repo="web", frontmatter={"declared_files": [shared_path]}
     )
-    node_repo.add_relation(
-        NodeRelation(
-            source_id="T-BLOCKED", target_id="T-IMPLEMENTING", relation_type=RelationType.DEPENDS_ON
-        )
+    add_task("T-STALE", Status.IMPLEMENTING, claimed_from=Status.READY)
+    add_task("T-WAITING-REVIEW", Status.IMPLEMENTED)
+    add_task("T-WAITING-FIX", Status.REVIEWED, outcome=Outcome.REJECT)
+    add_task("T-WAITING-MERGE", Status.REVIEWED, outcome=Outcome.APPROVE)
+    add_task("T-COMPLETED", Status.COMPLETED)
+    add_task("T-FAILED", Status.FAILED)
+    add_task("T-DEFERRED", Status.DEFERRED)
+    add_task("T-ABANDONED", Status.ABANDONED)
+    add_task("T-SUPERSEDED", Status.SUPERSEDED)
+    add_task("T-AWAITING-DECISION", Status.READY)
+    add_task("T-BLOCKED", Status.READY)
+    add_task("T-BLOCKED-BY-LEASE", Status.READY, frontmatter={"declared_files": [shared_path]})
+    node_repo.save_node(
+        Node(id="DECISION", kind=NodeKind.DECISION, title="Which way?", status=DecisionStatus.OPEN)
     )
-    node_repo.add_relation(
-        NodeRelation(
-            source_id="T-BLOCKED", target_id="T-SUPERSEDED", relation_type=RelationType.DEPENDS_ON
+    for source, target in (
+        ("T-AWAITING-DECISION", "DECISION"),
+        ("T-BLOCKED", "T-IMPLEMENTING"),
+        ("T-BLOCKED", "T-SUPERSEDED"),
+    ):
+        node_repo.add_relation(
+            NodeRelation(source_id=source, target_id=target, relation_type=RelationType.DEPENDS_ON)
         )
-    )
     node_repo.save_section(
         NodeSection(
             node_id="T-DEFERRED",
@@ -270,68 +292,79 @@ def every_status_project(tmp_path: Path) -> Path:
             content="line one\nline two",
         )
     )
-    # T-INFLIGHT's own active lease locks a path T-BLOCKED-BY-LEASE also declares, so the
-    # latter's dependencies are all clear (it has none) but the file it needs is held.
-    shared_path = "src/shared/module.py"
-    node_repo.add_verification(
-        NodeVerification(
-            node_id="T-BLOCKED-BY-LEASE",
-            verification_type=VerificationType.FILE_EXISTS,
-            target_path=shared_path,
-        )
+    claimed = node_repo.get_node("T-IMPLEMENTING")
+    assert claimed is not None
+    claimed.status, claimed.claimed_from = Status.IMPLEMENTING, Status.READY
+    lease = Lease(
+        task_id="T-IMPLEMENTING",
+        agent_id="agent",
+        session_id="session",
+        branch_name="tm/T-IMPLEMENTING",
+        action=Action.IMPLEMENT,
+        acquired_at=datetime.now(tz=UTC),
+        last_heartbeat=datetime.now(tz=UTC),
+        ttl_seconds=300,
     )
-    RuntimeRepository(db_mgr).acquire_lease(
-        Lease(
-            task_id="T-INFLIGHT",
-            agent_id="agent",
-            session_id="session",
-            branch_name="branch",
-            acquired_at=datetime.now(tz=UTC),
-            last_heartbeat=datetime.now(tz=UTC),
-            ttl_seconds=300,
-        ),
-        [FileLock(file_path=shared_path, task_id="T-INFLIGHT")],
+    assert RuntimeRepository(db_mgr).claim(
+        lease, [FileLock(file_path=shared_path, task_id="T-IMPLEMENTING")], claimed
     )
     return tmp_path
 
 
-def test_stats_reports_every_status_including_zeros(every_status_project: Path) -> None:
-    stats = TestClient(create_app(every_status_project)).get("/api/stats").json()
-
-    assert ALL_STATUS_CODES <= stats.keys()
-    assert stats["total"] == 16
-    assert {code: stats[code] for code in ALL_STATUS_CODES} == {
-        **{code: 1 for code in ALL_STATUS_CODES},
-        NodeStatus.NOT_STARTED.value: 0,
+def test_stats_report_every_display_status_and_phase_including_zeros(
+    every_display_project: Path,
+) -> None:
+    stats = TestClient(create_app(every_display_project)).get("/api/stats").json()
+    assert stats["total"] == 14
+    assert set(stats["display"]) == DISPLAY_CODES
+    assert {k: v for k, v in stats["display"].items() if v} == {
+        code: 1 for code in SEEDED_DISPLAY.values()
+    }
+    assert set(stats["phase"]) == {p.value for p in Phase}
+    assert stats["phase"] == {
+        "QUEUED": 4,
+        "DISPATCHED": 5,
+        "COMPLETED": 1,
+        "FAILED": 1,
+        "DEFERRED": 1,
+        "ABANDONED": 1,
+        "SUPERSEDED": 1,
     }
 
 
-def test_tree_progress_counts_each_status_separately(every_status_project: Path) -> None:
-    tree = TestClient(create_app(every_status_project)).get("/api/tree").json()
+@pytest.mark.parametrize(("task_id", "display"), sorted(SEEDED_DISPLAY.items()))
+def test_every_seeded_task_reads_its_display_status(
+    every_display_project: Path, task_id: str, display: str
+) -> None:
+    detail = TestClient(create_app(every_display_project)).get(f"/api/nodes/{task_id}").json()
+    assert detail["display"] == display
+
+
+def test_tree_progress_counts_each_display_status_separately(every_display_project: Path) -> None:
+    tree = TestClient(create_app(every_display_project)).get("/api/tree").json()
     spec = tree[0]
     plan = spec["children"][0]
-
-    expected = {code: 1 for code in ALL_STATUS_CODES if code != NodeStatus.NOT_STARTED.value}
-    # SUPERSEDED, ABANDONED and DEFERRED (3 of the 16 tasks) are set aside: they can never
-    # finish, so they leave both `total` and its `done` count rather than diluting them.
-    assert plan["progress"] == {"done": 1, "total": 13, "set_aside": 3, "counts": expected}
+    expected = {code: 1 for code in SEEDED_DISPLAY.values()}
+    # DEFERRED, ABANDONED and SUPERSEDED can never finish, so they leave both `total` and its
+    # `done` count rather than diluting them.
+    assert plan["progress"] == {"done": 1, "total": 11, "set_aside": 3, "counts": expected}
     assert spec["progress"] == plan["progress"]
-    assert plan["progress"]["counts"]["COMPLETED"] == 1
+    assert (plan["status"], plan["display"]) == ("READY", "IMPLEMENTING")
 
 
-def test_spec_status_in_tree_is_a_rollup_not_its_stored_status(tmp_path: Path) -> None:
+def test_a_container_in_the_tree_shows_its_stored_status_beside_its_display(
+    tmp_path: Path,
+) -> None:
     db_mgr = DatabaseManager(tmp_path / ".taskmanager")
     db_mgr.init_all()
     node_repo = NodeRepository(db_mgr)
-    node_repo.save_node(
-        Node(id="S", kind=NodeKind.SPEC, title="Spec", status=NodeStatus.NOT_STARTED)
-    )
-    node_repo.save_node(Node(id="S-P1", kind=NodeKind.PLAN, title="Plan"))
+    node_repo.save_node(Node(id="S", kind=NodeKind.SPEC, title="Spec", status=Status.READY))
+    node_repo.save_node(Node(id="S-P1", kind=NodeKind.PLAN, title="Plan", status=Status.READY))
     node_repo.add_relation(
         NodeRelation(source_id="S", target_id="S-P1", relation_type=RelationType.CONTAINS)
     )
     node_repo.save_node(
-        Node(id="S-P1-T1", kind=NodeKind.TASK, title="Task", status=NodeStatus.COMPLETED)
+        Node(id="S-P1-T1", kind=NodeKind.TASK, title="Task", status=Status.COMPLETED)
     )
     node_repo.add_relation(
         NodeRelation(source_id="S-P1", target_id="S-P1-T1", relation_type=RelationType.CONTAINS)
@@ -339,10 +372,8 @@ def test_spec_status_in_tree_is_a_rollup_not_its_stored_status(tmp_path: Path) -
 
     tree = TestClient(create_app(tmp_path)).get("/api/tree").json()
     spec = next(n for n in tree if n["id"] == "S")
-
-    # The stored field never moves; the page reads the live rollup instead (§3.2a).
-    assert spec["status"] == "NOT_STARTED"
-    assert spec["virtual_status"] == "COMPLETED"
+    # Nothing re-derived the stored rollup, so the display reads the started descendant.
+    assert (spec["status"], spec["display"]) == ("READY", "IMPLEMENTING")
 
 
 def test_tree_includes_standalone_plans_alongside_a_spec(tmp_path: Path) -> None:
@@ -377,8 +408,8 @@ def test_tree_includes_standalone_plans_alongside_a_spec(tmp_path: Path) -> None
     assert [c["id"] for c in spec["children"]] == ["SPEC-PLAN"]
 
 
-def test_tree_and_graph_carry_task_score_and_dependents(every_status_project: Path) -> None:
-    client = TestClient(create_app(every_status_project))
+def test_tree_and_graph_carry_task_score_and_dependents(every_display_project: Path) -> None:
+    client = TestClient(create_app(every_display_project))
     plan = client.get("/api/tree").json()[0]["children"][0]
     tasks_by_id = {t["id"]: t for t in plan["children"]}
 
@@ -391,11 +422,11 @@ def test_tree_and_graph_carry_task_score_and_dependents(every_status_project: Pa
     assert graph_nodes["PLAN"]["score"] is None
 
 
-def test_tree_task_lists_dependencies_with_their_own_status(every_status_project: Path) -> None:
-    plan = TestClient(create_app(every_status_project)).get("/api/tree").json()[0]["children"][0]
+def test_tree_task_lists_dependencies_with_their_own_status(every_display_project: Path) -> None:
+    plan = TestClient(create_app(every_display_project)).get("/api/tree").json()[0]["children"][0]
     blocked = next(t for t in plan["children"] if t["id"] == "T-BLOCKED")
 
-    assert blocked["virtual_status"] == "BLOCKED"
+    assert blocked["display"] == "BLOCKED_BY_TASK"
     assert blocked["dependency_details"] == [
         {
             "id": "T-IMPLEMENTING",
@@ -424,7 +455,11 @@ def test_dependency_details_carry_kind_so_the_page_can_tell_a_decision_apart(
     db_mgr.init_all()
     node_repo = NodeRepository(db_mgr)
     node_repo.save_node(Node(id="T1", kind=NodeKind.TASK, title="Task"))
-    node_repo.save_node(Node(id="decision-D1", kind=NodeKind.DECISION, title="Which way?"))
+    node_repo.save_node(
+        Node(
+            id="decision-D1", kind=NodeKind.DECISION, title="Which way?", status=DecisionStatus.OPEN
+        )
+    )
     node_repo.add_relation(
         NodeRelation(source_id="T1", target_id="decision-D1", relation_type=RelationType.DEPENDS_ON)
     )
@@ -436,50 +471,46 @@ def test_dependency_details_carry_kind_so_the_page_can_tell_a_decision_apart(
             "id": "decision-D1",
             "title": "Which way?",
             "kind": "decision",
-            "status": "NOT_STARTED",
+            "status": "OPEN",
             "finished": False,
         }
     ]
 
 
-def test_node_detail_lists_dependencies_and_every_section(every_status_project: Path) -> None:
-    client = TestClient(create_app(every_status_project))
+def test_node_detail_lists_dependencies_and_every_section(every_display_project: Path) -> None:
+    client = TestClient(create_app(every_display_project))
     blocked = client.get("/api/nodes/T-BLOCKED").json()
     deferred = client.get("/api/nodes/T-DEFERRED").json()
 
     assert [d["id"] for d in blocked["dependency_details"] if not d["finished"]] == [
         "T-IMPLEMENTING"
     ]
-    assert deferred["virtual_status"] == "DEFERRED"
+    assert deferred["display"] == "DEFERRED"
     assert deferred["sections"][0]["content"] == "line one\nline two"
 
 
-def test_graph_nodes_carry_repo_and_models_for_filtering(every_status_project: Path) -> None:
-    nodes = TestClient(create_app(every_status_project)).get("/api/graph").json()["nodes"]
+def test_graph_nodes_carry_repo_and_models_for_filtering(every_display_project: Path) -> None:
+    nodes = TestClient(create_app(every_display_project)).get("/api/graph").json()["nodes"]
     by_id = {n["id"]: n for n in nodes}
 
     assert by_id["T-COMPLETED"]["target_repo"] == "core"
     assert by_id["T-COMPLETED"]["acceptable_models"] == ["claude-opus-5"]
     assert by_id["T-IMPLEMENTING"]["target_repo"] == "web"
     assert by_id["T-IMPLEMENTING"]["acceptable_models"] == ["gemini-flash"]
-    assert by_id["T-INFLIGHT"]["status"] == "IN_FLIGHT"
+    assert by_id["T-IMPLEMENTING"]["display"] == "IMPLEMENTING"
 
 
 def test_static_export_embeds_every_status_and_the_filter_ui(
-    every_status_project: Path, tmp_path: Path
+    every_display_project: Path, tmp_path: Path
 ) -> None:
-    out = export_static_html(every_status_project, tmp_path / "out" / "all.html")
+    out = export_static_html(every_display_project, tmp_path / "out" / "all.html")
     html = out.read_text(encoding="utf-8")
 
-    themes_match = re.search(r"window.STATUS_THEMES = (\{.*?\});\n", html)
     static_match = re.search(r"window.STATIC_DATA = (\{.*?\});</script>", html)
-    assert themes_match
     assert static_match
-    themes = json.loads(themes_match.group(1))
     static = json.loads(static_match.group(1))
-    assert set(themes) == ALL_STATUS_CODES
-    assert ALL_STATUS_CODES <= static["stats"].keys()
-    assert static["tree"][0]["progress"]["total"] == 13
+    assert set(static["stats"]["display"]) == DISPLAY_CODES
+    assert static["tree"][0]["progress"]["total"] == 11
     for element_id in (
         "stats-digest",
         "repo-filter",

@@ -6,9 +6,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from taskmanager.core.enums import NodeKind, NodeStatus, RelationType, VerificationType
-from taskmanager.core.models import Node, NodeRelation, NodeVerification
-from taskmanager.core.status import DecisionStatus
+from taskmanager.core.enums import NodeKind, RelationType, VerificationType
+from taskmanager.core.models import Lease, Node, NodeRelation, NodeVerification
+from taskmanager.core.status import Action, DecisionStatus, Status
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
@@ -27,18 +27,22 @@ def api(tmp_path: Path) -> tuple[TestClient, NodeRepository, LedgerRepository]:
     db_mgr.init_all()
     node_repo = NodeRepository(db_mgr)
     ledger_repo = LedgerRepository(db_mgr)
-    node_repo.save_node(Node(id="SPEC", kind=NodeKind.SPEC, title="Spec"))
-    node_repo.save_node(Node(id="SPEC-P1", kind=NodeKind.PLAN, title="Plan"))
+    node_repo.save_node(Node(id="SPEC", kind=NodeKind.SPEC, title="Spec", status=Status.READY))
+    node_repo.save_node(Node(id="SPEC-P1", kind=NodeKind.PLAN, title="Plan", status=Status.READY))
     node_repo.add_relation(
         NodeRelation(source_id="SPEC", target_id="SPEC-P1", relation_type=RelationType.CONTAINS)
     )
-    node_repo.save_node(Node(id="SPEC-P1-T1", kind=NodeKind.TASK, title="Task", priority=60))
+    node_repo.save_node(
+        Node(id="SPEC-P1-T1", kind=NodeKind.TASK, title="Task", priority=60, status=Status.READY)
+    )
     node_repo.add_relation(
         NodeRelation(
             source_id="SPEC-P1", target_id="SPEC-P1-T1", relation_type=RelationType.CONTAINS
         )
     )
-    node_repo.save_node(Node(id="SPEC-P1-T2", kind=NodeKind.TASK, title="Second"))
+    node_repo.save_node(
+        Node(id="SPEC-P1-T2", kind=NodeKind.TASK, title="Second", status=Status.READY)
+    )
     node_repo.add_relation(
         NodeRelation(
             source_id="SPEC-P1", target_id="SPEC-P1-T2", relation_type=RelationType.CONTAINS
@@ -113,7 +117,7 @@ def test_get_meta_lists_pickers(
     assert res.status_code == 200
     body = res.json()
     assert "READY" in body["statuses"]
-    assert "NOT_STARTED" in body["statuses"]
+    assert "NOT_STARTED" not in body["statuses"]
     assert VerificationType.FILE_EXISTS.value in body["verification_types"]
     assert {"id": "SPEC", "title": "Spec"} in body["specs"]
     assert {"id": "SPEC-P1", "title": "Plan"} in body["plans"]
@@ -199,29 +203,6 @@ def test_patch_node_nothing_to_update_refused(
     assert "detail" in res.json()
 
 
-# -- status -------------------------------------------------------------------------------------
-
-
-def test_post_status_updates_node(
-    api: tuple[TestClient, NodeRepository, LedgerRepository],
-) -> None:
-    client, node_repo, _ledger_repo = api
-    res = client.post("/api/nodes/SPEC-P1-T1/status", json={"status": "ABANDONED"})
-    assert res.status_code == 200
-    node = node_repo.get_node("SPEC-P1-T1")
-    assert node is not None
-    assert node.status == NodeStatus.ABANDONED
-
-
-def test_post_status_unknown_node_is_404_and_writes_nothing(
-    api: tuple[TestClient, NodeRepository, LedgerRepository],
-) -> None:
-    client, node_repo, _ledger_repo = api
-    res = client.post("/api/nodes/NOPE/status", json={"status": "ABANDONED"})
-    assert res.status_code == 404
-    assert node_repo.get_node("NOPE") is None
-
-
 # -- dependencies ---------------------------------------------------------------------------
 
 
@@ -258,7 +239,7 @@ def test_post_supersede(api: tuple[TestClient, NodeRepository, LedgerRepository]
     assert res.status_code == 200
     node = node_repo.get_node("SPEC-P1-T1")
     assert node is not None
-    assert node.status == NodeStatus.SUPERSEDED
+    assert node.status == Status.SUPERSEDED
 
 
 def test_post_supersede_unknown_replacement_refused_and_writes_nothing(
@@ -269,7 +250,7 @@ def test_post_supersede_unknown_replacement_refused_and_writes_nothing(
     assert res.status_code == 400
     node = node_repo.get_node("SPEC-P1-T1")
     assert node is not None
-    assert node.status == NodeStatus.NOT_STARTED
+    assert node.status == Status.READY
 
 
 def test_post_move(api: tuple[TestClient, NodeRepository, LedgerRepository]) -> None:
@@ -381,12 +362,27 @@ def test_post_verify_empty_set_refused(
 # -- lease / sweep ----------------------------------------------------------------------------
 
 
-def test_delete_lease_releases_it(
+def test_delete_lease_gives_the_claimed_step_back(
     api: tuple[TestClient, NodeRepository, LedgerRepository],
 ) -> None:
-    client, _node_repo, _ledger_repo = api
+    client, node_repo, _ledger_repo = api
+    node = node_repo.get_node("SPEC-P1-T1")
+    assert node is not None
+    node.status, node.claimed_from = Status.IMPLEMENTING, Status.READY
+    lease = Lease(
+        task_id="SPEC-P1-T1",
+        agent_id="a",
+        session_id="s",
+        branch_name="tm/SPEC-P1-T1",
+        action=Action.IMPLEMENT,
+        ttl_seconds=3600,
+    )
+    from taskmanager.db.runtime_repo import RuntimeRepository
+
+    assert RuntimeRepository(node_repo.db).claim(lease, [], node)
     res = client.delete("/api/nodes/SPEC-P1-T1/lease", headers=JSON)
     assert res.status_code == 200
+    assert res.json() == {"id": "SPEC-P1-T1", "status": "READY"}
 
 
 def test_post_sweep_returns_swept_list(

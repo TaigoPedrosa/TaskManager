@@ -12,32 +12,36 @@ from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlsplit
 
+from dishka import make_container
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
-from taskmanager.core.enums import (
-    NodeKind,
-    NodeStatus,
-    RenderView,
-    TransferMode,
-    VerificationType,
-    VirtualStatus,
+from taskmanager.core.enums import NodeKind, RenderView, TransferMode, VerificationType
+from taskmanager.core.models import Node
+from taskmanager.core.status import (
+    ConditionStage,
+    DecisionEffect,
+    DecisionStatus,
+    DisplayStatus,
+    Merge,
+    Outcome,
+    Phase,
+    Status,
 )
-from taskmanager.core.status import DecisionStatus
+from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
-from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
+from taskmanager.di.container import TaskManagerProvider
 from taskmanager.engine.assets import ASSET_NAME_RE
-from taskmanager.engine.git import GitManager
-from taskmanager.engine.graph import GraphEngine
+from taskmanager.engine.chains import base_chain, landing_chain, satisfied
+from taskmanager.engine.config import ConfigStore
 from taskmanager.engine.heuristics import score_every_task
+from taskmanager.engine.landing import Landing
 from taskmanager.engine.operations import OperationError, Operations
-from taskmanager.engine.runtime import ExecutionCoordinator
-from taskmanager.engine.snapshot import stored_status
-from taskmanager.engine.verification import VerificationEngine
+from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder, phase_of, stored_status
 from taskmanager.renderers.markdown import MarkdownRenderer
 from taskmanager.web.ui import get_web_html
 
@@ -46,6 +50,8 @@ class SpecCreate(BaseModel):
     title: str
     slug: str | None = None
     priority: int = 50
+    review: bool = False
+    fix: bool = False
 
 
 class PlanCreate(BaseModel):
@@ -54,7 +60,9 @@ class PlanCreate(BaseModel):
     slug: str | None = None
     priority: int = 50
     order: int = 0
-    require_review: bool = False
+    review: bool = False
+    fix: bool = False
+    merge: Merge = Merge.MAIN
 
 
 class TaskCreate(BaseModel):
@@ -65,6 +73,10 @@ class TaskCreate(BaseModel):
     order: int = 0
     depends_on: list[str] = Field(default_factory=list)
     models: list[str] = Field(default_factory=list)
+    review: bool = True
+    fix: bool = True
+    merge: Merge = Merge.MAIN
+    requires: list[str] = Field(default_factory=list)
 
 
 class NodeUpdate(BaseModel):
@@ -74,11 +86,30 @@ class NodeUpdate(BaseModel):
     target_repo: str | None = None
     frontmatter_set: dict[str, Any] | None = None
     frontmatter_unset: list[str] | None = None
+    review: bool | None = None
+    fix: bool | None = None
+    merge: Merge | None = None
+    requires: list[str] | None = None
+    land_order: list[str] | None = None
 
 
-class StatusUpdate(BaseModel):
-    status: NodeStatus
-    remove_worktree: bool = False
+class NoteRequest(BaseModel):
+    note: str
+
+
+class ReopenRequest(NoteRequest):
+    new_branch: bool = False
+
+
+class ResetRequest(NoteRequest):
+    to: Status
+    outcome: Outcome | None = None
+
+
+class ConditionCreate(BaseModel):
+    needs: str
+    command: str
+    stage: ConditionStage = ConditionStage.CLAIM
 
 
 class DependencyAdd(BaseModel):
@@ -114,6 +145,7 @@ class DecisionOptionIn(BaseModel):
     key: str
     label: str
     description: str = ""
+    effect: DecisionEffect = DecisionEffect.NONE
 
 
 class DecisionCreate(BaseModel):
@@ -191,29 +223,26 @@ def _refusals() -> Iterator[None]:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
-# A task in one of these statuses cannot reach completion (§3.2a), so it is excluded from both
-# the rollup and the progress denominator until its status changes back.
-_SET_ASIDE_STATUSES = {
-    NodeStatus.SUPERSEDED.value,
-    NodeStatus.ABANDONED.value,
-    NodeStatus.DEFERRED.value,
-}
+# A task in one of these cannot reach completion, so it is excluded from both the rollup and
+# the progress denominator until its status changes back.
+_SET_ASIDE_STATUSES = {Status.SUPERSEDED.value, Status.ABANDONED.value, Status.DEFERRED.value}
+_RESET_TARGETS = (Status.READY, Status.IMPLEMENTED, Status.REVIEWED, Status.FIXED, Status.COMPLETED)
 
 
 def add_progress(node: dict[str, Any]) -> tuple[Counter[str], int, int]:
-    """Returns (status counts, done, set_aside) for the subtree rooted at `node`, and -- on
+    """Returns (display counts, done, set_aside) for the subtree rooted at `node`, and -- on
     every non-task node -- sets `node["progress"] = {done, total, set_aside, counts}`, where
-    `total` is `done + (non-set-aside, non-done)` and `counts` keeps every status, set-aside
+    `total` is `done + (non-set-aside, non-done)` and `counts` keeps every display, set-aside
     included, so the caller can still render a full breakdown."""
     counts: Counter[str] = Counter()
     done = 0
     set_aside = 0
     if node["kind"] == NodeKind.TASK.value:
-        vs = node["virtual_status"]
-        counts[vs] += 1
-        if vs in _SET_ASIDE_STATUSES:
+        display = node["display"]
+        counts[display] += 1
+        if display in _SET_ASIDE_STATUSES:
             set_aside += 1
-        elif vs == NodeStatus.COMPLETED.value:
+        elif display == Status.COMPLETED.value:
             done += 1
     for child in node["children"]:
         child_counts, child_done, child_set_aside = add_progress(child)
@@ -261,26 +290,17 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     allowed_hosts = _bound_hosts(host, port) if port is not None else None
     Actor = Annotated[str, Depends(_write_guard(allowed_hosts))]
     db_dir = project_root / ".taskmanager"
-    db_mgr = DatabaseManager(db_dir)
-    node_repo = NodeRepository(db_mgr)
-    runtime_repo = RuntimeRepository(db_mgr)
-    ledger_repo = LedgerRepository(db_mgr)
-    graph_engine = GraphEngine(node_repo, runtime_repo)
-    renderer = MarkdownRenderer(node_repo)
-    coordinator = ExecutionCoordinator(
-        node_repo, runtime_repo, graph_engine, GitManager(project_root)
-    )
-    verification_engine = VerificationEngine(project_root)
-    operations = Operations(
-        node_repo,
-        runtime_repo,
-        graph_engine,
-        coordinator,
-        ledger_repo,
-        verification_engine,
-        actor="web",
-        job_repo=JobRepository(db_mgr),
-    )
+    container = make_container(TaskManagerProvider(project_root))
+    db_mgr = container.get(DatabaseManager)
+    node_repo = container.get(NodeRepository)
+    runtime_repo = container.get(RuntimeRepository)
+    renderer = container.get(MarkdownRenderer)
+    operations = container.get(Operations).with_actor("web")
+    snapshots = container.get(SnapshotBuilder)
+    # A verb or a lease release may start or stop a landing, so the claims carry the engine.
+    claims = Landing.open(project_root).claims
+    jobs = container.get(JobRepository)
+    cache = container.get(CacheRepository)
     ws_manager = ConnectionManager()
 
     # Background change detection loop
@@ -325,68 +345,92 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
 
     app = FastAPI(title="TaskManager Visualizer", lifespan=lifespan)
 
-    # `effective_status` recomputes a task's/plan's/spec's state from the graph (dependency
-    # edges, leases, children) every time it is called, and the same node is asked for
-    # repeatedly within one request -- once as a tree row, again wherever another node lists it
-    # as a dependency or a dependent. `cache`, a plain dict the route creates once and threads
-    # through, turns every repeat within that one request into a lookup; it is never kept past
-    # the request, so a write landing between two requests is still picked up by the next one.
-    def effective_status(n: Any, cache: dict[str, str] | None = None) -> str:
-        if cache is not None:
-            cached = cache.get(n.id)
-            if cached is not None:
-                return cached
-        if n.kind == NodeKind.TASK:
-            result = graph_engine.resolve_task_state(n.id).value
-        elif n.kind == NodeKind.PLAN:
-            result = graph_engine.resolve_plan_status(n.id).value
-        elif n.kind == NodeKind.SPEC:
-            result = graph_engine.resolve_spec_status(n.id).value
-        else:
-            result = str(n.status.value)
-        if cache is not None:
-            cache[n.id] = result
-        return result
+    def _condition_ttl() -> int:
+        return ConfigStore(project_root).project().condition_ttl
 
-    def _dependency_met(rel: Any) -> bool:
-        # Same rule as GraphEngine.resolve_task_state: a decision is met once it is Answered or
-        # Withdrawn (COMPLETED or ABANDONED -- an open question no longer needs an answer to
-        # stop holding work), while every other dependency is met by COMPLETED or SUPERSEDED.
-        if rel.kind == NodeKind.DECISION:
-            return stored_status(rel) != DecisionStatus.OPEN
-        return bool(rel.status in (NodeStatus.COMPLETED, NodeStatus.SUPERSEDED))
+    def new_view() -> DisplayView:
+        """One snapshot per request, so every display in one response reads the same tree."""
+        return DisplayView(snapshots, cache, _condition_ttl())
 
-    def _relation_details(
-        related_ids: list[str], cache: dict[str, str] | None = None
-    ) -> list[dict[str, Any]]:
-        details: list[dict[str, Any]] = []
-        for rel_id in related_ids:
-            rel = node_repo.get_node(rel_id)
-            details.append(
-                {
-                    "id": rel_id,
-                    "title": rel.title if rel else None,
-                    "kind": rel.kind.value if rel else None,
-                    "status": effective_status(rel, cache) if rel else None,
-                    # A missing dependency blocks, same as GraphEngine.resolve_task_state.
-                    "finished": rel is not None and _dependency_met(rel),
-                }
-            )
-        return details
+    def _finished(view: DisplayView, source_id: str, target: Node) -> bool:
+        if target.kind == NodeKind.DECISION:
+            return stored_status(target) != DecisionStatus.OPEN
+        nodes = view.snapshot.nodes
+        return (
+            source_id in nodes
+            and target.id in nodes
+            and satisfied(view.snapshot, source_id, target.id)
+        )
+
+    def _relation_row(view: DisplayView, rel_id: str, finished: bool) -> dict[str, Any]:
+        rel = node_repo.get_node(rel_id)
+        return {
+            "id": rel_id,
+            "title": rel.title if rel else None,
+            "kind": rel.kind.value if rel else None,
+            "status": view.display(rel) if rel else None,
+            # A missing node blocks.
+            "finished": rel is not None and finished,
+        }
 
     def dependency_details(
-        node_id: str, deps: list[str] | None = None, cache: dict[str, str] | None = None
+        node_id: str, view: DisplayView, deps: list[str] | None = None
     ) -> list[dict[str, Any]]:
-        return _relation_details(
-            deps if deps is not None else node_repo.get_dependencies(node_id), cache
-        )
+        rows = []
+        for dep_id in deps if deps is not None else node_repo.get_dependencies(node_id):
+            dep = node_repo.get_node(dep_id)
+            rows.append(
+                _relation_row(view, dep_id, dep is not None and _finished(view, node_id, dep))
+            )
+        return rows
 
     def dependent_details(
-        node_id: str, blocked_by: list[str] | None = None, cache: dict[str, str] | None = None
+        node_id: str, view: DisplayView, blocked_by: list[str] | None = None
     ) -> list[dict[str, Any]]:
-        return _relation_details(
-            blocked_by if blocked_by is not None else node_repo.get_blocked_by(node_id), cache
-        )
+        node = node_repo.get_node(node_id)
+        return [
+            _relation_row(view, src_id, node is not None and _finished(view, src_id, node))
+            for src_id in (
+                blocked_by if blocked_by is not None else node_repo.get_blocked_by(node_id)
+            )
+        ]
+
+    def lifecycle_fields(n: Node, view: DisplayView) -> dict[str, Any]:
+        is_decision = n.kind == NodeKind.DECISION
+        return {
+            # Read through stored_status so a node saved under an old name shows its new one.
+            "status": stored_status(n).value,
+            "display": view.display(n),
+            "phase": phase_of(n),
+            "review": n.review,
+            "fix": n.fix,
+            "merge": n.merge.value,
+            "outcome": n.outcome.value if n.outcome else None,
+            "verdict": n.verdict,
+            "fix_for": n.fix_for.value if n.fix_for else None,
+            "claimed_from": n.claimed_from.value if n.claimed_from else None,
+            "review_cycles": n.review_cycles,
+            "merge_attempts": n.merge_attempts,
+            "step_failures": n.step_failures,
+            "branch": n.branch or f"tm/{n.id}",
+            "requires": n.requires,
+            "land_order": n.land_order,
+            "landing_chain": [] if is_decision else landing_chain(view.snapshot, n.id),
+            "base_chain": [] if is_decision else base_chain(view.snapshot, n.id),
+        }
+
+    def lease_dict(node_id: str) -> dict[str, Any] | None:
+        lease = runtime_repo.get_lease(node_id)
+        if lease is None:
+            return None
+        return {
+            "agent_id": lease.agent_id,
+            "session_id": lease.session_id,
+            "branch_name": lease.branch_name,
+            "worktree_path": lease.worktree_path,
+            "action": lease.action.value if lease.action else None,
+            "ttl_seconds": lease.ttl_seconds,
+        }
 
     def _attachment_size(asset_name: str) -> int | None:
         # Same asset-name check and containment check as `get_asset` below: an attachment
@@ -431,12 +475,11 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         plans = node_repo.list_nodes(kind=NodeKind.PLAN)
         tasks = node_repo.list_nodes(kind=NodeKind.TASK)
         task_scores = score_every_task(node_repo)
-        status_cache: dict[str, str] = {}
+        view = new_view()
 
         def node_to_dict(n: Any) -> dict[str, Any]:
             sections = node_repo.get_all_sections(n.id)
             verifications = node_repo.get_verifications(n.id) if n.kind == NodeKind.TASK else []
-            lease = runtime_repo.get_lease(n.id) if n.kind == NodeKind.TASK else None
             deps = node_repo.get_dependencies(n.id)
             blocked_by = node_repo.get_blocked_by(n.id)
 
@@ -444,8 +487,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
                 "id": n.id,
                 "kind": n.kind.value,
                 "title": n.title,
-                "status": n.status.value,
-                "virtual_status": effective_status(n, status_cache),
+                **lifecycle_fields(n, view),
                 "priority": n.priority,
                 "score": task_scores.get(n.id) if n.kind == NodeKind.TASK else None,
                 "ordinal": n.ordinal,
@@ -453,9 +495,9 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
                 "acceptable_models": n.acceptable_models,
                 "frontmatter": _frontmatter_with_attachment_sizes(n.frontmatter),
                 "dependencies": deps,
-                "dependency_details": dependency_details(n.id, deps, status_cache),
+                "dependency_details": dependency_details(n.id, view, deps),
                 "blocked_by": blocked_by,
-                "dependent_details": dependent_details(n.id, blocked_by, status_cache),
+                "dependent_details": dependent_details(n.id, view, blocked_by),
                 "sections": [
                     {
                         "key": s.section_key,
@@ -474,14 +516,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
                     }
                     for v in verifications
                 ],
-                "lease": {
-                    "agent_id": lease.agent_id,
-                    "session_id": lease.session_id,
-                    "branch_name": lease.branch_name,
-                    "worktree_path": lease.worktree_path,
-                }
-                if lease
-                else None,
+                "lease": lease_dict(n.id) if n.kind == NodeKind.TASK else None,
                 "children": [],
             }
 
@@ -533,39 +568,29 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
 
     @app.get("/api/graph")
     def get_graph() -> dict[str, Any]:
-        all_nodes = node_repo.list_nodes()
+        view = new_view()
         task_scores = score_every_task(node_repo)
-        status_cache: dict[str, str] = {}
-        nodes_out: list[dict[str, Any]] = []
-        for n in all_nodes:
-            nodes_out.append(
-                {
-                    "id": n.id,
-                    "title": n.title,
-                    "kind": n.kind.value,
-                    "status": effective_status(n, status_cache),
-                    "priority": n.priority,
-                    "score": task_scores.get(n.id) if n.kind == NodeKind.TASK else None,
-                    "ordinal": n.ordinal,
-                    "target_repo": n.target_repo,
-                    "acceptable_models": n.acceptable_models,
-                }
-            )
-
-        edges_out: list[dict[str, Any]] = []
-        with db_mgr.get_spec_connection() as conn:
+        nodes_out = [
+            {
+                "id": n.id,
+                "title": n.title,
+                "kind": n.kind.value,
+                "status": stored_status(n).value,
+                "display": view.display(n),
+                "phase": phase_of(n),
+                "priority": n.priority,
+                "score": task_scores.get(n.id) if n.kind == NodeKind.TASK else None,
+                "ordinal": n.ordinal,
+                "target_repo": n.target_repo,
+                "acceptable_models": n.acceptable_models,
+            }
+            for n in node_repo.list_nodes()
+        ]
+        with db_mgr.get_state_connection() as conn:
             rows = conn.execute(
                 "SELECT source_id, target_id, relation_type FROM node_relations"
             ).fetchall()
-            for r in rows:
-                edges_out.append(
-                    {
-                        "source": r[0],
-                        "target": r[1],
-                        "type": r[2],
-                    }
-                )
-
+        edges_out = [{"source": r[0], "target": r[1], "type": r[2]} for r in rows]
         return {"nodes": nodes_out, "edges": edges_out}
 
     @app.get("/api/nodes/{node_id}")
@@ -574,31 +599,29 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         if not node:
             raise HTTPException(status_code=404, detail="Node not found")
 
-        status_cache: dict[str, str] = {}
-        sections = node_repo.get_all_sections(node_id)
-        verifications = node_repo.get_verifications(node_id)
-        lease = runtime_repo.get_lease(node_id)
+        view = new_view()
         dependencies = node_repo.get_dependencies(node_id)
         blocked_by = node_repo.get_blocked_by(node_id)
-
+        ttl = _condition_ttl()
         return {
             "node": {
                 "id": node.id,
                 "kind": node.kind.value,
                 "title": node.title,
-                "status": node.status.value,
+                **lifecycle_fields(node, view),
                 "priority": node.priority,
                 "ordinal": node.ordinal,
                 "target_repo": node.target_repo,
                 "acceptable_models": node.acceptable_models,
                 "frontmatter": _frontmatter_with_attachment_sizes(node.frontmatter),
             },
-            "virtual_status": effective_status(node, status_cache),
+            "display": view.display(node),
+            "phase": phase_of(node),
             "rendered_markdown": renderer.render(node_id, view=RenderView.FULL),
             "dependencies": dependencies,
-            "dependency_details": dependency_details(node_id, dependencies, status_cache),
+            "dependency_details": dependency_details(node_id, view, dependencies),
             "blocked_by": blocked_by,
-            "dependent_details": dependent_details(node_id, blocked_by, status_cache),
+            "dependent_details": dependent_details(node_id, view, blocked_by),
             "sections": [
                 {
                     "key": s.section_key,
@@ -606,7 +629,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
                     "content": s.content,
                     "ordinal": s.ordinal,
                 }
-                for s in sections
+                for s in node_repo.get_all_sections(node_id)
             ],
             "verifications": [
                 {
@@ -615,41 +638,56 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
                     "target_path": v.target_path,
                     "expected_pattern": v.expected_pattern,
                 }
-                for v in verifications
+                for v in node_repo.get_verifications(node_id)
             ],
-            "lease": {
-                "agent_id": lease.agent_id,
-                "session_id": lease.session_id,
-                "branch_name": lease.branch_name,
-                "worktree_path": lease.worktree_path,
-                "ttl_seconds": lease.ttl_seconds,
-            }
-            if lease
-            else None,
+            "conditions": [
+                {
+                    "idx": c.idx,
+                    "needs": c.needs,
+                    "command": c.command,
+                    "stage": c.stage.value,
+                    "last_result": cache.get_condition(node_id, c.idx, c.command, ttl),
+                }
+                for c in node_repo.get_conditions(node_id)
+            ],
+            "jobs": [j.model_dump(mode="json") for j in jobs.for_node(node_id)],
+            "lease": lease_dict(node_id),
         }
 
     @app.get("/api/stats")
-    def get_stats() -> dict[str, int]:
-        all_tasks = node_repo.list_nodes(kind=NodeKind.TASK)
-        stats: dict[str, int] = {
-            "total": len(all_tasks),
-            **{s.value: 0 for s in NodeStatus},
-            **{v.value: 0 for v in VirtualStatus},
-        }
+    def get_stats() -> dict[str, Any]:
+        view = new_view()
+        tasks = node_repo.list_nodes(kind=NodeKind.TASK)
+        display: dict[str, int] = {d.value: 0 for d in DisplayStatus}
+        phases: dict[str, int] = {p.value: 0 for p in Phase}
+        for t in tasks:
+            code = view.display(t)
+            display[code] = display.get(code, 0) + 1
+            phase_code = phase_of(t)
+            if phase_code is not None:
+                phases[phase_code] += 1
+        return {"total": len(tasks), "display": display, "phase": phases}
 
-        for t in all_tasks:
-            stats[effective_status(t)] += 1
-
-        return stats
-
-    # -- write API (§5): generic routes only, decisions and attachments are added later ----
+    _DECISION_TAB_STATUS = {
+        "open": DecisionStatus.OPEN,
+        "answered": DecisionStatus.ANSWERED,
+        "withdrawn": DecisionStatus.WITHDRAWN,
+    }
 
     @app.get("/api/meta")
     def get_meta() -> dict[str, Any]:
         all_nodes = node_repo.list_nodes()
         return {
-            "statuses": [s.value for s in NodeStatus] + [v.value for v in VirtualStatus],
-            "decision_states": list(_DECISION_TAB_STATUS.keys()),
+            "statuses": [s.value for s in Status],
+            "display_statuses": [d.value for d in DisplayStatus],
+            "phases": [p.value for p in Phase],
+            "decision_statuses": [d.value for d in DecisionStatus],
+            "decision_effects": [e.value for e in DecisionEffect],
+            "reset_targets": [s.value for s in _RESET_TARGETS],
+            "merge_targets": [m.value for m in Merge],
+            "condition_stages": [s.value for s in ConditionStage],
+            "outcomes": [o.value for o in Outcome],
+            "decision_states": list(_DECISION_TAB_STATUS),
             "verification_types": [t.value for t in VerificationType],
             "models": sorted({m for n in all_nodes for m in n.acceptable_models}),
             "repos": sorted({n.target_repo for n in all_nodes if n.target_repo}),
@@ -664,7 +702,9 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     @app.post("/api/specs", status_code=201)
     def create_spec(body: SpecCreate, actor: Actor) -> dict[str, str]:
         with _refusals():
-            spec_id = operations.with_actor(actor).add_spec(body.title, body.slug, body.priority)
+            spec_id = operations.with_actor(actor).add_spec(
+                body.title, body.slug, body.priority, review=body.review, fix=body.fix
+            )
         return {"id": spec_id}
 
     @app.post("/api/plans", status_code=201)
@@ -676,8 +716,9 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
                 body.slug,
                 body.priority,
                 body.order,
-                review=body.require_review,
-                fix=body.require_review,
+                review=body.review,
+                fix=body.fix,
+                merge=body.merge,
             )
         return {"id": plan_id}
 
@@ -692,6 +733,10 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
                 body.order,
                 body.depends_on,
                 body.models,
+                review=body.review,
+                fix=body.fix,
+                merge=body.merge,
+                requires=body.requires,
             )
         return {"id": task_id}
 
@@ -706,19 +751,13 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
                 repo=body.target_repo,
                 frontmatter_set=body.frontmatter_set,
                 frontmatter_unset=body.frontmatter_unset,
+                review=body.review,
+                fix=body.fix,
+                merge=body.merge,
+                requires=body.requires,
+                land_order=body.land_order,
             )
         return changed
-
-    @app.post("/api/nodes/{node_id}/status")
-    def post_status(node_id: str, body: StatusUpdate, actor: Actor) -> dict[str, str]:
-        try:
-            operations.with_actor(actor).set_status(node_id, body.status, body.remove_worktree)
-        except OperationError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-        except ValueError as exc:
-            # `ExecutionCoordinator.stop_task` raises a bare ValueError for an unknown node.
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return {"status": body.status.value}
 
     @app.post("/api/nodes/{node_id}/dependencies")
     def post_dependencies(
@@ -793,25 +832,68 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             for r in results
         ]
 
+    def _moved(node_id: str) -> dict[str, str]:
+        node = node_repo.get_node(node_id)
+        return {"id": node_id, "status": node.status.value if node else ""}
+
+    @app.post("/api/nodes/{node_id}/reopen")
+    def post_reopen(node_id: str, body: ReopenRequest, actor: Actor) -> dict[str, str]:
+        with _refusals():
+            claims.reopen(node_id, body.note, new_branch=body.new_branch)
+        return _moved(node_id)
+
+    @app.post("/api/nodes/{node_id}/reset")
+    def post_reset(node_id: str, body: ResetRequest, actor: Actor) -> dict[str, str]:
+        with _refusals():
+            claims.reset(node_id, body.to, body.note, outcome=body.outcome)
+        return _moved(node_id)
+
+    @app.post("/api/nodes/{node_id}/defer")
+    def post_defer(node_id: str, body: NoteRequest, actor: Actor) -> dict[str, str]:
+        with _refusals():
+            claims.defer(node_id, body.note)
+        return _moved(node_id)
+
+    @app.post("/api/nodes/{node_id}/abandon")
+    def post_abandon(node_id: str, body: NoteRequest, actor: Actor) -> dict[str, str]:
+        with _refusals():
+            claims.abandon(node_id, body.note)
+        return _moved(node_id)
+
+    @app.post("/api/nodes/{node_id}/conditions", status_code=201)
+    def post_condition(node_id: str, body: ConditionCreate, actor: Actor) -> dict[str, Any]:
+        with _refusals():
+            added = operations.with_actor(actor).add_condition(
+                node_id, body.needs, body.command, body.stage
+            )
+        return added.model_dump(mode="json")
+
+    @app.delete("/api/nodes/{node_id}/conditions/{idx}")
+    def delete_condition(node_id: str, idx: int, actor: Actor) -> dict[str, int]:
+        with _refusals():
+            operations.with_actor(actor).remove_condition(node_id, idx)
+        return {"idx": idx}
+
     @app.delete("/api/nodes/{node_id}/lease")
     def delete_lease(node_id: str, actor: Actor) -> dict[str, str]:
         with _refusals():
-            operations.with_actor(actor).release_lease(node_id)
-        return {"id": node_id}
+            claims.release(node_id)
+        return _moved(node_id)
 
     @app.post("/api/leases/sweep")
     def post_sweep(actor: Actor) -> dict[str, list[str]]:
         with _refusals():
-            swept = operations.with_actor(actor).sweep_leases()
+            swept = claims.sweep()
         return {"swept": swept}
 
-    # -- decisions (§3, §5) ------------------------------------------------------------------
+    @app.get("/api/jobs/{job_id}")
+    def get_job(job_id: str) -> dict[str, Any]:
+        job = jobs.get(job_id)
+        if job is None:
+            raise HTTPException(404, f"no job '{job_id}'")
+        return job.model_dump(mode="json")
 
-    _DECISION_TAB_STATUS = {
-        "open": DecisionStatus.OPEN,
-        "answered": DecisionStatus.ANSWERED,
-        "withdrawn": DecisionStatus.WITHDRAWN,
-    }
+    # -- decisions (§3, §5) ------------------------------------------------------------------
 
     @app.get("/api/decisions")
     def list_decisions(status: str | None = None) -> list[dict[str, Any]]:
@@ -821,6 +903,23 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             if wanted is None:
                 raise HTTPException(400, "status is one of: open, answered, withdrawn")
             decisions = [d for d in decisions if stored_status(d) == wanted]
+        view = new_view()
+
+        def blocks(decision_id: str) -> list[dict[str, Any]]:
+            rows = []
+            for node_id in node_repo.get_blocked_by(decision_id):
+                node = node_repo.get_node(node_id)
+                if node is not None:
+                    rows.append(
+                        {
+                            "id": node.id,
+                            "title": node.title,
+                            "kind": node.kind.value,
+                            "display": view.display(node),
+                        }
+                    )
+            return rows
+
         return [
             {
                 "id": d.id,
@@ -829,6 +928,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
                 "priority": d.priority,
                 "created_at": d.created_at.isoformat(),
                 "waiting_count": len(node_repo.get_blocked_by(d.id)),
+                "blocks": blocks(d.id),
                 "decision": d.frontmatter.get("decision") or {},
                 "attachments": _attachments_with_size(d.frontmatter.get("attachments") or []),
             }
@@ -837,10 +937,10 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
 
     @app.post("/api/decisions", status_code=201)
     def create_decision(body: DecisionCreate, actor: Actor) -> dict[str, str]:
-        # Operations.add_decision still takes the CLI's "key|Label|description" strings; the
-        # web form collects the same three fields structured, so it is rejoined here rather
-        # than growing a second option shape inside Operations.
-        options = [f"{o.key}|{o.label}|{o.description}" for o in body.options]
+        # Operations.add_decision still takes the CLI's "key|Label|description|effect" strings;
+        # the web form collects the same fields structured, so it is rejoined here rather than
+        # growing a second option shape inside Operations.
+        options = [f"{o.key}|{o.label}|{o.description}|{o.effect.value}" for o in body.options]
         with _refusals():
             decision_id = operations.with_actor(actor).add_decision(
                 body.question,
