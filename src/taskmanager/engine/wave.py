@@ -117,7 +117,7 @@ def discover_batch(
     chosen: list[dict[str, object]] = []
     held: list[str] = []
     taken_files: set[str] = set()
-    for task_id, status in candidates.items():
+    for task_id, entry_status in candidates.items():
         if task_id in leased:
             continue
         if task_id in exclude:
@@ -137,7 +137,7 @@ def discover_batch(
         sections = {section.section_key for section in node_repo.get_all_sections(task_id)}
         if "hold" in sections and task_id not in release:
             why.append("hold section: read tm section get <id>:hold, then pass --release")
-        if status == "READY" and _writes_migration(files) and repo in chain_held:
+        if entry_status == "READY" and _writes_migration(files) and repo in chain_held:
             why.append(f"{repo} migration chain held by {chain_held[repo]}")
         if taken_files.intersection(files):
             why.append("declared_files overlap a task chosen this wave")
@@ -152,7 +152,7 @@ def discover_batch(
         chosen.append(
             {
                 "id": task_id,
-                "status": status,
+                "status": entry_status,
                 "repo": repo,
                 "model": model,
                 "review": _family(node.frontmatter.get("review_models") or []) or "sonnet",
@@ -163,7 +163,7 @@ def discover_batch(
         taken_files.update(files)
         if model in STRONG:
             strong_free -= 1
-        if status == "READY" and _writes_migration(files):
+        if entry_status == "READY" and _writes_migration(files):
             chain_held[repo] = task_id
 
     waiting = sum(entry.endswith(": no free slot") for entry in held)
