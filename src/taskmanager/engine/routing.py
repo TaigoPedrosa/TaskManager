@@ -1,6 +1,6 @@
 """Which model family runs a step. tm names it at claim; the workflow maps a family to a model id."""
 
-from taskmanager.core.enums import NodeKind
+from taskmanager.core.enums import CONTAINERS
 from taskmanager.core.models import Node
 from taskmanager.core.status import Action, Outcome
 
@@ -27,7 +27,7 @@ def _at_least_opus(families: list[str]) -> str:
 def model_for(action: Action, node: Node, fix_round: int) -> str:
     families = _families(node.acceptable_models)
     review_families = _families([str(m) for m in node.frontmatter.get("review_models") or []])
-    container = node.kind in (NodeKind.PLAN, NodeKind.SPEC)
+    container = node.kind in CONTAINERS
     if action == Action.IMPLEMENT:
         return families[0] if families else "sonnet"
     if action == Action.REVIEW:

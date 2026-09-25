@@ -1,11 +1,11 @@
 import json
 from typing import Any
 
-from taskmanager.core.enums import NodeKind, RelationType, RenderView
+from taskmanager.core.enums import CONTAINERS, NodeKind, RelationType, RenderView
 from taskmanager.core.status import DecisionStatus, Outcome
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.engine.decisions import read_decision
-from taskmanager.engine.snapshot import CONTAINERS, stored_status
+from taskmanager.engine.snapshot import stored_status
 
 
 class MarkdownRenderer:

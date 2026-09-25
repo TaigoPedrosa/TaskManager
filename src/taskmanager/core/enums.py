@@ -8,6 +8,10 @@ class NodeKind(StrEnum):
     DECISION = "decision"
 
 
+# The kinds whose implement step is their children's work.
+CONTAINERS: frozenset[NodeKind] = frozenset({NodeKind.PLAN, NodeKind.SPEC})
+
+
 class RelationType(StrEnum):
     CONTAINS = "contains"
     DEPENDS_ON = "depends_on"

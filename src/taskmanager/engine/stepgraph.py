@@ -5,11 +5,10 @@ refused when it closes a cycle here."""
 from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
 
-from taskmanager.core.enums import NodeKind
+from taskmanager.core.enums import CONTAINERS, NodeKind
 from taskmanager.core.status import EXITS, SET_ASIDE, DecisionStatus, Merge, Status
 from taskmanager.engine.chains import landing_chain, meeting, satisfied
 
-CONTAINERS = frozenset({NodeKind.PLAN, NodeKind.SPEC})
 Graph = dict[str, set[str]]
 
 

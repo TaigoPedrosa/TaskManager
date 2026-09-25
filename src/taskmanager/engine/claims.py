@@ -14,7 +14,7 @@ from subprocess import CalledProcessError
 from typing import Any, Protocol, cast
 
 from taskmanager.core import lifecycle
-from taskmanager.core.enums import NodeKind, RelationType
+from taskmanager.core.enums import CONTAINERS, NodeKind, RelationType
 from taskmanager.core.lifecycle import Caps, Cycle, LifecycleError
 from taskmanager.core.models import (
     Condition,
@@ -68,7 +68,6 @@ DEFAULT_TTL: dict[Action, int] = {
 }
 LIVE_JOBS = frozenset({JobState.RUNNING, JobState.NEEDS_AGENT})
 _log = logging.getLogger(__name__)
-CONTAINERS = frozenset({NodeKind.PLAN, NodeKind.SPEC})
 
 _STALLED = "max_step_failures steps in a row ended without progress"
 _FAILED_BECAUSE: dict[Event, str] = {

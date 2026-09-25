@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from taskmanager.core.enums import (
+    CONTAINERS,
     LedgerCommand,
     NodeKind,
     RelationType,
@@ -47,7 +48,6 @@ from taskmanager.engine.decisions import (
     write_decision,
 )
 from taskmanager.engine.snapshot import (
-    CONTAINERS,
     SnapshotBuilder,
     node_busy,
     roll_up_ancestors,

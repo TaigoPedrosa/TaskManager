@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
 from taskmanager.core.display import Facts, display_status, phase
-from taskmanager.core.enums import NodeKind, RelationType, VerificationType
+from taskmanager.core.enums import CONTAINERS, NodeKind, RelationType, VerificationType
 from taskmanager.core.lifecycle import Cycle, next_action
 from taskmanager.core.models import LedgerEvent, Node
 from taskmanager.core.rollup import rollup
@@ -26,8 +26,6 @@ from taskmanager.engine.stepgraph import SnapNode, Snapshot, migration_holders
 
 if TYPE_CHECKING:
     from taskmanager.engine.operations import Operations
-
-CONTAINERS = frozenset({NodeKind.PLAN, NodeKind.SPEC})
 
 # A job stopped for an agent still owns its node's worktree and lease, as a running one does.
 _LIVE_JOB = frozenset({JobState.RUNNING, JobState.NEEDS_AGENT})

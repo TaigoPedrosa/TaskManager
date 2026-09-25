@@ -9,7 +9,7 @@ from pathlib import Path
 
 import yaml
 
-from taskmanager.core.enums import NodeKind, RelationType
+from taskmanager.core.enums import CONTAINERS, NodeKind, RelationType
 from taskmanager.core.models import Node, NodeRelation
 from taskmanager.core.status import Merge, Status
 from taskmanager.db.cache_repo import CacheRepository
@@ -136,7 +136,7 @@ def add(
 ) -> None:
     """Saves a node straight through the repository: these tests exercise the claims engine,
     not the write-time validation in front of it."""
-    container = kind in (NodeKind.PLAN, NodeKind.SPEC)
+    container = kind in CONTAINERS
     reviewed = (not container) if review is None else review
     claims.nodes.save_node(
         Node(

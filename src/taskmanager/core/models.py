@@ -23,7 +23,6 @@ from taskmanager.core.status import (
     Status,
 )
 
-_CONTAINERS = frozenset({NodeKind.PLAN, NodeKind.SPEC})
 _FIX_ANSWERS = frozenset({Outcome.REJECT, Outcome.MERGE_FAILED})
 
 # `blocked` exits `tm task start` with nothing written (spec §5.2): a lease never holds it.
