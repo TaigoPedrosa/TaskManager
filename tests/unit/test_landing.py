@@ -219,17 +219,7 @@ def test_a_landing_parked_on_a_red_main_waits_until_main_moves_then_lands(tmp_pa
 def test_landings_parked_on_one_red_main_past_the_threshold_reach_the_owner_as_one_decision(
     tmp_path: Path,
 ) -> None:
-    claims, landing = estate_with(tmp_path, junit_gate(tmp_path))
-    push_main(claims.root / "api", "failing.txt", "a\n")
-    reviewed_task(claims, "T1")
-    reviewed_task(claims, "T2", path="other.py")
-    land(claims, landing, "T1")
-    land(claims, landing, "T2")
-    two_hours_ago = (datetime.now(tz=UTC) - timedelta(hours=2)).isoformat()
-    for node_id in ("T1", "T2"):
-        for job in claims.jobs.for_node(node_id):
-            job.result["red_target"]["since"] = two_hours_ago
-            claims.jobs.set_state(job)
+    claims, _ = park_two_on_a_red_main_long_ago(tmp_path)
 
     claims.sweep()
     claims.sweep()
@@ -520,3 +510,78 @@ def test_a_landing_that_cannot_be_launched_undoes_the_claim_and_expires_its_job(
     assert stored(claims, "T1").status == Status.REVIEWED
     monkeypatch.undo()
     assert land(claims, landing)[1] == JobState.SUCCEEDED
+
+
+def test_a_landing_parked_on_a_red_parent_branch_waits_until_that_branch_moves(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(
+        tmp_path,
+        config=ProjectConfig(
+            repos={"api": RepoConfig(gates={"parent": junit_gate(tmp_path)})}, condition_ttl=1
+        ),
+    )
+    landing = attach_landing(claims)
+    api = parent_landing(claims)
+    on_branch(api, "tm/P", "failing.txt", "a\n")
+    assert land(claims, landing)[1] == JobState.CONDITION_UNMET
+
+    time.sleep(1.1)
+    blocked = claims.start("T1", "merger", "s1")
+    assert blocked.action == Action.BLOCKED, blocked
+    assert "red-target" in (blocked.reason or "")
+
+    on_branch(api, "tm/P", "failing.txt", None)
+    time.sleep(1.1)
+    assert land(claims, landing)[1] == JobState.SUCCEEDED
+    assert claims.nodes.get_conditions("T1") == []
+
+
+def park_two_on_a_red_main_long_ago(tmp_path: Path) -> tuple[Claims, Landing]:
+    claims, landing = estate_with(tmp_path, junit_gate(tmp_path))
+    push_main(claims.root / "api", "failing.txt", "a\n")
+    reviewed_task(claims, "T1")
+    reviewed_task(claims, "T2", path="other.py")
+    land(claims, landing, "T1")
+    land(claims, landing, "T2")
+    two_hours_ago = (datetime.now(tz=UTC) - timedelta(hours=2)).isoformat()
+    for node_id in ("T1", "T2"):
+        for job in claims.jobs.for_node(node_id):
+            job.result["red_target"]["since"] = two_hours_ago
+            claims.jobs.set_state(job)
+    return claims, landing
+
+
+def test_a_parked_node_mid_step_is_left_out_of_the_red_main_decision_and_the_sweep_goes_on(
+    tmp_path: Path,
+) -> None:
+    from taskmanager.core.models import Lease
+
+    claims, _ = park_two_on_a_red_main_long_ago(tmp_path)
+    claims.runtime.acquire_lease(
+        Lease(task_id="T2", agent_id="busy", session_id="s", branch_name="tm/T2", ttl_seconds=600),
+        [],
+    )
+
+    claims.sweep()
+
+    decisions = [dep for dep in claims.nodes.get_dependencies("T1") if dep.startswith("decision-")]
+    assert len(decisions) == 1
+    assert not [d for d in claims.nodes.get_dependencies("T2") if d.startswith("decision-")]
+
+
+@pytest.mark.parametrize("repair", ["reset", "reopen"])
+def test_a_repair_ends_a_parked_landing_s_red_target_wait(tmp_path: Path, repair: str) -> None:
+    claims, landing = estate_with(tmp_path, junit_gate(tmp_path))
+    push_main(claims.root / "api", "failing.txt", "a\n")
+    reviewed_task(claims)
+    land(claims, landing)
+    assert claims.nodes.get_conditions("T1")
+
+    if repair == "reset":
+        claims.reset("T1", Status.READY, "start over")
+    else:
+        claims.defer("T1", "later")
+        claims.reopen("T1", "back")
+
+    assert claims.nodes.get_conditions("T1") == []

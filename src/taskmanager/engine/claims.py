@@ -57,7 +57,7 @@ from taskmanager.engine.decisions import (
     open_stranded_decision,
     stranded_dependents,
 )
-from taskmanager.engine.gates import RED_TARGET
+from taskmanager.engine.gates import RED_TARGET, clear_red_targets
 from taskmanager.engine.git import GitManager
 from taskmanager.engine.operations import OperationError, Operations
 from taskmanager.engine.routing import model_for
@@ -679,9 +679,11 @@ class Claims:
         self.runtime.park(node_id)
 
     def _escalate_red_targets(self) -> list[str]:
-        """One decision per red `main` that has held landings longer than
-        red_target_decision_after, blocking every landing it holds."""
-        parked: dict[tuple[str, str], list[tuple[str, datetime, list[str]]]] = {}
+        """One decision per red target that has held landings longer than
+        red_target_decision_after, blocking every landing it holds. A node mid-step cannot take
+        a new edge and is linked on a later sweep; a refusal is logged, never raised, since
+        every claim sweeps first."""
+        parked: dict[tuple[str, str, str], list[tuple[str, datetime, list[str]]]] = {}
         for node in self.nodes.list_nodes():
             if node.kind == NodeKind.DECISION:
                 continue
@@ -696,36 +698,41 @@ class Claims:
                 continue
             mark = marks[-1]
             since = datetime.fromisoformat(str(mark["since"]))
-            key = (str(mark["repo"]), str(mark["sha"]))
+            key = (str(mark["repo"]), str(mark.get("target", "main")), str(mark["sha"]))
             parked.setdefault(key, []).append((node.id, since, list(mark["failing"])))
         opened: list[str] = []
         now = datetime.now(tz=UTC)
-        for (repo, sha), entries in parked.items():
+        for (repo, target, sha), entries in parked.items():
             oldest = min(since for _, since, _ in entries)
             if (now - oldest).total_seconds() < self.config.red_target_decision_after:
                 continue
             slug = f"red-target-{repo}-{sha[:12]}"
-            held = [node_id for node_id, _, _ in entries]
+            held = [node_id for node_id, _, _ in entries if not self.ops.busy(node_id)]
             existing = self.nodes.get_node(f"decision-{slug}")
-            if existing is None:
-                opened.append(
-                    self.ops.add_decision(
-                        f"main of {repo} is red at {sha[:12]} and {len(held)} landing(s) wait on "
-                        "it: who fixes main?",
-                        slug=slug,
-                        context="Failing on main and at every parked landing:\n"
-                        + "\n".join(entries[0][2]),
-                        options=[
-                            "fixed|main is fixed; the parked landings retry on their own",
-                            "investigate|Someone investigates the red main",
-                        ],
-                        blocks=held,
+            try:
+                if existing is None and held:
+                    opened.append(
+                        self.ops.add_decision(
+                            f"{target} of {repo} is red at {sha[:12]} and {len(held)} "
+                            f"landing(s) wait on it: who fixes {target}?",
+                            slug=slug,
+                            context=f"Failing on {target} and at every parked landing:\n"
+                            + "\n".join(entries[0][2]),
+                            options=[
+                                f"fixed|{target} is fixed; the parked landings retry on their own",
+                                f"investigate|Someone investigates the red {target}",
+                            ],
+                            blocks=held,
+                        )
                     )
-                )
-            elif existing.status == DecisionStatus.OPEN:
-                unlinked = [n for n in held if existing.id not in self.nodes.get_dependencies(n)]
-                if unlinked:
-                    self.ops.link_decision(existing.id, add=unlinked)
+                elif existing is not None and existing.status == DecisionStatus.OPEN:
+                    unlinked = [
+                        n for n in held if existing.id not in self.nodes.get_dependencies(n)
+                    ]
+                    if unlinked:
+                        self.ops.link_decision(existing.id, add=unlinked)
+            except OperationError as exc:
+                _log.warning("red %s of %s at %s not escalated: %s", target, repo, sha, exc)
         return opened
 
     def _expire_jobs(self, node_id: str) -> int:
@@ -891,6 +898,7 @@ class Claims:
             before = self.snapshots.build()
             self.nodes.save_node(after)
             self._refuse(validate(before, self.snapshots.build(), {node.id}, _UnmovedBranches()))
+            clear_red_targets(self.nodes, node.id)
             self.note(node.id, *note)
             if nxt.status in (Status.DEFERRED, Status.ABANDONED):
                 self._strand(node.id, nxt.status)

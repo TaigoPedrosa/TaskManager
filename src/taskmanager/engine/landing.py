@@ -421,29 +421,28 @@ class Landing:
     def _park_red_target(self, job: Job, gate: Gate, base: GateRun) -> JobState:
         sha = str(job.result["base_sha"])
         failing = sorted(base.failing or frozenset())
-        for cond in self.claims.nodes.get_conditions(job.node_id):
-            if cond.needs.startswith(gates.RED_TARGET):
-                self.claims.nodes.remove_condition(job.node_id, cond.idx)
+        gates.clear_red_targets(self.claims.nodes, job.node_id)
         self.claims.nodes.add_condition(
             Condition(
                 node_id=job.node_id,
                 idx=0,
-                needs=f"{gates.RED_TARGET}: {job.repo} main at {sha[:12]} fails the "
+                needs=f"{gates.RED_TARGET}: {job.repo} {job.target} at {sha[:12]} fails the "
                 f"{len(failing)} test(s) this landing fails",
                 command=gates.red_target_command(
-                    self.root, job.repo, sha, gates.template_hash(gate.command)
+                    self.root, job.repo, sha, gates.template_hash(gate.command), job.target
                 ),
                 stage=ConditionStage.LANDING,
             )
         )
         mark = {
             "repo": job.repo,
+            "target": job.target,
             "sha": sha,
             "failing": failing,
             "since": datetime.now(tz=UTC).isoformat(),
         }
         return self._blocked(
-            job, f"main is red at {sha[:12]} with the same failures", red_target=mark
+            job, f"{job.target} is red at {sha[:12]} with the same failures", red_target=mark
         )
 
     def _drop_cleared_red_targets(self, node_id: str, unmet: list[Condition]) -> None:

@@ -15,6 +15,7 @@ from typing import Literal
 from taskmanager.core.models import GateRun
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
+from taskmanager.db.node_repo import NodeRepository
 from taskmanager.engine import git as gitops
 
 # The baseline cache stores this type; re-exported so callers share the one definition.
@@ -100,12 +101,21 @@ def attribute(tip: GateRun, base: GateRun) -> Attribution:
 
 
 def red_target_cleared(
-    cache: CacheRepository, repo_dir: Path, repo: str, sha: str, template_hash: str
+    cache: CacheRepository,
+    repo_dir: Path,
+    repo: str,
+    sha: str,
+    template_hash: str,
+    target: str = "main",
 ) -> bool:
-    """What a landing parked on a red `main` waits on: `main` moved past `sha`, and the baseline
-    at the new sha, if one ran, no longer fails the parked set. An unreadable remote is not
-    cleared."""
-    current = gitops.ls_remote(repo_dir, "refs/heads/main")
+    """What a landing parked on a red target waits on: the target (`main`, or a local container
+    branch) moved past `sha`, and the baseline at the new sha, if one ran, no longer fails the
+    parked set. An unreadable target is not cleared."""
+    current = (
+        gitops.ls_remote(repo_dir, "refs/heads/main")
+        if target == "main"
+        else gitops.rev_parse(repo_dir, f"refs/heads/{target}")
+    )
     if not current or current == sha:
         return False
     parked = cache.get_baseline(repo, sha, template_hash)
@@ -117,10 +127,20 @@ def red_target_cleared(
     return not parked.failing <= later.failing
 
 
-def red_target_command(root: Path, repo: str, sha: str, template_hash: str) -> str:
+def clear_red_targets(nodes: NodeRepository, node_id: str) -> None:
+    """Ends a parked landing's wait on its red target: the node's next landing parks again if
+    the target is still red."""
+    for cond in nodes.get_conditions(node_id):
+        if cond.needs.startswith(RED_TARGET):
+            nodes.remove_condition(node_id, cond.idx)
+
+
+def red_target_command(
+    root: Path, repo: str, sha: str, template_hash: str, target: str = "main"
+) -> str:
     """The condition command tm stores for a parked landing: tm itself evaluating the rule."""
     parts = [sys.executable, "-m", "taskmanager.engine.gates", RED_TARGET, "--root", str(root)]
-    parts += ["--repo", repo, "--sha", sha, "--template-hash", template_hash]
+    parts += ["--repo", repo, "--sha", sha, "--template-hash", template_hash, "--target", target]
     return " ".join(shlex.quote(part) for part in parts)
 
 
@@ -132,10 +152,11 @@ def main(argv: list[str] | None = None) -> int:
     red.add_argument("--repo", required=True)
     red.add_argument("--sha", required=True)
     red.add_argument("--template-hash", required=True)
+    red.add_argument("--target", default="main")
     args = parser.parse_args(argv)
     cache = CacheRepository(DatabaseManager(args.root / ".taskmanager"))
     cleared = red_target_cleared(
-        cache, args.root / args.repo, args.repo, args.sha, args.template_hash
+        cache, args.root / args.repo, args.repo, args.sha, args.template_hash, args.target
     )
     return 0 if cleared else 1
 
