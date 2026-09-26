@@ -61,8 +61,11 @@
         <button id="view-doc-btn" title="Document view" aria-label="Document view" class="h-full aspect-square flex items-center justify-center rounded-md font-medium text-zinc-400 hover:text-white transition">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-file-text"/></svg>
         </button>
+        <button id="view-decisions-btn" title="Decisions view" aria-label="Decisions view" class="relative h-full aspect-square flex items-center justify-center rounded-md font-medium text-zinc-400 hover:text-white transition">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-help-circle"/></svg>
+          <span id="decisions-badge" class="hidden absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-1 rounded-full bg-amber-500 text-black text-[10px] font-bold leading-4 text-center">0</span>
+        </button>
       </div>
-      <div id="view-extra-buttons" class="flex items-center gap-1.5 flex-shrink-0"></div>
 
       <div class="relative flex-1 min-w-[160px]">
         <div class="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-zinc-500">

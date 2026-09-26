@@ -113,40 +113,31 @@ window.tmStore.onChange(() => {
 });
 
 
-// Toolbar entry point: a badge-carrying button in #view-extra-buttons, and setViewMode
+// Toolbar entry point: the switcher's own fourth segment (index.html), and setViewMode
 // wrapped so a fourth mode exists without touching core.js's own Document/Graph/Waves switch.
 
-function renderDecisionsToolbarButton() {
-  const extra = document.getElementById('view-extra-buttons');
-  if (!extra || document.getElementById('view-decisions-btn')) return;
-  extra.insertAdjacentHTML('beforeend', `
-    <button id="view-decisions-btn" title="Decisions view" aria-label="Decisions view" class="relative h-8 px-2.5 flex items-center gap-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white text-xs font-medium transition">
-      ${renderIcon('help-circle', 'w-3.5 h-3.5')}<span class="hidden sm:inline">Decisions</span>
-      <span id="decisions-badge" class="hidden absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-1 rounded-full bg-amber-500 text-black text-[10px] font-bold leading-4 text-center">0</span>
-    </button>
-  `);
-  document.getElementById('view-decisions-btn').addEventListener('click', () => setViewMode(window.VIEW_MODES.DECISIONS));
-}
-renderDecisionsToolbarButton();
+const viewDecisionsBtn = document.getElementById('view-decisions-btn');
+const decisionsBadgeEl = document.getElementById('decisions-badge');
+viewDecisionsBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.DECISIONS));
 
 function updateDecisionsBadge() {
-  const badge = document.getElementById('decisions-badge');
-  if (!badge) return;
   // Live everywhere the store is (decisions_open travels with every snapshot/update); a
   // static export has no store push at all, so it counts the one page it was seeded with.
   const openCount = isStaticMode ? decisionsData.filter(d => d.status === 'OPEN').length : window.tmStore.decisionsOpen;
   if (openCount > 0) {
-    badge.textContent = openCount > 99 ? '99+' : String(openCount);
-    badge.classList.remove('hidden');
+    decisionsBadgeEl.textContent = openCount > 99 ? '99+' : String(openCount);
+    decisionsBadgeEl.classList.remove('hidden');
   } else {
-    badge.classList.add('hidden');
+    decisionsBadgeEl.classList.add('hidden');
   }
 }
 
 if (typeof setViewMode === 'function') {
   const previousSetViewMode = setViewMode;
+  // The badge is absolutely positioned against this segment, so it stays relative in both states.
+  const DECISIONS_BTN_ACTIVE = `${VIEW_BTN_ACTIVE} relative`;
+  const DECISIONS_BTN_INACTIVE = `${VIEW_BTN_INACTIVE} relative`;
   setViewMode = function (mode) {
-    const decisionsBtn = document.getElementById('view-decisions-btn');
     if (mode === window.VIEW_MODES.DECISIONS) {
       currentMode = mode;
       documentPane.classList.add('hidden');
@@ -157,15 +148,13 @@ if (typeof setViewMode === 'function') {
       viewWavesBtn.className = VIEW_BTN_INACTIVE;
       viewGraphBtn.className = VIEW_BTN_INACTIVE;
       viewDocBtn.className = VIEW_BTN_INACTIVE;
-      if (decisionsBtn) decisionsBtn.className = decisionsBtn.className.replace('bg-zinc-900', 'bg-zinc-800').replace('text-zinc-400', 'text-white');
+      viewDecisionsBtn.className = DECISIONS_BTN_ACTIVE;
       renderDecisionsView();
       refreshDecisionsData();
       return;
     }
     decisionsPane.classList.add('hidden');
-    if (decisionsBtn) {
-      decisionsBtn.className = 'relative h-8 px-2.5 flex items-center gap-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white text-xs font-medium transition';
-    }
+    viewDecisionsBtn.className = DECISIONS_BTN_INACTIVE;
     previousSetViewMode(mode);
   };
 }

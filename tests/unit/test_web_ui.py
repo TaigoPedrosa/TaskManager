@@ -45,9 +45,6 @@ def test_toolbar_holds_view_switcher_search_and_stats_in_one_row() -> None:
     toolbar = re.search(r'<header id="toolbar".*?</header>', html, re.DOTALL)
     assert toolbar, "single merged toolbar not found"
     row = toolbar.group(0)
-    assert 'id="view-waves-btn"' in row
-    assert 'id="view-graph-btn"' in row
-    assert 'id="view-doc-btn"' in row
     assert 'id="search-box"' in row
     assert 'id="stats-digest"' in row
     assert "lg:flex-nowrap" in row
@@ -1006,14 +1003,11 @@ def _class_tokens(tag: str) -> list[str]:
 
 
 def test_waves_view_is_the_default() -> None:
+    # Which segment is selected and which pane responds to a click is pinned by
+    # tests/web/switcher.test.mjs, which runs the real setViewMode rather than grepping for it;
+    # this test only pins the default pane visibility index.html itself bakes in.
     html = get_web_html()
     assert "window.VIEW_MODES.WAVES;" in html
-    waves_btn = re.search(r'<button id="view-waves-btn"[^>]*>', html)
-    assert waves_btn, "view-waves-btn not found"
-    assert "Waves view" in waves_btn.group(0)
-    doc_btn = re.search(r'<button id="view-doc-btn"[^>]*>', html)
-    assert doc_btn, "view-doc-btn not found"
-    assert "Document view" in doc_btn.group(0)
     waves_pane = re.search(r'<div id="waves-pane"[^>]*>', html)
     graph_pane = re.search(r'<section id="graph-pane"[^>]*>', html)
     network_canvas = re.search(r'<div id="network-canvas"[^>]*>', html)
@@ -1022,25 +1016,6 @@ def test_waves_view_is_the_default() -> None:
     assert graph_pane and "hidden" not in _class_tokens(graph_pane.group(0))
     assert network_canvas and "hidden" in _class_tokens(network_canvas.group(0))
     assert document_pane and "hidden" in _class_tokens(document_pane.group(0))
-
-
-def test_set_view_mode_handles_waves_graph_and_document() -> None:
-    html = get_web_html()
-    set_view_mode = _function_body(html, "setViewMode")
-    assert "window.VIEW_MODES.WAVES" in set_view_mode
-    assert "window.VIEW_MODES.DOCUMENT" in set_view_mode
-    assert "documentPane.classList" in set_view_mode
-    assert "toggleSectionsBtn.classList" in set_view_mode
-
-
-def test_document_view_button_switches_mode_and_toggle_sections_button_reappears() -> None:
-    html = get_web_html()
-    assert (
-        "viewDocBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.DOCUMENT))"
-        in html
-    )
-    set_view_mode = _function_body(html, "setViewMode")
-    assert "toggleSectionsBtn.classList.remove('hidden')" in set_view_mode
 
 
 def test_waves_pane_nests_inside_graph_pane_ahead_of_its_inspector() -> None:
