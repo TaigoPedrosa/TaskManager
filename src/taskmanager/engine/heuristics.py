@@ -4,17 +4,10 @@ from taskmanager.core.enums import NodeKind, RecommendationStrategy
 from taskmanager.core.models import Node
 from taskmanager.core.status import DisplayStatus, Status
 from taskmanager.db.cache_repo import CacheRepository
-from taskmanager.db.graph_reader import GraphData
 from taskmanager.db.node_repo import NodeRepository, declared_files_of
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder
 from taskmanager.engine.stepgraph import Snapshot
-
-
-def _graph_data(snapshot: Snapshot) -> GraphData:
-    if snapshot.data is None:
-        raise ValueError("snapshot has no bulk graph data; build it with SnapshotBuilder.build()")
-    return snapshot.data
 
 
 @dataclass
@@ -125,7 +118,7 @@ def score_every_task(
     not for picking a batch (that stays `get_next_tasks`, which also prunes by
     readiness, model and file collisions)."""
     weights = _STRATEGY_WEIGHTS[_resolve_strategy(strategy)]
-    nodes = _graph_data(snapshot).nodes
+    nodes = snapshot.graph_data().nodes
     plan_children = _plan_children(nodes, snapshot)
     parent_of = {c: p for p, children in plan_children.items() for c in children}
     blocked_by = _blocked_by(snapshot)
@@ -174,7 +167,7 @@ class RecommendationEngine:
 
         view = DisplayView(self.snapshots, self.cache, self.condition_ttl)
         snapshot = view.snapshot
-        data = _graph_data(snapshot)
+        data = snapshot.graph_data()
         nodes = data.nodes
         plan_children = _plan_children(nodes, snapshot)
         parent_of = {c: p for p, children in plan_children.items() for c in children}

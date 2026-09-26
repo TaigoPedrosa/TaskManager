@@ -241,8 +241,7 @@ class Claims:
         """Why `node` cannot be claimed now, the first reason in claimability order; None when
         it can. Reads only, and only from `snap`'s one bulk read: discovery asks it of every
         node, so a query here would run once per node in the estate."""
-        assert snap.data is not None, "blocked_reason needs a snapshot from SnapshotBuilder.build()"
-        data = snap.data
+        data = snap.graph_data()
         live = [j for j in data.jobs.get(node.id, []) if j.state in LIVE_JOBS]
         if live:
             job = live[0]

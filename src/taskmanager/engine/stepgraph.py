@@ -93,6 +93,13 @@ class Snapshot:
             owner = self.parent(owner)
         return found
 
+    def graph_data(self) -> GraphData:
+        if self.data is None:
+            raise ValueError(
+                "snapshot has no bulk graph data; build it with SnapshotBuilder.build()"
+            )
+        return self.data
+
 
 def _is_work(s: Snapshot, node_id: str) -> bool:
     return node_id in s.nodes and s.nodes[node_id].kind != NodeKind.DECISION

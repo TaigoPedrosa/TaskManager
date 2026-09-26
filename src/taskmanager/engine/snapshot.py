@@ -142,12 +142,6 @@ def roll_up_ancestors(
     return moved
 
 
-def _graph_data(snapshot: Snapshot) -> GraphData:
-    if snapshot.data is None:
-        raise ValueError("snapshot has no bulk graph data; build it with SnapshotBuilder.build()")
-    return snapshot.data
-
-
 class SnapshotBuilder:
     """The whole graph as the pure rules read it, and the per-node facts display derives from.
 
@@ -179,7 +173,7 @@ class SnapshotBuilder:
     def lock_set(self, node_id: str, snapshot: Snapshot) -> list[str]:
         """The files a claim of this node locks: its declared files, or for a container that
         declares none, the union of its descendants'."""
-        data = _graph_data(snapshot)
+        data = snapshot.graph_data()
         own = self._declared_files(node_id, data)
         if own or snapshot.nodes[node_id].kind not in CONTAINERS:
             return own
@@ -192,7 +186,7 @@ class SnapshotBuilder:
         """Every one of `files` a live lease other than its own currently holds, exactly as
         `RuntimeRepository.get_conflicting_tasks` reads it -- from the snapshot's one bulk read,
         not a query per call."""
-        data = _graph_data(snapshot)
+        data = snapshot.graph_data()
         wanted = set(files)
         found: dict[str, str] = {}
         for lock in data.file_locks:
@@ -209,7 +203,7 @@ class SnapshotBuilder:
         """Everything display derivation needs beyond the node's own cycle. `unmet_condition`
         is left False: conditions run through the ConditionRunner, whose result a caller folds
         in with `dataclasses.replace`."""
-        data = _graph_data(snapshot)
+        data = snapshot.graph_data()
         node = data.nodes.get(node_id)
         if node is None:
             raise KeyError(node_id)
@@ -294,7 +288,7 @@ class DisplayView:
     def _unmet(self, node: Node) -> bool:
         if self.cache is None:
             return False
-        data = _graph_data(self.snapshot)
+        data = self.snapshot.graph_data()
         stages = {ConditionStage.CLAIM}
         if next_action(self.builder.cycle(node)) == Action.MERGE:
             stages.add(ConditionStage.LANDING)

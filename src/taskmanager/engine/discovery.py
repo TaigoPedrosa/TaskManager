@@ -52,8 +52,7 @@ def _candidates(
     claims: Claims, snap: Snapshot, specs: list[str] | None, held: list[str]
 ) -> list[_Candidate]:
     found: list[_Candidate] = []
-    assert snap.data is not None, "discover() builds its snapshot through SnapshotBuilder.build()"
-    data = snap.data
+    data = snap.graph_data()
     for node in claims.nodes.list_nodes():
         if node.kind == NodeKind.DECISION or not _in_scope(claims, node, specs):
             continue
