@@ -137,10 +137,7 @@ function openDialog({ title, bodyHtml, onMount, onSubmit, submitLabel = 'Save', 
 
 // A confirm is just a dialog whose only field is the warning text -- and, unlike an editable
 // form, there is nothing in it left to correct on a refusal, so it closes as soon as the
-// button is pressed rather than staying open for the write plus the reload that follows it.
-// `onConfirm` routinely ends in `await afterWrite(...)`, which reloads the whole tree/graph
-// (seconds on a large estate); leaving the dialog open for that made a Withdraw or a Remove
-// look hung for as long as the reload took, disabled button and all.
+// button is pressed rather than staying open for the write that follows it.
 function confirmDialog({ title, message, confirmLabel = 'Confirm', destructive = true, onConfirm }) {
   return openDialog({
     title,
@@ -158,13 +155,23 @@ function confirmDialog({ title, message, confirmLabel = 'Confirm', destructive =
   });
 }
 
-// Reload the tree/graph/stats and, if the node just written to is the one open in the
-// inspector, re-render it -- the WS ledger watcher would do this too, ~0.7s later.
-async function afterWrite(nodeId) {
-  await loadAllData();
-  if (nodeId && selectedNodeId === nodeId && graphInspector && !graphInspector.classList.contains('hidden')) {
-    showGraphInspector(nodeId);
-  }
+// No write here ever reloads anything: its effect reaches every open view as a row/body
+// update over the store's own subscription. A created node is the one case with nothing yet
+// to update -- its row does not exist until the store says so -- so this opens its container
+// and selects it the moment that row arrives, immediately if the store already has it.
+function openAndSelectCreated(id, containerId) {
+  if (containerId) window.tmStore.open([containerId]);
+  const trySelect = () => {
+    const row = window.tmStore.rows.get(id);
+    if (!row) return false;
+    if (row.kind !== 'task' && !expandedIds.has(id)) toggleExpand(row);
+    selectNode(id);
+    return true;
+  };
+  if (trySelect()) return;
+  const unsubscribe = window.tmStore.onChange((patch) => {
+    if (patch.rowIds.includes(id) && trySelect()) unsubscribe();
+  });
 }
 
 
@@ -274,7 +281,7 @@ function openNewSpecDialog() {
       });
       toast(`Spec ${res.id} created.`, 'success');
       close();
-      await afterWrite(res.id);
+      openAndSelectCreated(res.id, null);
     }
   });
 }
@@ -319,7 +326,7 @@ async function openNewPlanDialog() {
       });
       toast(`Plan ${res.id} created.`, 'success');
       close();
-      await afterWrite(res.id);
+      openAndSelectCreated(res.id, panel.querySelector('.np-spec').value);
     }
   });
 }
@@ -365,7 +372,7 @@ async function openNewTaskDialog() {
       });
       toast(`Task ${res.id} created.`, 'success');
       close();
-      await afterWrite(res.id);
+      openAndSelectCreated(res.id, panel.querySelector('.nt-plan').value);
     }
   });
 }
@@ -406,7 +413,6 @@ function openEditNodeDialog(node) {
       await api('PATCH', `/api/nodes/${node.id}`, body);
       toast(`${node.id} updated.`, 'success');
       close();
-      await afterWrite(node.id);
     }
   });
 }
@@ -417,7 +423,6 @@ function openEditNodeDialog(node) {
 async function postVerb(node, verb, body) {
   const res = await api('POST', `/api/nodes/${node.id}/${verb}`, body);
   toast(`${node.id} is now ${res.status}.`, 'success');
-  await afterWrite(node.id);
 }
 
 const VERB_COPY = {
@@ -499,7 +504,6 @@ function openFlagsDialog(node) {
       await api('PATCH', `/api/nodes/${node.id}`, body);
       toast(`${node.id} flags saved.`, 'success');
       close();
-      await afterWrite(node.id);
     }
   });
 }
@@ -523,7 +527,6 @@ function openAddConditionDialog(node) {
       await api('POST', `/api/nodes/${node.id}/conditions`, { needs, command, stage: panel.querySelector('.cd-stage').value });
       toast(`Condition added to ${node.id}.`, 'success');
       close();
-      await afterWrite(node.id);
     }
   });
 }
@@ -536,7 +539,6 @@ function removeCondition(node, idx, needs) {
     onConfirm: async () => {
       await api('DELETE', `/api/nodes/${node.id}/conditions/${idx}`);
       toast(`Condition removed from ${node.id}.`, 'success');
-      await afterWrite(node.id);
     }
   });
 }
@@ -574,7 +576,6 @@ function openSupersedeDialog(node) {
       await api('POST', `/api/nodes/${node.id}/supersede`, { by, transfer_blocks });
       toast(`${node.id} superseded by ${by}.`, 'success');
       close();
-      await afterWrite(node.id);
     }
   });
 }
@@ -600,7 +601,6 @@ async function openMoveDialog(node) {
       await api('POST', `/api/nodes/${node.id}/move`, { plan });
       toast(`${node.id} moved to ${plan}.`, 'success');
       close();
-      await afterWrite(node.id);
     }
   });
 }
@@ -611,11 +611,21 @@ async function openMoveDialog(node) {
 // A search picker over ids and titles (§6.3): a native <datalist> is the whole
 // implementation, so typing "which auth" resolves the same as typing "decision-which".
 // `decisionsOnly` is "Wait on decision" -- the same picker, filtered to decisions, and the
-// same POST (a decision dependency is an ordinary depends_on edge, per §3.2).
-function openAddDependencyDialog(node, decisionsOnly = false) {
-  const candidates = decisionsOnly
-    ? decisionsData.filter(d => d.id !== node.id)
-    : collectAllNodes(treeData).filter(n => n.kind !== 'decision' && n.id !== node.id);
+// same POST (a decision dependency is an ordinary depends_on edge, per §3.2). Rows are never
+// decisions (§ "Rows"), so a decision candidate list has to come from /api/decisions instead
+// of the store; an ordinary dependency picks from the rows the store currently holds.
+async function openAddDependencyDialog(node, decisionsOnly = false) {
+  let candidates;
+  if (decisionsOnly) {
+    try {
+      candidates = (await api('GET', '/api/decisions?status=open&limit=200')).items.filter(d => d.id !== node.id);
+    } catch (e) {
+      toast(e.message, 'error');
+      return;
+    }
+  } else {
+    candidates = [...window.tmStore.rows.values()].filter(n => n.id !== node.id);
+  }
   const listId = 'dep-picker-list';
   const optionsHtml = candidates.map(n => `<option value="${esc(n.id)}">${esc(n.title)}</option>`).join('');
   openDialog({
@@ -634,7 +644,6 @@ function openAddDependencyDialog(node, decisionsOnly = false) {
       await api('POST', `/api/nodes/${node.id}/dependencies`, { add: [{ id }] });
       toast(`${id} added as a dependency of ${node.id}.`, 'success');
       close();
-      await afterWrite(node.id);
     }
   });
 }
@@ -647,7 +656,6 @@ function removeDependency(node, depId) {
     onConfirm: async () => {
       await api('POST', `/api/nodes/${node.id}/dependencies`, { remove: [depId] });
       toast(`${depId} removed from ${node.id}'s dependencies.`, 'success');
-      await afterWrite(node.id);
     }
   });
 }
@@ -701,7 +709,6 @@ function openSectionDialog(node, existing) {
       await api('PUT', `/api/nodes/${node.id}/sections/${encodeURIComponent(key)}`, { content, header });
       toast(`Section ${key} saved.`, 'success');
       close();
-      await afterWrite(node.id);
     }
   });
 }
@@ -714,7 +721,6 @@ function removeSection(node, key) {
     onConfirm: async () => {
       await api('DELETE', `/api/nodes/${node.id}/sections/${encodeURIComponent(key)}`);
       toast(`Section ${key} deleted.`, 'success');
-      await afterWrite(node.id);
     }
   });
 }
@@ -742,7 +748,6 @@ function openAddVerificationDialog(node) {
       });
       toast('Verification added.', 'success');
       close();
-      await afterWrite(node.id);
     }
   });
 }
@@ -755,7 +760,6 @@ function removeVerification(node, verificationId, target) {
     onConfirm: async () => {
       await api('DELETE', `/api/nodes/${node.id}/verifications/${verificationId}`);
       toast('Verification removed.', 'success');
-      await afterWrite(node.id);
     }
   });
 }
@@ -771,7 +775,6 @@ function releaseLease(node) {
     onConfirm: async () => {
       await api('DELETE', `/api/nodes/${node.id}/lease`);
       toast(`Lease released on ${node.id}.`, 'success');
-      await afterWrite(node.id);
     }
   });
 }
