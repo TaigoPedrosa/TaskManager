@@ -295,3 +295,23 @@ def test_the_docs_show_enough_owned_closes_to_be_worth_checking() -> None:
 def test_a_close_that_names_its_agent_names_its_claim_s_token(where: str, command: str) -> None:
     """An agent name repeats across claims of one node; only the token tells this claim apart."""
     assert "--token" in command, f"{where} shows `{command}`"
+
+
+def test_plan_guide_names_the_measurement_for_an_unchanged_acceptance() -> None:
+    """A file left unchanged is proven by its bytes or hash, never by re-reading a field or two."""
+    assert "names its measurement" in _guide_text("plan")
+
+
+def test_plan_guide_names_where_an_invariant_or_refusal_holds() -> None:
+    """A rule enforced on one path of several is a rule not enforced; acceptance must name each path."""
+    assert "names where it holds" in _guide_text("plan")
+
+
+def test_plan_guide_writes_a_config_backed_limit_as_its_key() -> None:
+    """A spec that hardcodes a bound a tm config key already covers drifts from that key silently."""
+    assert "written as the project's key" in _guide_text("plan")
+
+
+def test_review_guide_rejects_on_a_red_test_whoever_declared_its_file() -> None:
+    """A red test on the branch is this diff's failure regardless of which task's declared_files named the file."""
+    assert "rejects the node" in _guide_text("review")

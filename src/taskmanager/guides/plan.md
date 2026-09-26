@@ -109,6 +109,9 @@ One agent, one sitting, one branch: an objective of a sentence, acceptance of a 
 - **`acceptance` is the review's brief.** One check per line, each one a reviewer can actually run, and each about *this* node's deliverable. "The suite is green" is not a check.
 - **`review_models` is who runs it.** Set it wherever checking is harder than writing.
 - **A landing precondition is an edge or a condition, never a sentence.** Written into `acceptance` it reads as a review check, passes review, and is found only when the landing is already under way.
+- An acceptance that something is left unchanged names its measurement: the file's bytes or sha256 before and after, never a field or two read back.
+- An invariant or a refusal in acceptance names where it holds: the one function every write or command passes through, or each path by name, with a check for each; a changed shape names every caller.
+- A limit or default a spec states that a tm config key covers is written as the project's key, never a number.
 
 ## 9. Import it, then read it back
 
