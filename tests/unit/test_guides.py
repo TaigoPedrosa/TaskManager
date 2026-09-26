@@ -183,7 +183,7 @@ def test_overview_carries_the_cycle_and_the_cutover_runbook() -> None:
 
 
 def test_fix_guide_requires_a_test_that_fails_when_reverted() -> None:
-    """Twice in 0.3.1 a fix closed a finding with nothing failing when it was undone."""
+    """A finding closes only with a test proven to fail when its fix is undone."""
     text = _guide_text("fix")
     steps, never = text.split("## Never", 1)
     assert "revert" in steps.lower(), "fix guide's steps carry no revert-checked-test rule"
