@@ -11,6 +11,7 @@ from taskmanager.core.enums import NodeKind
 from taskmanager.core.lifecycle import LifecycleError
 from taskmanager.core.models import Node
 from taskmanager.core.status import IN_STEP, Action, JobKind, JobState, Status
+from taskmanager.db.node_repo import locked_key
 from taskmanager.engine.claims import Claims
 from taskmanager.engine.routing import STRONG
 from taskmanager.engine.stepgraph import Snapshot, migration_holders
@@ -120,7 +121,7 @@ def discover(
         repo = node.target_repo or ""
         migration = snap.nodes[node.id].writes_migration
         files = (
-            claims.nodes.declared_files(node.id)
+            [locked_key(node.target_repo, f) for f in claims.nodes.declared_files(node.id)]
             if cand.action in (Action.IMPLEMENT, Action.FIX)
             else []
         )

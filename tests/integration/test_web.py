@@ -23,7 +23,7 @@ from taskmanager.core.models import (
 )
 from taskmanager.core.status import Action, DecisionStatus, Outcome, Status
 from taskmanager.db.connection import DatabaseManager
-from taskmanager.db.node_repo import NodeRepository
+from taskmanager.db.node_repo import NodeRepository, locked_key
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.web.app import create_app
 from taskmanager.web.static_export import export_static_html
@@ -260,7 +260,12 @@ def every_display_project(tmp_path: Path) -> Path:
     add_task("T-SUPERSEDED", Status.SUPERSEDED)
     add_task("T-AWAITING-DECISION", Status.READY)
     add_task("T-BLOCKED", Status.READY)
-    add_task("T-BLOCKED-BY-LEASE", Status.READY, frontmatter={"declared_files": [shared_path]})
+    add_task(
+        "T-BLOCKED-BY-LEASE",
+        Status.READY,
+        repo="web",
+        frontmatter={"declared_files": [shared_path]},
+    )
     node_repo.save_node(
         Node(id="DECISION", kind=NodeKind.DECISION, title="Which way?", status=DecisionStatus.OPEN)
     )
@@ -295,7 +300,9 @@ def every_display_project(tmp_path: Path) -> Path:
         ttl_seconds=300,
     )
     assert RuntimeRepository(db_mgr).claim(
-        lease, [FileLock(file_path=shared_path, task_id="T-IMPLEMENTING")], claimed
+        lease,
+        [FileLock(file_path=locked_key("web", shared_path), task_id="T-IMPLEMENTING")],
+        claimed,
     )
     return tmp_path
 
