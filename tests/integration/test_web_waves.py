@@ -64,7 +64,7 @@ def test_size_outside_1_tick_budget_answers_400_naming_the_configured_bound(web:
     res = client.get("/api/waves", params={"size": 6})
 
     assert res.status_code == 400
-    assert res.json()["detail"] == "size is 1..5"
+    assert res.json()["detail"] == "wave size must be 1–5 (this project's dispatch.tick_budget)"
 
 
 def test_size_defaults_to_the_project_wave_size(web: Web) -> None:

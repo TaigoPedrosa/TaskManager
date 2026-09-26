@@ -214,13 +214,13 @@ test('a failed request shows the error and drops the stale cards, not a silent e
   await flushAsync();
   ctx.fetch = async (url) => {
     if (url.startsWith('/api/meta')) return metaResponse();
-    return { ok: false, status: 400, json: async () => ({ detail: 'size is 1..20' }) };
+    return { ok: false, status: 400, json: async () => ({ detail: "wave size must be 1–20 (this project's dispatch.tick_budget)" }) };
   };
 
   await ctx.fetchWaves();
 
   const html = ctx.contentHtml();
-  assert.match(html, /size is 1\.\.20/);
+  assert.match(html, /Could not compute waves: wave size must be 1–20 \(this project's dispatch\.tick_budget\)/);
   assert.match(html, /role="alert"/);
   assert.doesNotMatch(html, /Wave 1/);
   assert.match(html, /id="wave-size-input"[^>]*border-red-700/, 'a size-range refusal marks the size input itself invalid');

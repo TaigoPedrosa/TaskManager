@@ -76,7 +76,7 @@ async function fetchWaves() {
   } catch (e) {
     if (seq !== waveRequestSeq) return;
     waveData = [];
-    waveError = e.message;
+    waveError = `Could not compute waves: ${e.message}`;
   } finally {
     if (seq === waveRequestSeq) {
       waveLoading = false;
