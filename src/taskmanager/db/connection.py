@@ -46,6 +46,20 @@ class StateSchemaTooNew(Exception):
         )
 
 
+def _statements(script: str) -> list[str]:
+    """A migration's own statements, in order, without SQLite's `sqlite3_complete()` mistaking a
+    trigger body's semicolons for the one that ends its `CREATE TRIGGER`."""
+    statements = []
+    buf = ""
+    for line in script.splitlines(keepends=True):
+        buf += line
+        if buf.strip() and sqlite3.complete_statement(buf):
+            statements.append(buf)
+            buf = ""
+    assert not buf.strip(), f"incomplete statement left over: {buf!r}"
+    return statements
+
+
 def _is_sqlite(path: Path) -> bool:
     try:
         with path.open("rb") as fh:
@@ -127,7 +141,11 @@ class DatabaseManager:
             if version > STATE_SCHEMA_VERSION:
                 raise StateSchemaTooNew(version)
             for target in range(version + 1, STATE_SCHEMA_VERSION + 1):
-                conn.executescript(STATE_MIGRATIONS[target])
+                # Not `executescript`: it commits whatever transaction is already open before
+                # it runs a single statement, which would drop the lock above and let a second
+                # connection start migrating too.
+                for statement in _statements(STATE_MIGRATIONS[target]):
+                    conn.execute(statement)
                 conn.execute(f"PRAGMA user_version = {target}")
         except BaseException:
             conn.rollback()
