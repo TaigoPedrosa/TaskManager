@@ -39,7 +39,7 @@ from taskmanager.core.status import (
     Status,
 )
 from taskmanager.db.cache_repo import CacheRepository
-from taskmanager.db.connection import DatabaseManager
+from taskmanager.db.connection import DatabaseManager, StateSchemaTooNew
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
@@ -285,6 +285,10 @@ def _user_errors() -> Iterator[None]:
 def _get_container(path: Path | None) -> Container:
     root = _get_root(path, must_exist=False)
     _refuse_pre_lifecycle(root)
+    # Opened once here so a state.db newer than this tm refuses every command, even one that
+    # only reads audit.db or cache.db.
+    with DatabaseManager(root / ".taskmanager").get_state_connection():
+        pass
     return make_container(TaskManagerProvider(root))
 
 
@@ -2484,5 +2488,15 @@ def cli_install(
         print("[green]TaskManager installed successfully[/green]")
 
 
+def main() -> None:
+    """The console entry: a state.db newer than this tm can surface from whichever command
+    opens it first, so it is refused here, once, as its message and exit 1."""
+    try:
+        app()
+    except StateSchemaTooNew as exc:
+        print(f"[red]{escape(str(exc))}[/red]")
+        raise SystemExit(1) from exc
+
+
 if __name__ == "__main__":
-    app()
+    main()

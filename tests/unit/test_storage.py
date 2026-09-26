@@ -12,7 +12,7 @@ from taskmanager.core.status import ConditionStage, DecisionStatus, Merge, Outco
 from taskmanager.db.connection import DatabaseManager, PreLifecycleEstate
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
-from taskmanager.db.schema import SCHEMA_VERSION
+from taskmanager.db.schema import SCHEMA_VERSION, STATE_SCHEMA_VERSION
 
 PRE_LIFECYCLE = (
     "this directory holds a pre-lifecycle estate: run `tm init --archive` to move it to "
@@ -45,7 +45,7 @@ def _tables(conn: sqlite3.Connection) -> set[str]:
 def test_init_creates_state_and_ledger_at_the_current_schema_version(tmp_path: Path) -> None:
     db = _fresh(tmp_path)
     with db.get_state_connection() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone() == (SCHEMA_VERSION,)
+        assert conn.execute("PRAGMA user_version").fetchone() == (STATE_SCHEMA_VERSION,)
         assert {
             "nodes",
             "node_sections",

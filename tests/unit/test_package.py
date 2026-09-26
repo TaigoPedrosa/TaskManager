@@ -35,3 +35,13 @@ def test_every_manifest_carries_the_release_version() -> None:
         "marketplace": [RELEASE],
         "gemini": RELEASE,
     }
+
+
+def test_every_console_script_enters_through_main() -> None:
+    scripts = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))["project"][
+        "scripts"
+    ]
+    assert scripts == {
+        "tm": "taskmanager.cli.main:main",
+        "taskmanager": "taskmanager.cli.main:main",
+    }
