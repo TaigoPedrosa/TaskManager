@@ -86,6 +86,7 @@ function makeFakeFetch(wavesPayload) {
 function freshContext(wavesPayload) {
   const contentEl = new FakeElement();
   let rafQueue = [];
+  const loadPendingCalls = [];
   const sandbox = {
     console,
     setTimeout: globalThis.setTimeout,
@@ -99,6 +100,7 @@ function freshContext(wavesPayload) {
     getTheme: () => FAKE_THEME,
     statusChip: () => '',
     showGraphInspector: () => {},
+    setWavesLoadPending: (v) => loadPendingCalls.push(v),
   };
   sandbox.window = sandbox;
   sandbox.window.tmStore = new FakeStore();
@@ -112,6 +114,7 @@ function freshContext(wavesPayload) {
     queue.forEach((fn) => fn());
   };
   context.contentHtml = () => contentEl.innerHTML;
+  context.loadPendingCalls = loadPendingCalls;
   return context;
 }
 
@@ -219,4 +222,15 @@ test('a failed request shows the error and drops the stale cards, not a silent e
   assert.match(html, /size is 1\.\.20/);
   assert.match(html, /role="alert"/);
   assert.doesNotMatch(html, /Wave 1/);
+  assert.match(html, /id="wave-size-input"[^>]*border-red-700/, 'a size-range refusal marks the size input itself invalid');
+});
+
+test('every fetch drives the shared load indicator, not only the first', async () => {
+  const ctx = freshContext();
+  await flushAsync();
+  assert.deepEqual(ctx.loadPendingCalls, [true, false], 'the initial /api/waves fetch');
+
+  ctx.computeNextWave();
+  await flushAsync();
+  assert.deepEqual(ctx.loadPendingCalls, [true, false, true, false], 'a later fetch pends the indicator again');
 });

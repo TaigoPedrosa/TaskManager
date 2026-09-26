@@ -746,7 +746,9 @@ def test_load_indicator_follows_the_stores_pending_flag() -> None:
     html = get_web_html()
     assert 'id="load-indicator"' in html
     body = _function_body(html, "syncConnectionUi")
-    assert "loadIndicator.classList.toggle('hidden', !window.tmStore.pending)" in body
+    assert "!window.tmStore.pending" in body
+    # Waves' own fetch cycle runs outside the store, so it feeds the same bar through this flag.
+    assert "!wavesLoadPending" in body
 
 
 def test_a_refused_subscribe_notifies_the_store_and_core_toasts_it() -> None:

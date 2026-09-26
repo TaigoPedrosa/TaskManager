@@ -398,9 +398,17 @@ function setBrandLive(state) {
 // The brand icon follows the store's connection state and the load indicator its `pending`
 // flag; both are read straight off the store rather than mirrored into local variables, so
 // there is exactly one place either can drift from what the store actually reports.
+// Waves' own fetch cycle runs entirely outside the store (waves.js is deliberately
+// self-contained), so it feeds the same bar through this flag instead.
+let wavesLoadPending = false;
+function setWavesLoadPending(pending) {
+  wavesLoadPending = pending;
+  syncConnectionUi();
+}
+
 function syncConnectionUi() {
   setBrandLive(isStaticMode ? 'static' : (window.tmStore.connected ? 'synced' : 'disconnected'));
-  loadIndicator.classList.toggle('hidden', !window.tmStore.pending);
+  loadIndicator.classList.toggle('hidden', !window.tmStore.pending && !wavesLoadPending);
 }
 
 // Re-render coalesced to at most once per animation frame: a subscription can update rows,

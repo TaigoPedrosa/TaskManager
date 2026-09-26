@@ -2,8 +2,8 @@
 // rendered as one card per wave. Deliberately self-contained (its own fetch, its own render
 // target #waves-content) rather than routed through core.js's api()/scheduleRender(): the
 // only globals it leans on are the ones every other view already shares -- esc/renderIcon/
-// getTheme (core.js), filters.specMode (filters.js), showGraphInspector (detail.js) and
-// window.tmStore.
+// getTheme/setWavesLoadPending (core.js), filters.specMode (filters.js), showGraphInspector
+// (detail.js) and window.tmStore.
 
 let waveDepth = 1;
 let waveSize = null;
@@ -61,6 +61,7 @@ async function fetchWaves() {
   const seq = ++waveRequestSeq;
   waveLoading = true;
   waveError = null;
+  setWavesLoadPending(true);
   renderWaves();
   const params = new URLSearchParams({ depth: String(waveDepth) });
   if (waveSize !== null) params.set('size', String(waveSize));
@@ -74,7 +75,10 @@ async function fetchWaves() {
     waveData = [];
     waveError = e.message;
   } finally {
-    if (seq === waveRequestSeq) waveLoading = false;
+    if (seq === waveRequestSeq) {
+      waveLoading = false;
+      setWavesLoadPending(false);
+    }
     renderWaves();
   }
 }
@@ -213,11 +217,15 @@ function controlsHtml() {
   const captionText = waveMaxSize !== null ? `1–${waveMaxSize} (tick_budget)` : '';
   const maxAttr = waveMaxSize !== null ? ` max="${waveMaxSize}"` : '';
   const valueAttr = waveSize !== null ? waveSize : '';
+  // A size-range refusal is the one error the input itself caused, so it wears the refusal
+  // rather than only the pane-level alert above it (same border/text pair as toast's error tone).
+  const sizeBorderCls = waveError ? 'border-red-700' : 'border-zinc-800';
+  const sizeTextCls = waveError ? 'text-red-200' : 'text-zinc-200';
   return `
     <div class="flex items-center gap-3 flex-wrap">
       <label class="flex items-center gap-2 text-xs text-zinc-300">
         <span>Wave size</span>
-        <input id="wave-size-input" type="number" min="1"${maxAttr} value="${esc(valueAttr)}" aria-describedby="wave-size-caption" class="h-8 w-20 px-2.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-200 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+        <input id="wave-size-input" type="number" min="1"${maxAttr} value="${esc(valueAttr)}" aria-describedby="wave-size-caption" class="h-8 w-20 px-2.5 rounded-lg bg-zinc-950 border ${sizeBorderCls} text-xs ${sizeTextCls} focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
       </label>
       <span id="wave-size-caption" class="text-[11px] text-zinc-500">${esc(captionText)}</span>
       <button id="wave-reset-btn" type="button" class="h-8 px-3 rounded-lg text-xs font-medium bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 hover:text-white transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">Reset</button>
@@ -248,12 +256,12 @@ function wavesHtml() {
     `;
   }
   if (waveLoading && waveData.length === 0) {
+    // The pending cue itself is the shared #load-indicator bar (setWavesLoadPending, above);
+    // this is only the content pane's placeholder for the stretch before any wave has ever
+    // rendered here.
     return `
       ${controlsHtml()}
-      <div class="border border-zinc-800/80 rounded-lg bg-zinc-950/40 p-6 space-y-3">
-        <div class="h-0.5 bg-emerald-500 animate-pulse rounded-full"></div>
-        <div class="text-xs text-zinc-400 text-center py-4">Loading&hellip;</div>
-      </div>
+      <div class="border border-zinc-800/80 rounded-lg bg-zinc-950/40 p-6 text-xs text-zinc-400 text-center">Loading&hellip;</div>
     `;
   }
   return `
