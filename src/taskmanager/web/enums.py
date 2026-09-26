@@ -7,6 +7,7 @@ from typing import Any, NamedTuple
 class WebViewMode(StrEnum):
     DOCUMENT = "document"
     GRAPH = "graph"
+    WAVES = "waves"
 
 
 class IconData(NamedTuple):

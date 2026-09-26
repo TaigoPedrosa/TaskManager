@@ -130,8 +130,9 @@ def test_status_icon_carries_a_title_and_chip_is_legend_only() -> None:
     html = get_web_html()
     status_icon = _function_body(html, "statusIcon")
     assert 'title="${esc(t.label)}"' in status_icon
-    # statusChip (visible label) survives only in its own definition and the legend.
-    assert html.count("statusChip(") == 2
+    # statusChip (visible label) survives only in its own definition, the legend, and the
+    # waves view's from/to transition (a wave card names no other status marker at all).
+    assert html.count("statusChip(") == 3
     assert "renderLegend" in html
     legend = _function_body(html, "renderLegend")
     assert "statusChip(" in legend
@@ -251,6 +252,7 @@ def test_page_inlines_every_static_js_file() -> None:
         "graph.js": "const GRAPH_SHAPE_BY_KIND",
         "edit.js": "function openDialog(",
         "detail.js": "async function showGraphInspector(nodeId)",
+        "waves.js": "function fetchWaves()",
         "main.js": "readHash();\nrenderLegend();",
     }
     for source_file, needle in known_strings_by_file.items():
@@ -271,6 +273,7 @@ def test_static_files_are_packaged_and_resolve_at_runtime() -> None:
         "graph.js",
         "edit.js",
         "detail.js",
+        "waves.js",
         "main.js",
     ):
         assert static_dir.joinpath("js", name).is_file(), f"js/{name} did not ship"
@@ -976,6 +979,88 @@ def test_sections_and_relations_render_only_once_a_watched_body_arrives() -> Non
     task_card = _function_body(get_web_html(), "renderTaskCard")
     assert "bodyOf(task.id)" in task_card
     assert "Loading…" in task_card
+
+
+def _class_tokens(tag: str) -> list[str]:
+    match = re.search(r'class="([^"]*)"', tag)
+    assert match, f"no class attribute in {tag!r}"
+    return match.group(1).split()
+
+
+def test_waves_view_is_the_default_and_reuses_the_documents_toolbar_slot() -> None:
+    html = get_web_html()
+    assert "window.VIEW_MODES.WAVES;" in html
+    doc_btn = re.search(r'<button id="view-doc-btn"[^>]*>', html)
+    assert doc_btn, "view-doc-btn not found"
+    assert "Waves view" in doc_btn.group(0)
+    assert 'id="icon-file-text"' in html
+    waves_pane = re.search(r'<div id="waves-pane"[^>]*>', html)
+    document_pane = re.search(r'<main id="document-pane"[^>]*>', html)
+    graph_pane = re.search(r'<section id="graph-pane"[^>]*>', html)
+    network_canvas = re.search(r'<div id="network-canvas"[^>]*>', html)
+    assert waves_pane and "hidden" not in _class_tokens(waves_pane.group(0))
+    assert document_pane and "hidden" in _class_tokens(document_pane.group(0))
+    assert graph_pane and "hidden" not in _class_tokens(graph_pane.group(0))
+    assert network_canvas and "hidden" in _class_tokens(network_canvas.group(0))
+
+
+def test_waves_pane_nests_inside_graph_pane_ahead_of_its_inspector() -> None:
+    # Sharing graph-pane's own #graph-inspector (rather than a second copy of the drawer) is
+    # what lets a wave card open the same detail drawer showGraphInspector already provides.
+    html = get_web_html()
+    graph_pane = re.search(r'<section id="graph-pane".*?</section>', html, re.DOTALL)
+    assert graph_pane, "graph-pane not found"
+    body = graph_pane.group(0)
+    assert body.index('id="waves-pane"') < body.index('id="graph-inspector"')
+
+
+def test_set_view_mode_toggles_the_canvas_layer_and_waves_pane() -> None:
+    body = _function_body(get_web_html(), "setViewMode")
+    assert "wavesPane.classList.toggle('hidden', mode !== window.VIEW_MODES.WAVES)" in body
+    assert "networkCanvas.classList.toggle('hidden', mode !== window.VIEW_MODES.GRAPH)" in body
+    assert "graphFitWrap.classList.toggle('hidden', mode !== window.VIEW_MODES.GRAPH)" in body
+    assert (
+        "viewDocBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.WAVES))"
+        in _static_js("core.js")
+    )
+
+
+def test_wave_size_bounds_come_from_meta_never_a_constant() -> None:
+    # §"The wave-size input starts at /api/meta dispatch.wave_size and its maximum is
+    # dispatch.tick_budget; neither number appears as a constant in waves.js."
+    waves = _static_js("waves.js")
+    assert "meta.dispatch.wave_size" in waves
+    assert "meta.dispatch.tick_budget" in waves
+    for literal in ("= 10", "= 40", "|| 10", "|| 40"):
+        assert literal not in waves, literal
+
+
+def test_wave_status_chip_folds_implemented_and_reviewed_to_waiting() -> None:
+    waves = _static_js("waves.js")
+    assert "IMPLEMENTED: 'WAITING_REVIEW'" in waves
+    assert "REVIEWED: 'WAITING_MERGE'" in waves
+    assert "FIXED: 'WAITING_REVIEW'" in waves
+
+
+def test_wave_compute_disabled_while_loading_or_the_last_wave_is_empty() -> None:
+    body = _function_body(_static_js("waves.js"), "waveComputeDisabled")
+    assert "if (waveLoading) return true;" in body
+    assert "last.entries.length === 0" in body
+
+
+def test_wave_entry_card_is_a_focusable_button_naming_its_own_id_and_title() -> None:
+    body = _function_body(_static_js("waves.js"), "waveEntryHtml")
+    assert '<button type="button" class="wave-entry-card' in body
+    assert 'aria-label="${esc(entry.id)}: ${esc(entry.title)}"' in body
+    wire = _function_body(_static_js("waves.js"), "wireWavesHandlers")
+    assert "showGraphInspector(btn.getAttribute('data-node-id'))" in wire
+
+
+def test_wave_refetch_on_statuses_change_is_coalesced_per_frame() -> None:
+    schedule = _function_body(_static_js("waves.js"), "scheduleWavesRefetch")
+    assert "if (waveRefetchScheduled) return;" in schedule
+    assert "requestAnimationFrame(" in schedule
+    assert "patch.statusesChanged" in _static_js("waves.js")
 
 
 def test_a_filter_change_pushes_to_the_store_exactly_through_one_helper() -> None:
