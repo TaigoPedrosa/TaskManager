@@ -1,6 +1,5 @@
 """`/api/waves`' wave 1 and `tm wave discover` read the same graph rules, so their `chosen`
-must agree exactly -- including under a live condition and a container's repository order,
-where the two once diverged."""
+must agree exactly -- including under a live condition and a container's repository order."""
 
 import json
 from pathlib import Path

@@ -118,6 +118,18 @@ def test_a_node_already_mid_step_is_wave_one_marked_in_flight(estate: Estate) ->
     assert action_of(waves[0], "T2").in_flight is False
 
 
+def test_an_in_flight_containers_repos_follow_repo_order(estate: Estate) -> None:
+    estate.add("P", NodeKind.PLAN, status=Status.REVIEWING, claimed_from=Status.IMPLEMENTED)
+    estate.add("A", parent="P", target_repo="alpha", status=Status.COMPLETED)
+    estate.add("Z", parent="P", target_repo="zeta", status=Status.COMPLETED)
+
+    waves = simulate(
+        estate.snap(), depth=1, size=10, max_strong=10, specs=None, repo_order=["zeta", "alpha"]
+    )
+
+    assert action_of(waves[0], "P").repos == ["zeta", "alpha"]
+
+
 # -- a task marches implement -> review -> merge, one wave per step ------------------------------
 
 

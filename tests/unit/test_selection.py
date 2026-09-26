@@ -9,15 +9,17 @@ import pytest
 
 from taskmanager.core.enums import NodeKind, RelationType
 from taskmanager.core.lifecycle import LifecycleError
-from taskmanager.core.models import FileLock, Job, Lease, Node, NodeRelation
+from taskmanager.core.models import Condition, FileLock, Job, Lease, Node, NodeRelation
 from taskmanager.core.status import (
     Action,
+    ConditionStage,
     DecisionStatus,
     JobKind,
     JobState,
     Outcome,
     Status,
 )
+from taskmanager.db.cache_repo import _command_hash
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.node_repo import NodeRepository
@@ -208,6 +210,31 @@ def test_blocked_reason_sees_declared_files_another_lease_locks(estate: Estate) 
     estate.lease("OTHER", files=("api:api/app.py",))
     reason = selection.blocked_reason(node, estate.snap(), Action.IMPLEMENT)
     assert reason is not None and "declared files locked" in reason
+
+
+# -- _condition_reason_cached: the cached check a simulated wave stands in for a live one --------
+
+
+def test_blocked_reason_sees_a_cached_landing_condition_ahead_of_a_merge(estate: Estate) -> None:
+    node = estate.add("T", status=Status.MERGING, claimed_from=Status.REVIEWED)
+    condition = estate.nodes.add_condition(
+        Condition(node_id="T", needs="deploy", command="false", stage=ConditionStage.LANDING)
+    )
+    cache = {("T", condition.idx): (_command_hash("false"), 1)}
+    reason = selection.blocked_reason(node, estate.snap(), Action.MERGE, cached_conditions=cache)
+    assert reason == "condition unmet: deploy"
+
+
+def test_blocked_reason_ignores_a_cached_result_of_a_since_edited_command(estate: Estate) -> None:
+    node = estate.add("T")
+    condition = estate.nodes.add_condition(
+        Condition(node_id="T", needs="flag", command="test -f present", stage=ConditionStage.CLAIM)
+    )
+    stale = {("T", condition.idx): (_command_hash("test -f gone"), 1)}
+    reason = selection.blocked_reason(
+        node, estate.snap(), Action.IMPLEMENT, cached_conditions=stale
+    )
+    assert reason is None
 
 
 # -- select: migration chain, file overlap, strong slots, exclude, hold_merge -------------------
