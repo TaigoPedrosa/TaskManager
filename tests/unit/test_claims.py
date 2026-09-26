@@ -55,7 +55,7 @@ def test_a_containers_locked_files_are_the_same_set_the_display_builds_from_its_
 
     locked = claims._locked_files(node, Action.FIX, snap)
 
-    assert locked == ["api/a.py"]
+    assert locked == ["api:api/a.py"]
     assert locked == claims.snapshots.lock_set("P1", snap)
 
 
@@ -86,7 +86,7 @@ def test_an_implement_claim_cuts_the_branch_from_origin_main_and_locks_declared_
         claims.ttl_for(Action.IMPLEMENT),
         "sonnet",
     )
-    assert claims.runtime.get_conflicting_tasks(["api/app.py"])
+    assert claims.runtime.get_conflicting_tasks(["api:api/app.py"])
 
 
 def test_a_claim_cuts_its_worktree_under_the_directory_the_caller_names(tmp_path: Path) -> None:
@@ -695,8 +695,8 @@ def test_a_container_lands_locks_and_verifies_only_the_descendants_it_still_coun
     assert passed, report
     assert claims.start("P", "fixer", "s1").action == Action.FIX
     assert {lock.file_path for lock in claims.runtime.list_locks()} == {
-        "api/README.md",
-        "api/a.py",
+        "api:api/README.md",
+        "api:api/a.py",
     }
 
 

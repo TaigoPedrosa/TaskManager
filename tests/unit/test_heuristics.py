@@ -178,7 +178,7 @@ def test_exclusion_of_file_colliding_tasks(
         "OTHER-TASK",
     }
 
-    _claim(node_repo, runtime_repo, "OTHER-TASK", "src/auth/jwt.py", "src/db.py")
+    _claim(node_repo, runtime_repo, "OTHER-TASK", ":src/auth/jwt.py", ":src/db.py")
     assert [t.task_id for t in engine.get_next_tasks(limit=5)] == ["TASK-FREE"]
 
     runtime_repo.release_lease("OTHER-TASK")

@@ -97,6 +97,13 @@ def declared_files_of(node: Node | None, verifications: list[NodeVerification]) 
     return list(dict.fromkeys(files))
 
 
+def locked_key(repo: str | None, path: str) -> str:
+    """The lock key for `path` as declared by a node targeting `repo`: every lock and every
+    disjointness check keys on this, so two repositories' same-named files (pyproject.toml,
+    uv.lock) never collide. A node with no target_repo keys on the empty repository."""
+    return f"{repo or ''}:{path}"
+
+
 class NodeRepository:
     def __init__(self, db_mgr: DatabaseManager) -> None:
         self.db = db_mgr

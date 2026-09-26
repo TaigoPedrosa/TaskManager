@@ -4,7 +4,7 @@ from taskmanager.core.enums import NodeKind, RecommendationStrategy
 from taskmanager.core.models import Node
 from taskmanager.core.status import DisplayStatus, Status
 from taskmanager.db.cache_repo import CacheRepository
-from taskmanager.db.node_repo import NodeRepository, declared_files_of
+from taskmanager.db.node_repo import NodeRepository, declared_files_of, locked_key
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder
 from taskmanager.engine.stepgraph import Snapshot
@@ -228,14 +228,18 @@ class RecommendationEngine:
             )
 
         scored.sort(key=lambda x: x.score, reverse=True)
-        # A batch is started together, so no two of its tasks may claim one file.
+        # A batch is started together, so no two of its tasks may claim one file -- keyed to
+        # each task's own target_repo, so the same repo-relative path in two repositories
+        # never collides.
         chosen: list[ScoredTask] = []
         taken: set[str] = set()
         for candidate in scored:
-            if taken.intersection(candidate.declared_files):
+            repo = nodes[candidate.task_id].target_repo
+            keys = [locked_key(repo, f) for f in candidate.declared_files]
+            if taken.intersection(keys):
                 continue
             chosen.append(candidate)
-            taken.update(candidate.declared_files)
+            taken.update(keys)
             if len(chosen) >= limit:
                 break
         return chosen
