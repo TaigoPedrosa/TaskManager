@@ -3,7 +3,6 @@
 import asyncio
 import base64
 import mimetypes
-import sqlite3
 import tempfile
 from collections import Counter
 from collections.abc import AsyncGenerator, Iterator
@@ -49,6 +48,7 @@ from taskmanager.web.bodies import (
     lease_dict,
     lifecycle_fields,
 )
+from taskmanager.web.live import LiveHub
 from taskmanager.web.ui import get_web_html
 
 
@@ -266,29 +266,6 @@ def add_progress(node: dict[str, Any]) -> tuple[Counter[str], int, int]:
     return counts, done, set_aside
 
 
-class ConnectionManager:
-    def __init__(self) -> None:
-        self.active_connections: list[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket) -> None:
-        await websocket.accept()
-        self.active_connections.append(websocket)
-
-    def disconnect(self, websocket: WebSocket) -> None:
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-
-    async def broadcast(self, message: dict[str, Any]) -> None:
-        disconnected: list[WebSocket] = []
-        for connection in self.active_connections:
-            try:
-                await connection.send_json(message)
-            except WebSocketDisconnect, RuntimeError, OSError:
-                disconnected.append(connection)
-        for dead in disconnected:
-            self.disconnect(dead)
-
-
 def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = None) -> FastAPI:
     # `port=None` (tests, the static exporter's in-process TestClient) skips Host pinning and
     # keeps the old Origin-must-equal-Host check; the real server always passes its bound port,
@@ -306,39 +283,33 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     claims = Landing.open(project_root).claims
     jobs = container.get(JobRepository)
     cache = container.get(CacheRepository)
-    ws_manager = ConnectionManager()
 
-    # Background change detection loop
-    last_event_id: int = 0
-    try:
-        with db_mgr.get_ledger_connection() as conn:
-            row = conn.execute("SELECT MAX(id) FROM ledger_events").fetchone()
-            if row and row[0]:
-                last_event_id = row[0]
-    except sqlite3.Error, OSError:
-        last_event_id = 0
+    def _condition_ttl() -> int:
+        return ConfigStore(project_root).project().condition_ttl
 
-    async def ledger_watcher() -> None:
-        nonlocal last_event_id
+    live_hub = LiveHub(
+        snapshots=snapshots,
+        cache=cache,
+        node_repo=node_repo,
+        job_repo=jobs,
+        assets_dir=assets_dir,
+        condition_ttl=_condition_ttl,
+        state_db=db_mgr.state_db,
+        cache_db=db_mgr.cache_db,
+    )
+
+    async def live_loop() -> None:
         while True:
             try:
-                await asyncio.sleep(0.7)
-                with db_mgr.get_ledger_connection() as conn:
-                    row = conn.execute("SELECT MAX(id) FROM ledger_events").fetchone()
-                    current_max = row[0] if row and row[0] else 0
-                    if current_max > last_event_id:
-                        last_event_id = current_max
-                        await ws_manager.broadcast(
-                            {"type": "update", "latest_event_id": current_max}
-                        )
+                await asyncio.sleep(0.25)
+                await live_hub.refresh()
             except asyncio.CancelledError:
                 break
-            except sqlite3.Error, OSError:
-                await asyncio.sleep(0.5)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-        watcher_task = asyncio.create_task(ledger_watcher())
+        await live_hub.refresh()
+        watcher_task = asyncio.create_task(live_loop())
         try:
             yield
         finally:
@@ -349,9 +320,6 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
                 pass
 
     app = FastAPI(title="TaskManager Visualizer", lifespan=lifespan)
-
-    def _condition_ttl() -> int:
-        return ConfigStore(project_root).project().condition_ttl
 
     def new_view() -> DisplayView:
         """One snapshot per request, so every display in one response reads the same tree."""
@@ -372,12 +340,16 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
-        await ws_manager.connect(websocket)
+        await websocket.accept()
+        session = live_hub.open_session(websocket)
         try:
             while True:
-                await websocket.receive_text()
+                text = await websocket.receive_text()
+                await live_hub.handle_frame(session, text)
         except WebSocketDisconnect:
-            ws_manager.disconnect(websocket)
+            pass
+        finally:
+            live_hub.close_session(session)
 
     @app.get("/api/tree")
     def get_tree() -> list[dict[str, Any]]:
