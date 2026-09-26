@@ -1,4 +1,5 @@
 import sqlite3
+import sys
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -6,7 +7,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from taskmanager.cli.main import app
+from taskmanager.cli.main import app, main
 from taskmanager.core.enums import NodeKind, RelationType, VerificationType
 from taskmanager.core.models import (
     Condition,
@@ -170,25 +171,62 @@ def test_a_refused_connection_is_closed_not_leaked(
         opened[0].execute("SELECT 1")
 
 
-def test_a_too_new_schema_is_refused_by_a_command_with_no_operationerror_catch(
+# One command per registered group, plus the top-level ones that read the estate, each run
+# through the console entry so the refusal is what a user sees, not what CliRunner catches.
+_ESTATE_COMMANDS: dict[str, list[str]] = {
+    "spec": ["spec", "list"],
+    "plan": ["plan", "list"],
+    "task": ["task", "list"],
+    "section": ["section", "get", "S1:body"],
+    "run": ["run", "list"],
+    "wave": ["wave", "discover", "--session", "s", "--slots", "1", "--max-strong", "1"],
+    "verify": ["verify", "list", "S1"],
+    "audit": ["audit", "list"],
+    "web run": ["web", "run", "--no-open"],
+    "web export": ["web", "export", "-o", "out.html"],
+    "decision": ["decision", "list"],
+    "job": ["job", "status", "J1"],
+    "land": ["land", "start", "S1"],
+    "next": ["next"],
+    "render": ["render", "S1"],
+    "export": ["export", "exported"],
+}
+
+
+def test_every_registered_group_is_covered_by_the_too_new_schema_check() -> None:
+    covered = {argv[0] for argv in _ESTATE_COMMANDS.values()}
+    groups = {g.typer_instance.info.name for g in app.registered_groups if g.typer_instance}
+    assert groups - covered <= {"plugin", "config"}
+
+
+@pytest.mark.parametrize("argv", _ESTATE_COMMANDS.values(), ids=_ESTATE_COMMANDS.keys())
+def test_a_too_new_schema_is_only_its_refusal_from_every_command(
+    argv: list[str],
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """`task list` reads the state connection through the DI container, not through
-    `_refusing()` directly; the refusal has to land before that, in `_get_container`, or this
-    one prints a traceback instead of the message."""
     root = tmp_path / "estate"
     res = runner.invoke(app, ["init", "-C", str(root)])
     assert res.exit_code == 0, res.output
-
     conn = sqlite3.connect(root / ".taskmanager" / "state.db")
     conn.execute(f"PRAGMA user_version = {STATE_SCHEMA_VERSION + 1}")
     conn.commit()
     conn.close()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["tm", *argv, "-C", str(root)])
+    capsys.readouterr()
 
-    res = runner.invoke(app, ["task", "list", "-C", str(root)])
-    assert res.exit_code == 1 and f"newer than this tm ({STATE_SCHEMA_VERSION})" in res.output, (
-        res.output
-    )
+    with pytest.raises(SystemExit) as exited:
+        main()
+
+    out, err = capsys.readouterr()
+    assert exited.value.code == 1
+    assert out.strip() == (
+        f"state.db is schema {STATE_SCHEMA_VERSION + 1}, newer than this tm "
+        f"({STATE_SCHEMA_VERSION}): upgrade tm"
+    ), out + err
+    assert err == ""
 
 
 def test_rev_increases_on_status_and_title_change_through_save_node(tmp_path: Path) -> None:

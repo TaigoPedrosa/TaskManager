@@ -204,7 +204,7 @@ def _refusing() -> Iterator[None]:
     """A refusal is its message and exit 1, never a traceback."""
     try:
         yield
-    except (OperationError, StateSchemaTooNew) as exc:
+    except OperationError as exc:
         print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(code=1) from exc
 
@@ -285,9 +285,9 @@ def _user_errors() -> Iterator[None]:
 def _get_container(path: Path | None) -> Container:
     root = _get_root(path, must_exist=False)
     _refuse_pre_lifecycle(root)
-    # Opened and (if empty) left alone here, under `_refusing()`, so a state.db newer than this
-    # tm is a clean refusal for every command, not a traceback out of whichever one runs first.
-    with _refusing(), DatabaseManager(root / ".taskmanager").get_state_connection():
+    # Opened once here so a state.db newer than this tm refuses every command, even one that
+    # only reads audit.db or cache.db.
+    with DatabaseManager(root / ".taskmanager").get_state_connection():
         pass
     return make_container(TaskManagerProvider(root))
 
@@ -2488,5 +2488,15 @@ def cli_install(
         print("[green]TaskManager installed successfully[/green]")
 
 
+def main() -> None:
+    """The console entry: a state.db newer than this tm can surface from whichever command
+    opens it first, so it is refused here, once, as its message and exit 1."""
+    try:
+        app()
+    except StateSchemaTooNew as exc:
+        print(f"[red]{escape(str(exc))}[/red]")
+        raise SystemExit(1) from exc
+
+
 if __name__ == "__main__":
-    app()
+    main()
