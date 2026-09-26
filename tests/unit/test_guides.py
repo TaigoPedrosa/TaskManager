@@ -312,6 +312,21 @@ def test_plan_guide_writes_a_config_backed_limit_as_its_key() -> None:
     assert "written as the project's key" in _guide_text("plan")
 
 
+def test_plan_guide_asks_a_reviewed_plan_for_its_own_verification() -> None:
+    """A plan without a verification of its own reached review twice with nothing beyond its children's suites."""
+    assert "carries a verification of its own" in _guide_text("plan")
+
+
+def test_plan_guide_lists_every_input_a_matches_acceptance_reads() -> None:
+    """A dropped condition, lock or config key in a 'matches' acceptance is a mismatch a test never catches."""
+    assert "lists every input the reference reads" in _guide_text("plan")
+
+
+def test_plan_guide_names_the_function_that_stays_and_the_ones_it_replaces() -> None:
+    """A copied-not-moved implementation leaves the replaced ones alive for a caller to find by accident."""
+    assert "names the function that stays" in _guide_text("plan")
+
+
 def test_review_guide_rejects_on_a_red_test_whoever_declared_its_file() -> None:
     """A red test on the branch is this diff's failure regardless of which task's declared_files named the file."""
     assert "rejects the node" in _guide_text("review")
