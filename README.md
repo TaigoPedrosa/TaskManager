@@ -29,8 +29,10 @@ subscribe protocol, and a handful of paginated HTTP reads.
   not a doc here: `src/taskmanager/web/live.py`, `rows.py`, `visibility.py` and `bodies.py` are
   its implementation, and `tests/fixtures/statuses_hash.json` /
   `tests/fixtures/visibility_cases.json` are its golden vectors.
-- The page opens on one of two views (`WebViewMode`, `src/taskmanager/web/enums.py`): `graph`,
-  the node graph and inspector, and `waves`. The Document (tree) view is gone.
+- The page opens on one of three views (`WebViewMode`, `src/taskmanager/web/enums.py`): `waves`
+  (the default for `tm web` and for a live connection), `graph`, the node graph and inspector,
+  and `document`, one card per spec/plan/task walked from the roots down — the view a static
+  export (`tm web export`) opens on, since it renders straight from the embedded data.
 - Waves shows what `tm wave discover` would claim next, simulated forward from live state
   without claiming anything: a wave-size input, the same spec include filter as the graph view,
   a "Compute next wave" button that adds one wave on top of the last, and "Reset" back to wave

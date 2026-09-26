@@ -5,6 +5,7 @@ from typing import Any, NamedTuple
 
 
 class WebViewMode(StrEnum):
+    DOCUMENT = "document"
     GRAPH = "graph"
     WAVES = "waves"
 
@@ -131,9 +132,9 @@ class AppIcon(Enum):
         "info",
         '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
     )
-    # Verification kinds get their own icons rather than borrowing a status or toolbar icon's
-    # meaning (file-text/network/play/lock/git-branch already mean Waves view, Graph view,
-    # Implementing, Blocked and Merging respectively).
+    # Verification kinds and the relation tables get their own icons rather than borrowing a
+    # status or toolbar icon's meaning (file-text/network/play/lock/git-branch already mean
+    # Document view, Graph view, Implementing, Blocked and Merging respectively).
     FILE_CHECK = IconData(
         "file-check",
         '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="m9 15 2 2 4-4"/>',

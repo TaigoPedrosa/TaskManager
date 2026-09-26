@@ -45,8 +45,9 @@ def test_toolbar_holds_view_switcher_search_and_stats_in_one_row() -> None:
     toolbar = re.search(r'<header id="toolbar".*?</header>', html, re.DOTALL)
     assert toolbar, "single merged toolbar not found"
     row = toolbar.group(0)
-    assert 'id="view-doc-btn"' in row
+    assert 'id="view-waves-btn"' in row
     assert 'id="view-graph-btn"' in row
+    assert 'id="view-doc-btn"' in row
     assert 'id="search-box"' in row
     assert 'id="stats-digest"' in row
     assert "lg:flex-nowrap" in row
@@ -113,14 +114,34 @@ def test_document_sections_default_collapsed_and_remember_expand_state() -> None
     assert "expandedSections" in _function_body(html, "attachSectionToggleHandlers")
 
 
-def test_no_toggle_all_sections_button_survives_the_document_view() -> None:
-    # The "Expand all sections" toolbar button only ever showed in the Document view; no
-    # other mode ever un-hid it, so it and its bookkeeping (an id list appended to on every
-    # renderSections() call, only ever cleared by the Document renderer) must go together.
+def test_toggle_all_sections_button_only_shows_in_the_document_view() -> None:
     html = get_web_html()
-    assert 'id="toggle-sections-btn"' not in html
-    assert "toggleSectionsBtn" not in html
-    assert "allSectionIds" not in html
+    assert 'id="toggle-sections-btn"' in html
+    set_view_mode = _function_body(html, "setViewMode")
+    assert "toggleSectionsBtn.classList.remove('hidden')" in set_view_mode
+    assert set_view_mode.count("toggleSectionsBtn.classList.add('hidden')") == 2
+
+
+def test_all_section_ids_reset_on_every_document_render() -> None:
+    # allSectionIds backs the toggle-all-sections button; renderUnifiedDocument resets it
+    # before walking the tree, so re-rendering never lets it grow past one render's sections.
+    render_doc = _function_body(get_web_html(), "renderUnifiedDocument")
+    assert "allSectionIds = [];" in render_doc
+    render_sections = _function_body(get_web_html(), "renderSections")
+    assert "allSectionIds.push(id);" in render_sections
+
+
+def test_plan_and_task_headers_are_not_sticky() -> None:
+    html = get_web_html()
+    assert "sticky" not in html
+    assert (
+        'class="h-12 px-4 rounded-t-xl bg-zinc-900/95 backdrop-blur-sm border-b border-zinc-800 flex items-center justify-between cursor-pointer plan-header"'
+        in html
+    )
+    assert (
+        'class="h-10 px-3 rounded-t-lg flex items-center justify-between cursor-pointer task-header bg-zinc-900/90 backdrop-blur-sm hover:bg-zinc-900"'
+        in html
+    )
 
 
 def test_status_icon_carries_a_title_and_chip_is_legend_only() -> None:
@@ -144,6 +165,10 @@ def test_group_headers_default_all_collapsed() -> None:
     assert "groupCollapsed(groupId, true)" in render_sections
     assert "renderGroupHeader(groupId, 'Sections'" in render_sections
 
+    render_plan_card = _function_body(html, "renderPlanCard")
+    assert "groupCollapsed(tasksGroupId, true)" in render_plan_card
+    assert "renderGroupHeader(tasksGroupId, 'Tasks'" in render_plan_card
+
 
 def test_group_header_toggle_is_wired_independently_of_node_and_section_collapse() -> None:
     html = get_web_html()
@@ -151,6 +176,17 @@ def test_group_header_toggle_is_wired_independently_of_node_and_section_collapse
     assert "'.group-header'" in shared
     assert "collapsedGroups.has(id)) collapsedGroups.delete(id)" in shared
     assert "collapsedGroups.add(id)" in shared
+    attach = _function_body(html, "attachCollapsibleHandlers")
+    assert "attachGroupHeaderHandlers(document, renderUnifiedDocument)" in attach
+
+    # The all-sections toolbar button only ever touches expandedSections, never the groups.
+    toggle_sections_handler = re.search(
+        r"toggleSectionsBtn\.addEventListener\('click', \(\) => \{(.*?)\n\}\);",
+        html,
+        re.DOTALL,
+    )
+    assert toggle_sections_handler, "toggleSectionsBtn click handler not found"
+    assert "collapsedGroups" not in toggle_sections_handler.group(1)
 
 
 def test_group_header_is_keyboard_operable_everywhere_it_renders() -> None:
@@ -957,25 +993,54 @@ def test_graph_inspector_shows_loading_until_watched_body_arrives() -> None:
     assert "Loading" in inspector
 
 
+def test_sections_and_relations_render_only_once_a_watched_body_arrives() -> None:
+    task_card = _function_body(get_web_html(), "renderTaskCard")
+    assert "bodyOf(task.id)" in task_card
+    assert "Loading…" in task_card
+
+
 def _class_tokens(tag: str) -> list[str]:
     match = re.search(r'class="([^"]*)"', tag)
     assert match, f"no class attribute in {tag!r}"
     return match.group(1).split()
 
 
-def test_waves_view_is_the_default_and_reuses_the_documents_toolbar_slot() -> None:
+def test_waves_view_is_the_default() -> None:
     html = get_web_html()
     assert "window.VIEW_MODES.WAVES;" in html
+    waves_btn = re.search(r'<button id="view-waves-btn"[^>]*>', html)
+    assert waves_btn, "view-waves-btn not found"
+    assert "Waves view" in waves_btn.group(0)
     doc_btn = re.search(r'<button id="view-doc-btn"[^>]*>', html)
     assert doc_btn, "view-doc-btn not found"
-    assert "Waves view" in doc_btn.group(0)
-    assert 'id="icon-file-text"' in html
+    assert "Document view" in doc_btn.group(0)
     waves_pane = re.search(r'<div id="waves-pane"[^>]*>', html)
     graph_pane = re.search(r'<section id="graph-pane"[^>]*>', html)
     network_canvas = re.search(r'<div id="network-canvas"[^>]*>', html)
+    document_pane = re.search(r'<main id="document-pane"[^>]*>', html)
     assert waves_pane and "hidden" not in _class_tokens(waves_pane.group(0))
     assert graph_pane and "hidden" not in _class_tokens(graph_pane.group(0))
     assert network_canvas and "hidden" in _class_tokens(network_canvas.group(0))
+    assert document_pane and "hidden" in _class_tokens(document_pane.group(0))
+
+
+def test_set_view_mode_handles_waves_graph_and_document() -> None:
+    html = get_web_html()
+    set_view_mode = _function_body(html, "setViewMode")
+    assert "window.VIEW_MODES.WAVES" in set_view_mode
+    assert "window.VIEW_MODES.DOCUMENT" in set_view_mode
+    assert "documentPane.classList" in set_view_mode
+    assert "toggleSectionsBtn.classList" in set_view_mode
+
+
+def test_document_view_button_switches_mode_and_toggle_sections_button_reappears() -> None:
+    html = get_web_html()
+    assert (
+        "viewDocBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.DOCUMENT))"
+        in html
+    )
+    set_view_mode = _function_body(html, "setViewMode")
+    assert "toggleSectionsBtn.classList.remove('hidden')" in set_view_mode
 
 
 def test_waves_pane_nests_inside_graph_pane_ahead_of_its_inspector() -> None:
@@ -993,9 +1058,14 @@ def test_set_view_mode_toggles_the_canvas_layer_and_waves_pane() -> None:
     assert "wavesPane.classList.toggle('hidden', mode !== window.VIEW_MODES.WAVES)" in body
     assert "networkCanvas.classList.toggle('hidden', mode !== window.VIEW_MODES.GRAPH)" in body
     assert "graphFitWrap.classList.toggle('hidden', mode !== window.VIEW_MODES.GRAPH)" in body
+    core_js = _static_js("core.js")
     assert (
-        "viewDocBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.WAVES))"
-        in _static_js("core.js")
+        "viewWavesBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.WAVES))"
+        in core_js
+    )
+    assert (
+        "viewDocBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.DOCUMENT))"
+        in core_js
     )
 
 
@@ -1056,14 +1126,13 @@ def test_a_filter_change_also_refetches_waves() -> None:
     assert "scheduleWavesRefetch()" in apply_change
 
 
-def test_no_dead_highlight_css_survives_the_tree_views_removal() -> None:
-    # selectNode's Document-view branch was the only code that ever added
-    # .node-highlighted; tree.js's Graph-only branch never does.
+def test_selecting_a_node_pulses_it_in_the_document_view_and_focuses_it_in_graph() -> None:
     html = get_web_html()
-    assert "node-highlighted" not in html
-    assert "pulse-highlight" not in html
-    assert "networkInstance.selectNodes([nodeId])" in _static_js("tree.js")
-    assert "node-highlighted" not in _function_body(html, "selectNode")
+    assert "pulse-highlight" in html
+    assert "border-color: var(--tone-accent) !important;" in html
+    select_node = _function_body(html, "selectNode")
+    assert "targetEl.classList.add('node-highlighted')" in select_node
+    assert "networkInstance.selectNodes([nodeId])" in select_node
 
 
 def test_page_carries_an_inline_favicon_so_the_browser_never_requests_favicon_ico() -> None:

@@ -1,8 +1,8 @@
-// Decisions view (§3, §6.4): a third view beside Waves and Graph. Wraps core.js's
+// Decisions view (§3, §6.4): a fourth view beside Document, Graph and Waves. Wraps core.js's
 // setViewMode and edit.js's renderNewMenu rather than editing those files, the same
-// reassignment pattern detail.js already uses for renderSectionBody -- every function
-// reassigned here is a plain top-level `function` declared in an earlier <script> block,
-// and script tags share one global scope executed in order.
+// reassignment pattern detail.js already uses for renderSectionBody/renderUnifiedDocument --
+// every function reassigned here is a plain top-level `function` declared in an earlier
+// <script> block, and script tags share one global scope executed in order.
 
 window.VIEW_MODES.DECISIONS = 'decisions';
 
@@ -114,7 +114,7 @@ window.tmStore.onChange(() => {
 
 
 // Toolbar entry point: a badge-carrying button in #view-extra-buttons, and setViewMode
-// wrapped so a third mode exists without touching core.js's own switch.
+// wrapped so a fourth mode exists without touching core.js's own Document/Graph/Waves switch.
 
 function renderDecisionsToolbarButton() {
   const extra = document.getElementById('view-extra-buttons');
@@ -149,11 +149,14 @@ if (typeof setViewMode === 'function') {
     const decisionsBtn = document.getElementById('view-decisions-btn');
     if (mode === window.VIEW_MODES.DECISIONS) {
       currentMode = mode;
+      documentPane.classList.add('hidden');
       graphPane.classList.add('hidden');
       sidebarPane.classList.add('hidden');
       decisionsPane.classList.remove('hidden');
-      viewDocBtn.className = VIEW_BTN_INACTIVE;
+      toggleSectionsBtn.classList.add('hidden');
+      viewWavesBtn.className = VIEW_BTN_INACTIVE;
       viewGraphBtn.className = VIEW_BTN_INACTIVE;
+      viewDocBtn.className = VIEW_BTN_INACTIVE;
       if (decisionsBtn) decisionsBtn.className = decisionsBtn.className.replace('bg-zinc-900', 'bg-zinc-800').replace('text-zinc-400', 'text-white');
       renderDecisionsView();
       refreshDecisionsData();
@@ -166,6 +169,16 @@ if (typeof setViewMode === 'function') {
     previousSetViewMode(mode);
   };
 }
+
+// Reached from a document-view "Awaiting decision" banner (detail.js) or a decision-detail
+// task chip: switch to the Decisions view and open that decision.
+function goToDecision(decisionId) {
+  const row = decisionsData.find(d => d.id === decisionId);
+  decisionsTab = row ? decisionTabFor(row.status) : 'open';
+  selectedDecisionId = decisionId;
+  setViewMode(window.VIEW_MODES.DECISIONS);
+}
+
 
 // List -----------------------------------------------------------------------------------------
 
@@ -427,7 +440,7 @@ function renderDecisionDetail(id) {
 
     decisionsDetailEl.querySelectorAll('.dec-task-link, .dec-raised-by-link').forEach(btn => {
       btn.addEventListener('click', () => {
-        setViewMode(window.VIEW_MODES.GRAPH);
+        setViewMode(window.VIEW_MODES.DOCUMENT);
         selectNode(btn.getAttribute('data-task-id'));
       });
     });

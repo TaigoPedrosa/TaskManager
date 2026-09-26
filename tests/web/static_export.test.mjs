@@ -73,7 +73,9 @@ function runStaticPage() {
       querySelectorAll: () => [],
       body: makeElement('body'),
     },
-    requestAnimationFrame: () => {},
+    // Fired synchronously rather than deferred to a real frame, so scheduleRender()'s
+    // coalesced renderAll() actually runs in this test instead of silently never firing.
+    requestAnimationFrame: (fn) => fn(),
     setTimeout, clearTimeout, setInterval, clearInterval,
     localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
     location: { hash: '' },
@@ -91,10 +93,16 @@ function runStaticPage() {
   return elementsById;
 }
 
-test('a static export runs every inline script without throwing, opens on Graph, and offers no Waves view', () => {
+test('a static export runs every inline script without throwing, opens on Document, and offers no Waves view', () => {
   const elementsById = runStaticPage();
+  assert.equal(elementsById.get('document-pane').classList.contains('hidden'), false);
   assert.equal(elementsById.get('waves-pane').classList.contains('hidden'), true);
-  assert.equal(elementsById.get('network-canvas').classList.contains('hidden'), false);
-  assert.equal(elementsById.get('view-doc-btn').removed, true, 'the Waves toggle is gone');
+  assert.equal(elementsById.get('network-canvas').classList.contains('hidden'), true);
+  assert.equal(elementsById.get('view-waves-btn').removed, true, 'the Waves toggle is gone');
   assert.equal(elementsById.get('waves-content')?.innerHTML ?? '', '', 'no Waves message is rendered');
+  assert.match(
+    elementsById.get('unified-document')?.innerHTML ?? '',
+    /No specs, plans or tasks match/,
+    'the Document view rendered from the embedded data'
+  );
 });

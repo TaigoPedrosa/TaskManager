@@ -102,6 +102,7 @@ function renderAll() {
   updateStatsDigest();
   renderFilterControls();
   renderTree();
+  renderUnifiedDocument();
 }
 
 
