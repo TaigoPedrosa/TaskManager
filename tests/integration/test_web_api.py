@@ -534,10 +534,10 @@ def test_list_decisions_filters_by_status_tab(
 
     res_open = client.get("/api/decisions", params={"status": "open"})
     assert res_open.status_code == 200
-    assert [d["id"] for d in res_open.json()] == ["decision-D1"]
+    assert [d["id"] for d in res_open.json()["items"]] == ["decision-D1"]
 
     res_answered = client.get("/api/decisions", params={"status": "answered"})
-    assert [d["id"] for d in res_answered.json()] == ["decision-D2"]
+    assert [d["id"] for d in res_answered.json()["items"]] == ["decision-D2"]
 
     res_bad = client.get("/api/decisions", params={"status": "bogus"})
     assert res_bad.status_code == 400
@@ -713,7 +713,7 @@ def test_decisions_list_carries_attachment_size_bytes(
     )
     assert up.status_code == 201
 
-    decisions = client.get("/api/decisions").json()
+    decisions = client.get("/api/decisions").json()["items"]
     row = next(d for d in decisions if d["id"] == decision_id)
     assert row["attachments"][0]["size_bytes"] == len(_PNG_1PX)
 

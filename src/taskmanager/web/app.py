@@ -2,11 +2,14 @@
 
 import asyncio
 import base64
+import hashlib
+import json
 import mimetypes
 import tempfile
 from collections import Counter
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlsplit
@@ -17,6 +20,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
 from taskmanager.core.enums import NodeKind, TransferMode, VerificationType
+from taskmanager.core.models import Node
 from taskmanager.core.status import (
     ConditionStage,
     DecisionEffect,
@@ -49,7 +53,9 @@ from taskmanager.web.bodies import (
     lifecycle_fields,
 )
 from taskmanager.web.live import LiveHub
+from taskmanager.web.rows import build_rows, canonical, decisions_open, statuses, statuses_hash
 from taskmanager.web.ui import get_web_html
+from taskmanager.web.visibility import parse_filters, visible_ids
 
 
 class SpecCreate(BaseModel):
@@ -266,6 +272,192 @@ def add_progress(node: dict[str, Any]) -> tuple[Counter[str], int, int]:
     return counts, done, set_aside
 
 
+_MAX_NODES_IDS = 200
+_MIN_PAGE_LIMIT = 1
+_MAX_PAGE_LIMIT = 200
+_DEFAULT_NODES_LIMIT = 50
+_DEFAULT_DECISIONS_LIMIT = 50
+
+
+def _parse_page_limit(raw: str | None, default: int) -> int:
+    if raw is None:
+        return default
+    try:
+        limit = int(raw)
+    except ValueError as exc:
+        raise HTTPException(400, "limit must be an integer") from exc
+    if not (_MIN_PAGE_LIMIT <= limit <= _MAX_PAGE_LIMIT):
+        raise HTTPException(400, f"limit is {_MIN_PAGE_LIMIT}..{_MAX_PAGE_LIMIT}")
+    return limit
+
+
+def _encode_nodes_cursor(ordinal: int, node_id: str, query_hash: str) -> str:
+    payload = json.dumps({"o": ordinal, "i": node_id, "q": query_hash})
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def _decode_nodes_cursor(raw: str) -> tuple[int, str, str]:
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(raw.encode("ascii")).decode("utf-8"))
+        return int(payload["o"]), str(payload["i"]), str(payload["q"])
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(400, "invalid cursor") from exc
+
+
+def _node_details(ids: list[str], view: DisplayView, repos: BodyRepos) -> dict[str, dict[str, Any]]:
+    """The single place `/api/nodes/{id}` and a bulk page's `include=body` build a node's detail
+    from, so the two are equal by construction rather than by two routes staying in sync."""
+    bodies = build_bodies(view, ids, repos=repos)
+    return {
+        node_id: {
+            **body,
+            "display": body["node"]["display"],
+            "phase": body["node"].get("phase"),
+            "dependencies": repos.node_repo.get_dependencies(node_id),
+            "blocked_by": repos.node_repo.get_blocked_by(node_id),
+        }
+        for node_id, body in bodies.items()
+    }
+
+
+def paginate_nodes(
+    rows: dict[str, dict[str, Any]],
+    *,
+    view: DisplayView | None,
+    repos: BodyRepos | None,
+    parent: str | None,
+    ids: list[str] | None,
+    filters_raw: Mapping[str, str],
+    include_body: bool,
+    cursor: str | None,
+    limit: int,
+) -> dict[str, Any]:
+    """One page of `ids`, or of `parent`'s direct children (`None`/`"root"` for the roots),
+    filtered exactly as `visibility.py` filters the whole tree -- a client walks the tree one
+    call per opened container instead of paging it whole. `view`/`repos` are read only when
+    `include_body` is set, so a filtering-only caller (a test, `include_body=False`) needs
+    neither."""
+    try:
+        filters = parse_filters(filters_raw)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    if ids is not None:
+        candidates = [rows[i] for i in dict.fromkeys(ids) if i in rows]
+        candidates.sort(key=lambda r: (r["ordinal"], r["id"]))
+    else:
+        parent_id = None if parent in (None, "root") else parent
+        visible = visible_ids(rows, filters, list(rows.keys()))
+        candidates = [rows[i] for i in visible if rows[i]["parent"] == parent_id]
+
+    query_key = {
+        "parent": parent,
+        "ids": sorted(ids) if ids is not None else None,
+        "filters": dict(filters_raw),
+    }
+    query_hash = hashlib.sha256(canonical(query_key).encode("utf-8")).hexdigest()
+
+    start = 0
+    if cursor is not None:
+        c_ordinal, c_id, c_hash = _decode_nodes_cursor(cursor)
+        if c_hash != query_hash:
+            raise HTTPException(400, "cursor is for a different query")
+        start = next(
+            (
+                idx
+                for idx, r in enumerate(candidates)
+                if (r["ordinal"], r["id"]) > (c_ordinal, c_id)
+            ),
+            len(candidates),
+        )
+
+    page = candidates[start : start + limit]
+    items: list[dict[str, Any]]
+    if include_body and page:
+        if view is None or repos is None:
+            raise ValueError("include_body requires view and repos")
+        details = _node_details([r["id"] for r in page], view, repos)
+        items = [{**r, "body": details.get(r["id"])} for r in page]
+    else:
+        items = [dict(r) for r in page]
+
+    next_cursor = None
+    if start + limit < len(candidates):
+        last = page[-1]
+        next_cursor = _encode_nodes_cursor(last["ordinal"], last["id"], query_hash)
+    return {"items": items, "next": next_cursor}
+
+
+def _encode_decisions_cursor(created_at: str, node_id: str, query_hash: str) -> str:
+    payload = json.dumps({"c": created_at, "i": node_id, "q": query_hash})
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def _decode_decisions_cursor(raw: str) -> tuple[datetime, str, str]:
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(raw.encode("ascii")).decode("utf-8"))
+        return datetime.fromisoformat(payload["c"]), str(payload["i"]), str(payload["q"])
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(400, "invalid cursor") from exc
+
+
+def paginate_decisions(
+    decisions: list[Node], *, status: str | None, cursor: str | None, limit: int
+) -> tuple[list[Node], str | None]:
+    """Newest first (`created_at` desc, then `id` desc), keyset-paged the same way as
+    `paginate_nodes`."""
+    ordered = sorted(decisions, key=lambda d: (d.created_at, d.id), reverse=True)
+    query_hash = hashlib.sha256(canonical({"status": status}).encode("utf-8")).hexdigest()
+
+    start = 0
+    if cursor is not None:
+        c_created, c_id, c_hash = _decode_decisions_cursor(cursor)
+        if c_hash != query_hash:
+            raise HTTPException(400, "cursor is for a different query")
+        start = next(
+            (idx for idx, d in enumerate(ordered) if (d.created_at, d.id) < (c_created, c_id)),
+            len(ordered),
+        )
+
+    page = ordered[start : start + limit]
+    next_cursor = None
+    if start + limit < len(ordered):
+        last = page[-1]
+        next_cursor = _encode_decisions_cursor(last.created_at.isoformat(), last.id, query_hash)
+    return page, next_cursor
+
+
+def _decision_item(
+    node: Node, view: DisplayView, node_repo: NodeRepository, assets_dir: Path
+) -> dict[str, Any]:
+    def blocks() -> list[dict[str, Any]]:
+        rows = []
+        for blocked_id in node_repo.get_blocked_by(node.id):
+            blocked = node_repo.get_node(blocked_id)
+            if blocked is not None:
+                rows.append(
+                    {
+                        "id": blocked.id,
+                        "title": blocked.title,
+                        "kind": blocked.kind.value,
+                        "display": view.display(blocked),
+                    }
+                )
+        return rows
+
+    return {
+        "id": node.id,
+        "title": node.title,
+        "status": stored_status(node).value,
+        "priority": node.priority,
+        "created_at": node.created_at.isoformat(),
+        "waiting_count": len(node_repo.get_blocked_by(node.id)),
+        "blocks": blocks(),
+        "decision": node.frontmatter.get("decision") or {},
+        "attachments": attachments_with_size(assets_dir, node.frontmatter.get("attachments") or []),
+    }
+
+
 def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = None) -> FastAPI:
     # `port=None` (tests, the static exporter's in-process TestClient) skips Host pinning and
     # keeps the old Origin-must-equal-Host check; the real server always passes its bound port,
@@ -479,16 +671,49 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     @app.get("/api/nodes/{node_id}")
     def get_node_detail(node_id: str) -> dict[str, Any]:
         view = new_view()
-        body = build_bodies(view, [node_id], repos=_body_repos()).get(node_id)
-        if body is None:
+        detail = _node_details([node_id], view, _body_repos()).get(node_id)
+        if detail is None:
             raise HTTPException(status_code=404, detail="Node not found")
+        return detail
+
+    @app.get("/api/statuses")
+    def get_statuses() -> dict[str, Any]:
+        view = new_view()
+        rows = build_rows(view)
+        entries = statuses(rows)
         return {
-            **body,
-            "display": body["node"]["display"],
-            "phase": body["node"].get("phase"),
-            "dependencies": node_repo.get_dependencies(node_id),
-            "blocked_by": node_repo.get_blocked_by(node_id),
+            "statuses": entries,
+            "hash": statuses_hash(entries),
+            "decisions_open": decisions_open(view),
         }
+
+    @app.get("/api/nodes")
+    def get_nodes_page(request: Request) -> dict[str, Any]:
+        query = dict(request.query_params)
+        parent = query.pop("parent", None)
+        ids_raw = query.pop("ids", None)
+        include = query.pop("include", None)
+        cursor = query.pop("cursor", None)
+        limit = _parse_page_limit(query.pop("limit", None), _DEFAULT_NODES_LIMIT)
+        if parent is not None and ids_raw is not None:
+            raise HTTPException(400, "parent and ids are mutually exclusive")
+        id_list: list[str] | None = None
+        if ids_raw is not None:
+            id_list = [i for i in ids_raw.split(",") if i]
+            if len(id_list) > _MAX_NODES_IDS:
+                raise HTTPException(400, f"at most {_MAX_NODES_IDS} ids")
+        view = new_view()
+        return paginate_nodes(
+            build_rows(view),
+            view=view,
+            repos=_body_repos(),
+            parent=parent,
+            ids=id_list,
+            filters_raw=query,
+            include_body=include == "body",
+            cursor=cursor,
+            limit=limit,
+        )
 
     @app.get("/api/stats")
     def get_stats() -> dict[str, Any]:
@@ -730,46 +955,24 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         return job.model_dump(mode="json")
 
     @app.get("/api/decisions")
-    def list_decisions(status: str | None = None) -> list[dict[str, Any]]:
+    def list_decisions(
+        status: str | None = None, cursor: str | None = None, limit: str | None = None
+    ) -> dict[str, Any]:
+        page_limit = _parse_page_limit(limit, _DEFAULT_DECISIONS_LIMIT)
         decisions = node_repo.list_nodes(kind=NodeKind.DECISION)
         if status is not None:
             wanted = _DECISION_TAB_STATUS.get(status.lower())
             if wanted is None:
                 raise HTTPException(400, "status is one of: open, answered, withdrawn")
             decisions = [d for d in decisions if stored_status(d) == wanted]
+        page, next_cursor = paginate_decisions(
+            decisions, status=status, cursor=cursor, limit=page_limit
+        )
         view = new_view()
-
-        def blocks(decision_id: str) -> list[dict[str, Any]]:
-            rows = []
-            for node_id in node_repo.get_blocked_by(decision_id):
-                node = node_repo.get_node(node_id)
-                if node is not None:
-                    rows.append(
-                        {
-                            "id": node.id,
-                            "title": node.title,
-                            "kind": node.kind.value,
-                            "display": view.display(node),
-                        }
-                    )
-            return rows
-
-        return [
-            {
-                "id": d.id,
-                "title": d.title,
-                "status": stored_status(d).value,
-                "priority": d.priority,
-                "created_at": d.created_at.isoformat(),
-                "waiting_count": len(node_repo.get_blocked_by(d.id)),
-                "blocks": blocks(d.id),
-                "decision": d.frontmatter.get("decision") or {},
-                "attachments": attachments_with_size(
-                    assets_dir, d.frontmatter.get("attachments") or []
-                ),
-            }
-            for d in decisions
-        ]
+        return {
+            "items": [_decision_item(d, view, node_repo, assets_dir) for d in page],
+            "next": next_cursor,
+        }
 
     @app.post("/api/decisions", status_code=201)
     def create_decision(body: DecisionCreate, actor: Actor) -> dict[str, str]:
