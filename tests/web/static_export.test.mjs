@@ -4,22 +4,31 @@ import vm from 'node:vm';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const JS_DIR = path.join(here, '../../src/taskmanager/web/static/js');
+const REPO_ROOT = path.join(here, '../..');
 
-// Same fixed order taskmanager/web/ui.py's _JS_FILES loads them in (plain sequential <script>
-// tags, so a file may reference at top level what an earlier one declared). A grep-based pin
-// only checks that a call string is present in the source; it still passes on a page whose
-// scripts throw before ever reaching that call. This test instead runs the concatenation the
-// way a browser (or the static export served over http) would, and would have caught the
-// static-export page throwing "Cannot access 'VIEW_BTN_ACTIVE' before initialization" and
-// rendering nothing.
-const JS_FILES = [
-  'store.js', 'core.js', 'filters.js', 'tree.js', 'graph.js',
-  'edit.js', 'detail.js', 'waves.js', 'decisions.js', 'main.js',
-];
-const PAGE_SRC = JS_FILES.map((f) => fs.readFileSync(path.join(JS_DIR, f), 'utf8')).join('\n;\n');
+// The page under test is the one `tm web export` writes, over a freshly initialized project,
+// so the inline scripts, their order and the injected globals are exactly what ships. A grep
+// of the sources passes on a page whose scripts throw before ever reaching the checked call.
+function exportedPageScripts() {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-static-export-'));
+  try {
+    const tm = (...args) => execFileSync('uv', ['run', '--project', REPO_ROOT, '--quiet', 'tm', ...args], {
+      stdio: ['ignore', 'ignore', 'inherit'],
+    });
+    execFileSync('git', ['-C', project, 'init', '-q']);
+    tm('init', '-C', project);
+    const out = path.join(project, 'export.html');
+    tm('web', 'export', '-C', project, '-o', out);
+    const html = fs.readFileSync(out, 'utf8');
+    return [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+}
 
 function makeElement(id) {
   const classes = new Set();
@@ -36,7 +45,7 @@ function makeElement(id) {
       contains: (c) => classes.has(c),
     },
     addEventListener() {}, removeEventListener() {},
-    appendChild() {}, removeChild() {}, remove() {},
+    appendChild() {}, removeChild() {}, remove() { el.removed = true; },
     querySelector: () => makeElement(), querySelectorAll: () => [],
     getBoundingClientRect: () => ({ top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }),
     setAttribute() {}, getAttribute: () => null, focus() {}, click() {}, blur() {},
@@ -73,19 +82,19 @@ function runStaticPage() {
     WebSocket: class { constructor() {} send() {} close() {} },
     history: { replaceState() {} },
     addEventListener() {},
-    STATIC_DATA: { rows: {}, edges: [], statuses: [], bodies: {} },
-    VIEW_MODES: { GRAPH: 'graph', WAVES: 'waves' },
-    STATUS_THEMES: {}, STATUS_GROUPS: [], PHASE_THEMES: {},
+    tailwind: {},
     innerWidth: 1440, innerHeight: 900,
   };
   sandbox.window = sandbox;
   const context = vm.createContext(sandbox);
-  vm.runInContext(PAGE_SRC, context, { filename: 'static-export.js' });
+  exportedPageScripts().forEach((src, i) => vm.runInContext(src, context, { filename: `inline-script-${i}.js` }));
   return elementsById;
 }
 
-test('a static export runs every inline script without throwing, and opens on Graph', () => {
+test('a static export runs every inline script without throwing, opens on Graph, and offers no Waves view', () => {
   const elementsById = runStaticPage();
   assert.equal(elementsById.get('waves-pane').classList.contains('hidden'), true);
   assert.equal(elementsById.get('network-canvas').classList.contains('hidden'), false);
+  assert.equal(elementsById.get('view-doc-btn').removed, true, 'the Waves toggle is gone');
+  assert.equal(elementsById.get('waves-content')?.innerHTML ?? '', '', 'no Waves message is rendered');
 });

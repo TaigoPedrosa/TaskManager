@@ -110,12 +110,9 @@ function waveComputeDisabled() {
 }
 
 async function initWaves() {
-  // A static export has no server behind /api/meta or /api/waves to ask; wavesHtml() renders
-  // that state on its own rather than firing a request the export can never answer.
-  if (isStaticMode) {
-    renderWaves();
-    return;
-  }
+  // A static export has no server behind /api/meta or /api/waves, and main.js removes its
+  // Waves toggle, so there is nothing here to render or ask.
+  if (isStaticMode) return;
   waveLoading = true;
   renderWaves();
   await loadWaveMeta();
@@ -255,11 +252,6 @@ function footerHtml() {
 }
 
 function wavesHtml() {
-  if (isStaticMode) {
-    return `
-      <div class="border border-zinc-800/80 rounded-lg bg-zinc-950/40 p-6 text-xs text-zinc-400 text-center">Waves needs a live <code>tm web run</code> session; a static export has no <code>/api/waves</code> to simulate against.</div>
-    `;
-  }
   if (waveError) {
     return `
       ${controlsHtml()}
