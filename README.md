@@ -9,7 +9,7 @@ A local task tracker for agents: a SQLite graph of specs, plans and tasks that c
 - Landings as detached jobs: merge, gate against a cached baseline of the target, push, verify
 - Edges, decisions and conditions as the only things a node waits on, with a cycle check on every write
 - `state.db`, `cache.db` and `ledger.db` under `.taskmanager/`, SQLite in WAL mode, with `sqlite-vec` search
-- The `tm-wave` workflow (`workflows/tm-wave.js`): one loop per node, every step on the model family tm names
+- The `tm-wave` workflow (`workflows/tm-wave.js`): one step per node per tick, on the model family tm names, with a dispatching session looping itself to carry a node the rest of the way
 
 ## Upgrading from 0.2
 

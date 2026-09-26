@@ -55,7 +55,7 @@ test('a payload carrying non-ASCII text passes its checksum', async () => {
   assert.ok(logs.includes('held: T9: aguardando a decisão D1'))
 })
 
-test('a READY task is implemented, reviewed and landed in one loop, one claim per step', async () => {
+test('a READY task takes one step per run: implement, then review, then merge', async () => {
   const tm = makeTm({
     chosen: [T1],
     nodes: { T1: node('READY', 'implement') },
@@ -73,16 +73,30 @@ test('a READY task is implemented, reviewed and landed in one loop, one claim pe
     if (opts.label === 'review:T1') tm.set('T1', { status: 'REVIEWED', next_action: 'merge', outcome: 'approve' })
     return 'done'
   }
-  const { result, ops, work, errors } = await runWave({ args: ARGS, tm, agents })
-  assert.deepEqual(errors, [])
-  assert.deepEqual(result.results.map(r => [r.id, r.status]), [['T1', 'COMPLETED']])
-  assert.deepEqual(work.map(w => w.opts.label), ['implement:T1', 'review:T1'])
-  assert.equal(starts(ops).length, 3)
-  assert.equal(gets(ops).length, 4, 'one read before the first claim and one after each step')
-  assert.deepEqual(releases(ops), [])
+
+  const implementTick = await runWave({ args: ARGS, tm, agents })
+  assert.deepEqual(implementTick.errors, [])
+  assert.equal(implementTick.result.results[0].status, 'IMPLEMENTED')
+  assert.deepEqual(implementTick.work.map(w => w.opts.label), ['implement:T1'])
+  assert.equal(starts(implementTick.ops).length, 1)
+  assert.equal(gets(implementTick.ops).length, 2, 'one read before the claim and one after the step')
+
+  const reviewTick = await runWave({ args: ARGS, tm, agents })
+  assert.deepEqual(reviewTick.errors, [])
+  assert.equal(reviewTick.result.results[0].status, 'REVIEWED')
+  assert.deepEqual(reviewTick.work.map(w => w.opts.label), ['review:T1'])
+  assert.equal(starts(reviewTick.ops).length, 1)
+
+  const mergeTick = await runWave({ args: ARGS, tm, agents })
+  assert.deepEqual(mergeTick.errors, [])
+  assert.equal(mergeTick.result.results[0].status, 'COMPLETED')
+  assert.deepEqual(mergeTick.work, [])
+  assert.equal(starts(mergeTick.ops).length, 1)
+
+  assert.deepEqual(releases([...implementTick.ops, ...reviewTick.ops, ...mergeTick.ops]), [])
 })
 
-test('every agent runs under a phase the meta declares', async () => {
+test('every agent runs under a phase the meta declares, across the run each step takes', async () => {
   const tm = makeTm({
     chosen: [T1],
     nodes: { T1: node('READY', 'implement') },
@@ -116,11 +130,18 @@ test('every agent runs under a phase the meta declares', async () => {
     if (opts.label === 'fix:T1') tm.set('T1', { status: 'FIXED', next_action: 'review' })
     return 'done'
   }
-  const { calls, work, errors } = await runWave({ args: ARGS, tm, agents })
+  const ticks = []
+  for (let i = 0; i < 6; i++) ticks.push(await runWave({ args: ARGS, tm, agents }))
+  const calls = ticks.flatMap(t => t.calls)
+  const work = ticks.flatMap(t => t.work)
+  const errors = ticks.flatMap(t => t.errors)
   const titles = meta().phases.map(p => p.title)
   assert.deepEqual(errors, [])
   assert.deepEqual(work.map(w => w.opts.label), ['implement:T1', 'review:T1', 'fix:T1', 'review:T1', 'merge-agent:T1'])
   for (const call of calls) assert.ok(titles.includes(call.opts.phase), `${call.opts.label} runs under ${call.opts.phase}`)
+  assert.equal(ticks[4].work.length, 0, 'the run whose job stops for an agent dispatches nobody')
+  assert.equal(ticks[4].result.results[0].status, 'MERGING')
+  assert.equal(ticks[5].result.results[0].status, 'COMPLETED')
 })
 
 for (const [fam, models, id] of [
@@ -275,7 +296,7 @@ test('a node at FAILED is not claimed', async () => {
   assert.equal(result.results[0].status, 'FAILED')
 })
 
-test('a landing its own claim started is handed to an agent only by the next claim, then polling resumes', async () => {
+test('a landing its own claim started is handed to an agent only by a later claim', async () => {
   const tm = makeTm({
     chosen: [{ ...T1, action: 'merge' }],
     nodes: { T1: node('REVIEWED', 'merge', { outcome: 'approve' }) },
@@ -295,19 +316,23 @@ test('a landing its own claim started is handed to an agent only by the next cla
     },
   })
   const agents = (prompt, opts) => (opts.label === 'merge-agent:T1' && tm.resume('J1'), 'resolved and resumed')
-  const { work, ops, result, errors } = await runWave({ args: ARGS, tm, agents })
-  assert.deepEqual(errors, [])
-  const order = ops.filter(c => / task start | job status /.test(c)).map(c => (/ job status /.test(c) ? 'job' : 'start'))
-  assert.deepEqual(order.slice(0, 3), ['start', 'job', 'start'])
-  assert.equal(work.length, 1)
-  assert.equal(work[0].opts.label, 'merge-agent:T1')
-  assert.equal(work[0].opts.model, 'sonnet')
+
+  const waitTick = await runWave({ args: ARGS, tm, agents })
+  assert.deepEqual(waitTick.errors, [])
+  assert.deepEqual(waitTick.work, [])
+  assert.ok(waitTick.result.results[0].trail.includes('merge stopped for an agent; the next claim hands it over'))
+  assert.deepEqual(releases(waitTick.ops), [])
+
+  const handoverTick = await runWave({ args: ARGS, tm, agents })
+  assert.deepEqual(handoverTick.errors, [])
+  assert.equal(handoverTick.work.length, 1)
+  assert.equal(handoverTick.work[0].opts.label, 'merge-agent:T1')
+  assert.equal(handoverTick.work[0].opts.model, 'sonnet')
   for (const text of ['tm guide merge', 'Job: J1', 'stopped at build: conflict in src/a.py', 'Worktree: /est/.worktrees/land-T1', 'tm job resume J1 --agent wf-s1-T1 --token k2', '--own-defect']) {
-    assert.ok(work[0].prompt.includes(text), text)
+    assert.ok(handoverTick.work[0].prompt.includes(text), text)
   }
-  assert.ok(result.results[0].trail.includes('merge stopped for an agent; the next claim hands it over'))
-  assert.equal(result.results[0].status, 'COMPLETED')
-  assert.deepEqual(releases(ops), [])
+  assert.equal(handoverTick.result.results[0].status, 'COMPLETED')
+  assert.deepEqual(releases(handoverTick.ops), [])
 })
 
 test('a landing the handed agent left stopped is released under its claim and counted', async () => {
@@ -322,7 +347,7 @@ test('a landing the handed agent left stopped is released under its claim and co
   assert.ok(result.results[0].trail.includes('released, the merge agent left the job stopped'))
 })
 
-test('a landing that stops again after the agent resumed it is left parked for the next claim, not released', async () => {
+test('a landing that stops again after the agent resumed it is left parked, not released, for the next claim', async () => {
   const again = { step: 'gate', result: { reason: 'unattributed', resumed: 1 } }
   const tm = makeTm({
     chosen: [{ ...T1, action: 'merge' }],
@@ -344,12 +369,19 @@ test('a landing that stops again after the agent resumed it is left parked for t
     },
   })
   const agents = (prompt, opts) => (tm.resume('J1'), 'resumed')
-  const { ops, work, result, errors } = await runWave({ args: ARGS, tm, agents })
-  assert.deepEqual(errors, [])
-  assert.deepEqual(releases(ops), [])
-  assert.equal(starts(ops).length, 2)
-  assert.deepEqual(work.map(w => w.prompt.includes('--token k2') ? 'k2' : 'k3'), ['k2', 'k3'])
-  assert.equal(result.results[0].status, 'COMPLETED')
+
+  const parkedTick = await runWave({ args: ARGS, tm, agents })
+  assert.deepEqual(parkedTick.errors, [])
+  assert.deepEqual(releases(parkedTick.ops), [])
+  assert.equal(starts(parkedTick.ops).length, 1)
+  assert.ok(parkedTick.work[0].prompt.includes('--token k2'))
+
+  const completeTick = await runWave({ args: ARGS, tm, agents })
+  assert.deepEqual(completeTick.errors, [])
+  assert.deepEqual(releases(completeTick.ops), [])
+  assert.equal(starts(completeTick.ops).length, 1)
+  assert.ok(completeTick.work[0].prompt.includes('--token k3'))
+  assert.equal(completeTick.result.results[0].status, 'COMPLETED')
 })
 
 test("a container's landing follows the next repository's job to the end", async () => {
@@ -383,7 +415,7 @@ test('a running job is polled with --wait, under the long runner timeout, until 
   assert.deepEqual(work, [])
 })
 
-test('a sync the claim started is followed before the claim is retried', async () => {
+test('a blocked claim naming a sync job waits it out, and a later run is what retries the claim', async () => {
   const tm = makeTm({
     chosen: [T1],
     nodes: { T1: node('READY', 'implement') },
@@ -396,13 +428,18 @@ test('a sync the claim started is followed before the claim is retried', async (
     job: { S1: [jobAt('succeeded', { id: 'S1', kind: 'sync' })] },
   })
   const agents = () => (tm.set('T1', { status: 'IMPLEMENTED', next_action: null }), 'done')
-  const { ops, work } = await runWave({ args: ARGS, tm, agents })
-  const order = ops.filter(c => / task start | job status /.test(c)).map(c => (/ job status /.test(c) ? 'job' : 'start'))
-  assert.deepEqual(order, ['start', 'job', 'start'])
-  assert.deepEqual(work.map(w => w.opts.label), ['implement:T1'])
+
+  const waitTick = await runWave({ args: ARGS, tm, agents })
+  const order = waitTick.ops.filter(c => / task start | job status /.test(c)).map(c => (/ job status /.test(c) ? 'job' : 'start'))
+  assert.deepEqual(order, ['start', 'job'])
+  assert.deepEqual(waitTick.work, [])
+
+  const retryTick = await runWave({ args: ARGS, tm, agents })
+  assert.equal(starts(retryTick.ops).length, 1)
+  assert.deepEqual(retryTick.work.map(w => w.opts.label), ['implement:T1'])
 })
 
-test('a sync stopped for an agent is handed over by the next claim, on the family it names', async () => {
+test('a sync stopped for an agent is handed over by a later claim, on the family it names', async () => {
   const tm = makeTm({
     chosen: [T1],
     nodes: { T1: node('READY', 'implement') },
@@ -427,13 +464,21 @@ test('a sync stopped for an agent is handed over by the next claim, on the famil
     if (opts.label === 'implement:T1') tm.set('T1', { status: 'IMPLEMENTED', next_action: null })
     return 'done'
   }
-  const { work, ops, result, errors } = await runWave({ args: ARGS, tm, agents })
-  assert.deepEqual(errors, [])
-  assert.deepEqual(work.map(w => [w.opts.label, w.opts.model]), [['sync-agent:T1', 'sonnet'], ['implement:T1', 'sonnet']])
-  assert.ok(work[0].prompt.includes('tm job resume S1 --agent wf-s1-T1 --token k1'))
-  assert.ok(result.results[0].trail.includes('sync stopped for an agent; the next claim hands it over'))
-  assert.equal(starts(ops).length, 3)
-  assert.deepEqual(releases(ops), [])
+
+  const waitTick = await runWave({ args: ARGS, tm, agents })
+  assert.deepEqual(waitTick.work, [])
+
+  const handoverTick = await runWave({ args: ARGS, tm, agents })
+  assert.deepEqual(handoverTick.errors, [])
+  assert.deepEqual(handoverTick.work.map(w => [w.opts.label, w.opts.model]), [['sync-agent:T1', 'sonnet']])
+  assert.ok(handoverTick.work[0].prompt.includes('tm job resume S1 --agent wf-s1-T1 --token k1'))
+
+  const implementTick = await runWave({ args: ARGS, tm, agents })
+  assert.deepEqual(implementTick.work.map(w => w.opts.label), ['implement:T1'])
+
+  const allOps = [...waitTick.ops, ...handoverTick.ops, ...implementTick.ops]
+  assert.equal(starts(allOps).length, 3)
+  assert.deepEqual(releases(allOps), [])
 })
 
 test('a sync the handed agent left stopped is released under its claim, so its lease does not hold the node', async () => {
@@ -441,7 +486,7 @@ test('a sync the handed agent left stopped is released under its claim, so its l
     chosen: [T1],
     nodes: { T1: node('READY', 'implement') },
     parked: ['S1'],
-    start: { T1: [claim('sync', { job: 'S1', base: 'tm/P1', token: 'k2' }), json({ action: 'blocked', reason: 'waits on T0', job: null }, 3)] },
+    start: { T1: [claim('sync', { job: 'S1', base: 'tm/P1', token: 'k2' })] },
     job: { S1: [jobAt('needs_agent', { id: 'S1', kind: 'sync', target: 'tm/P1', step: 'build', result: 'conflict' })] },
   })
   const { ops, result } = await runWave({ args: ARGS, tm, agents: () => 'could not resolve it' })
@@ -535,17 +580,6 @@ test('every op runs the tm the caller names', async () => {
   const { ops } = await runWave({ args: { ...ARGS, tm: '/opt/tm-new/bin/tm' }, tm })
   assert.ok(ops.length >= 2)
   for (const cmd of ops) assert.ok(cmd.startsWith('/opt/tm-new/bin/tm ') || cmd.startsWith('out=$(/opt/tm-new/bin/tm '), cmd)
-})
-
-test('a loop that never settles stops at the step cap and says so', async () => {
-  const tm = makeTm({
-    chosen: [T1],
-    nodes: { T1: node('READY', 'implement') },
-    start: { T1: [claim('implement', { worktree: '/wt/core-T1' })] },
-  })
-  const { work, logs } = await runWave({ args: ARGS, tm })
-  assert.equal(work.length, 24)
-  assert.ok(logs.some(l => l.startsWith('T1: 24 steps without reaching COMPLETED, FAILED or blocked')))
 })
 
 // op() names the estate by exporting TM_ROOT ahead of the command it runs, so the runner's own
