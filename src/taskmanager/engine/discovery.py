@@ -43,7 +43,11 @@ def discover(
     free = slots - len(mine)
     strong_free = max_strong - sum(lease.model in STRONG for lease in mine)
     found, held = selection.candidates(
-        snap, specs, next_step=claims.next_step, blocked_reason=claims.blocked_reason
+        snap,
+        specs,
+        repo_order=claims.config.repo_order,
+        next_step=claims.next_step,
+        blocked_reason=claims.blocked_reason,
     )
     result = selection.select(found, snap, free, strong_free, exclude or [], hold_merge or [])
     payload = json.dumps(

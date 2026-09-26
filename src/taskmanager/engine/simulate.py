@@ -3,9 +3,15 @@ succeed. Wave 1 is `selection.candidates` + `selection.select` on the snapshot a
 every node already mid-step (in flight); each later wave reads a snapshot where the previous
 wave's nodes, chosen or in flight, landed their step's best outcome -- complete, approve, land.
 Transitions come from `core.lifecycle`, rollup from `core.rollup`; nothing here re-derives either.
+
+A simulated wave has no real claim to run a condition's command under, so `cached_conditions` (the
+same condition-result cache a display reads once per view) is the only signal it can ever fold in;
+`repo_order` is threaded through so a container's `repos` matches a real claim's.
 """
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from functools import partial
 
 from taskmanager.core.enums import CONTAINERS, NodeKind
 from taskmanager.core.lifecycle import Caps, advance, claim, fix_round
@@ -51,7 +57,14 @@ class Wave:
 
 
 def simulate(
-    snapshot: Snapshot, depth: int, size: int, max_strong: int, specs: list[str] | None
+    snapshot: Snapshot,
+    depth: int,
+    size: int,
+    max_strong: int,
+    specs: list[str] | None,
+    *,
+    repo_order: Sequence[str] = (),
+    cached_conditions: Mapping[tuple[str, int], tuple[str, int]] | None = None,
 ) -> list[Wave]:
     """`depth` waves out from `snapshot`, each a `select` over the snapshot the wave before it
     left: `snapshot` itself is read only, never written, and this issues no SQL -- every wave
@@ -60,16 +73,27 @@ def simulate(
     snap = snapshot
     waves: list[Wave] = []
     for _ in range(depth):
-        snap, wave = _advance(snap, size, max_strong, specs, caps)
+        snap, wave = _advance(snap, size, max_strong, specs, caps, repo_order, cached_conditions)
         waves.append(wave)
     return waves
 
 
 def _advance(
-    snap: Snapshot, size: int, max_strong: int, specs: list[str] | None, caps: Caps
+    snap: Snapshot,
+    size: int,
+    max_strong: int,
+    specs: list[str] | None,
+    caps: Caps,
+    repo_order: Sequence[str],
+    cached_conditions: Mapping[tuple[str, int], tuple[str, int]] | None,
 ) -> tuple[Snapshot, Wave]:
     data = snap.graph_data()
-    found, candidate_held = selection.candidates(snap, specs)
+    blocked_reason = partial(
+        selection.blocked_reason, repo_order=repo_order, cached_conditions=cached_conditions
+    )
+    found, candidate_held = selection.candidates(
+        snap, specs, repo_order=repo_order, blocked_reason=blocked_reason
+    )
     result = selection.select(found, snap, size, max_strong)
     cand_by_id = {c.node.id: c for c in found}
 
@@ -135,7 +159,7 @@ def _advance(
                 kind=node.kind,
                 action=action,
                 model=model,
-                repos=selection.repos_of(snap, node_id),
+                repos=selection.repos_of(snap, node_id, repo_order),
                 status_before=before,
                 status_after=after,
                 in_flight=True,

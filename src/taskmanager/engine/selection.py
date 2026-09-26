@@ -1,22 +1,33 @@
 """Which node the graph would claim next, and which of those fit one wave: pure functions of a
 `Snapshot`, so `Claims`, `tm wave discover` and the wave simulator choose exactly alike.
 
-A condition needs a command run, which a snapshot alone cannot do, so `blocked_reason` here never
-checks one; `Claims.blocked_reason` layers that check on top, over the same snapshot.
+A live condition needs a command run, which a snapshot alone cannot do, so `blocked_reason` here
+never runs one; `Claims.blocked_reason` layers that live check on top, over the same snapshot. A
+caller with no live check available (the wave simulator, run ahead of any real claim) may pass
+`cached_conditions`, the same condition-result cache `DisplayView` reads once per view, instead.
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from taskmanager.core.enums import CONTAINERS, NodeKind
 from taskmanager.core.lifecycle import LifecycleError, claim, fix_round, next_action
 from taskmanager.core.models import Node
-from taskmanager.core.status import IN_STEP, Action, DecisionStatus, JobKind, JobState, Status
+from taskmanager.core.status import (
+    IN_STEP,
+    Action,
+    ConditionStage,
+    DecisionStatus,
+    JobKind,
+    JobState,
+    Status,
+)
+from taskmanager.db.cache_repo import _command_hash
 from taskmanager.db.node_repo import declared_files_of, locked_key
 from taskmanager.db.runtime_repo import lease_alive
 from taskmanager.engine.chains import satisfied
 from taskmanager.engine.routing import STRONG, model_for
-from taskmanager.engine.snapshot import apply_cycle, cycle_of
+from taskmanager.engine.snapshot import SnapshotBuilder, apply_cycle, cycle_of
 from taskmanager.engine.stepgraph import Snapshot, migration_holders
 
 # Later steps first, so a wave drains work already under way before it starts more.
@@ -51,6 +62,16 @@ def next_step(node: Node) -> tuple[Action | None, str | None]:
     return action, model_for(action, apply_cycle(node, claimed), fix_round(claimed))
 
 
+def ordered_repos(
+    found: set[str], land_order: Sequence[str], repo_order: Sequence[str]
+) -> list[str]:
+    """`found`, `land_order` first, then `repo_order`, then by name -- the one ordering
+    `Operations.repos_of` (a single live node) and `repos_of` below (a whole snapshot) both sort
+    by, so a container's repository order never depends on which of the two read it."""
+    order = [*land_order, *repo_order]
+    return sorted(found, key=lambda r: (order.index(r) if r in order else len(order), r))
+
+
 def repos_of(snap: Snapshot, node_id: str, repo_order: Sequence[str] = ()) -> list[str]:
     """A task's target repository; a container's, the repositories of its counted descendants in
     landing order (`land_order`, then `repo_order`, then by name)."""
@@ -65,41 +86,20 @@ def repos_of(snap: Snapshot, node_id: str, repo_order: Sequence[str] = ()) -> li
         for d in snap.counted_descendants(node_id)
         if (child := data.nodes.get(d)) is not None and child.target_repo
     }
-    order = [*node.land_order, *repo_order]
-    return sorted(found, key=lambda r: (order.index(r) if r in order else len(order), r))
+    return ordered_repos(found, node.land_order, repo_order)
 
 
 def _locked_files(node_id: str, action: Action | None, snap: Snapshot) -> list[str]:
-    """The files a claim of `node_id` locks: its declared files, or for a container that
-    declares none, the union of its counted descendants'."""
+    """The files a claim of `node_id` locks, through the one lock-set implementation
+    (`SnapshotBuilder.lock_set`) `Claims` itself locks through -- so the set a claim takes and the
+    set discovery checks can never drift apart."""
     if action not in (Action.IMPLEMENT, Action.FIX):
         return []
-    data = snap.graph_data()
-    node = snap.nodes[node_id]
-    own = declared_files_of(data.nodes.get(node_id), data.verifications.get(node_id, []))
-    if own or node.kind not in CONTAINERS:
-        return [locked_key(node.repo, f) for f in own]
-    keys = [
-        locked_key(snap.nodes[d].repo, f)
-        for d in snap.counted_descendants(node_id)
-        for f in declared_files_of(data.nodes.get(d), data.verifications.get(d, []))
-    ]
-    return list(dict.fromkeys(keys))
+    return SnapshotBuilder.lock_set(node_id, snap)
 
 
 def _conflicts(files: list[str], snap: Snapshot) -> dict[str, str]:
-    data = snap.graph_data()
-    wanted = set(files)
-    found: dict[str, str] = {}
-    for lock in data.file_locks:
-        if lock.file_path not in wanted:
-            continue
-        lease = data.leases.get(lock.task_id)
-        if lease is not None and lease_alive(
-            lease.ttl_seconds, lease.last_heartbeat, data.built_at
-        ):
-            found[lock.file_path] = f"Task: {lock.task_id}, Agent: {lease.agent_id}"
-    return found
+    return SnapshotBuilder.conflicts(files, snap)
 
 
 def blocked_reason_before_condition(node: Node, snap: Snapshot) -> str | None:
@@ -145,14 +145,51 @@ def blocked_reason_after_condition(
     return None
 
 
+def _condition_reason_cached(
+    node: Node,
+    snap: Snapshot,
+    action: Action | None,
+    cached_conditions: Mapping[tuple[str, int], tuple[str, int]],
+) -> str | None:
+    """The same condition check `Claims._condition_reason` runs live, read instead from a
+    condition-result cache taken once for the whole call (`DisplayView`'s own `_unmet`): a
+    simulated wave has no real claim to run a command under, so a stale cached result -- or none
+    at all, which reads as met -- is the only signal it can ever have."""
+    data = snap.graph_data()
+    stages = {ConditionStage.CLAIM}
+    if action == Action.MERGE:
+        stages.add(ConditionStage.LANDING)
+    for condition in data.conditions.get(node.id, []):
+        if condition.stage not in stages:
+            continue
+        entry = cached_conditions.get((node.id, condition.idx))
+        if entry is None:
+            continue
+        command_hash, exit_code = entry
+        if command_hash == _command_hash(condition.command) and exit_code != 0:
+            return f"condition unmet: {condition.needs}"
+    return None
+
+
 def blocked_reason(
-    node: Node, snap: Snapshot, action: Action | None, *, repo_order: Sequence[str] = ()
+    node: Node,
+    snap: Snapshot,
+    action: Action | None,
+    *,
+    repo_order: Sequence[str] = (),
+    cached_conditions: Mapping[tuple[str, int], tuple[str, int]] | None = None,
 ) -> str | None:
     """Why `node` cannot be claimed now, the first reason in claimability order, everything but a
-    condition; None when nothing here blocks it."""
+    live condition check; None when nothing here blocks it. `cached_conditions`, when given, folds
+    in the same cached condition result a display reads, ahead of "no next action" exactly where a
+    live claim's own condition check runs."""
     reason = blocked_reason_before_condition(node, snap)
     if reason is not None:
         return reason
+    if cached_conditions is not None:
+        reason = _condition_reason_cached(node, snap, action, cached_conditions)
+        if reason is not None:
+            return reason
     return blocked_reason_after_condition(node, snap, action, repo_order=repo_order)
 
 
@@ -180,6 +217,7 @@ def candidates(
     snap: Snapshot,
     specs: list[str] | None,
     *,
+    repo_order: Sequence[str] = (),
     next_step: Callable[[Node], tuple[Action | None, str | None]] = next_step,
     blocked_reason: Callable[[Node, Snapshot, Action | None], str | None] = blocked_reason,
 ) -> tuple[list[Candidate], list[str]]:
@@ -189,6 +227,9 @@ def candidates(
     `next_step` and `blocked_reason` default to this module's own pure rules, over `snap` alone;
     `Claims` calls this with its own bound methods instead, so a condition still runs its command
     exactly as a real claim would, and a monkeypatch of `Claims.next_step` still reaches here.
+    `repo_order` only orders a `Candidate`'s own `repos`; a `blocked_reason` bound to `Claims`
+    carries its own copy for the "nothing to land" check, so a caller passing a custom
+    `blocked_reason` must give it the same `repo_order` itself.
     """
     found: list[Candidate] = []
     held: list[str] = []
@@ -219,7 +260,7 @@ def candidates(
         if reason is not None:
             held.append(f"{node.id}: {reason}")
             continue
-        found.append(Candidate(node, action, model, None, repos_of(snap, node.id)))
+        found.append(Candidate(node, action, model, None, repos_of(snap, node.id, repo_order)))
     return sorted(found, key=lambda c: (_STAGE[c.action], -c.node.priority, c.node.id)), held
 
 

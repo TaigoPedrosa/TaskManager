@@ -452,6 +452,9 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     def _dispatch_config() -> DispatchConfig:
         return ConfigStore(project_root).project().dispatch
 
+    def _repo_order() -> list[str]:
+        return ConfigStore(project_root).project().repo_order
+
     live_hub = LiveHub(
         snapshots=snapshots,
         cache=cache,
@@ -606,9 +609,20 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         depth = _parse_bound(depth, 1, _MIN_WAVE_DEPTH, _MAX_WAVE_DEPTH, "depth")
         size = _parse_bound(size, dispatch.wave_size, 1, dispatch.tick_budget, "size")
         # One bulk read of state.db, however deep: every later wave replays over the snapshot
-        # this built, in memory (see `engine.simulate`).
+        # this built, in memory (see `engine.simulate`). Conditions are read from the cache once
+        # here too, the same read a display uses -- a simulated wave has no real claim to run a
+        # condition's command under.
         snap = snapshots.build()
-        waves = simulate(snap, depth, size, _WAVE_MAX_STRONG, spec)
+        cached_conditions = cache.all_conditions(_condition_ttl())
+        waves = simulate(
+            snap,
+            depth,
+            size,
+            _WAVE_MAX_STRONG,
+            spec,
+            repo_order=_repo_order(),
+            cached_conditions=cached_conditions,
+        )
         return {"waves": [asdict(w) for w in waves]}
 
     @app.post("/api/specs", status_code=201)
