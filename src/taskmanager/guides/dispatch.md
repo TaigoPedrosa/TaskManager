@@ -73,6 +73,8 @@ Within a batch no two nodes declare the same file. Across a repository, a node w
 
 A list you disagree with is a plan defect: fix it with `tm task update <id> --models a,b` and say so, never dispatch around it.
 
+A task's fix rounds are capped at `max_fix_rounds.task` (default 2): past that cap it is `FAILED` with a decision, not a third round, which is why the row above marks round 3 containers only — a task never reaches it. The lever on a task that keeps failing is widening `acceptable_models`, tried before anyone answers `investigate`.
+
 ## 4. Holds are edges, decisions and conditions
 
 A node waits only on something named: an edge (`tm task depends <id> --add <other-id>`), a decision (`tm decision add ... --blocks <id>`), or a condition (`tm task condition add <id> --needs "<what>" --command "<check>"`). `holdMerge` is the one hold the dispatcher keeps, and it is policy for this tick, not state on the node: a landing that is irreversible, deploys, or is the owner's call is listed there and reported, and the node's earlier steps still run.
@@ -92,7 +94,7 @@ tm job status <job> --wait 540
 
 A node that spends its fix rounds, its landing attempts or its failed steps is `FAILED`, and tm opens a decision on it; a `main` that stays red under parked landings for an hour opens one too; and a node deferred, abandoned or failed while others depend on it opens one on those dependents. `tm decision list --status open` is the owner's queue, not yours: do not answer a decision on the owner's behalf, and do not chase an agent to withdraw one.
 
-Re-running a failed step unchanged is not a fix. Before anyone answers `investigate`, change what made it fail: correct the brief with `tm section set`, widen `acceptable_models`, or split the node.
+Re-running a failed step unchanged is not a fix. Before anyone answers `investigate`, change what made it fail: correct the brief with `tm section set`, widen `acceptable_models`, or split the node. A rejection whose findings are rulings — "the brief doesn't say", "which of these is correct" — is answered by a decision, not another fix round: the reviewer raises it instead of rejecting on it.
 
 ## 7. When the plan changes
 

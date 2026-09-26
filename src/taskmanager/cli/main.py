@@ -767,8 +767,15 @@ def task_get(
     yaml_output: Annotated[
         bool, typer.Option("--yaml", help="Output as YAML (fewer tokens than JSON)")
     ] = False,
+    fields: Annotated[
+        str | None,
+        typer.Option("--fields", help="Comma-separated keys to print; requires --json"),
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    if fields is not None and not json_output:
+        print("[red]--fields requires --json[/red]")
+        raise typer.Exit(code=1)
     container = _get_container(_get_root(path))
     node_repo = container.get(NodeRepository)
     task = node_repo.get_node(task_id)
@@ -827,6 +834,14 @@ def task_get(
                 ],
             }
         )
+        if fields is not None:
+            requested = [f.strip() for f in fields.split(",") if f.strip()]
+            unknown = [f for f in requested if f not in doc]
+            if unknown:
+                valid = ", ".join(sorted(doc))
+                print(f"[red]unknown field(s): {', '.join(unknown)} (valid: {valid})[/red]")
+                raise typer.Exit(code=1)
+            doc = {f: doc[f] for f in requested}
         _emit(doc, yaml_output)
         return
     print(f"[bold cyan]Task:[/] {task.id}")
@@ -1104,6 +1119,20 @@ def condition_remove(
     print(f"[green]Removed condition {idx} from {node_id}[/green]")
 
 
+def _dotted_get(doc: dict[str, Any], dotted: str) -> tuple[bool, Any]:
+    """(True, value) once the top-level name is a real field; a nested name a run's `result` never
+    populated is a known field with nothing there, not an unknown one, so it resolves to None."""
+    head, _, rest = dotted.partition(".")
+    if head not in doc:
+        return False, None
+    cur: Any = doc[head]
+    for part in rest.split(".") if rest else []:
+        if not isinstance(cur, dict) or part not in cur:
+            return True, None
+        cur = cur[part]
+    return True, cur
+
+
 @job_app.command("status")
 def job_status(
     job_id: str,
@@ -1111,6 +1140,10 @@ def job_status(
         int,
         typer.Option("--wait", min=0, help="Block up to this many seconds while the job runs"),
     ] = 0,
+    fields: Annotated[
+        str | None,
+        typer.Option("--fields", help="Comma-separated keys to print; dotted selects nested"),
+    ] = None,
     yaml_output: Annotated[bool, typer.Option("--yaml", help="Output as YAML")] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
@@ -1127,7 +1160,23 @@ def job_status(
     if job is None:
         print(f"[red]No job '{escape(job_id)}'[/red]")
         raise typer.Exit(code=1)
-    _emit(job.model_dump(mode="json"), yaml_output)
+    doc = job.model_dump(mode="json")
+    if fields is not None:
+        requested = [f.strip() for f in fields.split(",") if f.strip()]
+        picked: dict[str, Any] = {}
+        unknown = []
+        for f in requested:
+            found, value = _dotted_get(doc, f)
+            if not found:
+                unknown.append(f)
+            else:
+                picked[f] = value
+        if unknown:
+            valid = ", ".join(sorted(doc))
+            print(f"[red]unknown field(s): {', '.join(unknown)} (valid: {valid})[/red]")
+            raise typer.Exit(code=1)
+        doc = picked
+    _emit(doc, yaml_output)
 
 
 @job_app.command("resume")

@@ -96,6 +96,20 @@ test('a READY task takes one step per run: implement, then review, then merge', 
   assert.deepEqual(releases([...implementTick.ops, ...reviewTick.ops, ...mergeTick.ops]), [])
 })
 
+test('read() names exactly the fields it uses, and never sees the rest', async () => {
+  // A poisoned row: fields run()/work() do not read, set to values that would misroute the
+  // tick if the fake (or the real CLI) leaked them past --fields.
+  const tm = makeTm({
+    chosen: [T1],
+    nodes: { T1: { ...node('READY', 'implement'), verdict: 'reject', branch: 'tm/other', jobs: ['poison'] } },
+    start: { T1: [() => (tm.set('T1', { status: 'IMPLEMENTING', next_action: null }), claim('implement', { worktree: '/wt/core-T1' }))] },
+  })
+  const agents = () => (tm.set('T1', { status: 'IMPLEMENTED', next_action: null }), 'done')
+  const { ops, result } = await runWave({ args: ARGS, tm, agents })
+  assert.match(gets(ops)[0], /tm task get T1 --json --fields status,next_action,outcome /)
+  assert.equal(result.results[0].status, 'IMPLEMENTED')
+})
+
 test('every agent runs under a phase the meta declares, across the run each step takes', async () => {
   const tm = makeTm({
     chosen: [T1],
@@ -360,9 +374,13 @@ test('a landing its own claim started is handed to an agent only by a later clai
   assert.equal(handoverTick.work.length, 1)
   assert.equal(handoverTick.work[0].opts.label, 'merge-agent:T1')
   assert.equal(handoverTick.work[0].opts.model, 'sonnet')
-  for (const text of ['tm guide merge', 'Job: J1', 'stopped at build: conflict in src/a.py', 'Worktree: /est/.worktrees/land-T1', 'tm job resume J1 --agent wf-s1-T1 --token k2', '--own-defect']) {
+  for (const text of ['tm guide merge', 'Job: J1', 'stopped at build', 'Worktree: /est/.worktrees/land-T1', 'tm job status J1 prints what stopped it', 'tm job resume J1 --agent wf-s1-T1 --token k2', '--own-defect']) {
     assert.ok(handoverTick.work[0].prompt.includes(text), text)
   }
+  assert.ok(
+    !handoverTick.work[0].prompt.includes('conflict in src/a.py'),
+    'the job result is not read for this prompt, and the merge agent reads it itself with tm job status',
+  )
   assert.equal(handoverTick.result.results[0].status, 'COMPLETED')
   assert.deepEqual(releases(handoverTick.ops), [])
 })
@@ -441,7 +459,7 @@ test('a running job is polled with --wait, under the long runner timeout, until 
     job: { J1: [jobAt('running'), jobAt('running'), () => (tm.set('T1', { status: 'COMPLETED' }), jobAt('succeeded'))] },
   })
   const { calls, work } = await runWave({ args: ARGS, tm })
-  const waits = calls.filter(c => c.kind === 'op' && / job status J1 --wait 540 2>&1\)/.test(c.cmd))
+  const waits = calls.filter(c => c.kind === 'op' && / job status J1 --wait 540 --fields \S+ 2>&1\)/.test(c.cmd))
   assert.equal(waits.length, 3)
   for (const w of waits) assert.ok(w.prompt.includes('600000'))
   assert.deepEqual(work, [])
@@ -634,4 +652,29 @@ test('an op against the default root exports TM_ROOT=. rather than omitting it',
   const ops = calls.filter(c => c.kind === 'op')
   assert.ok(ops.length >= 2)
   for (const c of ops) assert.match(c.prompt, /\( export TM_ROOT=\.; /)
+})
+
+test('read, start and job each keep their transcript small next to a job log the run never asked for', async () => {
+  const tail = 'FAILED tests/test_x.py::test_case - see docs.pytest.org/en/stable/how-to/capture\n'.repeat(20)
+  const tm = makeTm({
+    chosen: [{ ...T1, action: 'merge' }],
+    nodes: { T1: node('REVIEWED', 'merge', { outcome: 'approve', sections: tail }) },
+    start: { T1: [() => (tm.set('T1', { status: 'MERGING', next_action: null }), claim('merge', { job: 'J1' }))] },
+    job: {
+      J1: [
+        jobAt('running'),
+        () => (tm.set('T1', { status: 'COMPLETED' }), jobAt('succeeded', { result: { tail, next: null, resumed: 0 } })),
+      ],
+    },
+  })
+  const { calls, errors } = await runWave({ args: ARGS, tm })
+  assert.deepEqual(errors, [])
+  const ops = calls.filter(c => c.kind === 'op')
+  assert.ok(tail.length > 500)
+  const byOp = kind => ops.filter(c => new RegExp(` ${kind} `).test(c.cmd))
+  for (const [label, kind] of [['read', 'task get'], ['start', 'task start'], ['job', 'job status']]) {
+    const matched = byOp(kind)
+    assert.ok(matched.length > 0, `no ${label} op ran`)
+    for (const c of matched) assert.ok(c.stdout.length < 500, `${label} transcript was ${c.stdout.length} bytes: ${c.stdout.slice(0, 80)}`)
+  }
 })

@@ -25,9 +25,10 @@ One commit per finding, or one commit naming them all — either way on the node
 
 - A finding you can close, close.
 - A finding you judge wrong is answered in the report with the evidence that refutes it, and the code is left alone. It is never silently skipped.
+- A finding you close lands with a test that fails when the fix is reverted: revert it once, watch that test go red, then restore the fix. A comment the fix touches states the present reason the code holds, never what it replaced.
 - Anything else you notice goes in the report, not in the diff. Widening the scope is what spends the next round.
 - A landing failure whose red lies in files this node does not declare belongs to the node that caused it: find or file that node, then `tm task release <node-id> --agent <name> --token <token> --blocked --depends <that-node>`, and say so in the report.
-- A finding whose fix needs a call only the owner can make: `tm task release <node-id> --agent <name> --token <token> --blocked --decision "<question>" --option "a|Do X|why" --recommend a`, and answer it in the report as raised, not closed.
+- A finding whose fix needs a call only the owner can make: `tm task release <node-id> --agent <name> --token <token> --blocked --decision "<question>" --option "a|Do X|why" --recommend a`, and answer it in the report as raised, not closed. A finding that turns on "the brief doesn't say" or "which of these is correct" is exactly that call, raised at once rather than guessed at.
 
 ## 3. Verify and keep the lease alive
 
@@ -63,4 +64,5 @@ On every path that finished the round, including one where a finding was contest
 - Never edit outside your worktree, and never merge or push anything.
 - Never force-push, rebase or squash the node's branch.
 - Never change a test so a finding stops firing; close the finding the test names.
+- Never close a finding with nothing that fails when the fix is reverted, and never leave a comment naming what it replaced instead of the present reason it holds.
 - Never end your turn with the step open: close it, or release it naming why.

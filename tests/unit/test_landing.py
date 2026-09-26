@@ -724,7 +724,7 @@ def test_a_job_stopped_again_after_each_resume_counts_resumes_under_the_key_tm_w
     tmp_path: Path,
 ) -> None:
     workflow = Path(__file__).resolve().parents[2] / "workflows" / "tm-wave.js"
-    assert "j.result && j.result.resumed" in workflow.read_text(encoding="utf-8")
+    assert "j['result.resumed']" in workflow.read_text(encoding="utf-8")
     claims, landing = estate_with(tmp_path, None)
     reviewed_task(claims)
     job_id, _ = land(claims, landing)

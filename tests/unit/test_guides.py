@@ -182,6 +182,42 @@ def test_overview_carries_the_cycle_and_the_cutover_runbook() -> None:
         assert needle in text, needle
 
 
+def test_fix_guide_requires_a_test_that_fails_when_reverted() -> None:
+    """A finding closes only with a test proven to fail when its fix is undone."""
+    text = _guide_text("fix")
+    steps, never = text.split("## Never", 1)
+    assert "revert" in steps.lower(), "fix guide's steps carry no revert-checked-test rule"
+    assert "revert" in never.lower(), "fix guide's Never list carries no revert-checked-test rule"
+    assert "present" in never.lower(), "fix guide's Never list says nothing about comment tense"
+
+
+def test_dispatch_guide_states_the_task_fix_round_cap() -> None:
+    """The model table's round-3 row is containers only because a task fails before it gets there."""
+    text = _guide_text("dispatch")
+    assert "max_fix_rounds.task" in text
+    assert "widening `acceptable_models`" in text
+
+
+def test_dispatch_guide_answers_a_ruling_rejection_with_a_decision() -> None:
+    text = _guide_text("dispatch")
+    assert "not another fix round" in text
+
+
+RULING_RULE_OF_THUMB_GUIDES = ("implement", "fix", "review")
+
+
+@pytest.mark.parametrize("topic", RULING_RULE_OF_THUMB_GUIDES)
+def test_guide_tells_a_ruling_from_a_defect(topic: str) -> None:
+    """A blocker that is a judgement call, not a defect, is a decision raised at once."""
+    text = _guide_text(topic)
+    assert "the brief doesn't say" in text
+    assert "which of these is correct" in text
+
+
+def test_review_guide_says_a_reviewer_raises_a_ruling_instead_of_rejecting() -> None:
+    assert "raises it instead of rejecting" in _guide_text("review")
+
+
 def test_dispatch_guide_names_every_argument_tm_wave_reads() -> None:
     read = set(re.findall(r"\bA\.([A-Za-z]+)", WORKFLOW.read_text(encoding="utf-8")))
     assert read, "no argument found in the workflow script"
