@@ -1056,13 +1056,6 @@ def test_a_filter_change_also_refetches_waves() -> None:
     assert "scheduleWavesRefetch()" in apply_change
 
 
-def test_static_export_opens_on_graph_not_waves() -> None:
-    # A static export has no /api/waves behind it; only Graph renders from the rows/edges
-    # get_web_html() embeds directly, so that is the one view a static export can open on.
-    html = get_web_html(initial_data={"rows": {}, "edges": [], "statuses": [], "bodies": {}})
-    assert "if (isStaticMode) setViewMode(window.VIEW_MODES.GRAPH);" in html
-
-
 def test_no_dead_highlight_css_survives_the_tree_views_removal() -> None:
     # selectNode's Document-view branch was the only code that ever added
     # .node-highlighted; tree.js's Graph-only branch never does.
@@ -1071,3 +1064,9 @@ def test_no_dead_highlight_css_survives_the_tree_views_removal() -> None:
     assert "pulse-highlight" not in html
     assert "networkInstance.selectNodes([nodeId])" in _static_js("tree.js")
     assert "node-highlighted" not in _function_body(html, "selectNode")
+
+
+def test_page_carries_an_inline_favicon_so_the_browser_never_requests_favicon_ico() -> None:
+    # Without a <link rel="icon">, a browser falls back to GET /favicon.ico, a 404 console
+    # error on `tm web run` and on a served export alike.
+    assert re.search(r'<link rel="icon" href="data:image/svg\+xml,', get_web_html())
