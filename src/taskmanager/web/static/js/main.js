@@ -1,9 +1,10 @@
 // Initialize
 readHash();
 renderLegend();
+window.tmStore.setFilters(filtersToF());
 window.addEventListener('hashchange', () => {
   readHash();
-  populateFilterOptions();
-  renderAll();
+  window.tmStore.setFilters(filtersToF());
+  scheduleRender();
 });
-loadAllData();
+scheduleRender();

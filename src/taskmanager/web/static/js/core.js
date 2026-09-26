@@ -1,17 +1,18 @@
 // State Management
-let treeData = [];
 let graphData = { nodes: [], edges: [] };
-let statsData = {};
 let selectedNodeId = null;
 let visNodesDS = null;
 let currentMode = window.VIEW_MODES.DOCUMENT;
 let networkInstance = null;
 let isStaticMode = typeof window.STATIC_DATA !== 'undefined';
-const collapsedNodes = new Set();
+// A node's expand/collapse state now lives in the store's open and watch sets (open reveals
+// a container's children, watch fetches a node's own body); this set is this view's own record
+// of which ids it asked the store to expand, since the store exposes no getter for either set.
+const expandedIds = new Set();
 const expandedSections = new Set();
 // Group headers ("Tasks (N)", "Sections (N)") are a third, independent collapse level:
 // they hide a plan's task-card list or a section list's row of <details> summaries
-// without touching collapsedNodes (the plan/task body) or expandedSections (a section's
+// without touching expandedIds (the plan/task body) or expandedSections (a section's
 // own open state). A group id's default (collapsed or not) varies by group type, so this
 // set stores only ids whose state differs from their default; see groupCollapsed().
 // Session-only, never persisted, same as the two sets above.
@@ -162,7 +163,7 @@ viewDocBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.DOCUMEN
 viewGraphBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.GRAPH));
 graphFitBtn.addEventListener('click', () => networkInstance && networkInstance.fit());
 inspectorCloseBtn.addEventListener('click', () => graphInspector.classList.add('hidden'));
-refreshBtn.addEventListener('click', loadAllData);
+refreshBtn.addEventListener('click', () => window.tmStore.resync());
 
 
 // Document sections: default collapsed, remembered for this session only (never persisted),
@@ -179,27 +180,27 @@ toggleSectionsBtn.addEventListener('click', () => {
   } else {
     allSectionIds.forEach(id => expandedSections.add(id));
   }
-  renderUnifiedDocument();
+  scheduleRender();
 });
 
 
-// Expand / Collapse All. Expanding also opens every group header; collapsing does not
-// fold them back, since a group's default state already starts most of them closed.
+// Expand / Collapse All. A click opens every visible, still-collapsed container one level
+// further (the next level's rows arrive once the store answers); once nothing visible is
+// left to open, the same button collapses back to the roots. Unlike the old whole-tree
+// walk, this never touches a row the store hasn't sent yet -- there is nothing else to walk.
 expandAllBtn.addEventListener('click', () => {
-  if (collapsedNodes.size > 0) {
-    collapsedNodes.clear();
-    collapsedGroups.clear();
+  const containers = [...window.tmStore.rows.values()].filter(r => r.kind !== 'task');
+  const toOpen = containers.filter(r => !expandedIds.has(r.id)).map(r => r.id);
+  if (toOpen.length > 0) {
+    toOpen.forEach(id => expandedIds.add(id));
+    window.tmStore.open(toOpen);
+    window.tmStore.watch(toOpen);
   } else {
-    function collect(node) {
-      if (node.children && node.children.length > 0) {
-        collapsedNodes.add(node.id);
-        node.children.forEach(collect);
-      }
-    }
-    treeData.forEach(collect);
+    const roots = [...window.tmStore.rows.values()].filter(r => r.parent === null).map(r => r.id);
+    window.tmStore.close(roots);
+    window.tmStore.unwatch([...expandedIds]);
+    expandedIds.clear();
   }
-  renderTree(treeData);
-  renderUnifiedDocument();
 });
 
 
@@ -267,24 +268,54 @@ function statusDot(code) {
   return `<span class="st-dot st-${t.code} inline-block w-2.5 h-2.5 rounded-full flex-shrink-0" title="${esc(t.label)}"></span>`;
 }
 
-// Progress: per-status counts over a spec's or plan's tasks. Only COMPLETED counts as done.
-function progressParts(node) {
-  const p = node.progress || { total: 0, counts: {} };
-  const codes = Object.keys(window.STATUS_THEMES).filter(c => p.counts[c]);
-  return { total: p.total, completed: p.counts.COMPLETED || 0, codes, counts: p.counts };
+// Progress: per-display-status counts from the store's counts tree (statuses), not a
+// per-node field -- a spec's or plan's bar shows before its own body is ever fetched.
+// Only COMPLETED counts as done; a set-aside status (deferred/abandoned/superseded) can
+// never finish, so it is dropped from `total` but kept in `counts` for the full breakdown.
+const SET_ASIDE_DISPLAYS = new Set(['DEFERRED', 'ABANDONED', 'SUPERSEDED']);
+
+function progressParts(counts) {
+  const totalAll = Object.values(counts).reduce((a, b) => a + b, 0);
+  const setAside = Object.entries(counts).reduce((a, [c, n]) => a + (SET_ASIDE_DISPLAYS.has(c) ? n : 0), 0);
+  const codes = Object.keys(window.STATUS_THEMES).filter(c => counts[c]);
+  return { total: totalAll - setAside, completed: counts.COMPLETED || 0, codes, counts };
 }
 
-function progressText(node) {
-  const p = progressParts(node);
+function progressText(counts) {
+  const p = progressParts(counts);
   if (p.total === 0) return 'No tasks';
   return p.codes.map(c => `${p.counts[c]} ${getTheme(c).label.toLowerCase()}`).join(' · ');
 }
 
-function progressBar(node, height = 'h-1.5') {
-  const p = progressParts(node);
-  const text = esc(progressText(node));
+function progressBar(counts, height = 'h-1.5') {
+  const p = progressParts(counts);
+  const text = esc(progressText(counts));
   const segs = p.codes.map(c => `<span class="st-seg st-${c}" style="width:${(p.counts[c] / p.total) * 100}%"></span>`).join('');
   return `<div class="flex w-full ${height} rounded-full overflow-hidden bg-zinc-800" role="img" aria-label="${text}" title="${text}">${segs}</div>`;
+}
+
+// Reads the store's counts tree for one spec's or one plan's bar (§ "The counts tree" in the
+// plan's parent context): a spec's own entry sums every one of its plans' counts, a plan
+// reads its own entry directly. Neither exists in the tree until the store's first snapshot.
+function specStatusEntry(specId) {
+  return window.tmStore.statuses.find(s => s.spec === specId) || null;
+}
+
+function countsForRow(row) {
+  if (row.kind === 'spec') {
+    const entry = specStatusEntry(row.id);
+    if (!entry) return {};
+    const totals = {};
+    entry.plans.forEach(p => Object.entries(p.counts).forEach(([k, n]) => { totals[k] = (totals[k] || 0) + n; }));
+    return totals;
+  }
+  if (row.kind === 'plan') {
+    const entry = specStatusEntry(row.parent);
+    if (!entry) return {};
+    const planEntry = entry.plans.find(p => p.plan === row.id);
+    return planEntry ? planEntry.counts : {};
+  }
+  return {};
 }
 
 // A section's content is routinely imported straight from a markdown document, so its
@@ -338,39 +369,6 @@ function toast(message, tone = 'info') {
   }, 3500);
 }
 
-// Fetch and Load Data
-async function loadAllData() {
-  if (isStaticMode) {
-    treeData = window.STATIC_DATA.tree || [];
-    graphData = window.STATIC_DATA.graph || { nodes: [], edges: [] };
-    statsData = window.STATIC_DATA.stats || {};
-    populateFilterOptions();
-    renderAll();
-    renderGraph(graphData);
-    return;
-  }
-
-  loadIndicator.classList.remove('hidden');
-  try {
-    const [treeRes, graphRes, statsRes] = await Promise.all([
-      fetch('/api/tree'),
-      fetch('/api/graph'),
-      fetch('/api/stats')
-    ]);
-    treeData = await treeRes.json();
-    graphData = await graphRes.json();
-    statsData = await statsRes.json();
-
-    populateFilterOptions();
-    renderAll();
-    renderGraph(graphData);
-  } catch (err) {
-    console.error('Failed to load data:', err);
-  } finally {
-    loadIndicator.classList.add('hidden');
-  }
-}
-
 // Live state lives on the brand icon's own colour -- no separate connection chip.
 
 function setBrandLive(state) {
@@ -382,33 +380,40 @@ function setBrandLive(state) {
   brandIconTitle.textContent = labels[state];
 }
 
-// WebSocket Live Updates
-if (!isStaticMode) {
-  function connectWS() {
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${location.host}/ws`;
-    const ws = new WebSocket(wsUrl);
-
-    ws.onopen = () => setBrandLive('synced');
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'reload' || data.type === 'update') {
-          loadAllData();
-        }
-      } catch (e) {
-        console.error('WS error:', e);
-      }
-    };
-
-    ws.onclose = () => {
-      setBrandLive('disconnected');
-      setTimeout(connectWS, 3000);
-    };
-  }
-  connectWS();
-} else {
-  setBrandLive('static');
+// The brand icon follows the store's connection state and the load indicator its `pending`
+// flag; both are read straight off the store rather than mirrored into local variables, so
+// there is exactly one place either can drift from what the store actually reports.
+function syncConnectionUi() {
+  setBrandLive(isStaticMode ? 'static' : (window.tmStore.connected ? 'synced' : 'disconnected'));
+  loadIndicator.classList.toggle('hidden', !window.tmStore.pending);
 }
 
+// Re-render coalesced to at most once per animation frame: a subscription can update rows,
+// statuses, facets and bodies several times in a burst (a single CLI write already fans out
+// into more than one item), and re-rendering per store notification re-walks and rebuilds
+// the whole document/tree/filters DOM for each one.
+let renderScheduled = false;
+function scheduleRender() {
+  if (renderScheduled) return;
+  renderScheduled = true;
+  requestAnimationFrame(() => {
+    renderScheduled = false;
+    renderAll();
+  });
+}
+
+// window.tmStore is created here, before filters.js/tree.js/main.js run, but with whatever
+// filters happen to be in scope at this point (none yet -- readHash() runs later, in main.js).
+// That is safe: in live mode the store's own connect() only reaches the network on the
+// WebSocket's `onopen`, which cannot fire before this synchronous script pass finishes, so
+// main.js's later setFilters() call still lands before the one subscribe frame this page ever
+// sends on load. In static mode everything below runs synchronously and gets recomputed again
+// once main.js applies the real filters, which is just a local, in-memory pass.
+window.tmStore = isStaticMode
+  ? createStore({ staticData: window.STATIC_DATA })
+  : createStore({});
+window.tmStore.onChange(() => {
+  syncConnectionUi();
+  scheduleRender();
+});
+syncConnectionUi();
