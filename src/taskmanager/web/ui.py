@@ -14,6 +14,7 @@ from taskmanager.web.enums import AppIcon, PhaseVisual, StatusVisual, WebViewMod
 # top-level (e.g. main.js's Initialize block calls functions core.js/filters.js/tree.js
 # define), the same constraint plain sequential <script> tags impose in the browser.
 _JS_FILES = (
+    "store.js",
     "core.js",
     "filters.js",
     "tree.js",

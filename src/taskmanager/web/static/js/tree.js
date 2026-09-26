@@ -46,7 +46,7 @@ function renderGroupHeader(groupId, label, count, defaultCollapsed, icon = null)
 // Sections default collapsed; expandedSections remembers, for this session only, which
 // ones the user opened, so re-rendering after a filter change never re-collapses them.
 // The "Sections (N)" group header is a level above that: it hides the whole row of
-// <details> summaries at once, independent of expandedSections and of collapsedNodes.
+// <details> summaries at once, independent of expandedSections and of a node's own expand.
 function renderSections(sections, ownerId) {
   const list = sections || [];
   if (list.length === 0) return '';
@@ -91,17 +91,94 @@ function attachSectionToggleHandlers(root) {
 }
 
 
+// A body's sections arrive as a {key: {header, content, ordinal}} map (store.js's own
+// normalizeBody()); renderSections() wants the list shape web/bodies.py sends, so this
+// converts back, ordered the way the server ordered the section rows in the first place.
+function sectionsListFrom(body) {
+  return Object.entries((body && body.sections) || {})
+    .map(([key, s]) => ({ key, header: s.header, content: s.content, ordinal: s.ordinal }))
+    .sort((a, b) => a.ordinal - b.ordinal);
+}
+
+function bodyOf(id) {
+  return window.tmStore.bodies.get(id) || null;
+}
+
+// Groups the store's current (already-visible) rows by parent, sorted the way the plan's
+// parent context spells out for a visible set: ordinal, then id.
+function visibleChildrenByParent() {
+  const byParent = new Map();
+  window.tmStore.rows.forEach(row => {
+    if (!byParent.has(row.parent)) byParent.set(row.parent, []);
+    byParent.get(row.parent).push(row);
+  });
+  byParent.forEach(list => list.sort((a, b) => a.ordinal - b.ordinal || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)));
+  return byParent;
+}
+
+// A lease banner reads the row's own lightweight lease (agent_id, action -- always present,
+// no watch needed) until the fuller body.lease (branch_name too) arrives.
+function leaseBannerHtml(row, body) {
+  const lease = (body && body.lease) || row.lease;
+  if (!lease) return '';
+  const branch = lease.branch_name || `tm/${row.id}`;
+  return `
+    <div class="p-2.5 bg-blue-950/40 border border-blue-800/80 rounded-lg flex items-center justify-between text-xs mb-3">
+      <div class="flex items-center gap-2">
+        <span class="text-blue-400">${renderIcon('flame', 'w-3.5 h-3.5')}</span>
+        <span class="text-blue-300 font-semibold">Active In-Flight Lease:</span>
+        <span class="text-zinc-300 font-mono">${lease.agent_id}</span>
+      </div>
+      <span class="text-zinc-400 font-mono text-[11px]">${branch}</span>
+    </div>
+  `;
+}
+
+// A node is expanded exactly when the store's open set carries it (its children, if any,
+// are then in window.tmStore.rows) and its watch set carries it (its body, once it arrives,
+// is then in window.tmStore.bodies). The store exposes no getter for either set, so this
+// view keeps its own record of which ids it asked to expand -- the only thing that mutates
+// them is toggleExpand() below.
+function collapseWithDescendants(id) {
+  const toClose = new Set([id]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const eid of expandedIds) {
+      if (toClose.has(eid)) continue;
+      let p = window.tmStore.rows.has(eid) ? window.tmStore.rows.get(eid).parent : null;
+      while (p !== null && p !== undefined) {
+        if (toClose.has(p)) { toClose.add(eid); changed = true; break; }
+        p = window.tmStore.rows.has(p) ? window.tmStore.rows.get(p).parent : null;
+      }
+    }
+  }
+  toClose.forEach(x => expandedIds.delete(x));
+  return [...toClose];
+}
+
+function toggleExpand(row) {
+  if (expandedIds.has(row.id)) {
+    const closed = collapseWithDescendants(row.id);
+    window.tmStore.close(closed);
+    window.tmStore.unwatch(closed);
+  } else {
+    expandedIds.add(row.id);
+    if (row.kind !== 'task') window.tmStore.open([row.id]);
+    window.tmStore.watch([row.id]);
+  }
+}
+
+
 // Sidebar Tree Rendering
-function renderTree(nodes) {
+function renderTree() {
   treeList.innerHTML = '';
+  const byParent = visibleChildrenByParent();
 
-  function createNodeRow(node, depth = 0, parentTextOk = false) {
-    if (!nodeVisible(node, parentTextOk)) return;
-    const textOk = textAccepts(node, parentTextOk);
-
+  function createNodeRow(node, depth = 0) {
     const effectiveStatus = displayOf(node);
-    const hasChildren = node.children && node.children.length > 0;
-    const isCollapsed = collapsedNodes.has(node.id);
+    const hasChildren = node.child_count > 0;
+    const isOpen = expandedIds.has(node.id);
 
     const row = document.createElement('div');
     // tabindex/role/keydown: the tree is the only detail panel a keyboard user can reach
@@ -116,16 +193,19 @@ function renderTree(nodes) {
 
     let chevron = `<span class="w-3.5 h-3.5 inline-block"></span>`;
     if (hasChildren) {
-      chevron = `<button class="p-0.5 hover:text-white toggle-btn">${renderIcon(isCollapsed ? 'chevron-right' : 'chevron-down', 'w-3.5 h-3.5')}</button>`;
+      chevron = `<button class="p-0.5 hover:text-white toggle-btn">${renderIcon(isOpen ? 'chevron-down' : 'chevron-right', 'w-3.5 h-3.5')}</button>`;
     }
 
     let progressHtml = '';
-    if (node.progress && node.progress.total > 0) {
-      const p = progressParts(node);
-      progressHtml = `<span class="text-[10px] font-mono text-zinc-400 mr-1" title="${esc(progressText(node))}">${p.completed}/${p.total}</span>`;
+    let progressBarRow = '';
+    if (node.kind !== 'task') {
+      const counts = countsForRow(node);
+      const p = progressParts(counts);
+      if (p.total > 0) {
+        progressHtml = `<span class="text-[10px] font-mono text-zinc-400 mr-1" title="${esc(progressText(counts))}">${p.completed}/${p.total}</span>`;
+        progressBarRow = `<div class="pt-1.5">${progressBar(counts, 'h-1')}</div>`;
+      }
     }
-
-    const progressBarRow = progressHtml ? `<div class="pt-1.5">${progressBar(node, 'h-1')}</div>` : '';
 
     row.innerHTML = `
       <div class="flex items-center justify-between gap-2">
@@ -146,10 +226,8 @@ function renderTree(nodes) {
     if (toggleBtn) {
       toggleBtn.onclick = (e) => {
         e.stopPropagation();
-        if (isCollapsed) collapsedNodes.delete(node.id);
-        else collapsedNodes.add(node.id);
-        renderTree(treeData);
-        renderUnifiedDocument();
+        toggleExpand(node);
+        scheduleRender();
       };
     }
 
@@ -163,37 +241,36 @@ function renderTree(nodes) {
     });
     treeList.appendChild(row);
 
-    if (hasChildren && !isCollapsed) {
-      node.children.forEach(c => createNodeRow(c, depth + 1, textOk));
+    if (hasChildren && isOpen) {
+      (byParent.get(node.id) || []).forEach(c => createNodeRow(c, depth + 1));
     }
   }
 
-  nodes.forEach(n => createNodeRow(n));
+  (byParent.get(null) || []).forEach(n => createNodeRow(n));
 }
 
 searchBox.addEventListener('input', (e) => {
   filters.q = e.target.value.toLowerCase();
-  renderAll();
+  applyFilterChange();
 });
 
 // Select Node Action (Coordinates Tree, Document, and Graph)
 
 function selectNode(nodeId) {
   selectedNodeId = nodeId;
-  renderTree(treeData);
+  renderTree();
 
   if (currentMode === window.VIEW_MODES.DOCUMENT) {
+    const row = window.tmStore.rows.get(nodeId);
+    if (row && !expandedIds.has(nodeId)) {
+      toggleExpand(row);
+      scheduleRender();
+    }
     const targetEl = document.getElementById(`doc-node-${nodeId}`);
     if (targetEl) {
-      // If inside a collapsed plan, expand it
-      collapsedNodes.delete(nodeId);
-      renderUnifiedDocument();
-      const refreshedEl = document.getElementById(`doc-node-${nodeId}`);
-      if (refreshedEl) {
-        refreshedEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        refreshedEl.classList.add('node-highlighted');
-        setTimeout(() => refreshedEl.classList.remove('node-highlighted'), 1600);
-      }
+      targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      targetEl.classList.add('node-highlighted');
+      setTimeout(() => targetEl.classList.remove('node-highlighted'), 1600);
     }
   } else if (currentMode === window.VIEW_MODES.GRAPH) {
     if (networkInstance) {
@@ -205,55 +282,75 @@ function selectNode(nodeId) {
 }
 
 
-// Render Unified Document View
+// Render Unified Document View: one card per root the store currently holds (a spec; a
+// plan or task with no container -- the "Rows" section's own definition of a root), walked
+// by parent/ordinal/id exactly like the sidebar tree above.
 function renderUnifiedDocument() {
   unifiedDocument.innerHTML = '';
   allSectionIds = [];
+  const byParent = visibleChildrenByParent();
+  const roots = byParent.get(null) || [];
 
-  if (treeData.length === 0) {
-    unifiedDocument.innerHTML = '<div class="text-zinc-400 text-sm italic py-12 text-center">No specifications or tasks registered. Use CLI to add items.</div>';
+  if (roots.length === 0) {
+    unifiedDocument.innerHTML = '<div class="text-zinc-400 text-sm italic py-12 text-center">No specs, plans or tasks match the current view.</div>';
     return;
   }
 
-  treeData.filter(root => nodeVisible(root)).forEach(spec => {
-    const specStatus = displayOf(spec);
-    const specTextOk = textAccepts(spec, false);
+  const cardHtml = roots.map(root => {
+    if (root.kind === 'spec') return renderSpecCard(root, byParent);
+    if (root.kind === 'plan') return renderPlanCard(root, byParent);
+    return renderTaskCard(root);
+  }).join('');
+  unifiedDocument.innerHTML = cardHtml;
 
-    const specCard = document.createElement('article');
-    specCard.id = `doc-node-${spec.id}`;
-    specCard.className = 'space-y-6 transition duration-200';
+  attachCollapsibleHandlers();
+  attachSectionToggleHandlers(unifiedDocument);
+  attachCopyHandlers(unifiedDocument);
+  updateToggleSectionsButton();
+}
 
-    // Spec Header Banner
-    let specPills = '';
-    if (spec.priority) {
-      specPills += `<span class="px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-300 font-mono text-xs">Prio: ${spec.priority}</span>`;
-    }
-    if (spec.target_repo) {
-      specPills += `<span class="px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-cyan-400 font-mono text-xs">${spec.target_repo}</span>`;
-    }
 
-    const specSectionsHtml = renderSections(spec.sections, spec.id);
+function renderSpecCard(spec, byParent) {
+  const specStatus = displayOf(spec);
+  const isOpen = expandedIds.has(spec.id);
+  const body = bodyOf(spec.id);
+  const counts = countsForRow(spec);
+  const children = byParent.get(spec.id) || [];
 
-    // Render Plans
-    let plansHtml = '';
-    if (spec.children && spec.children.length > 0) {
+  let specPills = '';
+  if (spec.priority) {
+    specPills += `<span class="px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-300 font-mono text-xs">Prio: ${spec.priority}</span>`;
+  }
+  if (spec.target_repo) {
+    specPills += `<span class="px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-cyan-400 font-mono text-xs">${spec.target_repo}</span>`;
+  }
+
+  let bodyHtml = '';
+  let plansHtml = '';
+  if (isOpen) {
+    bodyHtml = body ? renderSections(sectionsListFrom(body), spec.id)
+      : '<div class="text-xs text-zinc-500 italic py-2">Loading…</div>';
+    if (children.length > 0) {
       plansHtml = `
         <div class="space-y-6 pt-4">
           <h2 class="text-xs font-semibold text-zinc-400 uppercase tracking-wider flex items-center gap-2">
             ${renderIcon('layers', 'w-4 h-4 text-emerald-400')}
-            <span>Implementation Plans (${spec.children.length})</span>
+            <span>Implementation Plans (${children.length})</span>
           </h2>
           <div class="space-y-4">
-            ${spec.children.filter(plan => nodeVisible(plan, specTextOk)).map(plan => renderPlanCard(plan, specTextOk)).join('')}
+            ${children.map(plan => renderPlanCard(plan, byParent)).join('')}
           </div>
         </div>
       `;
     }
+  }
 
-    specCard.innerHTML = `
-      <div class="border-b border-zinc-800 pb-6 space-y-3">
+  return `
+    <article id="doc-node-${spec.id}" class="space-y-6 transition duration-200">
+      <div class="border-b border-zinc-800 pb-6 space-y-3 cursor-pointer spec-header" data-node-id="${spec.id}">
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-2">
+            <button class="text-zinc-400 hover:text-white flex-shrink-0">${renderIcon(isOpen ? 'chevron-down' : 'chevron-right', 'w-4 h-4')}</button>
             <span class="px-2 py-0.5 rounded text-[11px] font-mono uppercase bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">${spec.kind}</span>
             <span class="font-mono text-xs font-semibold text-zinc-400">${spec.id}</span>
             ${statusIcon(specStatus, 'w-4 h-4')}
@@ -265,39 +362,42 @@ function renderUnifiedDocument() {
         </div>
         <h1 class="text-2xl font-bold tracking-tight text-white">${spec.title}</h1>
         <div class="space-y-1.5">
-          ${progressBar(spec, 'h-2.5')}
-          <div class="text-xs text-zinc-400">${esc(progressText(spec))}</div>
+          ${progressBar(counts, 'h-2.5')}
+          <div class="text-xs text-zinc-400">${esc(progressText(counts))}</div>
         </div>
       </div>
-      ${specSectionsHtml}
+      ${bodyHtml}
       ${plansHtml}
-    `;
-
-    unifiedDocument.appendChild(specCard);
-  });
-
-  if (!unifiedDocument.hasChildNodes()) {
-    unifiedDocument.innerHTML = '<div class="text-zinc-400 text-sm italic py-12 text-center">No tasks match the active filters.</div>';
-  }
-
-  attachCollapsibleHandlers();
-  attachSectionToggleHandlers(unifiedDocument);
-  attachCopyHandlers(unifiedDocument);
-  updateToggleSectionsButton();
+    </article>
+  `;
 }
 
 
-function renderPlanCard(plan, parentTextOk = false) {
+function renderPlanCard(plan, byParent) {
   const planStatus = displayOf(plan);
-  const isCollapsed = collapsedNodes.has(plan.id);
-
-  const tasks = plan.children || [];
-  const p = progressParts(plan);
-  const planTextOk = textAccepts(plan, parentTextOk);
-  const visibleTasks = tasks.filter(t => nodeVisible(t, planTextOk));
-  const planSectionsHtml = renderSections(plan.sections, plan.id);
+  const isOpen = expandedIds.has(plan.id);
+  const body = bodyOf(plan.id);
+  const counts = countsForRow(plan);
+  const p = progressParts(counts);
+  const tasks = byParent.get(plan.id) || [];
   const tasksGroupId = `${plan.id}::tasks`;
   const tasksGroupCollapsed = groupCollapsed(tasksGroupId, true);
+
+  let innerBody = '';
+  if (isOpen) {
+    const planSectionsHtml = body ? renderSections(sectionsListFrom(body), plan.id)
+      : '<div class="text-xs text-zinc-500 italic py-2">Loading…</div>';
+    innerBody = `
+      <h3 class="text-base font-semibold text-zinc-200">${plan.title}</h3>
+      ${planSectionsHtml}
+      <div class="space-y-3">
+        ${renderGroupHeader(tasksGroupId, 'Tasks', tasks.length, true, 'check')}
+        <div class="space-y-2.5 ${tasksGroupCollapsed ? 'hidden' : ''}">
+          ${tasks.map(task => renderTaskCard(task)).join('')}
+        </div>
+      </div>
+    `;
+  }
 
   return `
     <div id="doc-node-${plan.id}" class="border border-zinc-800 rounded-xl bg-zinc-900/30 transition">
@@ -309,24 +409,17 @@ function renderPlanCard(plan, parentTextOk = false) {
         </div>
         <div class="flex items-center gap-3 flex-shrink-0">
           <div class="flex items-center gap-2">
-            <div class="w-40">${progressBar(plan, 'h-2')}</div>
+            <div class="w-40">${progressBar(counts, 'h-2')}</div>
             <span class="font-mono text-xs text-zinc-400" title="Completed of total tasks">${p.completed}/${p.total}</span>
           </div>
           ${copyIdButton(plan.id)}
-          <button class="text-zinc-400 hover:text-white flex-shrink-0">${renderIcon(isCollapsed ? 'chevron-right' : 'chevron-down', 'w-4 h-4')}</button>
+          <button class="text-zinc-400 hover:text-white flex-shrink-0">${renderIcon(isOpen ? 'chevron-down' : 'chevron-right', 'w-4 h-4')}</button>
         </div>
       </div>
 
       <!-- Plan Body: title lives here, before sections, folding with everything else -->
-      <div class="plan-body ${isCollapsed ? 'hidden' : ''} p-4 space-y-4">
-        <h3 class="text-base font-semibold text-zinc-200">${plan.title}</h3>
-        ${planSectionsHtml}
-        <div class="space-y-3">
-          ${renderGroupHeader(tasksGroupId, 'Tasks', visibleTasks.length, true, 'check')}
-          <div class="space-y-2.5 ${tasksGroupCollapsed ? 'hidden' : ''}">
-            ${visibleTasks.map(task => renderTaskCard(task)).join('')}
-          </div>
-        </div>
+      <div class="plan-body ${isOpen ? '' : 'hidden'} p-4 space-y-4">
+        ${innerBody}
       </div>
     </div>
   `;
@@ -370,7 +463,8 @@ function renderRelationTable(ownerId, key, label, icon, rows, defaultCollapsed) 
 
 function renderTaskCard(task) {
   const taskStatus = displayOf(task);
-  const isCollapsed = collapsedNodes.has(task.id);
+  const isOpen = expandedIds.has(task.id);
+  const body = bodyOf(task.id);
 
   // Model pills
   let modelPills = '';
@@ -380,47 +474,51 @@ function renderTaskCard(task) {
     ).join('');
   }
 
-  // Lease banner
-  let leaseBanner = '';
-  if (task.lease) {
-    leaseBanner = `
-      <div class="p-2.5 bg-blue-950/40 border border-blue-800/80 rounded-lg flex items-center justify-between text-xs mb-3">
-        <div class="flex items-center gap-2">
-          <span class="text-blue-400">${renderIcon('flame', 'w-3.5 h-3.5')}</span>
-          <span class="text-blue-300 font-semibold">Active In-Flight Lease:</span>
-          <span class="text-zinc-300 font-mono">${task.lease.agent_id}</span>
-        </div>
-        <span class="text-zinc-400 font-mono text-[11px]">${task.lease.branch_name}</span>
-      </div>
-    `;
-  }
+  const leaseBanner = leaseBannerHtml(task, body);
 
-  // Verifications: icon names the kind (hover for the word), row stays justified
-  // (icon pinned left, target pinned right) but the target text itself reads left-aligned;
-  // a real gap keeps the two from ever touching regardless of either one's length.
-  let verificationsHtml = '';
-  if (task.verifications && task.verifications.length > 0) {
-    const groupId = `${task.id}::verifications`;
-    const isGroupCollapsed = groupCollapsed(groupId, true);
-    const rows = task.verifications.map(v => `
-      <div class="p-2 bg-zinc-950/60 flex items-center gap-3 justify-between">
-        <span class="text-emerald-400 flex-shrink-0" title="${esc(VERIFICATION_LABEL[v.type] || v.type)}">${renderIcon(VERIFICATION_ICON[v.type] || 'check', 'w-3.5 h-3.5')}</span>
-        <span class="text-zinc-300 truncate text-left flex-1 min-w-0">${esc(v.target)}</span>
-      </div>
-    `).join('');
-    verificationsHtml = `
-      <div class="space-y-1.5 pt-2 border-t border-zinc-800/60 mb-3">
-        ${renderGroupHeader(groupId, 'Verifications', task.verifications.length, true, 'shield-check')}
-        <div class="rounded-lg border border-zinc-800 overflow-hidden divide-y divide-zinc-800 text-[11px] font-mono ${isGroupCollapsed ? 'hidden' : ''}">${rows}</div>
-      </div>
-    `;
-  }
+  let innerBody = '';
+  if (isOpen) {
+    if (!body) {
+      innerBody = '<div class="text-xs text-zinc-500 italic py-2">Loading…</div>';
+    } else {
+      // Verifications: icon names the kind (hover for the word), row stays justified
+      // (icon pinned left, target pinned right) but the target text itself reads left-aligned;
+      // a real gap keeps the two from ever touching regardless of either one's length.
+      let verificationsHtml = '';
+      if (body.verifications && body.verifications.length > 0) {
+        const groupId = `${task.id}::verifications`;
+        const isGroupCollapsed = groupCollapsed(groupId, true);
+        const rows = body.verifications.map(v => `
+          <div class="p-2 bg-zinc-950/60 flex items-center gap-3 justify-between">
+            <span class="text-emerald-400 flex-shrink-0" title="${esc(VERIFICATION_LABEL[v.verification_type] || v.verification_type)}">${renderIcon(VERIFICATION_ICON[v.verification_type] || 'check', 'w-3.5 h-3.5')}</span>
+            <span class="text-zinc-300 truncate text-left flex-1 min-w-0">${esc(v.target_path)}</span>
+          </div>
+        `).join('');
+        verificationsHtml = `
+          <div class="space-y-1.5 pt-2 border-t border-zinc-800/60 mb-3">
+            ${renderGroupHeader(groupId, 'Verifications', body.verifications.length, true, 'shield-check')}
+            <div class="rounded-lg border border-zinc-800 overflow-hidden divide-y divide-zinc-800 text-[11px] font-mono ${isGroupCollapsed ? 'hidden' : ''}">${rows}</div>
+          </div>
+        `;
+      }
 
-  const sectionsHtml = renderSections(task.sections, task.id);
-  const unfinishedDeps = (task.dependency_details || []).filter(d => !d.finished);
-  const blockersHtml = renderRelationTable(task.id, 'blockers', 'Blockers', 'ban', unfinishedDeps, true);
-  const dependenciesHtml = renderRelationTable(task.id, 'deps', 'Dependencies', 'link', task.dependency_details, true);
-  const dependentsHtml = renderRelationTable(task.id, 'dependents', 'Dependents', 'arrow-up-right', task.dependent_details, true);
+      const sectionsHtml = renderSections(sectionsListFrom(body), task.id);
+      const unfinishedDeps = (body.dependency_details || []).filter(d => !d.finished);
+      const blockersHtml = renderRelationTable(task.id, 'blockers', 'Blockers', 'ban', unfinishedDeps, true);
+      const dependenciesHtml = renderRelationTable(task.id, 'deps', 'Dependencies', 'link', body.dependency_details, true);
+      const dependentsHtml = renderRelationTable(task.id, 'dependents', 'Dependents', 'arrow-up-right', body.dependent_details, true);
+
+      innerBody = `
+        <h3 class="text-sm font-medium text-zinc-200">${task.title}</h3>
+        ${leaseBanner}
+        ${verificationsHtml}
+        ${blockersHtml}
+        ${dependenciesHtml}
+        ${dependentsHtml}
+        ${sectionsHtml}
+      `;
+    }
+  }
 
   return `
     <div id="doc-node-${task.id}" class="border border-zinc-800/80 rounded-lg bg-zinc-950/40 hover:border-zinc-700 transition">
@@ -434,19 +532,13 @@ function renderTaskCard(task) {
           ${modelPills}
           <span class="px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-400 font-mono text-[10px]">P${task.priority || 50}</span>
           ${copyIdButton(task.id)}
-          <button class="text-zinc-500 hover:text-white flex-shrink-0">${renderIcon(isCollapsed ? 'chevron-right' : 'chevron-down', 'w-3.5 h-3.5')}</button>
+          <button class="text-zinc-500 hover:text-white flex-shrink-0">${renderIcon(isOpen ? 'chevron-down' : 'chevron-right', 'w-3.5 h-3.5')}</button>
         </div>
       </div>
 
       <!-- Task Body: title lives here too, like the plan card, before everything else -->
-      <div class="task-body ${isCollapsed ? 'hidden' : ''} p-3.5 bg-zinc-950/80 border-t border-zinc-800/60 space-y-2">
-        <h3 class="text-sm font-medium text-zinc-200">${task.title}</h3>
-        ${leaseBanner}
-        ${verificationsHtml}
-        ${blockersHtml}
-        ${dependenciesHtml}
-        ${dependentsHtml}
-        ${sectionsHtml}
+      <div class="task-body ${isOpen ? '' : 'hidden'} p-3.5 bg-zinc-950/80 border-t border-zinc-800/60 space-y-2">
+        ${innerBody}
       </div>
     </div>
   `;
@@ -476,26 +568,16 @@ function attachGroupHeaderHandlers(root, rerender) {
 }
 
 function attachCollapsibleHandlers() {
-  document.querySelectorAll('.plan-header').forEach(header => {
+  document.querySelectorAll('.spec-header, .plan-header, .task-header').forEach(header => {
     header.onclick = () => {
       const id = header.getAttribute('data-node-id');
-      if (collapsedNodes.has(id)) collapsedNodes.delete(id);
-      else collapsedNodes.add(id);
-      renderUnifiedDocument();
-      renderTree(treeData);
-    };
-  });
-
-  document.querySelectorAll('.task-header').forEach(header => {
-    header.onclick = () => {
-      const id = header.getAttribute('data-node-id');
-      if (collapsedNodes.has(id)) collapsedNodes.delete(id);
-      else collapsedNodes.add(id);
-      renderUnifiedDocument();
+      const row = window.tmStore.rows.get(id);
+      if (row) {
+        toggleExpand(row);
+        scheduleRender();
+      }
     };
   });
 
   attachGroupHeaderHandlers(document, renderUnifiedDocument);
 }
-
-
