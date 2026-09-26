@@ -52,14 +52,16 @@ def _candidates(
     claims: Claims, snap: Snapshot, specs: list[str] | None, held: list[str]
 ) -> list[_Candidate]:
     found: list[_Candidate] = []
+    assert snap.data is not None, "discover() builds its snapshot through SnapshotBuilder.build()"
+    data = snap.data
     for node in claims.nodes.list_nodes():
         if node.kind == NodeKind.DECISION or not _in_scope(claims, node, specs):
             continue
         waiting = next(
-            (j for j in claims.jobs.for_node(node.id) if j.state == JobState.NEEDS_AGENT), None
+            (j for j in data.jobs.get(node.id, []) if j.state == JobState.NEEDS_AGENT), None
         )
         if waiting is not None:
-            lease = claims.runtime.get_lease(node.id)
+            lease = data.leases.get(node.id)
             if lease is not None and lease.ttl_seconds is None:
                 job_action = Action.MERGE if waiting.kind == JobKind.LAND else Action.SYNC
                 found.append(_Candidate(node, job_action, "sonnet", waiting.id, [waiting.repo]))
