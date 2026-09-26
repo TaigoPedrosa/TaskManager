@@ -384,6 +384,32 @@ def test_review_guide_runs_every_check_the_acceptance_lists() -> None:
     ) in _guide_text("review")
 
 
+def test_fix_guide_says_a_source_grep_is_not_a_test_of_behaviour() -> None:
+    """A test that greps for a call site proves nothing about what the code does when it runs."""
+    assert (
+        "A test of behaviour runs the code it tests: it calls the function, drives the page's "
+        "scripts, or runs the command, and asserts what comes out. Searching the source for a call "
+        "or a string is not a test of behaviour, even when it fails once the line is deleted."
+    ) in _guide_text("fix")
+
+
+def test_plan_guide_says_a_source_grep_is_not_a_test_of_behaviour() -> None:
+    """An acceptance line reviewed as behaviour must be closed by a test that runs the code, not greps for it."""
+    assert (
+        "A test of behaviour runs the code it tests: it calls the function, drives the page's "
+        "scripts, or runs the command, and asserts what comes out. Searching the source for a call "
+        "or a string is not a test of behaviour, even when it fails once the line is deleted."
+    ) in _guide_text("plan")
+
+
+def test_review_guide_says_a_source_grep_is_no_evidence_for_behaviour() -> None:
+    """A reviewer who accepts a source grep as proof of behaviour approves a page that crashes at runtime."""
+    assert (
+        "A test that only searches source text is not evidence for an acceptance line about "
+        "behaviour; name it in the findings."
+    ) in _guide_text("review")
+
+
 def test_dispatch_guide_closes_a_wording_only_rejection_without_another_fix_round() -> None:
     """A rejection that only disputes the record's wording, on a ruling already made, is not a defect to fix again."""
     assert (
