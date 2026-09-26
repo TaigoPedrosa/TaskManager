@@ -53,6 +53,8 @@ tm verify run <node-id> --ref <branch>
 
 The path checks read that ref directly, with no fetch, so a check against the unmerged branch is real evidence. Each `test_command` sees the same ref as `TM_VERIFY_REF`. Exit 1 names each failing row; `No verifications to run.` exits 2 and proves nothing — a task with no checks is itself a finding.
 
+A test that fails on the branch rejects the node, whichever task declared the test's file; another task's ownership of a file never excuses a failure this diff caused.
+
 ## 5. Write the findings
 
 Append them to the node before you close the step:

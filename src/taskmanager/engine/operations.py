@@ -52,6 +52,7 @@ from taskmanager.engine.decisions import (
     read_decision,
     write_decision,
 )
+from taskmanager.engine.selection import ordered_repos
 from taskmanager.engine.snapshot import (
     SnapshotBuilder,
     node_busy,
@@ -255,7 +256,12 @@ class Operations:
 
     def repos_of(self, node_id: str, repo_order: Sequence[str] = ()) -> list[str]:
         """A task's target repository; a container's, the repositories of its counted
-        descendants in landing order (`land_order`, then `repo_order`, then by name)."""
+        descendants in landing order (`land_order`, then `repo_order`, then by name).
+
+        Reads the node and its descendants straight from `node_repo` rather than through a built
+        `Snapshot`: a single live claim or landing needs one node's repos, never the whole
+        graph's. `engine.selection.repos_of` answers the same question in bulk, over a snapshot
+        already built for a whole wave; the two share `ordered_repos` for the ordering itself."""
         node = self.node_repo.get_node(node_id)
         if node is None:
             return []
@@ -266,8 +272,7 @@ class Operations:
             for d in self.counted_descendants(node_id)
             if (child := self.node_repo.get_node(d)) is not None and child.target_repo
         }
-        order = [*node.land_order, *repo_order]
-        return sorted(found, key=lambda r: (order.index(r) if r in order else len(order), r))
+        return ordered_repos(found, node.land_order, repo_order)
 
     def nothing_to_land(self, container_id: str) -> bool:
         """True when the container's branch changes nothing against its landing target in every

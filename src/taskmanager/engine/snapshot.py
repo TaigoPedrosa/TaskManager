@@ -170,23 +170,29 @@ class SnapshotBuilder:
     def cycle(self, node: Node) -> Cycle:
         return cycle_of(node)
 
-    def lock_set(self, node_id: str, snapshot: Snapshot) -> list[str]:
+    @staticmethod
+    def lock_set(node_id: str, snapshot: Snapshot) -> list[str]:
         """The files a claim of this node locks: its declared files, or for a container that
         declares none, the union of its descendants' -- each keyed to its own node's
-        target_repo, so the same repo-relative path in two repositories never collides."""
+        target_repo, so the same repo-relative path in two repositories never collides.
+
+        A `staticmethod`, over the snapshot alone: `engine.selection` calls this directly, so the
+        set a claim locks and the set discovery's `blocked_reason` checks are the one
+        implementation, never two copies to keep in step."""
         data = snapshot.graph_data()
         node = snapshot.nodes[node_id]
-        own = self._declared_files(node_id, data)
+        own = SnapshotBuilder._declared_files(node_id, data)
         if own or node.kind not in CONTAINERS:
             return [locked_key(node.repo, f) for f in own]
         keys = [
             locked_key(snapshot.nodes[d].repo, f)
             for d in snapshot.counted_descendants(node_id)
-            for f in self._declared_files(d, data)
+            for f in SnapshotBuilder._declared_files(d, data)
         ]
         return list(dict.fromkeys(keys))
 
-    def conflicts(self, files: list[str], snapshot: Snapshot) -> dict[str, str]:
+    @staticmethod
+    def conflicts(files: list[str], snapshot: Snapshot) -> dict[str, str]:
         """Every one of `files` a live lease other than its own currently holds, exactly as
         `RuntimeRepository.get_conflicting_tasks` reads it -- from the snapshot's one bulk read,
         not a query per call."""

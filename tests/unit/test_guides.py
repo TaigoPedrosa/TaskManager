@@ -198,6 +198,15 @@ def test_dispatch_guide_states_the_task_fix_round_cap() -> None:
     assert "widening `acceptable_models`" in text
 
 
+def test_dispatch_guide_routes_questions_through_decisions() -> None:
+    """A question in chat is lost when the session ends; every question is a decision instead."""
+    text = _guide_text("dispatch")
+    assert "never ask" in text.lower()
+    assert "tm decision add" in text
+    assert "--blocks" in text
+    assert "tm decision list --status open" in text
+
+
 def test_dispatch_guide_answers_a_ruling_rejection_with_a_decision() -> None:
     text = _guide_text("dispatch")
     assert "not another fix round" in text
@@ -286,3 +295,38 @@ def test_the_docs_show_enough_owned_closes_to_be_worth_checking() -> None:
 def test_a_close_that_names_its_agent_names_its_claim_s_token(where: str, command: str) -> None:
     """An agent name repeats across claims of one node; only the token tells this claim apart."""
     assert "--token" in command, f"{where} shows `{command}`"
+
+
+def test_plan_guide_names_the_measurement_for_an_unchanged_acceptance() -> None:
+    """A file left unchanged is proven by its bytes or hash, never by re-reading a field or two."""
+    assert "names its measurement" in _guide_text("plan")
+
+
+def test_plan_guide_names_where_an_invariant_or_refusal_holds() -> None:
+    """A rule enforced on one path of several is a rule not enforced; acceptance must name each path."""
+    assert "names where it holds" in _guide_text("plan")
+
+
+def test_plan_guide_writes_a_config_backed_limit_as_its_key() -> None:
+    """A spec that hardcodes a bound a tm config key already covers drifts from that key silently."""
+    assert "written as the project's key" in _guide_text("plan")
+
+
+def test_plan_guide_asks_a_reviewed_plan_for_its_own_verification() -> None:
+    """A plan without a verification of its own reached review twice with nothing beyond its children's suites."""
+    assert "carries a verification of its own" in _guide_text("plan")
+
+
+def test_plan_guide_lists_every_input_a_matches_acceptance_reads() -> None:
+    """A dropped condition, lock or config key in a 'matches' acceptance is a mismatch a test never catches."""
+    assert "lists every input the reference reads" in _guide_text("plan")
+
+
+def test_plan_guide_names_the_function_that_stays_and_the_ones_it_replaces() -> None:
+    """A copied-not-moved implementation leaves the replaced ones alive for a caller to find by accident."""
+    assert "names the function that stays" in _guide_text("plan")
+
+
+def test_review_guide_rejects_on_a_red_test_whoever_declared_its_file() -> None:
+    """A red test on the branch is this diff's failure regardless of which task's declared_files named the file."""
+    assert "rejects the node" in _guide_text("review")

@@ -100,6 +100,8 @@ symbol_signature  src/notify/email/sender.py  FAILED  File src/notify/email/send
 
 The path checks read a ref of the task's `target_repo` (`origin/main` by default, fetched first; `--ref` names another) and never a working tree. `test_command` runs from the tm root with that ref in `TM_VERIFY_REF`, and a landing sets it to the landing target — the parent's branch for `merge: parent` — so a command reads `"${TM_VERIFY_REF:-origin/main}"` instead of naming `origin/main` (a plain `tm verify run` sets no ref); tm refuses one that names `origin/main` itself on a task landing on its parent. The target repository is a directory under the tm root, and the ref is not checked out anywhere, so a command that runs code checks the ref out itself first, as the worked example's do.
 
+A plan with `review: true` carries a verification of its own that runs its children's joined behaviour, the one test that exercises them together, so its review has a check beyond the children's suites.
+
 ## 7. Size a task to one agent
 
 One agent, one sitting, one branch: an objective of a sentence, acceptance of a handful of lines, and a `declared_files` list short enough that no sibling wants any of it. Two objectives joined by "and" are two tasks.
@@ -109,6 +111,11 @@ One agent, one sitting, one branch: an objective of a sentence, acceptance of a 
 - **`acceptance` is the review's brief.** One check per line, each one a reviewer can actually run, and each about *this* node's deliverable. "The suite is green" is not a check.
 - **`review_models` is who runs it.** Set it wherever checking is harder than writing.
 - **A landing precondition is an edge or a condition, never a sentence.** Written into `acceptance` it reads as a review check, passes review, and is found only when the landing is already under way.
+- An acceptance that something is left unchanged names its measurement: the file's bytes or sha256 before and after, never a field or two read back.
+- An invariant or a refusal in acceptance names where it holds: the one function every write or command passes through, or each path by name, with a check for each; a changed shape names every caller.
+- A limit or default a spec states that a tm config key covers is written as the project's key, never a number.
+- An acceptance that one thing matches another ("matches `tm wave discover`", "byte-identical to before") lists every input the reference reads (conditions, locks, config keys such as `repo_order`) and has a test holding each.
+- A task that makes one implementation of something names the function that stays and each one it replaces; the replaced ones are deleted in the same task.
 
 ## 9. Import it, then read it back
 
