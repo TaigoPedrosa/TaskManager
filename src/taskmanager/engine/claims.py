@@ -45,6 +45,7 @@ from taskmanager.core.status import (
 )
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
+from taskmanager.db.graph_reader import read_graph
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.di.container import create_container
 from taskmanager.engine import git as gitops
@@ -238,14 +239,16 @@ class Claims:
 
     def blocked_reason(self, node: Node, snap: Snapshot, action: Action | None) -> str | None:
         """Why `node` cannot be claimed now, the first reason in claimability order; None when
-        it can. Reads only: discovery asks it of every node."""
-        live = [j for j in self.jobs.for_node(node.id) if j.state in LIVE_JOBS]
+        it can. Reads only, and only from `snap`'s one bulk read: discovery asks it of every
+        node, so a query here would run once per node in the estate."""
+        data = snap.graph_data()
+        live = [j for j in data.jobs.get(node.id, []) if j.state in LIVE_JOBS]
         if live:
             job = live[0]
             if job.kind == JobKind.SYNC:
                 return f"syncing {job.target}"
             return f"landing job {job.id} is {job.state}"
-        lease = self.runtime.get_lease(node.id)
+        lease = data.leases.get(node.id)
         if lease is not None and self.live(lease):
             return f"held by {lease.agent_id}"
         edges = snap.inherited_edges(node.id)
@@ -264,6 +267,10 @@ class Claims:
             *([ConditionStage.LANDING] if action == Action.MERGE else []),
         ]
         for stage in stages:
+            # A node with none of this stage's conditions is met by definition: skip the runner
+            # (which would run any stale one's command) rather than call it for nothing.
+            if not any(c.stage == stage for c in data.conditions.get(node.id, [])):
+                continue
             unmet = self.conditions.unmet(node.id, stage)
             if unmet:
                 return f"condition unmet: {unmet[0].needs}"
@@ -273,7 +280,7 @@ class Claims:
             return "no target_repo: a task is cut and landed in its target repository"
         if action == Action.MERGE and not self.repos_of(node.id):
             return "nothing to land: no task under it names a target_repo"
-        conflicts = self.runtime.get_conflicting_tasks(self._locked_files(node, action, snap))
+        conflicts = self.snapshots.conflicts(self._locked_files(node, action, snap), snap)
         if conflicts:
             return f"declared files locked: {', '.join(sorted(conflicts))}"
         return None
@@ -648,11 +655,15 @@ class Claims:
         red_target_decision_after, blocking every landing it holds. A node mid-step cannot take
         a new edge and is linked on a later sweep; a refusal is logged, never raised, since
         every claim sweeps first."""
+        # One bulk read carries both the nodes and their conditions, so this sweep costs a fixed
+        # number of statements regardless of estate size: every claim runs it, and discovery
+        # sweeps before every wave.
+        data = read_graph(self.nodes.db)
         parked: dict[tuple[str, str, str], list[tuple[str, datetime, list[str]]]] = {}
-        for node in self.nodes.list_nodes():
+        for node in data.nodes.values():
             if node.kind == NodeKind.DECISION:
                 continue
-            if not any(c.needs.startswith(RED_TARGET) for c in self.nodes.get_conditions(node.id)):
+            if not any(c.needs.startswith(RED_TARGET) for c in data.conditions.get(node.id, [])):
                 continue
             marks = [
                 j.result["red_target"]

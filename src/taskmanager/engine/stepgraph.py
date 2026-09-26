@@ -2,11 +2,12 @@
 one step waits on another. It is the only deadlock guard, so every graph-changing write is
 refused when it closes a cycle here."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from graphlib import CycleError, TopologicalSorter
 
 from taskmanager.core.enums import CONTAINERS, NodeKind
 from taskmanager.core.status import EXITS, SET_ASIDE, DecisionStatus, Merge, Status
+from taskmanager.db.graph_reader import GraphData
 from taskmanager.engine.chains import landing_chain, meeting, satisfied
 
 Graph = dict[str, set[str]]
@@ -31,6 +32,23 @@ class SnapNode:
 class Snapshot:
     nodes: dict[str, SnapNode]
     edges: list[tuple[str, str]]
+    # The bulk read `SnapshotBuilder.build()` made this snapshot from: None only for a snapshot a
+    # test builds by hand for the validation rules, which never read it.
+    data: GraphData | None = None
+    _children: dict[str, list[str]] = field(
+        init=False, repr=False, compare=False, default_factory=dict
+    )
+    _edges_by_source: dict[str, list[str]] = field(
+        init=False, repr=False, compare=False, default_factory=dict
+    )
+
+    def __post_init__(self) -> None:
+        for node_id in sorted(self.nodes):
+            parent = self.nodes[node_id].parent
+            if parent is not None:
+                self._children.setdefault(parent, []).append(node_id)
+        for dependent, dependency in self.edges:
+            self._edges_by_source.setdefault(dependent, []).append(dependency)
 
     def parent(self, node_id: str) -> str | None:
         return self.nodes[node_id].parent
@@ -42,8 +60,7 @@ class Snapshot:
         return self.nodes[node_id].status
 
     def children(self, node_id: str) -> list[str]:
-        # ponytail: scans every node per call; index children once snapshots reach thousands.
-        return sorted(n.id for n in self.nodes.values() if n.parent == node_id)
+        return list(self._children.get(node_id, ()))
 
     def descendants(self, node_id: str) -> list[str]:
         found: list[str] = []
@@ -71,11 +88,17 @@ class Snapshot:
         found: dict[str, str] = {}
         owner: str | None = node_id
         while owner is not None:
-            for d, dep in self.edges:
-                if d == owner:
-                    found.setdefault(dep, owner)
+            for dep in self._edges_by_source.get(owner, ()):
+                found.setdefault(dep, owner)
             owner = self.parent(owner)
         return found
+
+    def graph_data(self) -> GraphData:
+        if self.data is None:
+            raise ValueError(
+                "snapshot has no bulk graph data; build it with SnapshotBuilder.build()"
+            )
+        return self.data
 
 
 def _is_work(s: Snapshot, node_id: str) -> bool:

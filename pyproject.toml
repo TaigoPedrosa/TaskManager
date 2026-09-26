@@ -18,8 +18,8 @@ dependencies = [
 ]
 
 [project.scripts]
-taskmanager = "taskmanager.cli.main:app"
-tm = "taskmanager.cli.main:app"
+taskmanager = "taskmanager.cli.main:main"
+tm = "taskmanager.cli.main:main"
 
 [project.optional-dependencies]
 local-embeddings = [

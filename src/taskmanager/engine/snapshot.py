@@ -17,9 +17,10 @@ from taskmanager.core.status import (
     JobState,
     Status,
 )
-from taskmanager.db.cache_repo import CacheRepository
+from taskmanager.db.cache_repo import CacheRepository, _command_hash
+from taskmanager.db.graph_reader import GraphData, read_graph
 from taskmanager.db.job_repo import JobRepository
-from taskmanager.db.node_repo import NodeRepository
+from taskmanager.db.node_repo import NodeRepository, declared_files_of
 from taskmanager.db.runtime_repo import RuntimeRepository, lease_alive
 from taskmanager.engine.chains import satisfied
 from taskmanager.engine.stepgraph import SnapNode, Snapshot, migration_holders
@@ -141,10 +142,12 @@ def roll_up_ancestors(
     return moved
 
 
-# ponytail: one query per node for its files, lease and jobs; bulk reads once a graph is large
-# enough for it to show.
 class SnapshotBuilder:
-    """The whole graph as the pure rules read it, and the per-node facts display derives from."""
+    """The whole graph as the pure rules read it, and the per-node facts display derives from.
+
+    `build()` reads `state.db` once, through `graph_reader.read_graph`; every other method here
+    reads only that one read's result, carried on the `Snapshot` it returned.
+    """
 
     def __init__(
         self, node_repo: NodeRepository, runtime_repo: RuntimeRepository, job_repo: JobRepository
@@ -154,11 +157,15 @@ class SnapshotBuilder:
         self.job_repo = job_repo
 
     def build(self) -> Snapshot:
+        data = read_graph(self.node_repo.db)
         parents: dict[str, str] = {}
-        for source, target in self.node_repo.relations(RelationType.CONTAINS):
+        for source, target in data.relations[RelationType.CONTAINS]:
             parents.setdefault(target, source)
-        nodes = {n.id: self._snap(n, parents.get(n.id)) for n in self.node_repo.list_nodes()}
-        return Snapshot(nodes=nodes, edges=self.node_repo.relations(RelationType.DEPENDS_ON))
+        nodes = {
+            node_id: self._snap(node, parents.get(node_id), data)
+            for node_id, node in data.nodes.items()
+        }
+        return Snapshot(nodes=nodes, edges=data.relations[RelationType.DEPENDS_ON], data=data)
 
     def cycle(self, node: Node) -> Cycle:
         return cycle_of(node)
@@ -166,54 +173,88 @@ class SnapshotBuilder:
     def lock_set(self, node_id: str, snapshot: Snapshot) -> list[str]:
         """The files a claim of this node locks: its declared files, or for a container that
         declares none, the union of its descendants'."""
-        own = self.node_repo.declared_files(node_id)
+        data = snapshot.graph_data()
+        own = self._declared_files(node_id, data)
         if own or snapshot.nodes[node_id].kind not in CONTAINERS:
             return own
         files = [
-            f
-            for d in snapshot.counted_descendants(node_id)
-            for f in self.node_repo.declared_files(d)
+            f for d in snapshot.counted_descendants(node_id) for f in self._declared_files(d, data)
         ]
         return list(dict.fromkeys(files))
+
+    def conflicts(self, files: list[str], snapshot: Snapshot) -> dict[str, str]:
+        """Every one of `files` a live lease other than its own currently holds, exactly as
+        `RuntimeRepository.get_conflicting_tasks` reads it -- from the snapshot's one bulk read,
+        not a query per call."""
+        data = snapshot.graph_data()
+        wanted = set(files)
+        found: dict[str, str] = {}
+        for lock in data.file_locks:
+            if lock.file_path not in wanted:
+                continue
+            lease = data.leases.get(lock.task_id)
+            if lease is not None and lease_alive(
+                lease.ttl_seconds, lease.last_heartbeat, data.built_at
+            ):
+                found[lock.file_path] = f"Task: {lock.task_id}, Agent: {lease.agent_id}"
+        return found
 
     def facts(self, node_id: str, snapshot: Snapshot) -> Facts:
         """Everything display derivation needs beyond the node's own cycle. `unmet_condition`
         is left False: conditions run through the ConditionRunner, whose result a caller folds
         in with `dataclasses.replace`."""
-        node = self.node_repo.get_node(node_id)
+        data = snapshot.graph_data()
+        node = data.nodes.get(node_id)
         if node is None:
             raise KeyError(node_id)
-        jobs = self.job_repo.for_node(node_id)
+        jobs = data.jobs.get(node_id, [])
         work, decisions = waits_on(snapshot, node)
         locking = next_action(cycle_of(node)) in _LOCKING
         return Facts(
-            lease=self._lease(node_id, datetime.now(tz=UTC)),
+            lease=self._lease(node_id, data),
             job_needs_agent=any(
                 j.kind == JobKind.LAND and j.state == JobState.NEEDS_AGENT for j in jobs
             ),
             open_decision=bool(decisions),
             unsatisfied_edge=bool(work),
-            sync_pending=any(j.kind == JobKind.SYNC and j.state in _LIVE_JOB for j in jobs),
+            sync_pending=any(j.kind == JobKind.SYNC for j in jobs),
             files_locked=locking
-            and bool(self.runtime_repo.get_conflicting_tasks(self.lock_set(node_id, snapshot))),
+            and bool(self.conflicts(self.lock_set(node_id, snapshot), snapshot)),
             descendant_started=any(
                 snapshot.status(d) not in _NOT_STARTED for d in snapshot.descendants(node_id)
             ),
         )
 
-    def _lease(self, node_id: str, now: datetime) -> Literal["live", "expired", "none"]:
-        lease = self.runtime_repo.get_lease(node_id)
+    @staticmethod
+    def _declared_files(node_id: str, data: GraphData) -> list[str]:
+        return declared_files_of(data.nodes.get(node_id), data.verifications.get(node_id, []))
+
+    @staticmethod
+    def _lease(node_id: str, data: GraphData) -> Literal["live", "expired", "none"]:
+        lease = data.leases.get(node_id)
         if lease is None:
             return "none"
-        return "live" if lease_alive(lease.ttl_seconds, lease.last_heartbeat, now) else "expired"
+        return (
+            "live"
+            if lease_alive(lease.ttl_seconds, lease.last_heartbeat, data.built_at)
+            else "expired"
+        )
 
-    def _snap(self, node: Node, parent: str | None) -> SnapNode:
+    @staticmethod
+    def _busy(node_id: str, data: GraphData) -> bool:
+        lease = data.leases.get(node_id)
+        if lease is not None and lease_alive(
+            lease.ttl_seconds, lease.last_heartbeat, data.built_at
+        ):
+            return True
+        return any(j.state in _LIVE_JOB for j in data.jobs.get(node_id, ()))
+
+    def _snap(self, node: Node, parent: str | None, data: GraphData) -> SnapNode:
         commands = [
             v.expected_pattern or v.target_path
-            for v in self.node_repo.get_verifications(node.id)
+            for v in data.verifications.get(node.id, [])
             if v.verification_type == VerificationType.TEST_COMMAND
         ]
-        busy = node_busy(self.runtime_repo, self.job_repo, node.id)
         return SnapNode(
             id=node.id,
             kind=node.kind,
@@ -223,8 +264,8 @@ class SnapshotBuilder:
             review=node.review,
             fix=node.fix,
             repo=node.target_repo,
-            writes_migration=writes_migration(self.node_repo.declared_files(node.id)),
-            busy=busy,
+            writes_migration=writes_migration(self._declared_files(node.id, data)),
+            busy=self._busy(node.id, data),
             literal_origin_main=any(names_origin_main(c) for c in commands),
         )
 
@@ -242,18 +283,23 @@ class DisplayView:
         self.snapshot = builder.build()
         self.cache = cache
         self.max_age = max_age
+        self._conditions = cache.all_conditions(max_age) if cache is not None else {}
 
     def _unmet(self, node: Node) -> bool:
         if self.cache is None:
             return False
+        data = self.snapshot.graph_data()
         stages = {ConditionStage.CLAIM}
         if next_action(self.builder.cycle(node)) == Action.MERGE:
             stages.add(ConditionStage.LANDING)
-        for condition in self.builder.node_repo.get_conditions(node.id):
+        for condition in data.conditions.get(node.id, []):
             if condition.stage not in stages:
                 continue
-            code = self.cache.get_condition(node.id, condition.idx, condition.command, self.max_age)
-            if code is not None and code != 0:
+            cached = self._conditions.get((node.id, condition.idx))
+            if cached is None:
+                continue
+            command_hash, code = cached
+            if command_hash == _command_hash(condition.command) and code != 0:
                 return True
         return False
 
