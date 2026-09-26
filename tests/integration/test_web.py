@@ -21,7 +21,7 @@ from taskmanager.core.models import (
     NodeSection,
     NodeVerification,
 )
-from taskmanager.core.status import Action, DecisionStatus, DisplayStatus, Outcome, Phase, Status
+from taskmanager.core.status import Action, DecisionStatus, Outcome, Status
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository, locked_key
 from taskmanager.db.runtime_repo import RuntimeRepository
@@ -78,22 +78,20 @@ def test_web_api_endpoints_and_ui(tmp_path: Path) -> None:
     assert res_index.status_code == 200
     assert "TaskManager — Interactive Visualizer" in res_index.text
 
-    # 2. /api/tree
-    res_tree = client.get("/api/tree")
-    assert res_tree.status_code == 200
-    tree_data = res_tree.json()
-    assert isinstance(tree_data, list)
-    assert any(item["id"] == "AUTH" for item in tree_data)
+    # 2. /api/statuses
+    res_statuses = client.get("/api/statuses")
+    assert res_statuses.status_code == 200
+    statuses_data = res_statuses.json()
+    assert isinstance(statuses_data["hash"], str)
+    root_entry = next(e for e in statuses_data["statuses"] if e["spec"] is None)
+    root_plan = next(p for p in root_entry["plans"] if p["plan"] is None)
+    assert root_plan["counts"]["READY"] >= 1
 
-    # 3. /api/graph
-    res_graph = client.get("/api/graph")
-    assert res_graph.status_code == 200
-    graph_data = res_graph.json()
-    assert "nodes" in graph_data
-    assert "edges" in graph_data
-    node_ids = {n["id"] for n in graph_data["nodes"]}
-    assert "AUTH" in node_ids
-    assert "AUTH-T1" in node_ids
+    # 3. /api/nodes
+    res_nodes = client.get("/api/nodes", params={"ids": "AUTH,AUTH-T1"})
+    assert res_nodes.status_code == 200
+    node_ids = {n["id"] for n in res_nodes.json()["items"]}
+    assert node_ids == {"AUTH", "AUTH-T1"}
 
     # 4. /api/nodes/{id}
     res_node = client.get("/api/nodes/AUTH-T1")
@@ -103,21 +101,14 @@ def test_web_api_endpoints_and_ui(tmp_path: Path) -> None:
     assert node_detail["node"]["priority"] == 85
     assert node_detail["display"] == "READY"
     assert len(node_detail["sections"]) == 1
-    assert "## Steps" in node_detail["rendered_markdown"]
+    assert node_detail["sections"][0]["header"] == "## Steps"
     assert len(node_detail["verifications"]) == 1
 
     # 5. /api/nodes/nonexistent -> 404
     res_404 = client.get("/api/nodes/NONEXISTENT")
     assert res_404.status_code == 404
 
-    # 6. /api/stats
-    res_stats = client.get("/api/stats")
-    assert res_stats.status_code == 200
-    stats = res_stats.json()
-    assert stats["total"] >= 1
-    assert stats["display"]["READY"] >= 1
-
-    # 7. WebSocket connection
+    # 6. WebSocket connection
     with client.websocket_connect("/ws") as ws:
         # Connection established successfully
         assert ws is not None
@@ -160,12 +151,11 @@ def test_static_export_embeds_a_sections_own_markdown_image(tmp_path: Path) -> N
     out_file = tmp_path / "dashboard.html"
     content = export_static_html(tmp_path, out_file).read_text(encoding="utf-8")
 
-    # The section's own content is what tree.js/detail.js actually render as markdown client
-    # side; `rendered_markdown` is a separate, unused-by-the-page field this does not touch.
+    # The section's own content is what tree.js/detail.js render as markdown client side.
     static_match = re.search(r"window.STATIC_DATA = (\{.*?\});</script>", content)
     assert static_match
     static_data = json.loads(static_match.group(1))
-    section = static_data["tree"][0]["sections"][0]
+    section = static_data["bodies"]["AUTH"]["sections"][0]
     assert (
         section["content"]
         == "![capture](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=)"
@@ -214,7 +204,6 @@ SEEDED_DISPLAY = {
     "T-BLOCKED": "BLOCKED_BY_TASK",
     "T-BLOCKED-BY-LEASE": "BLOCKED_BY_LEASE",
 }
-DISPLAY_CODES = {d.value for d in DisplayStatus}
 
 
 @pytest.fixture
@@ -318,25 +307,18 @@ def every_display_project(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_stats_report_every_display_status_and_phase_including_zeros(
+def test_statuses_counts_each_seeded_display_status_and_the_containers_roll_up(
     every_display_project: Path,
 ) -> None:
-    stats = TestClient(create_app(every_display_project)).get("/api/stats").json()
-    assert stats["total"] == 14
-    assert set(stats["display"]) == DISPLAY_CODES
-    assert {k: v for k, v in stats["display"].items() if v} == {
-        code: 1 for code in SEEDED_DISPLAY.values()
-    }
-    assert set(stats["phase"]) == {p.value for p in Phase}
-    assert stats["phase"] == {
-        "QUEUED": 4,
-        "DISPATCHED": 5,
-        "COMPLETED": 1,
-        "FAILED": 1,
-        "DEFERRED": 1,
-        "ABANDONED": 1,
-        "SUPERSEDED": 1,
-    }
+    client = TestClient(create_app(every_display_project))
+    entries = client.get("/api/statuses").json()["statuses"]
+    entry = next(e for e in entries if e["spec"] == "SPEC")
+    plan = next(p for p in entry["plans"] if p["plan"] == "PLAN")
+    assert plan["counts"] == {code: 1 for code in SEEDED_DISPLAY.values()}
+
+    plan_row = client.get("/api/nodes", params={"ids": "PLAN"}).json()["items"][0]
+    # Nothing re-derived the stored rollup, so the display reads the started descendant.
+    assert (plan_row["status"], plan_row["display"]) == ("READY", "IMPLEMENTING")
 
 
 @pytest.mark.parametrize(("task_id", "display"), sorted(SEEDED_DISPLAY.items()))
@@ -347,19 +329,7 @@ def test_every_seeded_task_reads_its_display_status(
     assert detail["display"] == display
 
 
-def test_tree_progress_counts_each_display_status_separately(every_display_project: Path) -> None:
-    tree = TestClient(create_app(every_display_project)).get("/api/tree").json()
-    spec = tree[0]
-    plan = spec["children"][0]
-    expected = {code: 1 for code in SEEDED_DISPLAY.values()}
-    # DEFERRED, ABANDONED and SUPERSEDED can never finish, so they leave both `total` and its
-    # `done` count rather than diluting them.
-    assert plan["progress"] == {"done": 1, "total": 11, "set_aside": 3, "counts": expected}
-    assert spec["progress"] == plan["progress"]
-    assert (plan["status"], plan["display"]) == ("READY", "IMPLEMENTING")
-
-
-def test_a_container_in_the_tree_shows_its_stored_status_beside_its_display(
+def test_a_container_shows_its_stored_status_beside_its_display(
     tmp_path: Path,
 ) -> None:
     db_mgr = DatabaseManager(tmp_path / ".taskmanager")
@@ -377,15 +347,15 @@ def test_a_container_in_the_tree_shows_its_stored_status_beside_its_display(
         NodeRelation(source_id="S-P1", target_id="S-P1-T1", relation_type=RelationType.CONTAINS)
     )
 
-    tree = TestClient(create_app(tmp_path)).get("/api/tree").json()
-    spec = next(n for n in tree if n["id"] == "S")
+    nodes = TestClient(create_app(tmp_path)).get("/api/nodes", params={"ids": "S"}).json()
+    spec = nodes["items"][0]
     # Nothing re-derived the stored rollup, so the display reads the started descendant.
     assert (spec["status"], spec["display"]) == ("READY", "IMPLEMENTING")
 
 
-def test_tree_includes_standalone_plans_alongside_a_spec(tmp_path: Path) -> None:
+def test_standalone_plans_and_a_specs_children_all_reach_the_root(tmp_path: Path) -> None:
     # A DB can hold specs and, separately, plans with no spec parent at all --
-    # both must reach the tree root, not just whichever the (now-removed)
+    # both must reach the root, not just whichever the (now-removed)
     # `if specs / else` split happened to pick.
     db_mgr = DatabaseManager(tmp_path / ".taskmanager")
     db_mgr.init_all()
@@ -405,36 +375,44 @@ def test_tree_includes_standalone_plans_alongside_a_spec(tmp_path: Path) -> None
         )
     )
 
-    tree = TestClient(create_app(tmp_path)).get("/api/tree").json()
-
-    root_ids = {n["id"] for n in tree}
+    client = TestClient(create_app(tmp_path))
+    root_ids = {n["id"] for n in client.get("/api/nodes").json()["items"]}
     assert "STANDALONE-PLAN" in root_ids
-    standalone = next(n for n in tree if n["id"] == "STANDALONE-PLAN")
-    assert [c["id"] for c in standalone["children"]] == ["STANDALONE-TASK"]
-    spec = next(n for n in tree if n["id"] == "SPEC")
-    assert [c["id"] for c in spec["children"]] == ["SPEC-PLAN"]
+    assert "SPEC" in root_ids
+
+    standalone_children = client.get("/api/nodes", params={"parent": "STANDALONE-PLAN"}).json()
+    assert [c["id"] for c in standalone_children["items"]] == ["STANDALONE-TASK"]
+    spec_children = client.get("/api/nodes", params={"parent": "SPEC"}).json()
+    assert [c["id"] for c in spec_children["items"]] == ["SPEC-PLAN"]
 
 
-def test_tree_and_graph_carry_task_score_and_dependents(every_display_project: Path) -> None:
+def test_nodes_carry_task_score_and_dependents(every_display_project: Path) -> None:
     client = TestClient(create_app(every_display_project))
-    plan = client.get("/api/tree").json()[0]["children"][0]
-    tasks_by_id = {t["id"]: t for t in plan["children"]}
+    plan_children = client.get("/api/nodes", params={"parent": "PLAN", "include": "body"}).json()[
+        "items"
+    ]
+    tasks_by_id = {t["id"]: t for t in plan_children}
 
     assert isinstance(tasks_by_id["T-BLOCKED"]["score"], float)
-    assert tasks_by_id["T-BLOCKED"]["dependent_details"] == []
-    assert [d["id"] for d in tasks_by_id["T-IMPLEMENTING"]["dependent_details"]] == ["T-BLOCKED"]
+    assert tasks_by_id["T-BLOCKED"]["body"]["dependent_details"] == []
+    assert [d["id"] for d in tasks_by_id["T-IMPLEMENTING"]["body"]["dependent_details"]] == [
+        "T-BLOCKED"
+    ]
 
-    graph_nodes = {n["id"]: n for n in client.get("/api/graph").json()["nodes"]}
-    assert isinstance(graph_nodes["T-BLOCKED"]["score"], float)
-    assert graph_nodes["PLAN"]["score"] is None
+    plan_row = client.get("/api/nodes", params={"ids": "PLAN"}).json()["items"][0]
+    assert plan_row["score"] is None
 
 
-def test_tree_task_lists_dependencies_with_their_own_status(every_display_project: Path) -> None:
-    plan = TestClient(create_app(every_display_project)).get("/api/tree").json()[0]["children"][0]
-    blocked = next(t for t in plan["children"] if t["id"] == "T-BLOCKED")
+def test_a_task_lists_its_dependencies_with_their_own_status(every_display_project: Path) -> None:
+    plan_children = (
+        TestClient(create_app(every_display_project))
+        .get("/api/nodes", params={"parent": "PLAN", "include": "body"})
+        .json()["items"]
+    )
+    blocked = next(t for t in plan_children if t["id"] == "T-BLOCKED")
 
     assert blocked["display"] == "BLOCKED_BY_TASK"
-    assert blocked["dependency_details"] == [
+    assert blocked["body"]["dependency_details"] == [
         {
             "id": "T-IMPLEMENTING",
             "title": "Task T-IMPLEMENTING",
@@ -496,8 +474,12 @@ def test_node_detail_lists_dependencies_and_every_section(every_display_project:
     assert deferred["sections"][0]["content"] == "line one\nline two"
 
 
-def test_graph_nodes_carry_repo_and_models_for_filtering(every_display_project: Path) -> None:
-    nodes = TestClient(create_app(every_display_project)).get("/api/graph").json()["nodes"]
+def test_nodes_carry_repo_and_models_for_filtering(every_display_project: Path) -> None:
+    nodes = (
+        TestClient(create_app(every_display_project))
+        .get("/api/nodes", params={"parent": "PLAN"})
+        .json()["items"]
+    )
     by_id = {n["id"]: n for n in nodes}
 
     assert by_id["T-COMPLETED"]["target_repo"] == "core"
@@ -516,8 +498,9 @@ def test_static_export_embeds_every_status_and_the_filter_ui(
     static_match = re.search(r"window.STATIC_DATA = (\{.*?\});</script>", html)
     assert static_match
     static = json.loads(static_match.group(1))
-    assert set(static["stats"]["display"]) == DISPLAY_CODES
-    assert static["tree"][0]["progress"]["total"] == 11
+    entry = next(e for e in static["statuses"] if e["spec"] == "SPEC")
+    plan = next(p for p in entry["plans"] if p["plan"] == "PLAN")
+    assert plan["counts"] == {code: 1 for code in SEEDED_DISPLAY.values()}
     for element_id in (
         "stats-digest",
         "repo-filter",

@@ -1,10 +1,13 @@
 """Attachment embedding in the static export (§4): image attachments up to 2 MB ship as
 `data:` URIs; larger or missing ones stay name-only links the page renders without a server."""
 
+import json
+import re
 from pathlib import Path
 
 from taskmanager.core.enums import NodeKind
 from taskmanager.core.models import Node
+from taskmanager.core.status import DecisionStatus
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.engine.assets import store_asset
@@ -52,3 +55,27 @@ def test_oversized_attachment_is_not_embedded(tmp_path: Path, monkeypatch) -> No
     out = export_static_html(tmp_path, tmp_path / "export.html")
     html = out.read_text(encoding="utf-8")
     assert "data:image/png;base64," not in html
+
+
+def _static_data(html: str) -> dict:  # type: ignore[type-arg]
+    match = re.search(r"window\.STATIC_DATA = (.*);</script>", html)
+    assert match is not None
+    return json.loads(match.group(1).replace("<\\/", "</"))  # type: ignore[no-any-return]
+
+
+def test_export_holds_every_decision_past_the_http_pages_default_limit(tmp_path: Path) -> None:
+    db_mgr = DatabaseManager(tmp_path / ".taskmanager")
+    db_mgr.init_all()
+    node_repo = NodeRepository(db_mgr)
+    # More than app.py's _DEFAULT_DECISIONS_LIMIT (50): the export lists decisions straight
+    # from node_repo, unpaginated, so none should be dropped where the HTTP page would cut off.
+    ids = [f"decision-{i}" for i in range(60)]
+    for node_id in ids:
+        node_repo.save_node(
+            Node(id=node_id, kind=NodeKind.DECISION, title=node_id, status=DecisionStatus.OPEN)
+        )
+
+    out = export_static_html(tmp_path, tmp_path / "export.html")
+    data = _static_data(out.read_text(encoding="utf-8"))
+
+    assert {d["id"] for d in data["decisions"]} == set(ids)

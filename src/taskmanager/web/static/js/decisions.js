@@ -7,8 +7,11 @@
 window.VIEW_MODES.DECISIONS = 'decisions';
 
 let decisionsData = [];
+let decisionsNextCursor = null;
+let decisionsLoading = false;
 let selectedDecisionId = null;
 let decisionsTab = 'open';
+const DECISIONS_PAGE_LIMIT = 50;
 
 const decisionsPane = document.getElementById('decisions-pane');
 const decisionsTabsEl = document.getElementById('decisions-tabs');
@@ -41,15 +44,31 @@ function decisionStatusIcon(status, size = 'w-3.5 h-3.5') {
 
 
 // Data ---------------------------------------------------------------------------------------
+// Decisions are not rows (§ "Rows"): nothing pushes their list over the store's subscription,
+// so this pane pages /api/decisions itself, one status/tab at a time -- refreshDecisionsData()
+// replaces the current tab's page, loadMoreDecisions() appends the next one. Only the open
+// count is live (window.tmStore.decisionsOpen, part of every snapshot/update); the tracker
+// below is what turns that into "refetch the tab that's open" rather than polling.
 
 let decisionsLoadFailed = false;
+let lastSeenDecisionsOpen = isStaticMode ? null : window.tmStore.decisionsOpen;
+
+function decisionsQueryParams(cursor) {
+  const status = DECISION_TABS.find(t => t.key === decisionsTab).status;
+  const params = new URLSearchParams({ status, limit: String(DECISIONS_PAGE_LIMIT) });
+  if (cursor) params.set('cursor', cursor);
+  return params;
+}
 
 async function refreshDecisionsData() {
   if (isStaticMode) {
     decisionsData = (window.STATIC_DATA && window.STATIC_DATA.decisions) || [];
+    decisionsNextCursor = null;
   } else {
     try {
-      decisionsData = await api('GET', '/api/decisions');
+      const res = await api('GET', `/api/decisions?${decisionsQueryParams()}`);
+      decisionsData = res.items;
+      decisionsNextCursor = res.next;
       decisionsLoadFailed = false;
     } catch (e) {
       // A load failure used to read as "No open decisions." -- an empty queue, not a broken
@@ -57,6 +76,7 @@ async function refreshDecisionsData() {
       // is wrong.
       console.error('Failed to load decisions:', e);
       decisionsData = [];
+      decisionsNextCursor = null;
       decisionsLoadFailed = true;
       toast(`Could not load decisions: ${e.message}`, 'error');
     }
@@ -65,13 +85,32 @@ async function refreshDecisionsData() {
   if (currentMode === window.VIEW_MODES.DECISIONS) renderDecisionsView();
 }
 
-if (typeof loadAllData === 'function') {
-  const previousLoadAllData = loadAllData;
-  loadAllData = async function () {
-    await previousLoadAllData();
-    await refreshDecisionsData();
-  };
+async function loadMoreDecisions() {
+  if (isStaticMode || !decisionsNextCursor || decisionsLoading) return;
+  decisionsLoading = true;
+  try {
+    const res = await api('GET', `/api/decisions?${decisionsQueryParams(decisionsNextCursor)}`);
+    decisionsData = decisionsData.concat(res.items);
+    decisionsNextCursor = res.next;
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    decisionsLoading = false;
+    renderDecisionsList();
+  }
 }
+
+// The open count arrives with every snapshot/update regardless of which tab is showing; a
+// change to it means some decision moved in or out of Open, which can also change what the
+// Answered/Withdrawn tabs hold, so whichever tab is on screen refetches its own page.
+window.tmStore.onChange(() => {
+  if (isStaticMode) return;
+  const open = window.tmStore.decisionsOpen;
+  if (open === lastSeenDecisionsOpen) return;
+  lastSeenDecisionsOpen = open;
+  updateDecisionsBadge();
+  if (currentMode === window.VIEW_MODES.DECISIONS) refreshDecisionsData();
+});
 
 
 // Toolbar entry point: a badge-carrying button in #view-extra-buttons, and setViewMode
@@ -93,7 +132,9 @@ renderDecisionsToolbarButton();
 function updateDecisionsBadge() {
   const badge = document.getElementById('decisions-badge');
   if (!badge) return;
-  const openCount = decisionsData.filter(d => d.status === 'OPEN').length;
+  // Live everywhere the store is (decisions_open travels with every snapshot/update); a
+  // static export has no store push at all, so it counts the one page it was seeded with.
+  const openCount = isStaticMode ? decisionsData.filter(d => d.status === 'OPEN').length : window.tmStore.decisionsOpen;
   if (openCount > 0) {
     badge.textContent = openCount > 99 ? '99+' : String(openCount);
     badge.classList.remove('hidden');
@@ -117,6 +158,7 @@ if (typeof setViewMode === 'function') {
       viewGraphBtn.className = VIEW_BTN_INACTIVE;
       if (decisionsBtn) decisionsBtn.className = decisionsBtn.className.replace('bg-zinc-900', 'bg-zinc-800').replace('text-zinc-400', 'text-white');
       renderDecisionsView();
+      refreshDecisionsData();
       return;
     }
     decisionsPane.classList.add('hidden');
@@ -139,19 +181,32 @@ function goToDecision(decisionId) {
 
 // List -----------------------------------------------------------------------------------------
 
+// Only the Open tab has a live total (decisions_open); a page of Answered/Withdrawn is
+// however many /api/decisions has sent this tab so far, no more meaningful as a grand total
+// than the rows already on screen, so it carries no count at all in live mode. Static mode
+// still holds every decision at once, so its tabs keep their exact counts.
+function decisionsTabCount(tab) {
+  if (isStaticMode) return decisionsData.filter(d => decisionTabFor(d.status) === tab.key).length;
+  if (tab.key === 'open') return window.tmStore.decisionsOpen;
+  return null;
+}
+
 function renderDecisionsTabs() {
   decisionsTabsEl.innerHTML = DECISION_TABS.map(t => {
-    const count = decisionsData.filter(d => decisionTabFor(d.status) === t.key).length;
+    const count = decisionsTabCount(t);
     const active = t.key === decisionsTab;
     const cls = active
       ? 'bg-zinc-800 text-white'
       : 'text-zinc-400 hover:text-white hover:bg-zinc-900';
-    return `<button type="button" id="dec-tab-${t.key}" role="tab" aria-selected="${active}" aria-controls="decisions-list" tabindex="${active ? '0' : '-1'}" data-tab="${t.key}" class="dec-tab-btn h-7 px-2.5 rounded-md text-xs font-medium transition ${cls}">${t.label} (${count})</button>`;
+    return `<button type="button" id="dec-tab-${t.key}" role="tab" aria-selected="${active}" aria-controls="decisions-list" tabindex="${active ? '0' : '-1'}" data-tab="${t.key}" class="dec-tab-btn h-7 px-2.5 rounded-md text-xs font-medium transition ${cls}">${t.label}${count === null ? '' : ` (${count})`}</button>`;
   }).join('');
   const tabs = Array.from(decisionsTabsEl.querySelectorAll('.dec-tab-btn'));
   function activate(key, focusIt) {
     decisionsTab = key;
+    decisionsData = [];
+    decisionsNextCursor = null;
     renderDecisionsView();
+    refreshDecisionsData();
     if (focusIt) {
       const btn = decisionsTabsEl.querySelector(`[data-tab="${key}"]`);
       if (btn) btn.focus();
@@ -193,6 +248,10 @@ function renderDecisionsList() {
     return;
   }
 
+  const loadMoreHtml = decisionsNextCursor
+    ? `<button type="button" id="dec-load-more-btn" class="w-full h-8 rounded-lg text-xs font-medium text-zinc-300 hover:text-white hover:bg-zinc-900 border border-dashed border-zinc-700 transition" ${decisionsLoading ? 'disabled' : ''}>${decisionsLoading ? 'Loading…' : 'Load more'}</button>`
+    : '';
+
   decisionsListEl.innerHTML = rows.map(d => {
     const active = d.id === selectedDecisionId;
     return `
@@ -205,7 +264,7 @@ function renderDecisionsList() {
         </div>
       </button>
     `;
-  }).join('');
+  }).join('') + loadMoreHtml;
 
   decisionsListEl.querySelectorAll('.dec-row').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -214,13 +273,22 @@ function renderDecisionsList() {
       renderDecisionDetail(selectedDecisionId);
     });
   });
+  const loadMoreBtn = decisionsListEl.querySelector('#dec-load-more-btn');
+  if (loadMoreBtn) loadMoreBtn.addEventListener('click', loadMoreDecisions);
 }
 
 
 // Detail -----------------------------------------------------------------------------------------
 
+// Every task row the store currently holds -- the same "on the store" candidate source
+// edit.js's own dependency picker uses, since a task picker here has nothing else to draw
+// on without a whole-tree fetch the store no longer keeps around.
+function visibleTaskRows() {
+  return [...window.tmStore.rows.values()].filter(r => r.kind === 'task');
+}
+
 async function fetchNodeDetail(id) {
-  if (isStaticMode) return (window.STATIC_DATA.details || {})[id] || null;
+  if (isStaticMode) return (window.STATIC_DATA.bodies || {})[id] || null;
   try {
     return await api('GET', `/api/nodes/${id}`);
   } catch (e) {
@@ -394,7 +462,7 @@ function renderDecisionDetail(id) {
     const addBlockBtn = decisionsDetailEl.querySelector('.dec-block-add');
     if (addBlockBtn) {
       addBlockBtn.addEventListener('click', () => {
-        const taskOptions = collectTasks(treeData);
+        const taskOptions = visibleTaskRows();
         const listId = 'dec-block-picker-list';
         openDialog({
           title: `Block a task on ${node.id}`,
@@ -519,21 +587,25 @@ function wireDecisionAnswerForm(root, decisionId) {
   }
 }
 
+// A decision write never reloads anything either -- but a decision is not a row, so nothing
+// pushes its own new status here the way a row's write updates arrive at the drawer; its
+// detail is re-read straight from GET /api/nodes/{id} (§ "Bodies": "A decision's own detail
+// may keep reading" it), and the list's own refetch (below) is what makes the tab it now
+// belongs under current.
 async function afterDecisionWrite(decisionId) {
-  await loadAllData(); // wrapped above to also refresh decisionsData
   selectedDecisionId = decisionId;
-  const row = decisionsData.find(d => d.id === decisionId);
-  if (row) decisionsTab = decisionTabFor(row.status);
+  const detail = await fetchNodeDetail(decisionId);
+  if (detail) decisionsTab = decisionTabFor(detail.node.status);
+  await refreshDecisionsData();
   renderDecisionsView();
 }
 
 function renderDecisionsView() {
   renderDecisionsTabs();
   renderDecisionsList();
-  if (selectedDecisionId && decisionsData.some(d => d.id === selectedDecisionId)) {
+  if (selectedDecisionId) {
     renderDecisionDetail(selectedDecisionId);
   } else {
-    selectedDecisionId = null;
     decisionsDetailEl.innerHTML = '<div class="max-w-2xl mx-auto text-sm text-zinc-500 italic pt-12 text-center">Select a decision to view it.</div>';
   }
 }
@@ -576,7 +648,7 @@ function openNewDecisionDialog() {
         <div class="nd-opt-rows space-y-2"></div>
       </div>
       <label class="flex items-center gap-2 text-xs text-zinc-300"><input type="checkbox" class="nd-allow-custom rounded border-zinc-600 bg-zinc-950 text-emerald-500 focus:ring-emerald-500" checked>Allow a custom answer</label>
-      ${fieldRow('Blocks tasks (comma separated ids)', `<input type="text" class="nd-blocks ${INPUT_CLS} font-mono" list="nd-blocks-list" placeholder="(optional)"><datalist id="nd-blocks-list">${collectTasks(treeData).map(t => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join('')}</datalist>`)}
+      ${fieldRow('Blocks tasks (comma separated ids)', `<input type="text" class="nd-blocks ${INPUT_CLS} font-mono" list="nd-blocks-list" placeholder="(optional)"><datalist id="nd-blocks-list">${visibleTaskRows().map(t => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join('')}</datalist>`)}
     `,
     onMount: (panel) => {
       const rows = panel.querySelector('.nd-opt-rows');

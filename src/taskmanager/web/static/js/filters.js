@@ -1,7 +1,9 @@
-// Filters (mirrored into the URL hash so a view is shareable)
-const NO_REPO = '(none)';
-const NO_SPEC = '(none)';
-const NO_PHASE = '(none)';
+// Filters (mirrored into the URL hash so a view is shareable). Visibility itself -- which
+// rows this produces, which facet counts they add up to -- is the store's job (live: the
+// server; static: store.js's own port of web/visibility.py); this file only owns the
+// controls, the URL-hash round trip, and forwarding the result to the store.
+// NO_REPO/NO_SPEC/NO_PHASE are store.js's own sentinel constants (loaded before this file);
+// declaring them again here would be a duplicate top-level const in the same script scope.
 // Every dimension below is tri-state: absent from the Map = no opinion (neutral),
 // 'include' or 'exclude' otherwise. Maps are mutated in place, never reassigned (except
 // statusMode, read fresh every time and never captured by reference elsewhere) -- the
@@ -11,46 +13,11 @@ const filters = {
   statusMode: new Map(), phaseMode: new Map(), repoMode: new Map(), modelMode: new Map(),
   specMode: new Map(), scoreMin: null, scoreMax: null, q: ''
 };
-let scoreBounds = { min: 0, max: 100 };
 
-// A task passes a dimension if (no includes, or it matches at least one include) and it
-// matches no exclude. `values` holds every value the task carries for that dimension --
-// one for status/repo/spec, several for acceptable_models -- so "matching" means any overlap.
-function dimensionPasses(modeMap, values) {
-  if (values.some(v => modeMap.get(v) === 'exclude')) return false;
-  const anyIncludes = [...modeMap.values()].some(m => m === 'include');
-  return !anyIncludes || values.some(v => modeMap.get(v) === 'include');
-}
-
-function structuralFilterActive() {
+function anyFilterActive() {
   return filters.statusMode.size > 0 || filters.phaseMode.size > 0 || filters.repoMode.size > 0 ||
     filters.modelMode.size > 0 || filters.specMode.size > 0 ||
     filters.scoreMin !== null || filters.scoreMax !== null;
-}
-
-function taskPasses(t) {
-  if (!dimensionPasses(filters.statusMode, [displayOf(t)])) return false;
-  if (!dimensionPasses(filters.phaseMode, [t.phase || NO_PHASE])) return false;
-  if (!dimensionPasses(filters.repoMode, [t.target_repo || NO_REPO])) return false;
-  if (!dimensionPasses(filters.modelMode, t.acceptable_models || [])) return false;
-  if (!dimensionPasses(filters.specMode, [t._specId])) return false;
-  if (filters.scoreMin !== null && typeof t.score === 'number' && t.score < filters.scoreMin) return false;
-  if (filters.scoreMax !== null && typeof t.score === 'number' && t.score > filters.scoreMax) return false;
-  return true;
-}
-
-function textMatches(n) {
-  return n.title.toLowerCase().includes(filters.q) || n.id.toLowerCase().includes(filters.q);
-}
-
-function textAccepts(n, parentTextOk) {
-  return filters.q === '' || parentTextOk || textMatches(n);
-}
-
-function nodeVisible(n, parentTextOk = false) {
-  const textOk = textAccepts(n, parentTextOk);
-  if (n.kind === 'task') return textOk && taskPasses(n);
-  return (n.children || []).some(c => nodeVisible(c, textOk)) || (!structuralFilterActive() && textOk);
 }
 
 function readHash() {
@@ -84,26 +51,33 @@ function modeEntries(modeMap) {
   return { inc, exc };
 }
 
-function writeHash() {
-  const p = new URLSearchParams();
+// The same shape both writeHash() (a URL) and setFilters() (the store's F, protocol §"Filters,
+// visibility, facets and edges") need: only the keys with an opinion, values already strings.
+function filtersToF() {
+  const F = {};
   const status = modeEntries(filters.statusMode);
-  if (status.inc.length) p.set('status', status.inc.join(','));
-  if (status.exc.length) p.set('xstatus', status.exc.join(','));
+  if (status.inc.length) F.status = status.inc.join(',');
+  if (status.exc.length) F.xstatus = status.exc.join(',');
   const phase = modeEntries(filters.phaseMode);
-  if (phase.inc.length) p.set('phase', phase.inc.join(','));
-  if (phase.exc.length) p.set('xphase', phase.exc.join(','));
+  if (phase.inc.length) F.phase = phase.inc.join(',');
+  if (phase.exc.length) F.xphase = phase.exc.join(',');
   const repo = modeEntries(filters.repoMode);
-  if (repo.inc.length) p.set('repo', repo.inc.join(','));
-  if (repo.exc.length) p.set('xrepo', repo.exc.join(','));
+  if (repo.inc.length) F.repo = repo.inc.join(',');
+  if (repo.exc.length) F.xrepo = repo.exc.join(',');
   const model = modeEntries(filters.modelMode);
-  if (model.inc.length) p.set('model', model.inc.join(','));
-  if (model.exc.length) p.set('xmodel', model.exc.join(','));
+  if (model.inc.length) F.model = model.inc.join(',');
+  if (model.exc.length) F.xmodel = model.exc.join(',');
   const spec = modeEntries(filters.specMode);
-  if (spec.inc.length) p.set('spec', spec.inc.join(','));
-  if (spec.exc.length) p.set('xspec', spec.exc.join(','));
-  if (filters.scoreMin !== null) p.set('smin', String(filters.scoreMin));
-  if (filters.scoreMax !== null) p.set('smax', String(filters.scoreMax));
-  if (filters.q) p.set('q', filters.q);
+  if (spec.inc.length) F.spec = spec.inc.join(',');
+  if (spec.exc.length) F.xspec = spec.exc.join(',');
+  if (filters.scoreMin !== null) F.smin = String(filters.scoreMin);
+  if (filters.scoreMax !== null) F.smax = String(filters.scoreMax);
+  if (filters.q) F.q = filters.q;
+  return F;
+}
+
+function writeHash() {
+  const p = new URLSearchParams(filtersToF());
   try {
     history.replaceState(null, '', p.toString() ? '#' + p : location.pathname + location.search);
   } catch (e) {
@@ -111,13 +85,19 @@ function writeHash() {
   }
 }
 
-function renderAll() {
+// Every control below calls this, never renderAll() directly, on an actual filter change:
+// the URL, the store's own filters and the DOM must all move together, exactly once.
+function applyFilterChange() {
   writeHash();
+  window.tmStore.setFilters(filtersToF());
+  scheduleRender();
+}
+
+function renderAll() {
   updateStatsDigest();
   renderFilterControls();
-  renderTree(treeData);
+  renderTree();
   renderUnifiedDocument();
-  applyGraphFilter();
 }
 
 
@@ -169,31 +149,8 @@ function triStateHandlers(el, getMode, setMode) {
 }
 
 
-// Status Digest Bar
-function passesOtherDimensions(t, exclude) {
-  if (exclude !== 'status' && !dimensionPasses(filters.statusMode, [displayOf(t)])) return false;
-  if (exclude !== 'phase' && !dimensionPasses(filters.phaseMode, [t.phase || NO_PHASE])) return false;
-  if (exclude !== 'repo' && !dimensionPasses(filters.repoMode, [t.target_repo || NO_REPO])) return false;
-  if (exclude !== 'model' && !dimensionPasses(filters.modelMode, t.acceptable_models || [])) return false;
-  if (exclude !== 'spec' && !dimensionPasses(filters.specMode, [t._specId])) return false;
-  if (filters.scoreMin !== null && typeof t.score === 'number' && t.score < filters.scoreMin) return false;
-  if (filters.scoreMax !== null && typeof t.score === 'number' && t.score > filters.scoreMax) return false;
-  if (filters.q !== '' && !textMatches(t)) return false;
-  return true;
-}
-
-// Counts reflect every OTHER active filter (the dimension's own is excluded) so they read
-// as "how many tasks would show", not a frozen snapshot. `valuesOf` returns the task's own
-// value(s) for that dimension -- several for acceptable_models, one otherwise.
-function computeDimensionCounts(dimension, valuesOf) {
-  const counts = {};
-  collectTasks(treeData).forEach(t => {
-    if (!passesOtherDimensions(t, dimension)) return;
-    valuesOf(t).forEach(v => { counts[v] = (counts[v] || 0) + 1; });
-  });
-  return counts;
-}
-
+// Status Digest Bar: counts come from the store's facets (every other active filter already
+// applied, one dimension at a time -- see web/visibility.py's `facets`), never recomputed here.
 function updateStatsDigest() {
   // A rebuild replaces every chip with a new DOM node, so the one that had focus (Enter on a
   // status chip is a normal way to apply a filter) would otherwise drop to BODY and a
@@ -204,8 +161,8 @@ function updateStatsDigest() {
     : null;
 
   statsDigest.innerHTML = '';
-  const counts = computeDimensionCounts('status', t => [displayOf(t)]);
-  const total = collectTasks(treeData).filter(t => passesOtherDimensions(t, 'status')).length;
+  const counts = window.tmStore.facets.status || {};
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
   const allActive = filters.statusMode.size === 0;
   const totalChip = document.createElement('button');
   totalChip.className = `flex items-center gap-1 px-2 py-1 rounded-md border text-xs transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${allActive ? 'bg-zinc-800 text-white border-zinc-700' : 'bg-zinc-900/60 text-zinc-400 border-zinc-800 hover:bg-zinc-800'}`;
@@ -216,7 +173,7 @@ function updateStatsDigest() {
   totalChip.innerHTML = `${renderIcon('layers', 'w-3.5 h-3.5')}<strong>${total}</strong>`;
   totalChip.onclick = () => {
     filters.statusMode.clear();
-    renderAll();
+    applyFilterChange();
   };
   statsDigest.appendChild(totalChip);
 
@@ -239,7 +196,7 @@ function updateStatsDigest() {
       chip.innerHTML = `${renderIcon(theme.icon, 'w-3.5 h-3.5')}<strong>${count}</strong>`;
       triStateHandlers(chip, () => filters.statusMode.get(code), (mode) => {
         if (mode === null) filters.statusMode.delete(code); else filters.statusMode.set(code, mode);
-        renderAll();
+        applyFilterChange();
       });
       statsDigest.appendChild(chip);
     });
@@ -252,23 +209,8 @@ function updateStatsDigest() {
 }
 
 
-// Also stamps each task with the id/title of the spec it descends from (NO_SPEC when it
-// hangs off a standalone plan), so the spec filter needs no server round trip.
-function collectTasks(nodes, specCtx = null, out = []) {
-  nodes.forEach(n => {
-    if (n.kind === 'task') {
-      n._specId = specCtx ? specCtx.id : NO_SPEC;
-      n._specTitle = specCtx ? specCtx.title : 'No spec';
-      out.push(n);
-    }
-    const nextCtx = n.kind === 'spec' ? { id: n.id, title: n.title } : specCtx;
-    collectTasks(n.children || [], nextCtx, out);
-  });
-  return out;
-}
-
-// Every non-task node too (a dependency can target a spec, plan or task) -- used by the
-// dependency picker's <datalist>, never by the task-only filters above.
+// Every non-task node the tree currently holds (a dependency can target a spec, plan or
+// task) -- used by the dependency picker's <datalist>, never by the filters above.
 function collectAllNodes(nodes, out = []) {
   nodes.forEach(n => {
     out.push(n);
@@ -281,8 +223,8 @@ function collectAllNodes(nodes, out = []) {
 // value rows. Each row follows the same click/double-click gesture as a status chip on its
 // own label, plus a three-icon segmented control (plus/minus/circle) that sets a mode
 // directly; whichever icon matches the row's current mode is shown filled.
-// `getOptions` is re-read on every render so it always reflects the live tree, never a
-// stale snapshot.
+// `getOptions` is re-read on every render so it always reflects the store's latest facets,
+// never a stale snapshot.
 function createTriStatePopover(container, { label, dimension, getOptions, modeMap, onChange }) {
   let open = false;
 
@@ -405,14 +347,20 @@ function createTriStatePopover(container, { label, dimension, getOptions, modeMa
 function createScoreFilter(container) {
   let open = false;
 
+  function scoreBounds() {
+    return window.tmStore.facets.score || { min: 0, max: 100 };
+  }
+
   function bounds() {
-    const min = filters.scoreMin ?? scoreBounds.min;
-    const max = filters.scoreMax ?? scoreBounds.max;
+    const b = scoreBounds();
+    const min = filters.scoreMin ?? b.min;
+    const max = filters.scoreMax ?? b.max;
     return { min, max };
   }
 
   function render() {
     const { min, max } = bounds();
+    const b = scoreBounds();
     const active = filters.scoreMin !== null || filters.scoreMax !== null;
     const btn = container.querySelector('.sf-btn');
     btn.querySelector('.sf-label').textContent = `Score: ${Math.round(min)}-${Math.round(max)}`;
@@ -421,8 +369,8 @@ function createScoreFilter(container) {
     container.querySelector('.sf-pop').classList.toggle('hidden', !open);
     const lo = container.querySelector('.sf-lo');
     const hi = container.querySelector('.sf-hi');
-    lo.min = hi.min = scoreBounds.min;
-    lo.max = hi.max = scoreBounds.max;
+    lo.min = hi.min = b.min;
+    lo.max = hi.max = b.max;
     lo.value = min;
     hi.value = max;
     container.querySelector('.sf-lo-val').textContent = Math.round(min);
@@ -452,17 +400,17 @@ function createScoreFilter(container) {
     render();
   });
   container.querySelector('.sf-lo').addEventListener('input', (e) => {
-    filters.scoreMin = Math.min(Number(e.target.value), filters.scoreMax ?? scoreBounds.max);
-    renderAll();
+    filters.scoreMin = Math.min(Number(e.target.value), filters.scoreMax ?? scoreBounds().max);
+    applyFilterChange();
   });
   container.querySelector('.sf-hi').addEventListener('input', (e) => {
-    filters.scoreMax = Math.max(Number(e.target.value), filters.scoreMin ?? scoreBounds.min);
-    renderAll();
+    filters.scoreMax = Math.max(Number(e.target.value), filters.scoreMin ?? scoreBounds().min);
+    applyFilterChange();
   });
   container.querySelector('.sf-reset').addEventListener('click', () => {
     filters.scoreMin = null;
     filters.scoreMax = null;
-    renderAll();
+    applyFilterChange();
   });
   document.addEventListener('click', (e) => {
     if (open && !container.contains(e.target)) {
@@ -480,43 +428,42 @@ const repoTriState = createTriStatePopover(repoFilter, {
   label: 'Repo',
   dimension: 'Repo',
   modeMap: filters.repoMode,
-  onChange: renderAll,
-  getOptions: () => {
-    const counts = computeDimensionCounts('repo', t => [t.target_repo || NO_REPO]);
-    return [...new Set(collectTasks(treeData).map(t => t.target_repo || NO_REPO))]
-      .sort().map(v => ({ value: v, label: v, count: counts[v] || 0 }));
-  },
+  onChange: applyFilterChange,
+  getOptions: () => Object.entries(window.tmStore.facets.repo || {})
+    .map(([value, count]) => ({ value, label: value, count }))
+    .sort((a, b) => a.label.localeCompare(b.label)),
 });
 const modelTriState = createTriStatePopover(modelFilterEl, {
   label: 'Model',
   dimension: 'Model',
   modeMap: filters.modelMode,
-  onChange: renderAll,
-  getOptions: () => {
-    const counts = computeDimensionCounts('model', t => (t.acceptable_models && t.acceptable_models.length ? t.acceptable_models : []));
-    return [...new Set(collectTasks(treeData).flatMap(t => t.acceptable_models || []))]
-      .sort().map(v => ({ value: v, label: v, count: counts[v] || 0 }));
-  },
+  onChange: applyFilterChange,
+  // acceptable_models is a list: the store's own facets already count a task once per model
+  // it accepts, so this is a plain value/count read, not a per-task overlap check.
+  getOptions: () => Object.entries(window.tmStore.facets.model || {})
+    .map(([value, count]) => ({ value, label: value, count }))
+    .sort((a, b) => a.label.localeCompare(b.label)),
 });
 const specTriState = createTriStatePopover(specFilterEl, {
   label: 'Spec',
   dimension: 'Spec',
   modeMap: filters.specMode,
-  onChange: renderAll,
-  getOptions: () => {
-    const counts = computeDimensionCounts('spec', t => [t._specId]);
-    const byId = new Map();
-    collectTasks(treeData).forEach(t => byId.set(t._specId, t._specTitle));
-    return [...byId.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([value, label]) => ({ value, label, count: counts[value] || 0 }));
-  },
+  onChange: applyFilterChange,
+  getOptions: () => Object.entries(window.tmStore.facets.spec || {})
+    .map(([value, count]) => {
+      const row = window.tmStore.rows.get(value);
+      const label = value === NO_SPEC ? 'No spec' : (row ? row.title : value);
+      return { value, label, count };
+    })
+    .sort((a, b) => a.label.localeCompare(b.label)),
 });
 const phaseTriState = createTriStatePopover(phaseFilterEl, {
   label: 'Phase',
   dimension: 'Phase',
   modeMap: filters.phaseMode,
-  onChange: renderAll,
+  onChange: applyFilterChange,
   getOptions: () => {
-    const counts = computeDimensionCounts('phase', t => [t.phase || NO_PHASE]);
+    const counts = window.tmStore.facets.phase || {};
     return Object.keys(window.PHASE_THEMES).map(code => ({
       value: code, label: window.PHASE_THEMES[code].label, count: counts[code] || 0,
     }));
@@ -524,12 +471,6 @@ const phaseTriState = createTriStatePopover(phaseFilterEl, {
 });
 const scoreFilter = createScoreFilter(scoreFilterEl);
 
-
-function populateFilterOptions() {
-  const tasks = collectTasks(treeData);
-  const scores = tasks.map(t => t.score).filter(s => typeof s === 'number');
-  scoreBounds = scores.length ? { min: Math.min(...scores), max: Math.max(...scores) } : { min: 0, max: 100 };
-}
 
 // Below `sm` the filter controls stay off the toolbar's one row until this button opens them;
 // at `sm` and up `filter-controls-group`'s own `sm:flex` shows them regardless of this state,
@@ -559,7 +500,7 @@ function renderFilterControls() {
   specTriState.render();
   phaseTriState.render();
   scoreFilter.render();
-  clearFiltersBtn.classList.toggle('hidden', !(structuralFilterActive() || filters.q !== ''));
+  clearFiltersBtn.classList.toggle('hidden', !(anyFilterActive() || filters.q !== ''));
   renderFiltersToggle();
 }
 
@@ -573,7 +514,7 @@ clearFiltersBtn.addEventListener('click', () => {
   filters.scoreMax = null;
   filters.q = '';
   searchBox.value = '';
-  renderAll();
+  applyFilterChange();
 });
 
 
@@ -607,13 +548,3 @@ legendCloseBtn.addEventListener('click', () => setLegendOpen(false));
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') setLegendOpen(false);
 });
-
-
-function applyGraphFilter() {
-  if (!visNodesDS) return;
-  visNodesDS.update(graphData.nodes.map(n => {
-    const dim = n.kind === 'task' && !(taskPasses(n) && textAccepts(n, false));
-    return { id: n.id, opacity: dim ? 0.2 : 1 };
-  }));
-}
-

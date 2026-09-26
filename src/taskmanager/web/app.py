@@ -2,12 +2,13 @@
 
 import asyncio
 import base64
+import hashlib
+import json
 import mimetypes
-import sqlite3
 import tempfile
-from collections import Counter
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlsplit
@@ -17,7 +18,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSock
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
-from taskmanager.core.enums import NodeKind, RenderView, TransferMode, VerificationType
+from taskmanager.core.enums import NodeKind, TransferMode, VerificationType
 from taskmanager.core.models import Node
 from taskmanager.core.status import (
     ConditionStage,
@@ -33,24 +34,17 @@ from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.node_repo import NodeRepository
-from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.di.container import TaskManagerProvider
 from taskmanager.engine.assets import ASSET_NAME_RE
-from taskmanager.engine.chains import base_chain, landing_chain, satisfied
 from taskmanager.engine.config import ConfigStore
-from taskmanager.engine.heuristics import score_every_task
 from taskmanager.engine.landing import Landing
 from taskmanager.engine.operations import OperationError, Operations
-from taskmanager.engine.snapshot import (
-    DisplayView,
-    SnapshotBuilder,
-    chain_holder,
-    phase_of,
-    stored_status,
-    waits_on,
-)
-from taskmanager.renderers.markdown import MarkdownRenderer
+from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder, stored_status
+from taskmanager.web.bodies import BodyRepos, attachments_with_size, build_bodies
+from taskmanager.web.live import LiveHub
+from taskmanager.web.rows import build_rows, canonical, decisions_open, statuses, statuses_hash
 from taskmanager.web.ui import get_web_html
+from taskmanager.web.visibility import parse_filters, visible_ids
 
 
 class SpecCreate(BaseModel):
@@ -230,64 +224,193 @@ def _refusals() -> Iterator[None]:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
-# A task in one of these cannot reach completion, so it is excluded from both the rollup and
-# the progress denominator until its status changes back.
-_SET_ASIDE_STATUSES = {Status.SUPERSEDED.value, Status.ABANDONED.value, Status.DEFERRED.value}
 _RESET_TARGETS = (Status.READY, Status.IMPLEMENTED, Status.REVIEWED, Status.FIXED, Status.COMPLETED)
 
 
-def add_progress(node: dict[str, Any]) -> tuple[Counter[str], int, int]:
-    """Returns (display counts, done, set_aside) for the subtree rooted at `node`, and -- on
-    every non-task node -- sets `node["progress"] = {done, total, set_aside, counts}`, where
-    `total` is `done + (non-set-aside, non-done)` and `counts` keeps every display, set-aside
-    included, so the caller can still render a full breakdown."""
-    counts: Counter[str] = Counter()
-    done = 0
-    set_aside = 0
-    if node["kind"] == NodeKind.TASK.value:
-        display = node["display"]
-        counts[display] += 1
-        if display in _SET_ASIDE_STATUSES:
-            set_aside += 1
-        elif display == Status.COMPLETED.value:
-            done += 1
-    for child in node["children"]:
-        child_counts, child_done, child_set_aside = add_progress(child)
-        counts += child_counts
-        done += child_done
-        set_aside += child_set_aside
-    if node["kind"] != NodeKind.TASK.value:
-        total = sum(counts.values()) - set_aside
-        node["progress"] = {
-            "done": done,
-            "total": total,
-            "set_aside": set_aside,
-            "counts": dict(counts),
+_MAX_NODES_IDS = 200
+_MIN_PAGE_LIMIT = 1
+_MAX_PAGE_LIMIT = 200
+_DEFAULT_NODES_LIMIT = 50
+_DEFAULT_DECISIONS_LIMIT = 50
+
+
+def _parse_page_limit(raw: str | None, default: int) -> int:
+    if raw is None:
+        return default
+    try:
+        limit = int(raw)
+    except ValueError as exc:
+        raise HTTPException(400, "limit must be an integer") from exc
+    if not (_MIN_PAGE_LIMIT <= limit <= _MAX_PAGE_LIMIT):
+        raise HTTPException(400, f"limit is {_MIN_PAGE_LIMIT}..{_MAX_PAGE_LIMIT}")
+    return limit
+
+
+def _encode_nodes_cursor(ordinal: int, node_id: str, query_hash: str) -> str:
+    payload = json.dumps({"o": ordinal, "i": node_id, "q": query_hash})
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def _decode_nodes_cursor(raw: str) -> tuple[int, str, str]:
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(raw.encode("ascii")).decode("utf-8"))
+        return int(payload["o"]), str(payload["i"]), str(payload["q"])
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(400, "invalid cursor") from exc
+
+
+def _node_details(ids: list[str], view: DisplayView, repos: BodyRepos) -> dict[str, dict[str, Any]]:
+    """The single place `/api/nodes/{id}` and a bulk page's `include=body` build a node's detail
+    from, so the two are equal by construction rather than by two routes staying in sync."""
+    bodies = build_bodies(view, ids, repos=repos)
+    return {
+        node_id: {
+            **body,
+            "display": body["node"]["display"],
+            "phase": body["node"].get("phase"),
+            "dependencies": repos.node_repo.get_dependencies(node_id),
+            "blocked_by": repos.node_repo.get_blocked_by(node_id),
         }
-    return counts, done, set_aside
+        for node_id, body in bodies.items()
+    }
 
 
-class ConnectionManager:
-    def __init__(self) -> None:
-        self.active_connections: list[WebSocket] = []
+def paginate_nodes(
+    rows: dict[str, dict[str, Any]],
+    *,
+    view: DisplayView | None,
+    repos: BodyRepos | None,
+    parent: str | None,
+    ids: list[str] | None,
+    filters_raw: Mapping[str, str],
+    include_body: bool,
+    cursor: str | None,
+    limit: int,
+) -> dict[str, Any]:
+    """One page of `ids`, or of `parent`'s direct children (`None`/`"root"` for the roots),
+    filtered exactly as `visibility.py` filters the whole tree -- a client walks the tree one
+    call per opened container instead of paging it whole. `view`/`repos` are read only when
+    `include_body` is set, so a filtering-only caller (a test, `include_body=False`) needs
+    neither."""
+    try:
+        filters = parse_filters(filters_raw)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
-    async def connect(self, websocket: WebSocket) -> None:
-        await websocket.accept()
-        self.active_connections.append(websocket)
+    if ids is not None:
+        candidates = [rows[i] for i in dict.fromkeys(ids) if i in rows]
+        candidates.sort(key=lambda r: (r["ordinal"], r["id"]))
+    else:
+        parent_id = None if parent in (None, "root") else parent
+        visible = visible_ids(rows, filters, list(rows.keys()))
+        candidates = [rows[i] for i in visible if rows[i]["parent"] == parent_id]
 
-    def disconnect(self, websocket: WebSocket) -> None:
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
+    query_key = {
+        "parent": parent,
+        "ids": sorted(ids) if ids is not None else None,
+        "filters": dict(filters_raw),
+    }
+    query_hash = hashlib.sha256(canonical(query_key).encode("utf-8")).hexdigest()
 
-    async def broadcast(self, message: dict[str, Any]) -> None:
-        disconnected: list[WebSocket] = []
-        for connection in self.active_connections:
-            try:
-                await connection.send_json(message)
-            except WebSocketDisconnect, RuntimeError, OSError:
-                disconnected.append(connection)
-        for dead in disconnected:
-            self.disconnect(dead)
+    start = 0
+    if cursor is not None:
+        c_ordinal, c_id, c_hash = _decode_nodes_cursor(cursor)
+        if c_hash != query_hash:
+            raise HTTPException(400, "cursor is for a different query")
+        start = next(
+            (
+                idx
+                for idx, r in enumerate(candidates)
+                if (r["ordinal"], r["id"]) > (c_ordinal, c_id)
+            ),
+            len(candidates),
+        )
+
+    page = candidates[start : start + limit]
+    items: list[dict[str, Any]]
+    if include_body and page:
+        if view is None or repos is None:
+            raise ValueError("include_body requires view and repos")
+        details = _node_details([r["id"] for r in page], view, repos)
+        items = [{**r, "body": details.get(r["id"])} for r in page]
+    else:
+        items = [dict(r) for r in page]
+
+    next_cursor = None
+    if start + limit < len(candidates):
+        last = page[-1]
+        next_cursor = _encode_nodes_cursor(last["ordinal"], last["id"], query_hash)
+    return {"items": items, "next": next_cursor}
+
+
+def _encode_decisions_cursor(created_at: str, node_id: str, query_hash: str) -> str:
+    payload = json.dumps({"c": created_at, "i": node_id, "q": query_hash})
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def _decode_decisions_cursor(raw: str) -> tuple[datetime, str, str]:
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(raw.encode("ascii")).decode("utf-8"))
+        return datetime.fromisoformat(payload["c"]), str(payload["i"]), str(payload["q"])
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(400, "invalid cursor") from exc
+
+
+def paginate_decisions(
+    decisions: list[Node], *, status: str | None, cursor: str | None, limit: int
+) -> tuple[list[Node], str | None]:
+    """Newest first (`created_at` desc, then `id` desc), keyset-paged the same way as
+    `paginate_nodes`."""
+    ordered = sorted(decisions, key=lambda d: (d.created_at, d.id), reverse=True)
+    query_hash = hashlib.sha256(canonical({"status": status}).encode("utf-8")).hexdigest()
+
+    start = 0
+    if cursor is not None:
+        c_created, c_id, c_hash = _decode_decisions_cursor(cursor)
+        if c_hash != query_hash:
+            raise HTTPException(400, "cursor is for a different query")
+        start = next(
+            (idx for idx, d in enumerate(ordered) if (d.created_at, d.id) < (c_created, c_id)),
+            len(ordered),
+        )
+
+    page = ordered[start : start + limit]
+    next_cursor = None
+    if start + limit < len(ordered):
+        last = page[-1]
+        next_cursor = _encode_decisions_cursor(last.created_at.isoformat(), last.id, query_hash)
+    return page, next_cursor
+
+
+def _decision_item(
+    node: Node, view: DisplayView, node_repo: NodeRepository, assets_dir: Path
+) -> dict[str, Any]:
+    def blocks() -> list[dict[str, Any]]:
+        rows = []
+        for blocked_id in node_repo.get_blocked_by(node.id):
+            blocked = node_repo.get_node(blocked_id)
+            if blocked is not None:
+                rows.append(
+                    {
+                        "id": blocked.id,
+                        "title": blocked.title,
+                        "kind": blocked.kind.value,
+                        "display": view.display(blocked),
+                    }
+                )
+        return rows
+
+    return {
+        "id": node.id,
+        "title": node.title,
+        "status": stored_status(node).value,
+        "priority": node.priority,
+        "created_at": node.created_at.isoformat(),
+        "waiting_count": len(node_repo.get_blocked_by(node.id)),
+        "blocks": blocks(),
+        "decision": node.frontmatter.get("decision") or {},
+        "attachments": attachments_with_size(assets_dir, node.frontmatter.get("attachments") or []),
+    }
 
 
 def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = None) -> FastAPI:
@@ -297,50 +420,43 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     allowed_hosts = _bound_hosts(host, port) if port is not None else None
     Actor = Annotated[str, Depends(_write_guard(allowed_hosts))]
     db_dir = project_root / ".taskmanager"
+    assets_dir = db_dir / "assets"
     container = make_container(TaskManagerProvider(project_root))
     db_mgr = container.get(DatabaseManager)
     node_repo = container.get(NodeRepository)
-    runtime_repo = container.get(RuntimeRepository)
-    renderer = container.get(MarkdownRenderer)
     operations = container.get(Operations).with_actor("web")
     snapshots = container.get(SnapshotBuilder)
     # A verb or a lease release may start or stop a landing, so the claims carry the engine.
     claims = Landing.open(project_root).claims
     jobs = container.get(JobRepository)
     cache = container.get(CacheRepository)
-    ws_manager = ConnectionManager()
 
-    # Background change detection loop
-    last_event_id: int = 0
-    try:
-        with db_mgr.get_ledger_connection() as conn:
-            row = conn.execute("SELECT MAX(id) FROM ledger_events").fetchone()
-            if row and row[0]:
-                last_event_id = row[0]
-    except sqlite3.Error, OSError:
-        last_event_id = 0
+    def _condition_ttl() -> int:
+        return ConfigStore(project_root).project().condition_ttl
 
-    async def ledger_watcher() -> None:
-        nonlocal last_event_id
+    live_hub = LiveHub(
+        snapshots=snapshots,
+        cache=cache,
+        node_repo=node_repo,
+        job_repo=jobs,
+        assets_dir=assets_dir,
+        condition_ttl=_condition_ttl,
+        state_db=db_mgr.state_db,
+        cache_db=db_mgr.cache_db,
+    )
+
+    async def live_loop() -> None:
         while True:
             try:
-                await asyncio.sleep(0.7)
-                with db_mgr.get_ledger_connection() as conn:
-                    row = conn.execute("SELECT MAX(id) FROM ledger_events").fetchone()
-                    current_max = row[0] if row and row[0] else 0
-                    if current_max > last_event_id:
-                        last_event_id = current_max
-                        await ws_manager.broadcast(
-                            {"type": "update", "latest_event_id": current_max}
-                        )
+                await asyncio.sleep(0.25)
+                await live_hub.refresh()
             except asyncio.CancelledError:
                 break
-            except sqlite3.Error, OSError:
-                await asyncio.sleep(0.5)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-        watcher_task = asyncio.create_task(ledger_watcher())
+        await live_hub.refresh()
+        watcher_task = asyncio.create_task(live_loop())
         try:
             yield
         finally:
@@ -352,134 +468,18 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
 
     app = FastAPI(title="TaskManager Visualizer", lifespan=lifespan)
 
-    def _condition_ttl() -> int:
-        return ConfigStore(project_root).project().condition_ttl
-
     def new_view() -> DisplayView:
         """One snapshot per request, so every display in one response reads the same tree."""
         return DisplayView(snapshots, cache, _condition_ttl())
 
-    def _finished(view: DisplayView, source_id: str, target: Node) -> bool:
-        if target.kind == NodeKind.DECISION:
-            return stored_status(target) != DecisionStatus.OPEN
-        nodes = view.snapshot.nodes
-        return (
-            source_id in nodes
-            and target.id in nodes
-            and satisfied(view.snapshot, source_id, target.id)
+    def _body_repos() -> BodyRepos:
+        return BodyRepos(
+            node_repo=node_repo,
+            job_repo=jobs,
+            cache=cache,
+            condition_ttl=_condition_ttl(),
+            assets_dir=assets_dir,
         )
-
-    def _relation_row(view: DisplayView, rel_id: str, finished: bool) -> dict[str, Any]:
-        rel = node_repo.get_node(rel_id)
-        return {
-            "id": rel_id,
-            "title": rel.title if rel else None,
-            "kind": rel.kind.value if rel else None,
-            "status": view.display(rel) if rel else None,
-            # A missing node blocks.
-            "finished": rel is not None and finished,
-        }
-
-    def dependency_details(
-        node_id: str, view: DisplayView, deps: list[str] | None = None
-    ) -> list[dict[str, Any]]:
-        own = deps if deps is not None else node_repo.get_dependencies(node_id)
-        rows = []
-        for dep_id in own:
-            dep = node_repo.get_node(dep_id)
-            rows.append(
-                _relation_row(view, dep_id, dep is not None and _finished(view, node_id, dep))
-            )
-        # What a container waits on its children wait on too, and a migration writer waits
-        # behind its chain's holder: both are named, marked as edges not its own.
-        snap = view.snapshot
-        node = node_repo.get_node(node_id)
-        if node is None or node_id not in snap.nodes:
-            return rows
-        work, decisions = waits_on(snap, node)
-        owners = snap.edge_owners(node_id)
-        for dep_id, owner in owners.items():
-            if owner != node_id and dep_id in snap.nodes:
-                row = _relation_row(view, dep_id, dep_id not in work and dep_id not in decisions)
-                rows.append(row | {"inherited_from": owner})
-        holder = chain_holder(snap, node)
-        if holder is not None and holder not in owners:
-            rows.append(_relation_row(view, holder, False) | {"migration_chain": node.target_repo})
-        return rows
-
-    def dependent_details(
-        node_id: str, view: DisplayView, blocked_by: list[str] | None = None
-    ) -> list[dict[str, Any]]:
-        node = node_repo.get_node(node_id)
-        return [
-            _relation_row(view, src_id, node is not None and _finished(view, src_id, node))
-            for src_id in (
-                blocked_by if blocked_by is not None else node_repo.get_blocked_by(node_id)
-            )
-        ]
-
-    def lifecycle_fields(n: Node, view: DisplayView) -> dict[str, Any]:
-        # Read through stored_status so a node saved under an old name shows its new one.
-        status = {"status": stored_status(n).value, "display": view.display(n)}
-        if n.kind == NodeKind.DECISION:
-            # A decision has no cycle: it is never claimed, reviewed, fixed or landed.
-            return status
-        return {
-            **status,
-            "phase": phase_of(n),
-            "review": n.review,
-            "fix": n.fix,
-            "merge": n.merge.value,
-            "outcome": n.outcome.value if n.outcome else None,
-            "verdict": n.verdict,
-            "fix_for": n.fix_for.value if n.fix_for else None,
-            "claimed_from": n.claimed_from.value if n.claimed_from else None,
-            "review_cycles": n.review_cycles,
-            "merge_attempts": n.merge_attempts,
-            "step_failures": n.step_failures,
-            "branch": n.branch or f"tm/{n.id}",
-            "requires": n.requires,
-            "land_order": n.land_order,
-            "landing_chain": landing_chain(view.snapshot, n.id),
-            "base_chain": base_chain(view.snapshot, n.id),
-        }
-
-    def lease_dict(node_id: str) -> dict[str, Any] | None:
-        lease = runtime_repo.get_lease(node_id)
-        if lease is None:
-            return None
-        return {
-            "agent_id": lease.agent_id,
-            "session_id": lease.session_id,
-            "branch_name": lease.branch_name,
-            "worktree_path": lease.worktree_path,
-            "action": lease.action.value if lease.action else None,
-            "ttl_seconds": lease.ttl_seconds,
-        }
-
-    def _attachment_size(asset_name: str) -> int | None:
-        # Same asset-name check and containment check as `get_asset` below: an attachment
-        # entry's `asset` is frontmatter, so a crafted or corrupted one is treated as missing
-        # rather than stat'd wherever it points.
-        if not ASSET_NAME_RE.fullmatch(asset_name):
-            return None
-        assets_dir = (db_dir / "assets").resolve()
-        candidate = (assets_dir / asset_name).resolve()
-        if not candidate.is_relative_to(assets_dir):
-            return None
-        try:
-            return candidate.stat().st_size
-        except OSError:
-            return None
-
-    def _attachments_with_size(attachments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [{**a, "size_bytes": _attachment_size(a.get("asset", ""))} for a in attachments]
-
-    def _frontmatter_with_attachment_sizes(frontmatter: dict[str, Any]) -> dict[str, Any]:
-        attachments = frontmatter.get("attachments")
-        if not attachments:
-            return frontmatter
-        return {**frontmatter, "attachments": _attachments_with_size(attachments)}
 
     @app.get("/", response_class=HTMLResponse)
     async def index() -> str:
@@ -487,211 +487,63 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
-        await ws_manager.connect(websocket)
+        await websocket.accept()
+        session = live_hub.open_session(websocket)
         try:
             while True:
-                await websocket.receive_text()
+                text = await websocket.receive_text()
+                await live_hub.handle_frame(session, text)
         except WebSocketDisconnect:
-            ws_manager.disconnect(websocket)
-
-    @app.get("/api/tree")
-    def get_tree() -> list[dict[str, Any]]:
-        specs = node_repo.list_nodes(kind=NodeKind.SPEC)
-        plans = node_repo.list_nodes(kind=NodeKind.PLAN)
-        tasks = node_repo.list_nodes(kind=NodeKind.TASK)
-        view = new_view()
-        task_scores = score_every_task(view.snapshot)
-
-        def node_to_dict(n: Any) -> dict[str, Any]:
-            sections = node_repo.get_all_sections(n.id)
-            verifications = node_repo.get_verifications(n.id) if n.kind == NodeKind.TASK else []
-            deps = node_repo.get_dependencies(n.id)
-            blocked_by = node_repo.get_blocked_by(n.id)
-
-            return {
-                "id": n.id,
-                "kind": n.kind.value,
-                "title": n.title,
-                **lifecycle_fields(n, view),
-                "priority": n.priority,
-                "score": task_scores.get(n.id) if n.kind == NodeKind.TASK else None,
-                "ordinal": n.ordinal,
-                "target_repo": n.target_repo,
-                "acceptable_models": n.acceptable_models,
-                "frontmatter": _frontmatter_with_attachment_sizes(n.frontmatter),
-                "dependencies": deps,
-                "dependency_details": dependency_details(n.id, view, deps),
-                "blocked_by": blocked_by,
-                "dependent_details": dependent_details(n.id, view, blocked_by),
-                "sections": [
-                    {
-                        "key": s.section_key,
-                        "header": s.header,
-                        "content": s.content,
-                        "ordinal": s.ordinal,
-                    }
-                    for s in sections
-                ],
-                "verifications": [
-                    {
-                        "id": v.id,
-                        "type": v.verification_type.value,
-                        "target": v.target_path,
-                        "pattern": v.expected_pattern,
-                    }
-                    for v in verifications
-                ],
-                "lease": lease_dict(n.id),
-                "children": [],
-            }
-
-        tree: list[dict[str, Any]] = []
-
-        def plan_to_dict(pnode: Any) -> dict[str, Any]:
-            p_dict = node_to_dict(pnode)
-            task_children = []
-            for cid in node_repo.get_children(pnode.id):
-                cnode = node_repo.get_node(cid)
-                if cnode:
-                    task_children.append(node_to_dict(cnode))
-            p_dict["children"] = task_children
-            return p_dict
-
-        # A plan is nested under its spec when it has one; every other plan
-        # (this estate runs plenty of them) still needs a root of its own,
-        # so specs and standalone plans are both walked, never either/or.
-        spec_parented_plan_ids: set[str] = set()
-        for s in specs:
-            s_dict = node_to_dict(s)
-            plan_children: list[dict[str, Any]] = []
-            for pid in node_repo.get_children(s.id):
-                pnode = node_repo.get_node(pid)
-                if pnode and pnode.kind == NodeKind.PLAN:
-                    plan_children.append(plan_to_dict(pnode))
-                    spec_parented_plan_ids.add(pid)
-            s_dict["children"] = plan_children
-            tree.append(s_dict)
-
-        for p in plans:
-            if p.id not in spec_parented_plan_ids:
-                tree.append(plan_to_dict(p))
-
-        # Add any orphan tasks
-        parented_ids: set[str] = set()
-        for s in specs:
-            parented_ids.update(node_repo.get_children(s.id))
-        for p in plans:
-            parented_ids.update(node_repo.get_children(p.id))
-
-        for t in tasks:
-            if t.id not in parented_ids:
-                tree.append(node_to_dict(t))
-
-        for root in tree:
-            add_progress(root)
-        return tree
-
-    @app.get("/api/graph")
-    def get_graph() -> dict[str, Any]:
-        view = new_view()
-        task_scores = score_every_task(view.snapshot)
-        nodes_out = [
-            {
-                "id": n.id,
-                "title": n.title,
-                "kind": n.kind.value,
-                "status": stored_status(n).value,
-                "display": view.display(n),
-                "phase": phase_of(n),
-                "priority": n.priority,
-                "score": task_scores.get(n.id) if n.kind == NodeKind.TASK else None,
-                "ordinal": n.ordinal,
-                "target_repo": n.target_repo,
-                "acceptable_models": n.acceptable_models,
-            }
-            for n in node_repo.list_nodes()
-        ]
-        with db_mgr.get_state_connection() as conn:
-            rows = conn.execute(
-                "SELECT source_id, target_id, relation_type FROM node_relations"
-            ).fetchall()
-        edges_out = [{"source": r[0], "target": r[1], "type": r[2]} for r in rows]
-        return {"nodes": nodes_out, "edges": edges_out}
+            pass
+        finally:
+            live_hub.close_session(session)
 
     @app.get("/api/nodes/{node_id}")
     def get_node_detail(node_id: str) -> dict[str, Any]:
-        node = node_repo.get_node(node_id)
-        if not node:
-            raise HTTPException(status_code=404, detail="Node not found")
-
         view = new_view()
-        dependencies = node_repo.get_dependencies(node_id)
-        blocked_by = node_repo.get_blocked_by(node_id)
-        ttl = _condition_ttl()
+        detail = _node_details([node_id], view, _body_repos()).get(node_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Node not found")
+        return detail
+
+    @app.get("/api/statuses")
+    def get_statuses() -> dict[str, Any]:
+        view = new_view()
+        rows = build_rows(view)
+        entries = statuses(rows)
         return {
-            "node": {
-                "id": node.id,
-                "kind": node.kind.value,
-                "title": node.title,
-                **lifecycle_fields(node, view),
-                "priority": node.priority,
-                "ordinal": node.ordinal,
-                "target_repo": node.target_repo,
-                "acceptable_models": node.acceptable_models,
-                "frontmatter": _frontmatter_with_attachment_sizes(node.frontmatter),
-            },
-            "display": view.display(node),
-            "phase": phase_of(node),
-            "rendered_markdown": renderer.render(node_id, view=RenderView.FULL),
-            "dependencies": dependencies,
-            "dependency_details": dependency_details(node_id, view, dependencies),
-            "blocked_by": blocked_by,
-            "dependent_details": dependent_details(node_id, view, blocked_by),
-            "sections": [
-                {
-                    "key": s.section_key,
-                    "header": s.header,
-                    "content": s.content,
-                    "ordinal": s.ordinal,
-                }
-                for s in node_repo.get_all_sections(node_id)
-            ],
-            "verifications": [
-                {
-                    "id": v.id,
-                    "verification_type": v.verification_type.value,
-                    "target_path": v.target_path,
-                    "expected_pattern": v.expected_pattern,
-                }
-                for v in node_repo.get_verifications(node_id)
-            ],
-            "conditions": [
-                {
-                    "idx": c.idx,
-                    "needs": c.needs,
-                    "command": c.command,
-                    "stage": c.stage.value,
-                    "last_result": cache.get_condition(node_id, c.idx, c.command, ttl),
-                }
-                for c in node_repo.get_conditions(node_id)
-            ],
-            "jobs": [j.model_dump(mode="json") for j in jobs.for_node(node_id)],
-            "lease": lease_dict(node_id),
+            "statuses": entries,
+            "hash": statuses_hash(entries),
+            "decisions_open": decisions_open(view),
         }
 
-    @app.get("/api/stats")
-    def get_stats() -> dict[str, Any]:
+    @app.get("/api/nodes")
+    def get_nodes_page(request: Request) -> dict[str, Any]:
+        query = dict(request.query_params)
+        parent = query.pop("parent", None)
+        ids_raw = query.pop("ids", None)
+        include = query.pop("include", None)
+        cursor = query.pop("cursor", None)
+        limit = _parse_page_limit(query.pop("limit", None), _DEFAULT_NODES_LIMIT)
+        if parent is not None and ids_raw is not None:
+            raise HTTPException(400, "parent and ids are mutually exclusive")
+        id_list: list[str] | None = None
+        if ids_raw is not None:
+            id_list = [i for i in ids_raw.split(",") if i]
+            if len(id_list) > _MAX_NODES_IDS:
+                raise HTTPException(400, f"at most {_MAX_NODES_IDS} ids")
         view = new_view()
-        tasks = node_repo.list_nodes(kind=NodeKind.TASK)
-        display: dict[str, int] = {d.value: 0 for d in DisplayStatus}
-        phases: dict[str, int] = {p.value: 0 for p in Phase}
-        for t in tasks:
-            code = view.display(t)
-            display[code] = display.get(code, 0) + 1
-            phase_code = phase_of(t)
-            if phase_code is not None:
-                phases[phase_code] += 1
-        return {"total": len(tasks), "display": display, "phase": phases}
+        return paginate_nodes(
+            build_rows(view),
+            view=view,
+            repos=_body_repos(),
+            parent=parent,
+            ids=id_list,
+            filters_raw=query,
+            include_body=include == "body",
+            cursor=cursor,
+            limit=limit,
+        )
 
     _DECISION_TAB_STATUS = {
         "open": DecisionStatus.OPEN,
@@ -919,44 +771,24 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         return job.model_dump(mode="json")
 
     @app.get("/api/decisions")
-    def list_decisions(status: str | None = None) -> list[dict[str, Any]]:
+    def list_decisions(
+        status: str | None = None, cursor: str | None = None, limit: str | None = None
+    ) -> dict[str, Any]:
+        page_limit = _parse_page_limit(limit, _DEFAULT_DECISIONS_LIMIT)
         decisions = node_repo.list_nodes(kind=NodeKind.DECISION)
         if status is not None:
             wanted = _DECISION_TAB_STATUS.get(status.lower())
             if wanted is None:
                 raise HTTPException(400, "status is one of: open, answered, withdrawn")
             decisions = [d for d in decisions if stored_status(d) == wanted]
+        page, next_cursor = paginate_decisions(
+            decisions, status=status, cursor=cursor, limit=page_limit
+        )
         view = new_view()
-
-        def blocks(decision_id: str) -> list[dict[str, Any]]:
-            rows = []
-            for node_id in node_repo.get_blocked_by(decision_id):
-                node = node_repo.get_node(node_id)
-                if node is not None:
-                    rows.append(
-                        {
-                            "id": node.id,
-                            "title": node.title,
-                            "kind": node.kind.value,
-                            "display": view.display(node),
-                        }
-                    )
-            return rows
-
-        return [
-            {
-                "id": d.id,
-                "title": d.title,
-                "status": stored_status(d).value,
-                "priority": d.priority,
-                "created_at": d.created_at.isoformat(),
-                "waiting_count": len(node_repo.get_blocked_by(d.id)),
-                "blocks": blocks(d.id),
-                "decision": d.frontmatter.get("decision") or {},
-                "attachments": _attachments_with_size(d.frontmatter.get("attachments") or []),
-            }
-            for d in decisions
-        ]
+        return {
+            "items": [_decision_item(d, view, node_repo, assets_dir) for d in page],
+            "next": next_cursor,
+        }
 
     @app.post("/api/decisions", status_code=201)
     def create_decision(body: DecisionCreate, actor: Actor) -> dict[str, str]:

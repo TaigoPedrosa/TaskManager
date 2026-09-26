@@ -2,52 +2,10 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any
 
 import pytest
 
-from taskmanager.web.app import add_progress
 from taskmanager.web.ui import get_web_html
-
-
-def _task(status: str) -> dict[str, Any]:
-    return {"kind": "task", "display": status, "children": []}
-
-
-def test_add_progress_counts_set_aside_work_apart_from_completed() -> None:
-    plan: dict[str, Any] = {
-        "kind": "plan",
-        "children": [
-            _task("COMPLETED"),
-            _task("DEFERRED"),
-            _task("ABANDONED"),
-            _task("SUPERSEDED"),
-        ],
-    }
-    spec: dict[str, Any] = {"kind": "spec", "children": [plan, _task("READY")]}
-
-    add_progress(spec)
-
-    # Only the COMPLETED task counts: DEFERRED/ABANDONED/SUPERSEDED can never finish, so they
-    # are set aside rather than dragging `total` (and a bar built on it) down with them.
-    assert plan["progress"] == {
-        "done": 1,
-        "total": 1,
-        "set_aside": 3,
-        "counts": {"COMPLETED": 1, "DEFERRED": 1, "ABANDONED": 1, "SUPERSEDED": 1},
-    }
-    assert spec["progress"]["done"] == 1
-    assert spec["progress"]["total"] == 2  # the plan's one counted task + the spec's own READY one
-    assert spec["progress"]["set_aside"] == 3
-    assert spec["progress"]["counts"]["COMPLETED"] == 1
-
-
-def test_add_progress_of_a_plan_without_tasks_is_empty() -> None:
-    plan: dict[str, Any] = {"kind": "plan", "children": []}
-
-    add_progress(plan)
-
-    assert plan["progress"] == {"done": 0, "total": 0, "set_aside": 0, "counts": {}}
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is needed to syntax-check the page")
@@ -228,12 +186,41 @@ def test_group_header_is_keyboard_operable_everywhere_it_renders() -> None:
 
 
 def test_graph_layout_gives_nodes_room_and_a_shape_per_kind() -> None:
-    render_graph = _function_body(get_web_html(), "renderGraph")
+    html = get_web_html()
+    render_graph = _function_body(html, "renderGraph")
     assert "levelSeparation: 240" in render_graph
     assert "nodeSpacing: 320" in render_graph
-    assert "size: 16" in render_graph
-    assert "widthConstraint: { minimum: 170, maximum: 260 }" in render_graph
-    assert "GRAPH_SHAPE_BY_KIND" in get_web_html()
+    vis_node = _function_body(html, "graphVisNode")
+    assert "size: 16" in vis_node
+    assert "widthConstraint: { minimum: 170, maximum: 260 }" in vis_node
+    assert "GRAPH_SHAPE_BY_KIND" in html
+
+
+def test_graph_never_destroys_the_network_instance() -> None:
+    # The network is built once (renderGraph); every later store change patches its DataSets
+    # in place, so pan/zoom/selection are never lost to a rebuild.
+    assert "networkInstance.destroy" not in _static_js("graph.js")
+    sync_graph = _function_body(get_web_html(), "syncGraph")
+    assert "renderGraph()" in sync_graph
+    assert "syncGraphNodes(patch.rowIds)" in sync_graph
+    assert "syncGraphEdges()" in sync_graph
+
+
+def test_graph_container_label_is_a_counts_summary_not_a_status() -> None:
+    vis_node = _function_body(get_web_html(), "graphVisNode")
+    assert "progressText(countsForRow(row))" in vis_node
+
+
+def test_graph_double_click_toggles_a_container_through_the_store() -> None:
+    render_graph = _function_body(get_web_html(), "renderGraph")
+    assert "doubleClick" in render_graph
+    assert "toggleExpand(row)" in render_graph
+
+
+def test_filters_js_no_longer_hides_graph_nodes_itself() -> None:
+    # The server now leaves a filtered-out node out of the visible set entirely, so the
+    # client has nothing left to dim after the fact.
+    assert "function applyGraphFilter" not in _static_js("filters.js")
 
 
 def test_graph_inspector_is_full_width_below_lg_not_a_fixed_384px() -> None:
@@ -257,8 +244,9 @@ def test_page_inlines_every_static_js_file() -> None:
     # or read from the wrong path) shows up as a specific missing feature, not a blank page.
     html = get_web_html()
     known_strings_by_file = {
+        "store.js": "function createStore(options)",
         "core.js": "function canEdit()",
-        "filters.js": "const NO_REPO = '(none)';",
+        "filters.js": "function filtersToF()",
         "tree.js": "function renderTaskCard(task)",
         "graph.js": "const GRAPH_SHAPE_BY_KIND",
         "edit.js": "function openDialog(",
@@ -275,7 +263,16 @@ def test_static_files_are_packaged_and_resolve_at_runtime() -> None:
     static_dir = files("taskmanager.web").joinpath("static")
     assert static_dir.joinpath("index.html").is_file()
     assert static_dir.joinpath("app.css").is_file()
-    for name in ("core.js", "filters.js", "tree.js", "graph.js", "edit.js", "detail.js", "main.js"):
+    for name in (
+        "store.js",
+        "core.js",
+        "filters.js",
+        "tree.js",
+        "graph.js",
+        "edit.js",
+        "detail.js",
+        "main.js",
+    ):
         assert static_dir.joinpath("js", name).is_file(), f"js/{name} did not ship"
 
 
@@ -305,12 +302,15 @@ def test_status_chips_use_the_tri_state_grammar_not_a_three_way_cycle() -> None:
 
 
 def test_hash_round_trips_include_and_exclude_for_every_tri_state_dimension() -> None:
+    # writeHash() and setFilters() need the same shape (the protocol's F), so both build it
+    # from filtersToF() rather than each writing their own p.set(...) calls.
     html = get_web_html()
-    write_hash = _function_body(html, "writeHash")
+    to_f = _function_body(html, "filtersToF")
     read_hash = _function_body(html, "readHash")
+    assert "new URLSearchParams(filtersToF())" in _function_body(html, "writeHash")
     for key in ("status", "xstatus", "repo", "xrepo", "model", "xmodel", "spec", "xspec"):
         assert f"p.get('{key}')" in read_hash, f"readHash does not read {key}"
-        assert f"p.set('{key}'" in write_hash, f"writeHash does not write {key}"
+        assert f"F.{key} =" in to_f, f"filtersToF does not write {key}"
 
 
 def test_repo_filter_is_a_tri_state_popover_not_a_select() -> None:
@@ -325,11 +325,14 @@ def test_repo_filter_is_a_tri_state_popover_not_a_select() -> None:
 
 
 def test_model_and_spec_filters_are_multi_valued_tri_state_popovers() -> None:
+    # acceptable_models is a list: the store's own facets already count a task once per
+    # model it accepts (dimensionCounts's valuesOf), so the popover just reads that count
+    # instead of re-deriving the overlap client-side.
     html = get_web_html()
     assert "createTriStatePopover(modelFilterEl" in html
     assert "createTriStatePopover(specFilterEl" in html
-    # acceptable_models is a list: matching means any overlap, not exact equality.
-    assert "t.acceptable_models && t.acceptable_models.length ? t.acceptable_models : []" in html
+    assert "window.tmStore.facets.model || {}" in html
+    assert "window.tmStore.facets.spec || {}" in html
 
 
 def test_every_tri_state_control_carries_no_gesture_hover_text() -> None:
@@ -683,6 +686,15 @@ def test_decisions_load_failure_is_an_error_state_not_an_empty_queue() -> None:
     assert 'role="alert"' in render_list
 
 
+def test_refresh_decisions_data_reads_the_paginated_envelopes_items() -> None:
+    # /api/decisions answers {items, next}; reading the response itself as the list
+    # breaks decisionsData.filter with no test catching it.
+    refresh = _function_body(get_web_html(), "refreshDecisionsData")
+    assert "const res = await api('GET', `/api/decisions?" in refresh
+    assert "decisionsData = res.items;" in refresh
+    assert "decisionsNextCursor = res.next;" in refresh
+
+
 def test_dialog_initial_focus_prefers_a_form_field_over_the_close_button() -> None:
     body = _function_body(get_web_html(), "openDialog")
     assert "firstFieldOrFallback().focus()" in body
@@ -724,16 +736,27 @@ def test_lightbox_is_a_modal_dialog_with_a_focus_trap() -> None:
     assert "closeBtn.focus()" in body
 
 
-def test_load_indicator_shows_while_tree_and_graph_are_loading() -> None:
-    # /api/tree and /api/graph each take ~12s on the estate's own 541-task tree; the pane
-    # stayed blank with nothing to tell a slow load from a broken one, on first load and
-    # again after every write.
+def test_load_indicator_follows_the_stores_pending_flag() -> None:
+    # A subscribe/response round trip (opening a plan, the first snapshot) can take a while on
+    # a large estate; the indicator now tracks the store's own `pending` rather than a
+    # per-fetch try/finally, since there is no fetch left to wrap.
     html = get_web_html()
     assert 'id="load-indicator"' in html
-    body = _function_body(html, "loadAllData")
-    assert "loadIndicator.classList.remove('hidden')" in body
-    assert "loadIndicator.classList.add('hidden')" in body
-    assert "finally" in body
+    body = _function_body(html, "syncConnectionUi")
+    assert "loadIndicator.classList.toggle('hidden', !window.tmStore.pending)" in body
+
+
+def test_a_refused_subscribe_notifies_the_store_and_core_toasts_it() -> None:
+    # A refused subscribe (bad filters, too many watched ids) clears `pending` internally, but
+    # nothing followed it back to the DOM until the store also notifies its listeners; core.js's
+    # listener is what turns that into the acceptance's toast.
+    html = get_web_html()
+    handle_message = _function_body(html, "handleMessage")
+    assert "msg.type === 'error'" in handle_message
+    assert "error: msg.detail" in handle_message
+    on_change = re.search(r"window\.tmStore\.onChange\(\(patch\) => \{(.*?)\}\);", html, re.DOTALL)
+    assert on_change, "onChange handler not found"
+    assert "toast(patch.error, 'error')" in on_change.group(1)
 
 
 def test_tri_state_buttons_use_the_icon_sprite_not_inline_svg() -> None:
@@ -819,9 +842,9 @@ def test_the_page_carries_phase_themes_and_a_phase_filter() -> None:
     assert '<div id="phase-filter" class="relative"></div>' in html
     assert "createTriStatePopover(phaseFilterEl" in html
     read_hash = _function_body(html, "readHash")
-    write_hash = _function_body(html, "writeHash")
+    to_f = _function_body(html, "filtersToF")
     for key in ("phase", "xphase"):
-        assert f"p.get('{key}')" in read_hash and f"p.set('{key}'" in write_hash
+        assert f"p.get('{key}')" in read_hash and f"F.{key} =" in to_f
 
 
 def test_action_bar_offers_verbs_by_stored_status() -> None:
@@ -860,7 +883,9 @@ def test_the_inspector_shows_the_lifecycle_panel() -> None:
         "landingChainText(n)",
     ):
         assert field in panel, field
-    assert "renderLifecycle(detail, editable)" in _function_body(html, "showGraphInspector")
+    # showGraphInspector only opens and watches the node; renderGraphInspector is the part
+    # that draws the panel, re-run by the store's own onChange on every later update too.
+    assert "renderLifecycle(detail, editable)" in _function_body(html, "renderGraphInspector")
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is needed to exercise the JS")
@@ -901,3 +926,64 @@ def test_static_export_themes_every_display_status(tmp_path: Path) -> None:
     phases = json.loads(re.search(r"window.PHASE_THEMES = (\{.*?\});\n", html).group(1))  # type: ignore[union-attr]
     assert set(themes) == {d.value for d in DisplayStatus}
     assert set(phases) == {p.value for p in Phase}
+
+
+def _static_js(name: str) -> str:
+    from importlib.resources import files
+
+    return files("taskmanager.web").joinpath("static", "js", name).read_text(encoding="utf-8")
+
+
+def test_no_whole_tree_fetch_survives_in_core_js() -> None:
+    # core.js now opens on one subscribe and store.js's own rows/statuses/facets; a fetch of
+    # the whole tree on load, or a per-node fetch on load, would defeat that entirely.
+    core = _static_js("core.js")
+    for word in ("loadAllData", "treeData"):
+        assert word not in core, word
+
+
+def test_filters_js_no_longer_computes_visibility_itself() -> None:
+    # taskPasses/nodeVisible/passesOtherDimensions/computeDimensionCounts/collectTasks all had
+    # a twin already living in store.js; the store answers with the visible set and the facets
+    # directly now, so this file only owns the controls and the URL hash.
+    filters_src = _static_js("filters.js")
+    for name in (
+        "function taskPasses(",
+        "function nodeVisible(",
+        "function passesOtherDimensions(",
+        "function computeDimensionCounts(",
+        "function collectTasks(",
+    ):
+        assert name not in filters_src, name
+
+
+def test_core_creates_the_store_and_follows_its_connection_state() -> None:
+    html = get_web_html()
+    assert "window.tmStore = isStaticMode" in html
+    assert "createStore({ staticData: window.STATIC_DATA })" in html
+    assert "window.tmStore.onChange(" in html
+
+
+def test_expand_collapse_drive_the_stores_open_and_watch_sets_not_a_local_flag() -> None:
+    toggle = _function_body(get_web_html(), "toggleExpand")
+    assert "window.tmStore.open([row.id])" in toggle
+    assert "window.tmStore.watch([row.id])" in toggle
+    assert "window.tmStore.close(closed)" in toggle
+    assert "window.tmStore.unwatch(closed)" in toggle
+
+
+def test_sections_and_relations_render_only_once_a_watched_body_arrives() -> None:
+    task_card = _function_body(get_web_html(), "renderTaskCard")
+    assert "bodyOf(task.id)" in task_card
+    assert "Loading…" in task_card
+
+
+def test_a_filter_change_pushes_to_the_store_exactly_through_one_helper() -> None:
+    # Every control that mutates `filters` calls applyFilterChange(), never renderAll()
+    # directly, so the URL, the store's filters and the DOM redraw always move together.
+    html = get_web_html()
+    apply_change = _function_body(html, "applyFilterChange")
+    assert "window.tmStore.setFilters(filtersToF())" in apply_change
+    assert "writeHash()" in apply_change
+    render_all = _function_body(html, "renderAll")
+    assert "setFilters" not in render_all

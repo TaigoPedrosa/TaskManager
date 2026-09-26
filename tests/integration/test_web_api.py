@@ -534,10 +534,10 @@ def test_list_decisions_filters_by_status_tab(
 
     res_open = client.get("/api/decisions", params={"status": "open"})
     assert res_open.status_code == 200
-    assert [d["id"] for d in res_open.json()] == ["decision-D1"]
+    assert [d["id"] for d in res_open.json()["items"]] == ["decision-D1"]
 
     res_answered = client.get("/api/decisions", params={"status": "answered"})
-    assert [d["id"] for d in res_answered.json()] == ["decision-D2"]
+    assert [d["id"] for d in res_answered.json()["items"]] == ["decision-D2"]
 
     res_bad = client.get("/api/decisions", params={"status": "bogus"})
     assert res_bad.status_code == 400
@@ -669,17 +669,7 @@ def test_delete_attachment_missing_is_404(
 # -- attachment size_bytes: read from the stored asset, in every place attachments render ---
 
 
-def _find_tree_node(tree: list[dict], node_id: str) -> dict:
-    for n in tree:
-        if n["id"] == node_id:
-            return n
-        found = _find_tree_node(n.get("children", []), node_id)
-        if found is not None:
-            return found
-    raise AssertionError(f"{node_id} not in tree")
-
-
-def test_tree_and_node_detail_carry_attachment_size_bytes(
+def test_bulk_and_single_node_detail_carry_attachment_size_bytes(
     api: tuple[TestClient, NodeRepository, LedgerRepository], tmp_path: Path
 ) -> None:
     client, _node_repo, _ledger_repo = api
@@ -689,9 +679,9 @@ def test_tree_and_node_detail_carry_attachment_size_bytes(
     )
     asset = up.json()["asset"]
 
-    tree = client.get("/api/tree").json()
-    task = _find_tree_node(tree, "SPEC-P1-T1")
-    assert task["frontmatter"]["attachments"][0]["size_bytes"] == len(_PNG_1PX)
+    page = client.get("/api/nodes", params={"ids": "SPEC-P1-T1", "include": "body"}).json()
+    task = page["items"][0]
+    assert task["body"]["node"]["frontmatter"]["attachments"][0]["size_bytes"] == len(_PNG_1PX)
 
     detail = client.get("/api/nodes/SPEC-P1-T1").json()
     assert detail["node"]["frontmatter"]["attachments"][0]["size_bytes"] == len(_PNG_1PX)
@@ -713,7 +703,7 @@ def test_decisions_list_carries_attachment_size_bytes(
     )
     assert up.status_code == 201
 
-    decisions = client.get("/api/decisions").json()
+    decisions = client.get("/api/decisions").json()["items"]
     row = next(d for d in decisions if d["id"] == decision_id)
     assert row["attachments"][0]["size_bytes"] == len(_PNG_1PX)
 

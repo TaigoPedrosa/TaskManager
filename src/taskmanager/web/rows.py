@@ -1,0 +1,115 @@
+"""Rows, the counts tree and its hash: one `DisplayView` turned into what the live view sends."""
+
+import hashlib
+import json
+from collections import Counter
+from typing import Any
+
+from taskmanager.core.enums import NodeKind
+from taskmanager.core.status import DecisionStatus
+from taskmanager.engine.heuristics import score_every_task
+from taskmanager.engine.snapshot import DisplayView, phase_of, stored_status, waits_on
+from taskmanager.engine.stepgraph import Snapshot
+
+
+def _lease_row(snapshot: Snapshot, node_id: str) -> dict[str, Any] | None:
+    lease = snapshot.graph_data().leases.get(node_id)
+    if lease is None:
+        return None
+    return {"agent_id": lease.agent_id, "action": lease.action.value if lease.action else None}
+
+
+def build_rows(view: DisplayView) -> dict[str, dict[str, Any]]:
+    snapshot = view.snapshot
+    data = snapshot.graph_data()
+    scores = score_every_task(snapshot)
+    rows: dict[str, dict[str, Any]] = {}
+    for node_id, node in data.nodes.items():
+        if node.kind == NodeKind.DECISION:
+            continue
+        work, decisions = waits_on(snapshot, node)
+        rows[node_id] = {
+            "id": node.id,
+            "kind": node.kind.value,
+            "title": node.title,
+            "ordinal": node.ordinal,
+            "priority": node.priority,
+            "parent": snapshot.parent(node_id),
+            "status": stored_status(node).value,
+            "display": view.display(node),
+            "phase": phase_of(node),
+            "score": scores.get(node_id) if node.kind == NodeKind.TASK else None,
+            "target_repo": node.target_repo,
+            "acceptable_models": node.acceptable_models,
+            "review": node.review,
+            "fix": node.fix,
+            "merge": node.merge.value,
+            "outcome": node.outcome.value if node.outcome else None,
+            "requires": node.requires,
+            "lease": _lease_row(snapshot, node_id),
+            "waits_on": [*work, *decisions],
+            "child_count": len(snapshot.children(node_id)),
+            "rev": data.revs.get(node_id, 0),
+        }
+    return rows
+
+
+def canonical(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def row_digest(row: dict[str, Any]) -> str:
+    return hashlib.sha256(canonical(row).encode("utf-8")).hexdigest()
+
+
+def statuses_hash(entries: list[dict[str, Any]]) -> str:
+    return hashlib.sha256(canonical(entries).encode("utf-8")).hexdigest()
+
+
+def _sort_key(value: str | None) -> tuple[int, str]:
+    return (0, "") if value is None else (1, value)
+
+
+def _nearest_ancestor(rows: dict[str, dict[str, Any]], node_id: str, kind: str) -> str | None:
+    current: str | None = rows[node_id]["parent"]
+    while current is not None:
+        row = rows.get(current)
+        if row is None:
+            return None
+        if row["kind"] == kind:
+            return current
+        current = row["parent"]
+    return None
+
+
+def statuses(rows: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[str | None, dict[str | None, Counter[str]]] = {}
+    for row in rows.values():
+        if row["kind"] == NodeKind.SPEC.value:
+            groups.setdefault(row["id"], {})
+        elif row["kind"] == NodeKind.PLAN.value:
+            spec_id = _nearest_ancestor(rows, row["id"], NodeKind.SPEC.value)
+            groups.setdefault(spec_id, {}).setdefault(row["id"], Counter())
+        elif row["kind"] == NodeKind.TASK.value:
+            spec_id = _nearest_ancestor(rows, row["id"], NodeKind.SPEC.value)
+            plan_id = _nearest_ancestor(rows, row["id"], NodeKind.PLAN.value)
+            groups.setdefault(spec_id, {}).setdefault(plan_id, Counter())[row["display"]] += 1
+
+    return [
+        {
+            "spec": spec_id,
+            "plans": [
+                {"plan": plan_id, "counts": dict(groups[spec_id][plan_id])}
+                for plan_id in sorted(groups[spec_id], key=_sort_key)
+            ],
+        }
+        for spec_id in sorted(groups, key=_sort_key)
+    ]
+
+
+def decisions_open(view: DisplayView) -> int:
+    return sum(
+        1
+        for node in view.snapshot.graph_data().nodes.values()
+        if node.kind == NodeKind.DECISION and node.status == DecisionStatus.OPEN
+    )
