@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 
 const SOURCE = readFileSync(new URL('../../workflows/tm-wave.js', import.meta.url), 'utf8')
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
@@ -16,6 +17,26 @@ export function djb2(text) {
   let h = 5381
   for (const byte of Buffer.from(text, 'utf8')) h = (Math.imul(h, 33) + byte) >>> 0
   return h
+}
+
+// The fake tm's transcript check, computed by shelling out to the stock `cksum` binary rather
+// than the script's own cksum(), so a bug shared by both would still show up as a mismatch.
+export function realCksum(text) {
+  return execFileSync('cksum', { input: Buffer.from(text, 'utf8') }).toString().trim()
+}
+
+// A wrong check line that still has cksum's shape, for a test asserting the script rejects it.
+const wrongCksum = check => {
+  const [crc, len] = check.split(' ')
+  return `${Number(crc) + 1} ${len}`
+}
+
+// Extracted and evaluated straight out of the script's source, so a test can check its cksum()
+// against the real binary without the script exporting anything.
+export function scriptCksum(text) {
+  const start = SOURCE.indexOf('function cksum(')
+  const end = SOURCE.indexOf('\n}\n', start) + 2
+  return Function(`"use strict"; return (${SOURCE.slice(start, end)})`)()(text)
 }
 
 export const json = (value, exit = 0) => ({ text: JSON.stringify(value), exit })
@@ -87,8 +108,11 @@ export function makeTm({ chosen = [], nodes = {}, start = {}, job = {}, parked =
       const m = cmd.match(/^out=\$\((.*) 2>&1\); rc=\$\?; /)
       if (m) {
         const { text, exit } = answer(m[1])
-        const h = corrupt(m[1]) ? djb2(text) + 1 : djb2(text)
-        return { stdout: `${text}\n__CHECK h=${h}\n__EXIT:${exit}\n` }
+        // corrupt's return is either falsy (send the real check), true (mangle it), or a check
+        // line of the caller's own choosing (a djb2, or one hashed over different bytes).
+        const bad = corrupt(m[1], text)
+        const check = typeof bad === 'string' ? bad : bad ? wrongCksum(realCksum(text)) : realCksum(text)
+        return { stdout: `${text}\n__CHECK ${check}\n__EXIT:${exit}\n` }
       }
       if (/^\S+ task release \S+ --agent wf-\S+(?: --token \S+)? >\/dev\/null 2>&1$/.test(cmd)) {
         return { stdout: `__EXIT:${releaseExit}\n` }

@@ -110,15 +110,28 @@ function djb2(s) {
   return h
 }
 
-const CHECKSUM = `python3 -c 'import sys,functools;print("__CHECK h=%d" % functools.reduce(lambda h,b:(h*33+b)&0xFFFFFFFF,sys.stdin.buffer.read(),5381))'`
+// POSIX cksum (CRC-32 over the bytes, then the length), exactly as `cksum` prints it. The runner
+// pipes through the stock tool rather than a hash written into the command, because a model runner
+// has rewritten such code before executing it, and every claim it touched was released.
+function cksum(s) {
+  const bytes = unescape(encodeURIComponent(s))
+  let crc = 0
+  const step = b => {
+    crc = (crc ^ (b << 24)) >>> 0
+    for (let i = 0; i < 8; i++) crc = crc & 0x80000000 ? ((crc << 1) ^ 0x04C11DB7) >>> 0 : (crc << 1) >>> 0
+  }
+  for (let i = 0; i < bytes.length; i++) step(bytes.charCodeAt(i))
+  for (let n = bytes.length; n > 0; n = Math.floor(n / 256)) step(n & 0xff)
+  return `${(~crc) >>> 0} ${bytes.length}`
+}
 
-// A tm command whose stdout is JSON, checked against a djb2 the same shell computed over the same
+// A tm command whose stdout is JSON, checked against a cksum the same shell computed over the same
 // bytes, so a paraphrased field never reaches a decision.
 async function opJson(kind, id, cmd, opts = {}) {
   const r = await op(kind, id,
-    `out=$(${cmd} 2>&1); rc=$?; printf '%s\\n' "$out"; printf '%s' "$out" | ${CHECKSUM}; exit $rc`,
-    /^([\s\S]*)\n__CHECK h=(\d+)\n__EXIT:(\d+)\s*$/,
-    { ...opts, valid: m => djb2(m[1]) === Number(m[2]) })
+    `out=$(${cmd} 2>&1); rc=$?; printf '%s\\n' "$out"; printf '__CHECK '; printf '%s' "$out" | cksum; exit $rc`,
+    /^([\s\S]*)\n__CHECK (\d+ \d+)\n__EXIT:(\d+)\s*$/,
+    { ...opts, valid: m => cksum(m[1]) === m[2] })
   if (!r) return null
   let data = null
   try {

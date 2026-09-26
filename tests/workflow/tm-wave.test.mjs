@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { discovery, json, makeTm, meta, runWave } from './harness.mjs'
+import { discovery, djb2, json, makeTm, meta, realCksum, runWave, scriptCksum } from './harness.mjs'
 
 const ARGS = { session: 's1', worktreeDir: '/wt', root: '/est' }
 const T1 = { id: 'T1', kind: 'task', action: 'implement', model: 'sonnet', repos: ['core'], requires: [], job: null, migration: false }
@@ -251,6 +251,38 @@ test('a claim whose transcription fails its checksum is released and never acted
     nodes: { T1: node('READY', 'implement') },
     start: { T1: [claim('implement', { worktree: '/wt/core-T1' })] },
     corrupt: inner => / task start /.test(inner),
+  })
+  const { ops, work } = await runWave({ args: ARGS, tm })
+  assert.equal(starts(ops).length, 1)
+  assert.deepEqual(work, [])
+  assert.deepEqual(releases(ops), [RELEASE_T1])
+})
+
+test("the script's cksum agrees with the stock cksum binary", () => {
+  for (const text of ['', 'aguardando a decisão D1 — não é assim', 'x'.repeat(70_000)]) {
+    assert.equal(scriptCksum(text), realCksum(text))
+  }
+})
+
+test('a check line shaped like a djb2 rather than a cksum is rejected', async () => {
+  const tm = makeTm({
+    chosen: [T1],
+    nodes: { T1: node('READY', 'implement') },
+    start: { T1: [claim('implement', { worktree: '/wt/core-T1' })] },
+    corrupt: (inner, text) => (/ task start /.test(inner) ? `${djb2(text)} ${text.length}` : false),
+  })
+  const { ops, work } = await runWave({ args: ARGS, tm })
+  assert.equal(starts(ops).length, 1)
+  assert.deepEqual(work, [])
+  assert.deepEqual(releases(ops), [RELEASE_T1])
+})
+
+test('a check line hashed over a payload one byte off is rejected', async () => {
+  const tm = makeTm({
+    chosen: [T1],
+    nodes: { T1: node('READY', 'implement') },
+    start: { T1: [claim('implement', { worktree: '/wt/core-T1' })] },
+    corrupt: (inner, text) => (/ task start /.test(inner) ? realCksum(`${text} `) : false),
   })
   const { ops, work } = await runWave({ args: ARGS, tm })
   assert.equal(starts(ops).length, 1)
