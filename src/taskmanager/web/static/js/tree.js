@@ -54,7 +54,6 @@ function renderSections(sections, ownerId) {
   const isGroupCollapsed = groupCollapsed(groupId, true);
   const items = list.map(s => {
     const id = `${ownerId}::${s.key}`;
-    allSectionIds.push(id);
     const isOpen = expandedSections.has(id);
     const label = (s.header || s.key).replace(/^#+\s*/, '');
     const body = stripRedundantLeadingHeading(s.content, label);
@@ -85,7 +84,6 @@ function attachSectionToggleHandlers(root) {
       const id = details.getAttribute('data-section-id');
       if (details.open) expandedSections.add(id);
       else expandedSections.delete(id);
-      updateToggleSectionsButton();
     });
   });
 }

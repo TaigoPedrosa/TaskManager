@@ -17,7 +17,6 @@ const expandedSections = new Set();
 // set stores only ids whose state differs from their default; see groupCollapsed().
 // Session-only, never persisted, same as the two sets above.
 const collapsedGroups = new Set();
-let allSectionIds = [];
 
 
 // DOM Elements
@@ -31,7 +30,6 @@ const viewGraphBtn = document.getElementById('view-graph-btn');
 const graphFitBtn = document.getElementById('graph-fit-btn');
 const refreshBtn = document.getElementById('refresh-btn');
 const expandAllBtn = document.getElementById('expand-all-btn');
-const toggleSectionsBtn = document.getElementById('toggle-sections-btn');
 const sidebarResizeHandle = document.getElementById('sidebar-resize-handle');
 const graphInspector = document.getElementById('graph-inspector');
 const networkCanvas = document.getElementById('network-canvas');
@@ -150,13 +148,11 @@ function setViewMode(mode) {
     viewGraphBtn.className = VIEW_BTN_INACTIVE;
     graphPane.classList.remove('hidden');
     sidebarPane.classList.add('hidden');
-    toggleSectionsBtn.classList.add('hidden');
   } else {
     viewGraphBtn.className = VIEW_BTN_ACTIVE;
     viewDocBtn.className = VIEW_BTN_INACTIVE;
     graphPane.classList.remove('hidden');
     sidebarPane.classList.remove('hidden');
-    toggleSectionsBtn.classList.add('hidden');
     if (networkInstance) {
       setTimeout(() => networkInstance.fit(), 50);
     }
@@ -168,24 +164,6 @@ viewGraphBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.GRAPH
 graphFitBtn.addEventListener('click', () => networkInstance && networkInstance.fit());
 inspectorCloseBtn.addEventListener('click', () => graphInspector.classList.add('hidden'));
 refreshBtn.addEventListener('click', () => window.tmStore.resync());
-
-
-// Document sections: default collapsed, remembered for this session only (never persisted),
-// so a re-render after a filter change never surprise-collapses one the user just opened.
-function updateToggleSectionsButton() {
-  const label = expandedSections.size > 0 ? 'Collapse all sections' : 'Expand all sections';
-  toggleSectionsBtn.title = label;
-  toggleSectionsBtn.setAttribute('aria-label', label);
-}
-
-toggleSectionsBtn.addEventListener('click', () => {
-  if (expandedSections.size > 0) {
-    expandedSections.clear();
-  } else {
-    allSectionIds.forEach(id => expandedSections.add(id));
-  }
-  scheduleRender();
-});
 
 
 // Expand / Collapse All. A click opens every visible, still-collapsed container one level

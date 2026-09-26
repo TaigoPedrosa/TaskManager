@@ -113,6 +113,16 @@ def test_document_sections_default_collapsed_and_remember_expand_state() -> None
     assert "expandedSections" in _function_body(html, "attachSectionToggleHandlers")
 
 
+def test_no_toggle_all_sections_button_survives_the_document_view() -> None:
+    # The "Expand all sections" toolbar button only ever showed in the Document view; no
+    # other mode ever un-hid it, so it and its bookkeeping (an id list appended to on every
+    # renderSections() call, only ever cleared by the Document renderer) must go together.
+    html = get_web_html()
+    assert 'id="toggle-sections-btn"' not in html
+    assert "toggleSectionsBtn" not in html
+    assert "allSectionIds" not in html
+
+
 def test_status_icon_carries_a_title_and_chip_is_legend_only() -> None:
     html = get_web_html()
     status_icon = _function_body(html, "statusIcon")
@@ -141,15 +151,6 @@ def test_group_header_toggle_is_wired_independently_of_node_and_section_collapse
     assert "'.group-header'" in shared
     assert "collapsedGroups.has(id)) collapsedGroups.delete(id)" in shared
     assert "collapsedGroups.add(id)" in shared
-
-    # The all-sections toolbar button only ever touches expandedSections, never the groups.
-    toggle_sections_handler = re.search(
-        r"toggleSectionsBtn\.addEventListener\('click', \(\) => \{(.*?)\n\}\);",
-        html,
-        re.DOTALL,
-    )
-    assert toggle_sections_handler, "toggleSectionsBtn click handler not found"
-    assert "collapsedGroups" not in toggle_sections_handler.group(1)
 
 
 def test_group_header_is_keyboard_operable_everywhere_it_renders() -> None:

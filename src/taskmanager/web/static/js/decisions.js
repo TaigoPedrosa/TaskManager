@@ -152,7 +152,6 @@ if (typeof setViewMode === 'function') {
       graphPane.classList.add('hidden');
       sidebarPane.classList.add('hidden');
       decisionsPane.classList.remove('hidden');
-      toggleSectionsBtn.classList.add('hidden');
       viewDocBtn.className = VIEW_BTN_INACTIVE;
       viewGraphBtn.className = VIEW_BTN_INACTIVE;
       if (decisionsBtn) decisionsBtn.className = decisionsBtn.className.replace('bg-zinc-900', 'bg-zinc-800').replace('text-zinc-400', 'text-white');
