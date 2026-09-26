@@ -74,6 +74,18 @@ def _embed_images_in_tree(node: dict[str, Any], root: Path) -> None:
         _embed_images_in_tree(child, root)
 
 
+def _fetch_all_decisions(client: TestClient) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    cursor: str | None = None
+    while True:
+        params = {"cursor": cursor} if cursor else {}
+        page = client.get("/api/decisions", params=params).json()
+        items.extend(page["items"])
+        cursor = page["next"]
+        if cursor is None:
+            return items
+
+
 def export_static_html(project_root: Path, output_file: Path) -> Path:
     app = create_app(project_root)
     client = TestClient(app)
@@ -81,7 +93,7 @@ def export_static_html(project_root: Path, output_file: Path) -> Path:
     tree = client.get("/api/tree").json()
     graph = client.get("/api/graph").json()
     stats = client.get("/api/stats").json()
-    decisions = client.get("/api/decisions").json()
+    decisions = _fetch_all_decisions(client)
 
     # Fetch details for all nodes
     details: dict[str, Any] = {}

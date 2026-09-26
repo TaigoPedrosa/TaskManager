@@ -728,6 +728,13 @@ def test_decisions_load_failure_is_an_error_state_not_an_empty_queue() -> None:
     assert 'role="alert"' in render_list
 
 
+def test_refresh_decisions_data_reads_the_paginated_envelopes_items() -> None:
+    # /api/decisions answers {items, next}; reading the response itself as the list
+    # breaks decisionsData.filter with no test catching it.
+    refresh = _function_body(get_web_html(), "refreshDecisionsData")
+    assert "await api('GET', '/api/decisions')).items" in refresh
+
+
 def test_dialog_initial_focus_prefers_a_form_field_over_the_close_button() -> None:
     body = _function_body(get_web_html(), "openDialog")
     assert "firstFieldOrFallback().focus()" in body
