@@ -49,7 +49,8 @@ from taskmanager.db.graph_reader import read_graph
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.di.container import create_container
 from taskmanager.engine import git as gitops
-from taskmanager.engine.chains import MAIN, meeting, satisfied, sync_pairs
+from taskmanager.engine import selection
+from taskmanager.engine.chains import MAIN, meeting, sync_pairs
 from taskmanager.engine.conditions import ConditionRunner, is_executable
 from taskmanager.engine.config import ConfigStore, ProjectConfig
 from taskmanager.engine.decisions import (
@@ -239,29 +240,13 @@ class Claims:
 
     def blocked_reason(self, node: Node, snap: Snapshot, action: Action | None) -> str | None:
         """Why `node` cannot be claimed now, the first reason in claimability order; None when
-        it can. Reads only, and only from `snap`'s one bulk read: discovery asks it of every
-        node, so a query here would run once per node in the estate."""
+        it can. `engine.selection` holds the graph rules, read only from `snap`'s one bulk read;
+        a condition needs a command run, which only this live check can do."""
+        reason = selection.blocked_reason(node, snap, action, repo_order=self.config.repo_order)
+        return reason if reason is not None else self._condition_reason(node, snap, action)
+
+    def _condition_reason(self, node: Node, snap: Snapshot, action: Action | None) -> str | None:
         data = snap.graph_data()
-        live = [j for j in data.jobs.get(node.id, []) if j.state in LIVE_JOBS]
-        if live:
-            job = live[0]
-            if job.kind == JobKind.SYNC:
-                return f"syncing {job.target}"
-            return f"landing job {job.id} is {job.state}"
-        lease = data.leases.get(node.id)
-        if lease is not None and self.live(lease):
-            return f"held by {lease.agent_id}"
-        edges = snap.inherited_edges(node.id)
-        decisions = [d for d in edges if snap.status(d) == DecisionStatus.OPEN]
-        if decisions:
-            return f"awaiting decision {', '.join(decisions)}"
-        waiting = [
-            d
-            for d in edges
-            if isinstance(snap.status(d), Status) and not satisfied(snap, node.id, d)
-        ]
-        if waiting:
-            return f"waits on {', '.join(waiting)}"
         stages = [
             ConditionStage.CLAIM,
             *([ConditionStage.LANDING] if action == Action.MERGE else []),
@@ -274,27 +259,11 @@ class Claims:
             unmet = self.conditions.unmet(node.id, stage)
             if unmet:
                 return f"condition unmet: {unmet[0].needs}"
-        if action is None:
-            return f"{node.status} has no next action"
-        if action == Action.IMPLEMENT and not node.target_repo:
-            return "no target_repo: a task is cut and landed in its target repository"
-        if action == Action.MERGE and not self.repos_of(node.id):
-            return "nothing to land: no task under it names a target_repo"
-        conflicts = self.snapshots.conflicts(self._locked_files(node, action, snap), snap)
-        if conflicts:
-            return f"declared files locked: {', '.join(sorted(conflicts))}"
         return None
 
     def next_step(self, node: Node) -> tuple[Action | None, str | None]:
         """The action a claim would take now, and the model it would name."""
-        cycle = self.snapshots.cycle(node)
-        action = lifecycle.next_action(cycle)
-        if action is None:
-            return None, None
-        claimed = lifecycle.claim(cycle)
-        return action, model_for(
-            action, self._with_cycle(node, claimed), lifecycle.fix_round(claimed)
-        )
+        return selection.next_step(node)
 
     def verify(self, node_id: str, ref: str, repo: str | None = None) -> tuple[bool, str]:
         """The node's verifications at `ref` (a container's: every descendant task's), limited to
