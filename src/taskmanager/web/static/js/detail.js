@@ -631,50 +631,9 @@ if (typeof renderSectionBody === 'function') {
 }
 
 
-// AWAITING_DECISION banner (§6.4) in the document view: renderUnifiedDocument is tree.js's
-// own function, wrapped rather than edited there -- same reassignment pattern as above, so
-// the document view's own markup never has to know decisions exist.
-
-function decorateAwaitingDecisionBanners() {
-  // Rows are flat (no `.children`), and dependency_details lives on a watched body, not the
-  // row itself -- a task not yet expanded has no body to read the banner's links from, and
-  // it reappears here on its own once opening the card starts watching it.
-  window.tmStore.rows.forEach(task => {
-    if (task.kind !== 'task' || displayOf(task) !== 'AWAITING_DECISION') return;
-    const el = document.getElementById(`doc-node-${task.id}`);
-    const cardBody = el && el.querySelector('.task-body');
-    if (!cardBody || cardBody.querySelector('.awaiting-decision-banner')) return;
-    const body = window.tmStore.bodies.get(task.id);
-    const waitingOn = ((body && body.dependency_details) || []).filter(d => !d.finished);
-    const links = waitingOn.map(d =>
-      `<button type="button" class="awaiting-decision-link underline decoration-dotted text-amber-200 hover:text-amber-100" data-decision-id="${esc(d.id)}">${esc(d.id)}${d.title ? `: ${esc(d.title)}` : ''}</button>`
-    ).join(', ');
-    const banner = document.createElement('div');
-    banner.className = 'awaiting-decision-banner p-2.5 bg-amber-950/40 border border-amber-800/80 rounded-lg flex items-center gap-2 text-xs mb-3';
-    banner.innerHTML = `${renderIcon('help-circle', 'w-3.5 h-3.5 text-amber-400 flex-shrink-0')}<span class="text-amber-200">Awaiting decision: ${links || 'unknown'}</span>`;
-    cardBody.insertBefore(banner, cardBody.firstChild);
-  });
-}
-
-document.addEventListener('click', (e) => {
-  const link = e.target.closest('.awaiting-decision-link');
-  if (!link) return;
-  e.preventDefault();
-  if (typeof goToDecision === 'function') goToDecision(link.getAttribute('data-decision-id'));
-});
-
-if (typeof renderUnifiedDocument === 'function') {
-  const previousRenderUnifiedDocument = renderUnifiedDocument;
-  renderUnifiedDocument = function () {
-    previousRenderUnifiedDocument();
-    decorateAwaitingDecisionBanners();
-  };
-}
-
-// tree.js's attachCollapsibleHandlers() wires .group-header clicks only for the document
-// view (it queries the whole document, but only after renderUnifiedDocument() runs, and
-// showGraphInspector() rebuilds this body afterwards) -- so the inspector's own "Sections"
-// and "Verifications" group headers need the same collapsedGroups toggle wired here.
+// showGraphInspector() rebuilds bodyEl's whole innerHTML on every render, so the inspector's
+// own "Sections" group header needs its collapsedGroups toggle rewired after each one,
+// scoped to this nodeId.
 function attachInspectorGroupToggleHandlers(root, nodeId) {
   root.querySelectorAll('.group-header').forEach(header => {
     header.onclick = () => {

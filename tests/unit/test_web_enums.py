@@ -80,5 +80,5 @@ def test_app_icon_sprite_carries_the_new_status_icons() -> None:
 
 
 def test_webview_mode_values() -> None:
-    assert WebViewMode.DOCUMENT.value == "document"
     assert WebViewMode.GRAPH.value == "graph"
+    assert WebViewMode.WAVES.value == "waves"
