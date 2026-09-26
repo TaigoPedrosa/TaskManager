@@ -1861,6 +1861,15 @@ class _RefusingImporter:
             raise typer.Exit(code=1) from exc
 
 
+def _dispatch_targets(text: str, root: Path) -> str:
+    # str.format would choke on the guide's own literal braces (a code span like `{...}`), so
+    # only these known `{{token}}` spots are substituted.
+    values = {k: r.value for k, r in ConfigStore(root).effective().items()}
+    for token in ("tick_min", "tick_max", "wave_size", "tick_budget"):
+        text = text.replace(f"{{{{{token}}}}}", str(values[f"dispatch.{token}"]))
+    return text
+
+
 def _guide_topics() -> dict[str, str]:
     """Built-in topic -> one-line description (the first sentence after the title)."""
     from importlib.resources import files
@@ -1915,9 +1924,10 @@ def guide(
         raise typer.BadParameter(f"no guide '{topic}'; topics: {', '.join(topics)}")
     parts: list[str] = []
     if topic in topics and not project_only:
-        parts.append(
-            files("taskmanager").joinpath(f"guides/{topic}.md").read_text(encoding="utf-8")
-        )
+        text = files("taskmanager").joinpath(f"guides/{topic}.md").read_text(encoding="utf-8")
+        if topic == "dispatch":
+            text = _dispatch_targets(text, _get_root(path, must_exist=False))
+        parts.append(text)
     if overlay is not None and not builtin_only:
         parts.append(overlay.content)
     sys.stdout.write("\n\n---\n\n".join(p.rstrip("\n") for p in parts) + "\n")
