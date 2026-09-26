@@ -253,10 +253,12 @@ def dependency_maps(data: GraphData) -> tuple[dict[str, list[str]], dict[str, li
 def refresh_relations(
     view: DisplayView, data: GraphData, ids: Sequence[str]
 ) -> dict[str, dict[str, Any]]:
-    """`dependency_details`, `dependent_details` and the node's own `display`, recomputed for a
-    watched id whose `rev` did not move: all three read the view already built for this rebuild,
-    at no query cost, and a neighbour landing or a chain's holder clearing can change any of them
-    with this node's own row untouched."""
+    """`dependency_details`, `dependent_details` and every one of the node's own `lifecycle_fields`
+    (display, phase, landing_chain, base_chain, ...), recomputed for a watched id whose `rev` did
+    not move. All of it reads the view already built for this rebuild, at no query cost, and a
+    neighbour landing or a chain's holder or merge target changing can move any of these fields
+    with this node's own row untouched. `lifecycle_fields` is one function, so a field added there
+    is refreshed here too, rather than named again by hand."""
     deps_by_source, blocked_by_target = dependency_maps(data)
     parts: dict[str, dict[str, Any]] = {}
     for node_id in ids:
@@ -270,7 +272,7 @@ def refresh_relations(
             "dependent_details": dependent_details(
                 node_id, view, data.nodes, blocked_by_target.get(node_id, [])
             ),
-            "display": view.display(node),
+            "lifecycle": lifecycle_fields(node, view),
         }
     return parts
 

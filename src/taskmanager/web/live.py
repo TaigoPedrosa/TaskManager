@@ -452,9 +452,7 @@ class LiveHub:
             for node_id, parts in _runtime_parts(repos, data, stale_ids).items():
                 body = self._bodies[node_id]
                 rel = relations.get(node_id)
-                node_part = (
-                    body["node"] if rel is None else {**body["node"], "display": rel["display"]}
-                )
+                node_part = body["node"] if rel is None else {**body["node"], **rel["lifecycle"]}
                 self._bodies[node_id] = {
                     **body,
                     **parts,

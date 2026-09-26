@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from taskmanager.core.enums import NodeKind, RelationType
 from taskmanager.core.models import FileLock, Lease, Node, NodeRelation, NodeSection
-from taskmanager.core.status import Action, Status
+from taskmanager.core.status import Action, Merge, Status
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
@@ -409,6 +409,36 @@ async def test_a_landed_dependency_refreshes_a_watched_dependents_stale_body(
     )
     assert dep_item["value"][0]["status"] == "COMPLETED"
     assert dep_item["value"][0]["finished"] is True
+
+
+@run_async
+async def test_an_ancestors_merge_change_refreshes_a_watched_nodes_stale_chains(
+    estate: Estate,
+) -> None:
+    # T's own rev never moves when P's merge target changes: base_chain and landing_chain come
+    # from a tree walk over the view, not from T's own row, so a stale-body refresh that only
+    # patched display and the relations left them stuck at the chain computed before P changed.
+    estate.add("S", NodeKind.SPEC)
+    estate.add("P", NodeKind.PLAN, parent="S", merge=Merge.MAIN)
+    estate.add("T", NodeKind.TASK, parent="P", merge=Merge.PARENT)
+
+    hub = estate.hub()
+    await hub.refresh()
+    session = hub.open_session(FakeSocket())
+    snapshot = await subscribe(hub, session, 1, watch=["T"], reset=True)
+    assert snapshot["bodies"]["T"]["node"]["base_chain"] == ["P", "MAIN"]
+
+    p = estate.node_repo.get_node("P")
+    assert p is not None
+    estate.node_repo.save_node(p.model_copy(update={"merge": Merge.PARENT}))
+    await hub.refresh()
+
+    msg = _socket(session).sent[-1]
+    node_item = next(
+        i for i in msg["items"] if i["op"] == "body" and i["id"] == "T" and i["part"] == "node"
+    )
+    assert node_item["value"]["base_chain"] == ["P", "S", "MAIN"]
+    assert node_item["value"]["landing_chain"] == ["T", "P", "S"]
 
 
 # -- malformed frames -------------------------------------------------------------------------
