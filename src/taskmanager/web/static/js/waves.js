@@ -2,8 +2,8 @@
 // rendered as one card per wave. Deliberately self-contained (its own fetch, its own render
 // target #waves-content) rather than routed through core.js's api()/scheduleRender(): the
 // only globals it leans on are the ones every other view already shares -- esc/renderIcon/
-// getTheme/setWavesLoadPending (core.js), filters.specMode (filters.js), showGraphInspector
-// (detail.js) and window.tmStore.
+// getTheme/setWavesLoadPending/isStaticMode (core.js), filters.specMode (filters.js),
+// showGraphInspector (detail.js) and window.tmStore.
 
 let waveDepth = 1;
 let waveSize = null;
@@ -58,6 +58,9 @@ function waveSpecFilter() {
 }
 
 async function fetchWaves() {
+  // The one chokepoint every wave request routes through (init, retry, size change, compute,
+  // reset, and a filters.js refetch) -- a static export has no /api/waves behind any of them.
+  if (isStaticMode) return;
   const seq = ++waveRequestSeq;
   waveLoading = true;
   waveError = null;
@@ -107,6 +110,12 @@ function waveComputeDisabled() {
 }
 
 async function initWaves() {
+  // A static export has no server behind /api/meta or /api/waves to ask; wavesHtml() renders
+  // that state on its own rather than firing a request the export can never answer.
+  if (isStaticMode) {
+    renderWaves();
+    return;
+  }
   waveLoading = true;
   renderWaves();
   await loadWaveMeta();
@@ -246,6 +255,11 @@ function footerHtml() {
 }
 
 function wavesHtml() {
+  if (isStaticMode) {
+    return `
+      <div class="border border-zinc-800/80 rounded-lg bg-zinc-950/40 p-6 text-xs text-zinc-400 text-center">Waves needs a live \`tm web run\` session; a static export has no \`/api/waves\` to simulate against.</div>
+    `;
+  }
   if (waveError) {
     return `
       ${controlsHtml()}

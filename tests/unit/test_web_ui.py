@@ -1046,3 +1046,28 @@ def test_a_filter_change_pushes_to_the_store_exactly_through_one_helper() -> Non
     assert "writeHash()" in apply_change
     render_all = _function_body(html, "renderAll")
     assert "setFilters" not in render_all
+
+
+def test_a_filter_change_also_refetches_waves() -> None:
+    # waveSpecFilter() reads filters.specMode directly rather than taking it as an argument
+    # (waves.js's own doc comment), so a spec include/exclude change has no other way to reach
+    # it -- window.tmStore's own patch never reports statusesChanged for a filter change.
+    apply_change = _function_body(get_web_html(), "applyFilterChange")
+    assert "scheduleWavesRefetch()" in apply_change
+
+
+def test_static_export_opens_on_graph_not_waves() -> None:
+    # A static export has no /api/waves behind it; only Graph renders from the rows/edges
+    # get_web_html() embeds directly, so that is the one view a static export can open on.
+    html = get_web_html(initial_data={"rows": {}, "edges": [], "statuses": [], "bodies": {}})
+    assert "if (isStaticMode) setViewMode(window.VIEW_MODES.GRAPH);" in html
+
+
+def test_no_dead_highlight_css_survives_the_tree_views_removal() -> None:
+    # selectNode's Document-view branch was the only code that ever added
+    # .node-highlighted; tree.js's Graph-only branch never does.
+    html = get_web_html()
+    assert "node-highlighted" not in html
+    assert "pulse-highlight" not in html
+    assert "networkInstance.selectNodes([nodeId])" in _static_js("tree.js")
+    assert "node-highlighted" not in _function_body(html, "selectNode")

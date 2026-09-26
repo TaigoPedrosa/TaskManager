@@ -83,7 +83,7 @@ function makeFakeFetch(wavesPayload) {
 // declared inside the script (waveDepth, waveData, ...) never becomes a context property --
 // only its top-level `function`s do -- so every assertion below reads observable behaviour
 // (a fetch call's URL, #waves-content's rendered HTML) rather than that internal state.
-function freshContext(wavesPayload) {
+function freshContext(wavesPayload, { isStaticMode = false } = {}) {
   const contentEl = new FakeElement();
   let rafQueue = [];
   const loadPendingCalls = [];
@@ -101,6 +101,7 @@ function freshContext(wavesPayload) {
     statusChip: () => '',
     showGraphInspector: () => {},
     setWavesLoadPending: (v) => loadPendingCalls.push(v),
+    isStaticMode,
   };
   sandbox.window = sandbox;
   sandbox.window.tmStore = new FakeStore();
@@ -233,4 +234,16 @@ test('every fetch drives the shared load indicator, not only the first', async (
   ctx.computeNextWave();
   await flushAsync();
   assert.deepEqual(ctx.loadPendingCalls, [true, false, true, false], 'a later fetch pends the indicator again');
+});
+
+test('a static export never calls /api/meta or /api/waves, on load or on refetch', async () => {
+  const ctx = freshContext(undefined, { isStaticMode: true });
+  await flushAsync();
+  assert.equal(ctx.fetch.calls.length, 0, 'initWaves fired no request');
+  assert.match(ctx.contentHtml(), /needs a live/);
+
+  ctx.window.tmStore.emit({ statusesChanged: true });
+  ctx.flushRaf();
+  await flushAsync();
+  assert.equal(ctx.fetch.calls.length, 0, 'a later store change still fires nothing');
 });
