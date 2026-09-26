@@ -228,12 +228,41 @@ def test_group_header_is_keyboard_operable_everywhere_it_renders() -> None:
 
 
 def test_graph_layout_gives_nodes_room_and_a_shape_per_kind() -> None:
-    render_graph = _function_body(get_web_html(), "renderGraph")
+    html = get_web_html()
+    render_graph = _function_body(html, "renderGraph")
     assert "levelSeparation: 240" in render_graph
     assert "nodeSpacing: 320" in render_graph
-    assert "size: 16" in render_graph
-    assert "widthConstraint: { minimum: 170, maximum: 260 }" in render_graph
-    assert "GRAPH_SHAPE_BY_KIND" in get_web_html()
+    vis_node = _function_body(html, "graphVisNode")
+    assert "size: 16" in vis_node
+    assert "widthConstraint: { minimum: 170, maximum: 260 }" in vis_node
+    assert "GRAPH_SHAPE_BY_KIND" in html
+
+
+def test_graph_never_destroys_the_network_instance() -> None:
+    # The network is built once (renderGraph); every later store change patches its DataSets
+    # in place, so pan/zoom/selection are never lost to a rebuild.
+    assert "networkInstance.destroy" not in _static_js("graph.js")
+    sync_graph = _function_body(get_web_html(), "syncGraph")
+    assert "renderGraph()" in sync_graph
+    assert "syncGraphNodes(patch.rowIds)" in sync_graph
+    assert "syncGraphEdges()" in sync_graph
+
+
+def test_graph_container_label_is_a_counts_summary_not_a_status() -> None:
+    vis_node = _function_body(get_web_html(), "graphVisNode")
+    assert "progressText(countsForRow(row))" in vis_node
+
+
+def test_graph_double_click_toggles_a_container_through_the_store() -> None:
+    render_graph = _function_body(get_web_html(), "renderGraph")
+    assert "doubleClick" in render_graph
+    assert "toggleExpand(row)" in render_graph
+
+
+def test_filters_js_no_longer_hides_graph_nodes_itself() -> None:
+    # The server now leaves a filtered-out node out of the visible set entirely, so the
+    # client has nothing left to dim after the fact.
+    assert "function applyGraphFilter" not in _static_js("filters.js")
 
 
 def test_graph_inspector_is_full_width_below_lg_not_a_fixed_384px() -> None:

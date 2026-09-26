@@ -98,7 +98,6 @@ function renderAll() {
   renderFilterControls();
   renderTree();
   renderUnifiedDocument();
-  applyGraphFilter();
 }
 
 
@@ -549,14 +548,3 @@ legendCloseBtn.addEventListener('click', () => setLegendOpen(false));
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') setLegendOpen(false);
 });
-
-
-// Graph view dims a task row the current filters/open set drops rather than removing it
-// outright; a row still in the store's own visible set (window.tmStore.rows) passes.
-function applyGraphFilter() {
-  if (!visNodesDS) return;
-  visNodesDS.update(graphData.nodes.map(n => ({
-    id: n.id,
-    opacity: (n.kind === 'task' && !window.tmStore.rows.has(n.id)) ? 0.2 : 1,
-  })));
-}
