@@ -47,8 +47,9 @@ class StateSchemaTooNew(Exception):
 
 
 def _statements(script: str) -> list[str]:
-    """A migration's own statements, in order, without SQLite's `sqlite3_complete()` mistaking a
-    trigger body's semicolons for the one that ends its `CREATE TRIGGER`."""
+    """A migration's own statements, in order, split by `sqlite3.complete_statement`
+    (`sqlite3_complete()`), which reads a trigger body's own semicolons correctly rather than
+    ending the statement at the first one."""
     statements = []
     buf = ""
     for line in script.splitlines(keepends=True):
@@ -106,15 +107,21 @@ class DatabaseManager:
         # from whichever thread gets there; no connection is ever used by a thread other than
         # its own.
         conn = sqlite3.connect(str(db_path), timeout=5.0, check_same_thread=False)
-        conn.execute("PRAGMA journal_mode = WAL;")
         conn.execute("PRAGMA busy_timeout = 5000;")
         conn.execute("PRAGMA foreign_keys = ON;")
+        if db_path == self.state_db:
+            try:
+                self._migrate_state(conn)
+            except BaseException:
+                conn.close()
+                raise
+        # After any refusal above: turning WAL on rewrites the file's header even for a
+        # database this call is about to refuse outright, and a refusal must leave it untouched.
+        conn.execute("PRAGMA journal_mode = WAL;")
         if load_vec:
             conn.enable_load_extension(True)
             sqlite_vec.load(conn)
             conn.enable_load_extension(False)
-        if db_path == self.state_db:
-            self._migrate_state(conn)
         with self._all_conns_lock:
             self._all_conns.append((threading.current_thread(), conn))
         return conn

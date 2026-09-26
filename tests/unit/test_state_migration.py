@@ -128,6 +128,7 @@ def test_newer_schema_is_refused_and_nothing_is_written(tmp_path: Path) -> None:
     conn.execute("PRAGMA user_version = 3")
     conn.commit()
     conn.close()
+    before = (future / "state.db").read_bytes()
 
     with (
         pytest.raises(StateSchemaTooNew, match=r"schema 3.*\(2\)"),
@@ -135,13 +136,59 @@ def test_newer_schema_is_refused_and_nothing_is_written(tmp_path: Path) -> None:
     ):
         pass
 
+    # Not just user_version and the rev column: the file's bytes, so a WAL-mode switch (which
+    # rewrites the header and adds -wal/-shm) counts as a write too.
+    assert (future / "state.db").read_bytes() == before
+    assert not (future / "state.db-wal").exists()
+    assert not (future / "state.db-shm").exists()
+
+
+def test_a_refused_connection_is_closed_not_leaked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    future = tmp_path / "future"
+    _build_v1_estate(future)
     conn = sqlite3.connect(future / "state.db")
-    try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(nodes)").fetchall()}
-    finally:
-        conn.close()
-    assert "rev" not in columns
+    conn.execute("PRAGMA user_version = 3")
+    conn.commit()
+    conn.close()
+
+    opened: list[sqlite3.Connection] = []
+    real_connect = sqlite3.connect
+    monkeypatch.setattr(
+        sqlite3, "connect", lambda *a, **kw: opened.append(real_connect(*a, **kw)) or opened[-1]
+    )
+
+    with (
+        pytest.raises(StateSchemaTooNew),
+        DatabaseManager(future).get_state_connection(),
+    ):
+        pass
+
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        opened[0].execute("SELECT 1")
+
+
+def test_a_too_new_schema_is_refused_by_a_command_with_no_operationerror_catch(
+    tmp_path: Path,
+) -> None:
+    """`task list` reads the state connection through the DI container, not through
+    `_refusing()` directly; the refusal has to land before that, in `_get_container`, or this
+    one prints a traceback instead of the message."""
+    root = tmp_path / "estate"
+    res = runner.invoke(app, ["init", "-C", str(root)])
+    assert res.exit_code == 0, res.output
+
+    conn = sqlite3.connect(root / ".taskmanager" / "state.db")
+    conn.execute(f"PRAGMA user_version = {STATE_SCHEMA_VERSION + 1}")
+    conn.commit()
+    conn.close()
+
+    res = runner.invoke(app, ["task", "list", "-C", str(root)])
+    assert res.exit_code == 1 and f"newer than this tm ({STATE_SCHEMA_VERSION})" in res.output, (
+        res.output
+    )
 
 
 def test_rev_increases_on_status_and_title_change_through_save_node(tmp_path: Path) -> None:
@@ -302,11 +349,16 @@ def test_audit_and_cache_dbs_keep_schema_1(tmp_path: Path) -> None:
 
 def test_export_then_restore_round_trips_and_never_exports_rev(tmp_path: Path) -> None:
     source = tmp_path / "source"
-    runner.invoke(app, ["init", "-C", str(source)])
-    runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "-C", str(source)])
-    runner.invoke(app, ["plan", "add", "P", "--spec", "S1", "--slug", "P1", "-C", str(source)])
-    runner.invoke(app, ["task", "add", "T", "--plan", "S1-P1", "--slug", "t1", "-C", str(source)])
-    runner.invoke(app, ["section", "set", "S1-P1-t1:body", "line one", "-C", str(source)])
+    setup = [
+        ["init", "-C", str(source)],
+        ["spec", "add", "S", "--slug", "S1", "-C", str(source)],
+        ["plan", "add", "P", "--spec", "S1", "--slug", "P1", "-C", str(source)],
+        ["task", "add", "T", "--plan", "S1-P1", "--slug", "t1", "-C", str(source)],
+        ["section", "set", "S1-P1-t1:body", "line one", "-C", str(source)],
+    ]
+    for args in setup:
+        res = runner.invoke(app, args)
+        assert res.exit_code == 0, res.output
 
     export_dir = tmp_path / "export"
     res = runner.invoke(app, ["export", str(export_dir), "-C", str(source)])

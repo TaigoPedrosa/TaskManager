@@ -39,7 +39,7 @@ from taskmanager.core.status import (
     Status,
 )
 from taskmanager.db.cache_repo import CacheRepository
-from taskmanager.db.connection import DatabaseManager
+from taskmanager.db.connection import DatabaseManager, StateSchemaTooNew
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
@@ -204,7 +204,7 @@ def _refusing() -> Iterator[None]:
     """A refusal is its message and exit 1, never a traceback."""
     try:
         yield
-    except OperationError as exc:
+    except (OperationError, StateSchemaTooNew) as exc:
         print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(code=1) from exc
 
@@ -285,6 +285,10 @@ def _user_errors() -> Iterator[None]:
 def _get_container(path: Path | None) -> Container:
     root = _get_root(path, must_exist=False)
     _refuse_pre_lifecycle(root)
+    # Opened and (if empty) left alone here, under `_refusing()`, so a state.db newer than this
+    # tm is a clean refusal for every command, not a traceback out of whichever one runs first.
+    with _refusing(), DatabaseManager(root / ".taskmanager").get_state_connection():
+        pass
     return make_container(TaskManagerProvider(root))
 
 
