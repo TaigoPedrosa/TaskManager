@@ -29,6 +29,17 @@ subscribe protocol, and a handful of paginated HTTP reads.
   not a doc here: `src/taskmanager/web/live.py`, `rows.py`, `visibility.py` and `bodies.py` are
   its implementation, and `tests/fixtures/statuses_hash.json` /
   `tests/fixtures/visibility_cases.json` are its golden vectors.
+- The page opens on one of two views (`WebViewMode`, `src/taskmanager/web/enums.py`): `graph`,
+  the node graph and inspector, and `waves`. The Document (tree) view is gone.
+- Waves shows what `tm wave discover` would claim next, simulated forward from live state
+  without claiming anything: a wave-size input, the same spec include filter as the graph view,
+  a "Compute next wave" button that adds one wave on top of the last, and "Reset" back to wave
+  1. Each card lists its claimable entries (action, model, repos, status before/after) and a
+  collapsible "Held" list of what the wave skipped and why.
+- `GET /api/waves?depth=&size=&spec=` (`src/taskmanager/web/app.py`) runs that same simulation
+  server-side over one snapshot of `state.db` and the cached conditions, and returns
+  `{"waves": [...]}`; `depth` and `size` are bounds-checked server-side regardless of what the
+  client sends.
 
 ## Upgrading from 0.2
 
