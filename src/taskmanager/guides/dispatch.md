@@ -98,6 +98,8 @@ A node that spends its fix rounds, its landing attempts or its failed steps is `
 
 Re-running a failed step unchanged is not a fix. Before anyone answers `investigate`, change what made it fail: correct the brief with `tm section set`, widen `acceptable_models`, or split the node. A rejection whose findings are rulings — "the brief doesn't say", "which of these is correct" — is answered by a decision, not another fix round: the reviewer raises it instead of rejecting on it.
 
+- A rejection whose findings are only about the record's wording or accuracy, on work whose ruling is already made, does not buy another fix round: the findings go in the node's `report` section and the node closes as the ruling stands.
+
 ## 7. When the plan changes
 
 - **Defer**: `tm task defer <id> --note "<why>"`. The note is kept in `:deferral`.

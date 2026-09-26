@@ -104,6 +104,12 @@ A plan with `review: true` carries a verification of its own that runs its child
 
 ## 7. Size a task to one agent
 
+A task's deliverable is code or an artifact that must land. A question whose answer is a ruling is a `tm decision add`. A measurement is one read-only agent whose result goes into that decision's context or a section, with no implement, review or fix cycle. Before filing either, look for the answer where it may already be: an agent's report, a section, an earlier decision. When it exists, raise the decision with that data in its context.
+
+Scale review and fix to what the deliverable risks: a document or research deliverable is `review: false`, or not a task at all.
+
+Two small changes to one file from one finding are one task, not two tasks serialized on that file with a review cycle each.
+
 One agent, one sitting, one branch: an objective of a sentence, acceptance of a handful of lines, and a `declared_files` list short enough that no sibling wants any of it. Two objectives joined by "and" are two tasks.
 
 ## 8. Write the review into the node
@@ -116,6 +122,8 @@ One agent, one sitting, one branch: an objective of a sentence, acceptance of a 
 - A limit or default a spec states that a tm config key covers is written as the project's key, never a number.
 - An acceptance that one thing matches another ("matches `tm wave discover`", "byte-identical to before") lists every input the reference reads (conditions, locks, config keys such as `repo_order`) and has a test holding each.
 - A task that makes one implementation of something names the function that stays and each one it replaces; the replaced ones are deleted in the same task.
+- A brief never copies a figure from a source still under review or still being measured; it names the source, and the implementer reads the current value.
+- A task that removes a feature names what only that feature reached (its markup, handlers, styles, the state it reset) and deletes each one, or moves it to where it is still used; its acceptance lists them, each with a check that fails when it comes back.
 
 ## 9. Import it, then read it back
 

@@ -55,6 +55,8 @@ The path checks read that ref directly, with no fetch, so a check against the un
 
 A test that fails on the branch rejects the node, whichever task declared the test's file; another task's ownership of a file never excuses a failure this diff caused.
 
+Run every check the acceptance lists. A check you could not run is named in the findings as not run, and the node is not approved over it.
+
 ## 5. Write the findings
 
 Append them to the node before you close the step:

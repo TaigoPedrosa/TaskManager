@@ -330,3 +330,64 @@ def test_plan_guide_names_the_function_that_stays_and_the_ones_it_replaces() -> 
 def test_review_guide_rejects_on_a_red_test_whoever_declared_its_file() -> None:
     """A red test on the branch is this diff's failure regardless of which task's declared_files named the file."""
     assert "rejects the node" in _guide_text("review")
+
+
+def test_plan_guide_tells_a_deliverable_from_a_ruling_and_a_measurement() -> None:
+    """A spurious task files a ruling or a measurement as if it were code that must land."""
+    assert (
+        "A task's deliverable is code or an artifact that must land. A question whose answer is a "
+        "ruling is a `tm decision add`. A measurement is one read-only agent whose result goes "
+        "into that decision's context or a section, with no implement, review or fix cycle. Before "
+        "filing either, look for the answer where it may already be: an agent's report, a section, "
+        "an earlier decision. When it exists, raise the decision with that data in its context."
+    ) in _guide_text("plan")
+
+
+def test_plan_guide_scales_review_and_fix_to_deliverable_risk() -> None:
+    """A document or research deliverable reviewed like shippable code buys a fix cycle nothing needs."""
+    assert (
+        "Scale review and fix to what the deliverable risks: a document or research deliverable is "
+        "`review: false`, or not a task at all."
+    ) in _guide_text("plan")
+
+
+def test_plan_guide_keeps_two_small_changes_to_one_file_as_one_task() -> None:
+    """Serializing two small changes to one file across two tasks buys a review cycle each for nothing."""
+    assert (
+        "Two small changes to one file from one finding are one task, not two tasks serialized on "
+        "that file with a review cycle each."
+    ) in _guide_text("plan")
+
+
+def test_plan_guide_names_the_source_instead_of_copying_a_moving_figure() -> None:
+    """A figure copied from a source still under review or still being measured goes stale before it lands."""
+    assert (
+        "A brief never copies a figure from a source still under review or still being measured; "
+        "it names the source, and the implementer reads the current value."
+    ) in _guide_text("plan")
+
+
+def test_plan_guide_names_what_a_removed_feature_reached() -> None:
+    """A removal task with no list of what only that feature reached leaves its markup and handlers behind."""
+    assert (
+        "A task that removes a feature names what only that feature reached (its markup, handlers, "
+        "styles, the state it reset) and deletes each one, or moves it to where it is still used; "
+        "its acceptance lists them, each with a check that fails when it comes back."
+    ) in _guide_text("plan")
+
+
+def test_review_guide_runs_every_check_the_acceptance_lists() -> None:
+    """A check skipped rather than run and reported leaves a node approved over untested acceptance."""
+    assert (
+        "Run every check the acceptance lists. A check you could not run is named in the findings "
+        "as not run, and the node is not approved over it."
+    ) in _guide_text("review")
+
+
+def test_dispatch_guide_closes_a_wording_only_rejection_without_another_fix_round() -> None:
+    """A rejection that only disputes the record's wording, on a ruling already made, is not a defect to fix again."""
+    assert (
+        "A rejection whose findings are only about the record's wording or accuracy, on work whose "
+        "ruling is already made, does not buy another fix round: the findings go in the node's "
+        "`report` section and the node closes as the ruling stands."
+    ) in _guide_text("dispatch")
