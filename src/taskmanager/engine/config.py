@@ -28,6 +28,25 @@ KEYS: Final = (
     "red_target_decision_after",
     "repo_order",
     "repos",
+    "dispatch.tick_min",
+    "dispatch.tick_max",
+    "dispatch.wave_size",
+    "dispatch.tick_budget",
+)
+
+# The dispatch loop's typical target, printed by `tm guide dispatch`: a wakeup every tick_min-
+# tick_max seconds, waves of at most wave_size nodes, at most tick_budget nodes per tick.
+DISPATCH_DEFAULTS: Final = {
+    "tick_min": 300,
+    "tick_max": 900,
+    "wave_size": 10,
+    "tick_budget": 40,
+}
+
+# (low key, high key): the low value must never exceed the high one.
+_DISPATCH_BOUNDS: Final = (
+    ("dispatch.tick_min", "dispatch.tick_max"),
+    ("dispatch.wave_size", "dispatch.tick_budget"),
 )
 
 # Keys whose value is a whole mapping or list: stored and set as one value, never split into
@@ -91,6 +110,15 @@ class RepoConfig(BaseModel):
     gates: dict[Literal["main", "parent"], Gate] = Field(default_factory=dict)
 
 
+class DispatchConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tick_min: int = Field(default=DISPATCH_DEFAULTS["tick_min"], gt=0)
+    tick_max: int = Field(default=DISPATCH_DEFAULTS["tick_max"], gt=0)
+    wave_size: int = Field(default=DISPATCH_DEFAULTS["wave_size"], gt=0)
+    tick_budget: int = Field(default=DISPATCH_DEFAULTS["tick_budget"], gt=0)
+
+
 class ProjectConfig(BaseModel):
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
     worktree_dir: str = Field(default=".worktrees", min_length=1)
@@ -103,6 +131,7 @@ class ProjectConfig(BaseModel):
     red_target_decision_after: int = Field(default=3600, gt=0)
     repo_order: list[str] = Field(default_factory=list)
     repos: dict[str, RepoConfig] = Field(default_factory=dict)
+    dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
 
     @field_validator("lease_ttl")
     @classmethod
@@ -180,6 +209,26 @@ def _default(key: str) -> Any:
     return _lookup(ProjectConfig().model_dump(mode="json"), key)
 
 
+def _check_bound_pair(low_key: str, high_key: str, flat: dict[str, Any]) -> None:
+    low, high = flat.get(low_key, _default(low_key)), flat.get(high_key, _default(high_key))
+    if low > high:
+        low_name, high_name = low_key.rsplit(".", 1)[-1], high_key.rsplit(".", 1)[-1]
+        raise ConfigError(f"{low_key}: {low_name} must not exceed {high_name} ({low} > {high})")
+
+
+def _check_bounds(key: str, flat: dict[str, Any]) -> None:
+    """`flat` is the file about to be written; a bound only applies once both sides are known."""
+    for low_key, high_key in _DISPATCH_BOUNDS:
+        if key in (low_key, high_key):
+            _check_bound_pair(low_key, high_key, flat)
+
+
+def _check_all_bounds(flat: dict[str, Any]) -> None:
+    """Every bound, for a write that replaces the whole document in one shot."""
+    for low_key, high_key in _DISPATCH_BOUNDS:
+        _check_bound_pair(low_key, high_key, flat)
+
+
 class ConfigStore:
     """`<root>/.taskmanager/config.yaml`, holding only the keys that were set."""
 
@@ -202,12 +251,15 @@ class ConfigStore:
         self.path.write_text(yaml.safe_dump(_nest(flat), sort_keys=True), encoding="utf-8")
 
     def set(self, key: str, raw: str) -> None:
-        self._write({**self.read(), key: _typed(key, raw)})
+        flat = {**self.read(), key: _typed(key, raw)}
+        _check_bounds(key, flat)
+        self._write(flat)
 
     def unset(self, key: str) -> None:
         _require_key(key)
         flat = self.read()
         flat.pop(key, None)
+        _check_bounds(key, flat)
         if flat:
             self._write(flat)
         else:
@@ -250,4 +302,6 @@ class ConfigStore:
         return _nest(self.read()) if self.path.exists() else None
 
     def replace(self, document: dict[str, Any]) -> None:
-        self._write({key: _typed(key, value) for key, value in _flatten(document)})
+        flat = {key: _typed(key, value) for key, value in _flatten(document)}
+        _check_all_bounds(flat)
+        self._write(flat)
