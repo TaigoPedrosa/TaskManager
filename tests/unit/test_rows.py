@@ -4,8 +4,9 @@ from pathlib import Path
 from lifecycle_estate import add, make_estate
 
 from taskmanager.core.enums import NodeKind
-from taskmanager.core.models import FileLock, Lease, Node
+from taskmanager.core.models import FileLock, Lease, LeaseAction, Node
 from taskmanager.core.status import Action, DecisionStatus, Merge, Outcome, Status
+from taskmanager.engine.claims import Claims
 from taskmanager.engine.heuristics import score_every_task
 from taskmanager.engine.snapshot import DisplayView, waits_on
 from taskmanager.web.rows import (
@@ -238,6 +239,107 @@ def test_statuses_counts_each_task_once_under_its_nearest_spec_and_plan(tmp_path
     # plans sorted by id, null first
     [s1_entry] = [e for e in result if e["spec"] == "S1"]
     assert [p["plan"] for p in s1_entry["plans"]] == [None, "P1"]
+
+
+def _lease(claims: Claims, node_id: str, action: LeaseAction) -> None:
+    claims.runtime.acquire_lease(
+        Lease(
+            task_id=node_id,
+            agent_id="agent-1",
+            session_id="s1",
+            branch_name=f"tm/{node_id}",
+            action=action,
+        ),
+        [],
+    )
+
+
+def test_a_plan_past_ready_adds_its_own_unit_to_its_own_group(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path)
+    add(claims, "S1", NodeKind.SPEC)
+    add(
+        claims,
+        "P1",
+        NodeKind.PLAN,
+        parent="S1",
+        status=Status.REVIEWING,
+        claimed_from=Status.IMPLEMENTED,
+    )
+    add(claims, "T1", NodeKind.TASK, parent="P1", status=Status.COMPLETED)
+    add(claims, "T2", NodeKind.TASK, parent="P1", status=Status.COMPLETED)
+    _lease(claims, "P1", Action.REVIEW)
+
+    rows = build_rows(DisplayView(claims.snapshots))
+    [plan_entry] = [p for e in statuses(rows) if e["spec"] == "S1" for p in e["plans"]]
+
+    assert rows["P1"]["display"] == "REVIEWING"
+    assert plan_entry["counts"] == {"COMPLETED": 2, "REVIEWING": 1}
+
+
+def test_a_completed_plan_adds_its_own_unit_as_one_more_completed(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path)
+    add(claims, "S1", NodeKind.SPEC)
+    add(claims, "P1", NodeKind.PLAN, parent="S1", status=Status.COMPLETED)
+    add(claims, "T1", NodeKind.TASK, parent="P1", status=Status.COMPLETED)
+    add(claims, "T2", NodeKind.TASK, parent="P1", status=Status.COMPLETED)
+
+    rows = build_rows(DisplayView(claims.snapshots))
+    [plan_entry] = [p for e in statuses(rows) if e["spec"] == "S1" for p in e["plans"]]
+
+    assert plan_entry["counts"] == {"COMPLETED": 3}
+
+
+def test_a_ready_plan_with_children_in_progress_adds_no_unit_of_its_own(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path)
+    add(claims, "S1", NodeKind.SPEC)
+    add(claims, "P1", NodeKind.PLAN, parent="S1", status=Status.READY)
+    # started (not READY, not a set-aside exit) rolls the plan's own display up to IMPLEMENTING,
+    # but its stored status stays READY, so it adds no unit of its own
+    add(claims, "T1", NodeKind.TASK, parent="P1", status=Status.IMPLEMENTED)
+
+    rows = build_rows(DisplayView(claims.snapshots))
+    [plan_entry] = [p for e in statuses(rows) if e["spec"] == "S1" for p in e["plans"]]
+
+    assert rows["P1"]["status"] == "READY"
+    assert rows["P1"]["display"] == "IMPLEMENTING"
+    assert plan_entry["counts"] == {rows["T1"]["display"]: 1}
+
+
+def test_a_spec_past_ready_adds_its_own_unit_to_its_no_plan_group(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path)
+    add(claims, "S1", NodeKind.SPEC, status=Status.FIXING, claimed_from=Status.REVIEWED)
+    add(claims, "T1", NodeKind.TASK, parent="S1", status=Status.READY)
+    _lease(claims, "S1", Action.FIX)
+
+    rows = build_rows(DisplayView(claims.snapshots))
+    [entry] = [e for e in statuses(rows) if e["spec"] == "S1"]
+    [no_plan] = [p["counts"] for p in entry["plans"] if p["plan"] is None]
+
+    assert rows["S1"]["display"] == "FIXING"
+    assert no_plan == {"READY": 1, "FIXING": 1}
+
+
+def test_a_deferred_plan_with_children_adds_no_unit_of_its_own(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path)
+    add(claims, "S1", NodeKind.SPEC)
+    add(claims, "P1", NodeKind.PLAN, parent="S1", status=Status.DEFERRED)
+    add(claims, "T1", NodeKind.TASK, parent="P1", status=Status.DEFERRED)
+
+    rows = build_rows(DisplayView(claims.snapshots))
+    [plan_entry] = [p for e in statuses(rows) if e["spec"] == "S1" for p in e["plans"]]
+
+    assert plan_entry["counts"] == {"DEFERRED": 1}
+
+
+def test_a_childless_plan_past_ready_adds_no_unit(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path)
+    add(claims, "S1", NodeKind.SPEC)
+    add(claims, "P1", NodeKind.PLAN, parent="S1", status=Status.COMPLETED)
+
+    rows = build_rows(DisplayView(claims.snapshots))
+    [plan_entry] = [p for e in statuses(rows) if e["spec"] == "S1" for p in e["plans"]]
+
+    assert plan_entry["counts"] == {}
 
 
 def test_building_rows_and_statuses_reads_only_the_views_own_bulk_read(
