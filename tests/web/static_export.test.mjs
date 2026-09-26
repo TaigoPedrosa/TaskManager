@@ -100,6 +100,12 @@ test('a static export runs every inline script without throwing, opens on Docume
   assert.equal(elementsById.get('network-canvas').classList.contains('hidden'), true);
   assert.equal(elementsById.get('view-waves-btn').removed, true, 'the Waves toggle is gone');
   assert.equal(elementsById.get('waves-content')?.innerHTML ?? '', '', 'no Waves message is rendered');
+  // The other three segments the static data supports stay, Decisions among them, with its
+  // own badge carried over rather than left behind on a removed toolbar button.
+  for (const id of ['view-graph-btn', 'view-doc-btn', 'view-decisions-btn']) {
+    assert.equal(elementsById.get(id).removed, undefined, `${id} should not be removed`);
+  }
+  assert.ok(elementsById.get('decisions-badge'), 'the badge lives on the Decisions segment, not an injected toolbar button');
   assert.match(
     elementsById.get('unified-document')?.innerHTML ?? '',
     /No specs, plans or tasks match/,
