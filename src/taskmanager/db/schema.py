@@ -1,7 +1,11 @@
 from taskmanager.core.status import DecisionStatus, Status
 
-# The schema a fresh `tm init` writes. A later change bumps this and migrates by user_version.
+# audit.db and cache.db: neither has moved past its first shape yet.
 SCHEMA_VERSION = 1
+
+# state.db: bumped and migrated separately, since it changes far more often than the ledger
+# or the cache.
+STATE_SCHEMA_VERSION = 2
 
 # Built from the enums so the vocabulary SQLite enforces and the one the code writes cannot drift.
 _CYCLE_STATUSES = ", ".join(f"'{s.value}'" for s in Status)
@@ -11,6 +15,9 @@ NODE_STATUS_CHECK = (
     f"OR (kind <> 'decision' AND status IN ({_CYCLE_STATUSES})))"
 )
 
+# `rev` sits on the `updated_at` line, not its own: that is exactly where
+# `ALTER TABLE nodes ADD COLUMN rev ...` (the migration, below) lands it, so a migrated 0.3.0
+# estate and a fresh one store byte-identical `sqlite_master.sql` for `nodes`.
 STATE_SCHEMA_SQL = (
     """
 CREATE TABLE IF NOT EXISTS nodes (
@@ -37,7 +44,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     requires TEXT NOT NULL DEFAULT '[]',
     land_order TEXT NOT NULL DEFAULT '[]',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, rev INTEGER NOT NULL DEFAULT 0,
     CHECK (fix <= review),
     """
     + NODE_STATUS_CHECK
@@ -160,6 +167,96 @@ CREATE TABLE IF NOT EXISTS branch_locks (
 );
 """
 )
+
+# One node's `rev` moves on any change to the node itself or to a section, verification,
+# condition or relation naming it. Shared by the fresh schema and the migration below so the
+# two write sets can never drift apart.
+NODE_REV_TRIGGERS_SQL = """
+CREATE TRIGGER IF NOT EXISTS trg_nodes_rev
+AFTER UPDATE ON nodes
+WHEN NEW.rev = OLD.rev
+BEGIN
+    UPDATE nodes SET rev = OLD.rev + 1 WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_node_sections_rev_ins
+AFTER INSERT ON node_sections
+BEGIN
+    UPDATE nodes SET rev = rev + 1 WHERE id = NEW.node_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_node_sections_rev_upd
+AFTER UPDATE ON node_sections
+BEGIN
+    UPDATE nodes SET rev = rev + 1 WHERE id IN (OLD.node_id, NEW.node_id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_node_sections_rev_del
+AFTER DELETE ON node_sections
+BEGIN
+    UPDATE nodes SET rev = rev + 1 WHERE id = OLD.node_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_node_verifications_rev_ins
+AFTER INSERT ON node_verifications
+BEGIN
+    UPDATE nodes SET rev = rev + 1 WHERE id = NEW.node_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_node_verifications_rev_upd
+AFTER UPDATE ON node_verifications
+BEGIN
+    UPDATE nodes SET rev = rev + 1 WHERE id IN (OLD.node_id, NEW.node_id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_node_verifications_rev_del
+AFTER DELETE ON node_verifications
+BEGIN
+    UPDATE nodes SET rev = rev + 1 WHERE id = OLD.node_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_node_conditions_rev_ins
+AFTER INSERT ON node_conditions
+BEGIN
+    UPDATE nodes SET rev = rev + 1 WHERE id = NEW.node_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_node_conditions_rev_upd
+AFTER UPDATE ON node_conditions
+BEGIN
+    UPDATE nodes SET rev = rev + 1 WHERE id IN (OLD.node_id, NEW.node_id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_node_conditions_rev_del
+AFTER DELETE ON node_conditions
+BEGIN
+    UPDATE nodes SET rev = rev + 1 WHERE id = OLD.node_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_node_relations_rev_ins
+AFTER INSERT ON node_relations
+BEGIN
+    UPDATE nodes SET rev = rev + 1 WHERE id IN (NEW.source_id, NEW.target_id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_node_relations_rev_upd
+AFTER UPDATE ON node_relations
+BEGIN
+    UPDATE nodes SET rev = rev + 1
+    WHERE id IN (OLD.source_id, OLD.target_id, NEW.source_id, NEW.target_id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_node_relations_rev_del
+AFTER DELETE ON node_relations
+BEGIN
+    UPDATE nodes SET rev = rev + 1 WHERE id IN (OLD.source_id, OLD.target_id);
+END;
+"""
+
+# Applied in order to an estate below STATE_SCHEMA_VERSION, each key the version it produces.
+STATE_MIGRATIONS: dict[int, str] = {
+    2: "ALTER TABLE nodes ADD COLUMN rev INTEGER NOT NULL DEFAULT 0;\n" + NODE_REV_TRIGGERS_SQL,
+}
 
 # Derived results only: dropping this database loses time, never state.
 CACHE_SCHEMA_SQL = """

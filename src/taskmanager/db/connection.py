@@ -11,8 +11,11 @@ import taskmanager
 from taskmanager.db.schema import (
     CACHE_SCHEMA_SQL,
     LEDGER_SCHEMA_SQL,
+    NODE_REV_TRIGGERS_SQL,
     SCHEMA_VERSION,
+    STATE_MIGRATIONS,
     STATE_SCHEMA_SQL,
+    STATE_SCHEMA_VERSION,
     vec_nodes_sql,
 )
 
@@ -34,6 +37,13 @@ PRE_LIFECYCLE_MESSAGE = (
 class PreLifecycleEstate(Exception):
     def __init__(self) -> None:
         super().__init__(PRE_LIFECYCLE_MESSAGE)
+
+
+class StateSchemaTooNew(Exception):
+    def __init__(self, found: int) -> None:
+        super().__init__(
+            f"state.db is schema {found}, newer than this tm ({STATE_SCHEMA_VERSION}): upgrade tm"
+        )
 
 
 def _is_sqlite(path: Path) -> bool:
@@ -89,9 +99,41 @@ class DatabaseManager:
             conn.enable_load_extension(True)
             sqlite_vec.load(conn)
             conn.enable_load_extension(False)
+        if db_path == self.state_db:
+            self._migrate_state(conn)
         with self._all_conns_lock:
             self._all_conns.append((threading.current_thread(), conn))
         return conn
+
+    def _migrate_state(self, conn: sqlite3.Connection) -> None:
+        """The first `state.db` connection this process opens brings it to
+        `STATE_SCHEMA_VERSION`, or refuses it. `BEGIN IMMEDIATE` takes SQLite's write lock before
+        the real check, so a second process racing this one blocks here instead of migrating
+        twice: it re-reads `user_version` once the lock is its own and finds nothing left to do.
+        """
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version == STATE_SCHEMA_VERSION:
+            return
+        if version > STATE_SCHEMA_VERSION:
+            raise StateSchemaTooNew(version)
+        has_nodes = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='nodes'"
+        ).fetchone()
+        if not has_nodes:
+            return  # uninitialised directory: `tm init` creates it at the current version
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if version > STATE_SCHEMA_VERSION:
+                raise StateSchemaTooNew(version)
+            for target in range(version + 1, STATE_SCHEMA_VERSION + 1):
+                conn.executescript(STATE_MIGRATIONS[target])
+                conn.execute(f"PRAGMA user_version = {target}")
+        except BaseException:
+            conn.rollback()
+            raise
+        else:
+            conn.commit()
 
     def _close_dead_threads_connections(self) -> None:
         dead: list[tuple[threading.Thread, sqlite3.Connection]] = []
@@ -190,8 +232,9 @@ class DatabaseManager:
     def init_all(self, vector_dimensions: int = 384) -> None:
         with self.get_state_connection() as conn:
             conn.executescript(STATE_SCHEMA_SQL)
+            conn.executescript(NODE_REV_TRIGGERS_SQL)
             conn.execute(vec_nodes_sql(vector_dimensions))
-            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            conn.execute(f"PRAGMA user_version = {STATE_SCHEMA_VERSION}")
             conn.commit()
 
         with self.get_ledger_connection() as conn:

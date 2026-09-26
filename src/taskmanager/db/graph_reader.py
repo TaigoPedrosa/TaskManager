@@ -27,6 +27,9 @@ class GraphData:
     its callers need no query per node."""
 
     nodes: dict[str, Node]
+    # SQLite's own count of changes to a node or to a section, verification, condition or
+    # relation naming it; not on `Node` itself, since nothing that builds one writes it.
+    revs: dict[str, int]
     relations: dict[RelationType, list[tuple[str, str]]]
     verifications: dict[str, list[NodeVerification]]
     conditions: dict[str, list[Condition]]
@@ -42,7 +45,7 @@ def read_graph(db: DatabaseManager) -> GraphData:
     built_at = datetime.now(tz=UTC)
     with db.get_state_connection() as conn:
         # A caller already inside a transaction (`validated_write`) shares its consistent view;
-        # otherwise this read opens its own, so the seven selects below see one snapshot.
+        # otherwise this read opens its own, so the eight selects below see one snapshot.
         opened = not db.in_transaction and not conn.in_transaction
         if opened:
             conn.execute("BEGIN")
@@ -53,6 +56,8 @@ def read_graph(db: DatabaseManager) -> GraphData:
                 f"SELECT {_NODE_COLUMNS} FROM nodes ORDER BY ordinal ASC, priority DESC, id ASC"
             ).fetchall()
             nodes = {row[0]: NodeRepository._row_to_node(row) for row in node_rows}
+
+            revs = dict(conn.execute("SELECT id, rev FROM nodes").fetchall())
 
             relations: dict[RelationType, list[tuple[str, str]]] = {t: [] for t in RelationType}
             for source, target, rel_type in conn.execute(
@@ -119,6 +124,7 @@ def read_graph(db: DatabaseManager) -> GraphData:
                 conn.execute("COMMIT")
     return GraphData(
         nodes=nodes,
+        revs=revs,
         relations=relations,
         verifications=verifications,
         conditions=conditions,

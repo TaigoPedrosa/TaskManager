@@ -1,0 +1,326 @@
+import sqlite3
+import threading
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+from typer.testing import CliRunner
+
+from taskmanager.cli.main import app
+from taskmanager.core.enums import NodeKind, RelationType, VerificationType
+from taskmanager.core.models import (
+    Condition,
+    Job,
+    Lease,
+    Node,
+    NodeRelation,
+    NodeSection,
+    NodeVerification,
+)
+from taskmanager.core.status import JobKind, Status
+from taskmanager.db.connection import DatabaseManager, StateSchemaTooNew
+from taskmanager.db.graph_reader import read_graph
+from taskmanager.db.job_repo import JobRepository
+from taskmanager.db.node_repo import NodeRepository
+from taskmanager.db.runtime_repo import RuntimeRepository
+from taskmanager.db.schema import SCHEMA_VERSION, STATE_SCHEMA_VERSION
+
+_FIXTURE = Path(__file__).parent.parent / "fixtures" / "state_v1.sql"
+runner = CliRunner()
+
+
+def _build_v1_estate(taskmanager_dir: Path) -> None:
+    """A `state.db` shaped exactly like 0.3.0 wrote it: the frozen schema, at its own version,
+    with no `rev` column and no trigger this version added."""
+    taskmanager_dir.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(taskmanager_dir / "state.db")
+    try:
+        conn.executescript(_FIXTURE.read_text(encoding="utf-8"))
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _repo(tmp_path: Path) -> NodeRepository:
+    db = DatabaseManager(tmp_path)
+    db.init_all()
+    return NodeRepository(db)
+
+
+def _rev(repo: NodeRepository, node_id: str) -> int:
+    with repo.db.get_state_connection() as conn:
+        row = conn.execute("SELECT rev FROM nodes WHERE id = ?", (node_id,)).fetchone()
+    assert row is not None
+    return row[0]
+
+
+def _sqlite_master_rows(db: DatabaseManager) -> list[tuple[str, str, str, str]]:
+    with db.get_state_connection() as conn:
+        return conn.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master "
+            "WHERE name = 'nodes' OR name LIKE 'trg_%rev%' ORDER BY name"
+        ).fetchall()
+
+
+def test_migrated_v1_estate_matches_a_fresh_init(tmp_path: Path) -> None:
+    old = tmp_path / "old"
+    _build_v1_estate(old)
+    migrated = DatabaseManager(old)
+    with migrated.get_state_connection() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 2
+
+    fresh = DatabaseManager(tmp_path / "fresh")
+    fresh.init_all()
+    with fresh.get_state_connection() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION
+
+    assert _sqlite_master_rows(migrated) == _sqlite_master_rows(fresh)
+
+
+def test_uninitialised_directory_is_left_to_tm_init(tmp_path: Path) -> None:
+    db = DatabaseManager(tmp_path)
+    with db.get_state_connection() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
+        has_nodes = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='nodes'"
+        ).fetchone()
+    assert has_nodes is None
+
+    db.init_all()
+    with db.get_state_connection() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION
+
+
+def test_two_database_managers_migrate_the_same_estate_exactly_once(tmp_path: Path) -> None:
+    estate = tmp_path / "estate"
+    _build_v1_estate(estate)
+
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(2)
+
+    def open_it() -> None:
+        try:
+            barrier.wait(timeout=5)
+            with DatabaseManager(estate).get_state_connection():
+                pass
+        except BaseException as exc:  # noqa: BLE001 -- captured across the thread boundary
+            errors.append(exc)
+
+    threads = [threading.Thread(target=open_it) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    conn = sqlite3.connect(estate / "state.db")
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION
+    finally:
+        conn.close()
+
+
+def test_newer_schema_is_refused_and_nothing_is_written(tmp_path: Path) -> None:
+    future = tmp_path / "future"
+    _build_v1_estate(future)
+    conn = sqlite3.connect(future / "state.db")
+    conn.execute("PRAGMA user_version = 3")
+    conn.commit()
+    conn.close()
+
+    with (
+        pytest.raises(StateSchemaTooNew, match=r"schema 3.*\(2\)"),
+        DatabaseManager(future).get_state_connection(),
+    ):
+        pass
+
+    conn = sqlite3.connect(future / "state.db")
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(nodes)").fetchall()}
+    finally:
+        conn.close()
+    assert "rev" not in columns
+
+
+def test_rev_increases_on_status_and_title_change_through_save_node(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    node = Node(id="T1", kind=NodeKind.TASK, title="Original", status=Status.READY)
+    repo.save_node(node)
+    rev0 = _rev(repo, "T1")
+
+    repo.save_node(node.model_copy(update={"status": Status.DEFERRED}))
+    rev1 = _rev(repo, "T1")
+    assert rev1 > rev0
+
+    repo.save_node(node.model_copy(update={"status": Status.DEFERRED, "title": "Renamed"}))
+    assert _rev(repo, "T1") > rev1
+
+
+def test_rev_increases_on_set_section_and_remove_section(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    repo.save_node(Node(id="T1", kind=NodeKind.TASK, title="T", status=Status.READY))
+    rev0 = _rev(repo, "T1")
+
+    repo.save_section(
+        NodeSection(node_id="T1", section_key="body", ordinal=1, header="## Body", content="x")
+    )
+    rev1 = _rev(repo, "T1")
+    assert rev1 > rev0
+
+    assert repo.remove_section("T1", "body")
+    assert _rev(repo, "T1") > rev1
+
+
+def test_rev_increases_on_add_and_remove_verification(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    repo.save_node(Node(id="T1", kind=NodeKind.TASK, title="T", status=Status.READY))
+    rev0 = _rev(repo, "T1")
+
+    ver = NodeVerification(
+        node_id="T1", verification_type=VerificationType.FILE_EXISTS, target_path="a.py"
+    )
+    repo.add_verification(ver)
+    rev1 = _rev(repo, "T1")
+    assert rev1 > rev0
+    assert ver.id is not None
+
+    assert repo.remove_verification("T1", ver.id)
+    assert _rev(repo, "T1") > rev1
+
+
+def test_rev_increases_on_add_and_remove_condition(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    repo.save_node(Node(id="T1", kind=NodeKind.TASK, title="T", status=Status.READY))
+    rev0 = _rev(repo, "T1")
+
+    added = repo.add_condition(Condition(node_id="T1", needs="X", command="true"))
+    rev1 = _rev(repo, "T1")
+    assert rev1 > rev0
+
+    assert repo.remove_condition("T1", added.idx)
+    assert _rev(repo, "T1") > rev1
+
+
+def test_rev_increases_on_add_and_remove_dependency_on_both_ends(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    repo.save_node(Node(id="T1", kind=NodeKind.TASK, title="T1", status=Status.READY))
+    repo.save_node(Node(id="T2", kind=NodeKind.TASK, title="T2", status=Status.READY))
+    source_rev0, target_rev0 = _rev(repo, "T1"), _rev(repo, "T2")
+
+    repo.add_relation(
+        NodeRelation(source_id="T1", target_id="T2", relation_type=RelationType.DEPENDS_ON)
+    )
+    source_rev1, target_rev1 = _rev(repo, "T1"), _rev(repo, "T2")
+    assert source_rev1 > source_rev0
+    assert target_rev1 > target_rev0
+
+    repo.remove_relation("T1", "T2", RelationType.DEPENDS_ON)
+    assert _rev(repo, "T1") > source_rev1
+    assert _rev(repo, "T2") > target_rev1
+
+
+def test_rev_increases_on_moving_a_task(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    repo.save_node(Node(id="P1", kind=NodeKind.PLAN, title="P1", status=Status.READY))
+    repo.save_node(Node(id="P2", kind=NodeKind.PLAN, title="P2", status=Status.READY))
+    repo.save_node(Node(id="T1", kind=NodeKind.TASK, title="T1", status=Status.READY))
+    repo.add_relation(
+        NodeRelation(source_id="P1", target_id="T1", relation_type=RelationType.CONTAINS)
+    )
+    rev0 = _rev(repo, "T1")
+
+    repo.remove_relation("P1", "T1", RelationType.CONTAINS)
+    repo.add_relation(
+        NodeRelation(source_id="P2", target_id="T1", relation_type=RelationType.CONTAINS)
+    )
+    assert _rev(repo, "T1") > rev0
+
+
+def test_rev_unchanged_by_acquiring_heartbeating_and_releasing_a_lease(tmp_path: Path) -> None:
+    db = DatabaseManager(tmp_path)
+    db.init_all()
+    repo = NodeRepository(db)
+    runtime = RuntimeRepository(db)
+    repo.save_node(Node(id="T1", kind=NodeKind.TASK, title="T", status=Status.READY))
+    rev0 = _rev(repo, "T1")
+
+    runtime.acquire_lease(
+        Lease(task_id="T1", agent_id="a", session_id="s", branch_name="tm/T1"), []
+    )
+    assert _rev(repo, "T1") == rev0
+
+    assert runtime.heartbeat("T1")
+    assert _rev(repo, "T1") == rev0
+
+    runtime.release_lease("T1")
+    assert _rev(repo, "T1") == rev0
+
+
+def test_rev_unchanged_by_job_writes(tmp_path: Path) -> None:
+    db = DatabaseManager(tmp_path)
+    db.init_all()
+    repo = NodeRepository(db)
+    jobs = JobRepository(db)
+    repo.save_node(Node(id="T1", kind=NodeKind.TASK, title="T", status=Status.READY))
+    rev0 = _rev(repo, "T1")
+
+    jobs.create(
+        Job(
+            kind=JobKind.LAND,
+            node_id="T1",
+            repo="backend",
+            target="main",
+            heartbeat=datetime.now(tz=UTC),
+        )
+    )
+    assert _rev(repo, "T1") == rev0
+
+
+def test_graph_data_exposes_each_nodes_rev(tmp_path: Path) -> None:
+    db = DatabaseManager(tmp_path)
+    db.init_all()
+    repo = NodeRepository(db)
+    repo.save_node(Node(id="T1", kind=NodeKind.TASK, title="T", status=Status.READY))
+    repo.save_node(Node(id="T1", kind=NodeKind.TASK, title="T renamed", status=Status.READY))
+
+    data = read_graph(db)
+    assert data.revs["T1"] == _rev(repo, "T1")
+    assert data.revs["T1"] > 0
+
+
+def test_audit_and_cache_dbs_keep_schema_1(tmp_path: Path) -> None:
+    db = DatabaseManager(tmp_path)
+    db.init_all()
+    assert SCHEMA_VERSION == 1
+    with db.get_ledger_connection() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    with db.get_cache_connection() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+
+
+def test_export_then_restore_round_trips_and_never_exports_rev(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    runner.invoke(app, ["init", "-C", str(source)])
+    runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "-C", str(source)])
+    runner.invoke(app, ["plan", "add", "P", "--spec", "S1", "--slug", "P1", "-C", str(source)])
+    runner.invoke(app, ["task", "add", "T", "--plan", "S1-P1", "--slug", "t1", "-C", str(source)])
+    runner.invoke(app, ["section", "set", "S1-P1-t1:body", "line one", "-C", str(source)])
+
+    export_dir = tmp_path / "export"
+    res = runner.invoke(app, ["export", str(export_dir), "-C", str(source)])
+    assert res.exit_code == 0, res.output
+    for f in export_dir.glob("*.json"):
+        assert '"rev"' not in f.read_text(encoding="utf-8"), f.name
+
+    restored = tmp_path / "restored"
+    restored.mkdir()
+    res = runner.invoke(app, ["restore", str(export_dir), "-C", str(restored)])
+    assert res.exit_code == 0, res.output
+
+    export_dir2 = tmp_path / "export2"
+    res = runner.invoke(app, ["export", str(export_dir2), "-C", str(restored)])
+    assert res.exit_code == 0, res.output
+    for f in sorted(export_dir.glob("*.json")):
+        assert f.read_bytes() == (export_dir2 / f.name).read_bytes(), f.name
