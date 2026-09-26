@@ -235,7 +235,7 @@ def test_decision_rows_use_decision_statuses_and_list_the_nodes_they_block(web: 
         },
     )
     assert res.status_code == 201
-    rows = client.get("/api/decisions", params={"status": "open"}).json()
+    rows = client.get("/api/decisions", params={"status": "open"}).json()["items"]
     assert [r["id"] for r in rows] == ["decision-way"]
     assert rows[0]["status"] == DecisionStatus.OPEN.value
     assert [(b["id"], b["display"]) for b in rows[0]["blocks"]] == [
