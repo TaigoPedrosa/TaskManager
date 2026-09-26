@@ -24,7 +24,7 @@ from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine.conditions import is_executable
-from taskmanager.engine.operations import Operations, validated_write
+from taskmanager.engine.operations import Operations, is_owed_key, owed_refusal, validated_write
 from taskmanager.engine.snapshot import roll_up_ancestors
 from taskmanager.engine.verification import VerificationEngine
 
@@ -175,6 +175,10 @@ class BulkImporter:
         )
         if unknown:
             raise ValueError(f"{REFUSED}unknown ids {unknown}")
+
+        owed_ids = sorted({s.node_id for s in sections if is_owed_key(s.section_key)})
+        if owed_ids:
+            raise ValueError(f"{REFUSED}{'; '.join(owed_refusal(i) for i in owed_ids)}")
 
         with validated_write(self.node_repo, self.snapshots, known, prefix=REFUSED):
             for node in nodes:
