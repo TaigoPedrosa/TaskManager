@@ -56,6 +56,14 @@ def test_depth_outside_1_20_answers_400_naming_the_bound(web: Web) -> None:
         assert "1..20" in res.json()["detail"]
 
 
+def test_waves_answer_the_depth_cap_the_page_stops_compute_at(web: Web) -> None:
+    client, _root = web
+    body = client.get("/api/waves").json()
+    assert body["max_depth"] == 20
+    assert client.get("/api/waves", params={"depth": body["max_depth"]}).status_code == 200
+    assert client.get("/api/waves", params={"depth": body["max_depth"] + 1}).status_code == 400
+
+
 def test_size_outside_1_tick_budget_answers_400_naming_the_configured_bound(web: Web) -> None:
     client, root = web
     ConfigStore(root).set("dispatch.wave_size", "5")

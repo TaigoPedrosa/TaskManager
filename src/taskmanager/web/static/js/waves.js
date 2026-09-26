@@ -8,11 +8,13 @@
 let waveDepth = 1;
 let waveSize = null;
 let waveMaxSize = null;
+let waveMaxDepth = null;
 let waveData = [];
 let waveLoading = false;
 let waveError = null;
-// Indices whose Held section the user toggled away from its default (open when the card
-// itself has no entries -- "Nothing claimable.", collapsed otherwise).
+// Indices whose Held section the user toggled away from its default: open only when wave 1
+// itself has no entries ("Nothing claimable." with nothing else on screen to explain it),
+// collapsed otherwise, an empty later wave included.
 let waveHeldOverrides = new Set();
 let waveRequestSeq = 0;
 let waveRefetchScheduled = false;
@@ -31,9 +33,18 @@ async function getJson(path) {
     } catch (e) {
       /* non-JSON body */
     }
-    throw new Error(detail || `GET ${path} failed (${res.status})`);
+    throw new Error(detailText(detail) || `GET ${path} failed (${res.status})`);
   }
   return res.json();
+}
+
+// FastAPI answers a validation failure (422) with `detail` as a list of {loc, msg, type}
+// objects, and an HTTPException with a plain string.
+function detailText(detail) {
+  if (detail == null) return null;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) return detail.map((d) => (d && d.msg ? d.msg : JSON.stringify(d))).join('; ');
+  return JSON.stringify(detail);
 }
 
 async function loadWaveMeta() {
@@ -58,18 +69,19 @@ function waveSpecFilter() {
 }
 
 async function fetchWaves() {
-  // The one chokepoint every wave request routes through (init, retry, size change, compute,
-  // reset, and a filters.js refetch) -- a static export has no /api/waves behind any of them.
+  // The one chokepoint every wave request routes through (init, size change, compute, reset,
+  // and a filters.js refetch) -- a static export has no /api/waves behind any of them.
   if (isStaticMode) return;
   const seq = ++waveRequestSeq;
   waveLoading = true;
   waveError = null;
   setWavesLoadPending(true);
   renderWaves();
-  // The one bound the client already knows before ever asking the server: an out-of-range
-  // size would otherwise reach /api/waves, and its 400 response logs a browser console
-  // error no amount of catching in JS can silence.
-  if (waveSize !== null && waveMaxSize !== null && (waveSize < 1 || waveSize > waveMaxSize)) {
+  // The size bound is refused here rather than by /api/waves: a 400 or 422 response logs a
+  // browser console error no amount of catching in JS can silence. Only a plain run of digits
+  // counts, so 0, negatives, fractions, exponents and an empty box all take the refusal.
+  const size = waveSize === null ? null : String(waveSize).trim();
+  if (size !== null && waveMaxSize !== null && !(/^\d+$/.test(size) && Number(size) >= 1 && Number(size) <= waveMaxSize)) {
     waveData = [];
     waveError = `Could not compute waves: wave size must be 1–${waveMaxSize} (this project's dispatch.tick_budget).`;
     waveLoading = false;
@@ -78,12 +90,13 @@ async function fetchWaves() {
     return;
   }
   const params = new URLSearchParams({ depth: String(waveDepth) });
-  if (waveSize !== null) params.set('size', String(waveSize));
+  if (size !== null) params.set('size', size);
   waveSpecFilter().forEach((s) => params.append('spec', s));
   try {
     const res = await getJson(`/api/waves?${params}`);
     if (seq !== waveRequestSeq) return; // superseded by a later request
     waveData = res.waves;
+    waveMaxDepth = res.max_depth;
   } catch (e) {
     if (seq !== waveRequestSeq) return;
     waveData = [];
@@ -116,6 +129,8 @@ function onWaveSizeChange(size) {
 
 function waveComputeDisabled() {
   if (waveLoading) return true;
+  // /api/waves refuses a depth past its cap, so the button stops there.
+  if (waveMaxDepth !== null && waveData.length >= waveMaxDepth) return true;
   const last = waveData[waveData.length - 1];
   return !!last && last.entries.length === 0;
 }
@@ -156,7 +171,7 @@ const ACTION_STATUS_CODE = { implement: 'IMPLEMENTING', review: 'REVIEWING', fix
 function actionChip(action) {
   const code = ACTION_STATUS_CODE[action] || 'STALE';
   const t = getTheme(code);
-  return `<span class="st-chip st-${t.code} inline-flex items-center px-1.5 py-0.5 rounded-full font-medium text-[10px]" title="${esc(t.description)}">${esc(action)}</span>`;
+  return `<span class="st-chip st-${t.code} inline-flex items-center px-1.5 py-0.5 rounded-full font-medium text-[10px] leading-tight" title="${esc(t.description)}">${esc(action)}</span>`;
 }
 
 // A wave entry's status_before/status_after are the raw Status a real claim would carry
@@ -174,7 +189,7 @@ const WAVE_STATUS_DISPLAY = {
 function waveStatusChip(rawStatus) {
   const t = getTheme(WAVE_STATUS_DISPLAY[rawStatus] || rawStatus);
   const label = rawStatus.charAt(0) + rawStatus.slice(1).toLowerCase();
-  return `<span class="st-chip st-${t.code} inline-flex items-center px-1.5 py-0.5 rounded-full font-medium text-[10px]">${esc(label)}</span>`;
+  return `<span class="st-chip st-${t.code} inline-flex items-center px-1.5 py-0.5 rounded-full font-medium text-[10px] leading-tight">${esc(label)}</span>`;
 }
 
 function heldRowHtml(row) {
@@ -193,7 +208,7 @@ function heldRowHtml(row) {
 }
 
 function waveEntryHtml(entry) {
-  const pill = 'px-1.5 py-0.5 rounded border font-mono text-[10px]';
+  const pill = 'px-1.5 py-0.5 rounded border font-mono text-[10px] leading-tight';
   const inFlight = entry.in_flight ? `<span class="${pill} bg-zinc-800 border-zinc-700 text-zinc-300">in flight</span>` : '';
   const repoPills = entry.repos.map((r) => `<span class="${pill} bg-zinc-900 border-zinc-800 text-cyan-400">${esc(r)}</span>`).join('');
   const pillsInner = `${inFlight}<span class="${pill} bg-purple-950/60 border-purple-800/80 text-purple-300">${esc(entry.model)}</span>${repoPills}`;
@@ -210,11 +225,11 @@ function waveEntryHtml(entry) {
         <div class="hidden sm:flex items-center gap-1.5 flex-wrap">${pillsInner}</div>
       </div>
       <div class="wave-entry-body px-3.5 py-3 space-y-2.5 bg-zinc-950/80 border-t border-zinc-800/60">
-        <div class="text-sm font-medium text-zinc-200 break-words">${esc(entry.title)}</div>
+        <div class="text-sm leading-tight font-medium text-zinc-200 break-words">${esc(entry.title)}</div>
         <div class="flex sm:hidden items-center gap-1.5 flex-wrap">${pillsInner}</div>
         <div class="flex items-center gap-1.5 flex-wrap">
           ${waveStatusChip(entry.status_before)}
-          <span class="text-xs text-zinc-500">→</span>
+          <span class="text-xs text-zinc-400">→</span>
           ${waveStatusChip(entry.status_after)}
         </div>
       </div>
@@ -224,14 +239,14 @@ function waveEntryHtml(entry) {
 
 function waveCardHtml(wave, waveNumber, index) {
   const isEmpty = wave.entries.length === 0;
-  const heldOpen = isEmpty !== waveHeldOverrides.has(index);
+  const heldOpen = (isEmpty && index === 0) !== waveHeldOverrides.has(index);
   const heldHtml = wave.held.length > 0
     ? `
       <div class="space-y-1.5">
-        <button type="button" class="wave-held-toggle w-full flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-zinc-400 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 rounded" data-wave-index="${index}" aria-expanded="${heldOpen}">
+        <button type="button" class="wave-held-toggle w-full flex items-center justify-between text-[11px] leading-tight font-semibold uppercase tracking-wider text-zinc-400 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 rounded" data-wave-index="${index}" aria-expanded="${heldOpen}">
           <span>Held (${wave.held.length})</span>${renderIcon(heldOpen ? 'chevron-down' : 'chevron-right', 'w-3 h-3')}
         </button>
-        <div class="wave-held-rows border border-zinc-800 rounded-lg overflow-hidden divide-y divide-zinc-800 font-mono text-[11px] ${heldOpen ? '' : 'hidden'}">${wave.held.map(heldRowHtml).join('')}</div>
+        <div class="wave-held-rows border border-zinc-800 rounded-lg overflow-hidden divide-y divide-zinc-800 font-mono text-[11px] leading-snug ${heldOpen ? '' : 'hidden'}">${wave.held.map(heldRowHtml).join('')}</div>
       </div>`
     : '';
   return `
@@ -240,8 +255,8 @@ function waveCardHtml(wave, waveNumber, index) {
         <h3 class="font-bold uppercase text-emerald-400">Wave ${waveNumber}</h3>
         <span class="text-zinc-400">${wave.entries.length} task${wave.entries.length === 1 ? '' : 's'}</span>
       </div>
-      <div class="p-4 space-y-2.5">
-        ${isEmpty ? '<div class="text-sm text-zinc-400">Nothing claimable.</div>' : wave.entries.map(waveEntryHtml).join('')}
+      <div class="wave-body px-3 py-4 sm:px-4 space-y-2.5">
+        ${isEmpty ? '<div class="text-sm leading-tight text-zinc-400">Nothing claimable.</div>' : wave.entries.map(waveEntryHtml).join('')}
         ${heldHtml}
       </div>
     </section>
@@ -252,16 +267,13 @@ function controlsHtml() {
   const captionText = waveMaxSize !== null ? `1–${waveMaxSize} (tick_budget)` : '';
   const maxAttr = waveMaxSize !== null ? ` max="${waveMaxSize}"` : '';
   const valueAttr = waveSize !== null ? waveSize : '';
-  // A size-range refusal is the one error the input itself caused, so it wears the refusal
-  // rather than only the pane-level alert above it (same border/text pair as toast's error tone).
   const sizeBorderCls = waveError ? 'border-red-700' : 'border-zinc-800';
-  const sizeTextCls = waveError ? 'text-red-200' : 'text-zinc-200';
   return `
     <div class="wave-controls flex items-center justify-between gap-3 flex-wrap">
       <div class="flex items-center gap-2 flex-wrap">
-        <label class="flex items-center gap-2 text-xs text-zinc-300">
+        <label class="flex items-center gap-2 text-xs font-medium text-zinc-400">
           <span>Wave size</span>
-          <input id="wave-size-input" type="number" min="1"${maxAttr} value="${esc(valueAttr)}" aria-describedby="wave-size-caption" class="h-8 w-16 px-2.5 rounded-lg bg-zinc-950 border ${sizeBorderCls} text-xs ${sizeTextCls} focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+          <input id="wave-size-input" type="number" min="1"${maxAttr} value="${esc(valueAttr)}" aria-describedby="wave-size-caption" class="h-8 w-16 px-2.5 rounded-lg bg-zinc-950 border ${sizeBorderCls} font-mono text-xs font-normal text-zinc-200 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
         </label>
         <span id="wave-size-caption" class="text-xs font-medium text-zinc-400">${esc(captionText)}</span>
       </div>
@@ -275,8 +287,8 @@ function footerHtml() {
   const lastEmpty = !!last && last.entries.length === 0;
   const disabled = waveComputeDisabled();
   return `
-    <div class="flex items-center gap-3">
-      <button id="wave-compute-btn" type="button" ${disabled ? 'disabled' : ''} class="h-9 px-4 rounded-lg text-xs font-semibold transition bg-emerald-600 hover:bg-emerald-500 text-black focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed">Compute next wave</button>
+    <div class="wave-footer flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:gap-3">
+      <button id="wave-compute-btn" type="button" ${disabled ? 'disabled' : ''} class="h-8 px-3 rounded-lg text-xs font-semibold transition bg-emerald-600 hover:bg-emerald-500 text-black focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed">Compute next wave</button>
       ${lastEmpty && !waveLoading ? '<span class="text-xs text-zinc-400">The last wave is empty.</span>' : ''}
     </div>
   `;
@@ -288,7 +300,7 @@ function wavesHtml() {
     // own `change` event, and the frame draws no button here.
     return `
       ${controlsHtml()}
-      <div role="alert" class="border border-red-800/60 rounded-lg bg-red-950/40 text-red-200 text-xs p-4">
+      <div role="alert" class="border border-red-700 rounded-lg bg-red-950 text-red-200 text-xs font-medium p-3">
         <span>${esc(waveError)}</span>
       </div>
     `;
@@ -304,8 +316,8 @@ function wavesHtml() {
           <h3 class="font-bold uppercase text-emerald-400">Wave 1</h3>
           <span class="text-zinc-400">&hellip;</span>
         </div>
-        <div class="p-4">
-          <div class="text-xs text-zinc-500 italic">Loading&hellip;</div>
+        <div class="wave-body px-3 py-4 sm:px-4">
+          <div class="text-xs text-zinc-400 italic">Loading&hellip;</div>
         </div>
       </section>
       ${footerHtml()}
@@ -321,10 +333,7 @@ function wavesHtml() {
 function wireWavesHandlers(root) {
   const sizeInput = root.querySelector('#wave-size-input');
   if (sizeInput) {
-    sizeInput.addEventListener('change', () => {
-      const n = Number(sizeInput.value);
-      if (Number.isFinite(n) && n > 0) onWaveSizeChange(n);
-    });
+    sizeInput.addEventListener('change', () => onWaveSizeChange(sizeInput.value));
   }
   const resetBtn = root.querySelector('#wave-reset-btn');
   if (resetBtn) resetBtn.addEventListener('click', resetWaves);

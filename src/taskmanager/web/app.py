@@ -635,7 +635,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             repo_order=_repo_order(),
             cached_conditions=cached_conditions,
         )
-        return {"waves": [asdict(w) for w in waves]}
+        return {"waves": [asdict(w) for w in waves], "max_depth": _MAX_WAVE_DEPTH}
 
     @app.post("/api/specs", status_code=201)
     def create_spec(body: SpecCreate, actor: Actor) -> dict[str, str]:

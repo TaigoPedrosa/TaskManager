@@ -38,8 +38,8 @@ subscribe protocol, and a handful of paginated HTTP reads.
   collapsible "Held" list of what the wave skipped and why.
 - `GET /api/waves?depth=&size=&spec=` (`src/taskmanager/web/app.py`) runs that same simulation
   server-side over one snapshot of `state.db` and the cached conditions, and returns
-  `{"waves": [...]}`; `depth` and `size` are bounds-checked server-side regardless of what the
-  client sends.
+  `{"waves": [...], "max_depth": n}`; `depth` and `size` are bounds-checked server-side
+  regardless of what the client sends, and the page stops "Compute next wave" at `max_depth`.
 
 ## Upgrading from 0.2
 

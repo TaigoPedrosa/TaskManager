@@ -11,6 +11,11 @@
       darkMode: 'class',
       theme: {
         extend: {
+          // The CDN's own .font-mono rule is injected after app.css, so the face has to be set
+          // here for JetBrains Mono (loaded by app.css) to win over the ui-monospace default.
+          fontFamily: {
+            mono: ['"JetBrains Mono"', 'monospace'],
+          },
           colors: {
             brand: {
               50: '#f0fdf4',
