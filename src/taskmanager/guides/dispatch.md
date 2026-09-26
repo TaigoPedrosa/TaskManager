@@ -14,6 +14,8 @@ A step the agent leaves open, an agent that dies, or a handed-over job the agent
 
 Because one run takes a node exactly one step, carrying it from `implement` through `review`, `fix` and `merge` takes several ticks — so the dispatching session loops itself, not the workflow: arm `/loop` with a dynamic interval unless the user says otherwise. Each wakeup is one tick: read `tm run list`, then one `tm wave discover` sized to the tick's budget, split into staggered waves of at most `wave_size` nodes; launch each wave as its own `tm-wave` run by `scriptPath`, with `maxBatch` set to `wave_size` and every other wave's chosen ids in `exclude`, so no two runs draw the same node. Record what each wave landed, failed or blocked, then schedule the next wakeup — shorter while nodes are mid-step, longer when nothing is claimable. Nothing claimable, or everything held on an owner decision, does not stop it — it still ticks, at the ceiling; only the user stops it. Never run two ticks in one wakeup drawing from the same unclaimed pool.
 
+A session manager never asks the owner a question in chat — no question tool, no question folded into a status message: chat is for status reports, and a question there is lost when the session ends, invisible to other sessions, and holds nothing back. Every question, ruling, authorization or choice is instead registered as a decision: `tm decision add "<question>" --context-file <path> --option "a|Label|what happens" --recommend a`, with `--blocks <ids>` on whatever must wait for the answer. The loop reads `tm decision list --status open` and each answer on its next tick, acting on it and amending the affected nodes when the answer carries changes.
+
 **Typical target** (`tm config` keys `dispatch.tick_min`, `dispatch.tick_max`, `dispatch.wave_size`, `dispatch.tick_budget`, effective here): a wakeup every {{tick_min}}–{{tick_max}} s, waves of at most {{wave_size}} nodes, at most {{tick_budget}} nodes dispatched per tick across those staggered waves. A dispatch message's own numbers override these for that session; `tm config set` changes what this line prints.
 
 Arguments, of which `session` and `worktreeDir` are required:
@@ -123,4 +125,5 @@ A plan's `context` reaches every task's brief. Anything a `tm` command can answe
 - Never paste, summarise or extend the rendered brief; `tm render <id> --view subagent` is the brief.
 - Never keep a second record of what is in flight, a fix counter, or a hold outside `holdMerge`.
 - Never answer a decision that is the owner's.
+- Never ask the owner a question in chat: every question is a `tm decision add`.
 - Never re-run a failed node without changing what made it fail.

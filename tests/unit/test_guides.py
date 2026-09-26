@@ -198,6 +198,15 @@ def test_dispatch_guide_states_the_task_fix_round_cap() -> None:
     assert "widening `acceptable_models`" in text
 
 
+def test_dispatch_guide_routes_questions_through_decisions() -> None:
+    """A question in chat is lost when the session ends; every question is a decision instead."""
+    text = _guide_text("dispatch")
+    assert "never ask" in text.lower()
+    assert "tm decision add" in text
+    assert "--blocks" in text
+    assert "tm decision list --status open" in text
+
+
 def test_dispatch_guide_answers_a_ruling_rejection_with_a_decision() -> None:
     text = _guide_text("dispatch")
     assert "not another fix round" in text
