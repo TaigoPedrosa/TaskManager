@@ -260,34 +260,73 @@ function wireLifecycleControls(root, node) {
 }
 
 
-// Slide-over Node Inspector for Graph
+// Slide-over Node Inspector for Graph: opening it watches the node through the store (the
+// same watch tree.js's own expand uses) and every later render reads straight off
+// window.tmStore.rows/bodies, re-run by the onChange listener below -- no fetch, no reload,
+// ever, on either open or a write made from inside it.
+let inspectorNodeId = null;
+
+// A node still expanded in the tree/document keeps its own reason to stay watched; only
+// drop the watch here when closing or switching leaves nothing else asking for it.
+function releaseInspectorWatch(id) {
+  if (id && !expandedIds.has(id)) window.tmStore.unwatch([id]);
+}
+
 async function showGraphInspector(nodeId) {
+  if (inspectorNodeId && inspectorNodeId !== nodeId) releaseInspectorWatch(inspectorNodeId);
+  inspectorNodeId = nodeId;
   selectedNodeId = nodeId;
   graphInspector.classList.remove('hidden');
+  window.tmStore.watch([nodeId]);
+  renderGraphInspector(nodeId);
+}
 
-  let detail = null;
-  if (isStaticMode) {
-    detail = (window.STATIC_DATA.details || {})[nodeId];
-  } else {
-    try {
-      const res = await fetch(`/api/nodes/${nodeId}`);
-      if (res.ok) detail = await res.json();
-    } catch (e) {
-      console.error('Failed to load node detail:', e);
-    }
+inspectorCloseBtn.addEventListener('click', () => {
+  releaseInspectorWatch(inspectorNodeId);
+  inspectorNodeId = null;
+});
+
+function renderGraphInspector(nodeId) {
+  const row = window.tmStore.rows.get(nodeId);
+  const body = window.tmStore.bodies.get(nodeId);
+  const kindEl = document.getElementById('inspector-kind');
+  const idEl = document.getElementById('inspector-id');
+  const titleEl = document.getElementById('inspector-title');
+  const bodyEl = document.getElementById('inspector-body');
+
+  if (!row && !body) {
+    kindEl.textContent = '';
+    idEl.textContent = nodeId;
+    titleEl.textContent = '';
+    bodyEl.innerHTML = '<div class="text-xs text-red-400 italic py-6 text-center">Node not found.</div>';
+    return;
   }
 
-  if (!detail) return;
+  const n = (body && body.node) || row;
+  kindEl.textContent = n.kind;
+  idEl.textContent = n.id;
+  titleEl.textContent = n.title;
 
-  const n = detail.node;
+  if (!body) {
+    bodyEl.innerHTML = '<div class="text-xs text-zinc-500 italic py-6 text-center">Loading&hellip;</div>';
+    return;
+  }
+
+  const detail = {
+    node: body.node,
+    dependency_details: body.dependency_details,
+    dependent_details: body.dependent_details,
+    sections: sectionsListFrom(body),
+    verifications: body.verifications,
+    conditions: body.conditions,
+    jobs: body.jobs,
+    lease: body.lease,
+    phase: row ? row.phase : null,
+    display: row ? row.display : null,
+  };
   const status = detail.display || n.status;
   const editable = canEdit();
 
-  document.getElementById('inspector-kind').textContent = n.kind;
-  document.getElementById('inspector-id').textContent = n.id;
-  document.getElementById('inspector-title').textContent = n.title;
-
-  const body = document.getElementById('inspector-body');
   let leaseBanner = '';
   if (detail.lease) {
     leaseBanner = `
@@ -304,7 +343,7 @@ async function showGraphInspector(nodeId) {
 
   const attachments = (n.frontmatter && n.frontmatter.attachments) || [];
 
-  body.innerHTML = `
+  bodyEl.innerHTML = `
     ${editable ? renderActionBar(n, !!detail.lease) : ''}
     <div class="flex items-center gap-2">
       ${statusIcon(status, 'w-4 h-4')}
@@ -317,17 +356,27 @@ async function showGraphInspector(nodeId) {
     ${renderAttachments(n, attachments, editable)}
     ${renderSections(detail.sections, n.id)}
   `;
-  attachSectionToggleHandlers(body);
-  attachInspectorGroupToggleHandlers(body, nodeId);
-  wireAttachmentControls(body, n, attachments, editable, () => showGraphInspector(nodeId));
+  attachSectionToggleHandlers(bodyEl);
+  attachInspectorGroupToggleHandlers(bodyEl, nodeId);
+  wireAttachmentControls(bodyEl, n, attachments, editable);
   if (editable) {
-    wireActionBar(body, n);
-    wireLifecycleControls(body, n);
-    wireVerificationControls(body, n);
-    wireDependencyControls(body, n);
-    attachSectionEditControls(body, n, detail.sections);
+    wireActionBar(bodyEl, n);
+    wireLifecycleControls(bodyEl, n);
+    wireVerificationControls(bodyEl, n);
+    wireDependencyControls(bodyEl, n);
+    attachSectionEditControls(bodyEl, n, detail.sections);
   }
 }
+
+// A write from inside the inspector (a section edit, a verb, a dependency change...) never
+// reloads anything -- its effect lands as a `row`/`body`/`section` item on this same
+// subscription, and this is what turns that into a re-render.
+window.tmStore.onChange((patch) => {
+  if (!inspectorNodeId || graphInspector.classList.contains('hidden')) return;
+  if (patch.rowIds.includes(inspectorNodeId) || patch.bodyIds.includes(inspectorNodeId)) {
+    renderGraphInspector(inspectorNodeId);
+  }
+});
 
 
 // Attachments (§4): a gallery with lightbox, source/age/staleness badges and Re-check, plus
@@ -587,26 +636,24 @@ if (typeof renderSectionBody === 'function') {
 // the document view's own markup never has to know decisions exist.
 
 function decorateAwaitingDecisionBanners() {
-  function walk(nodes) {
-    (nodes || []).forEach(task => {
-      if (task.kind === 'task' && displayOf(task) === 'AWAITING_DECISION') {
-        const el = document.getElementById(`doc-node-${task.id}`);
-        const cardBody = el && el.querySelector('.task-body');
-        if (cardBody && !cardBody.querySelector('.awaiting-decision-banner')) {
-          const waitingOn = (task.dependency_details || []).filter(d => !d.finished);
-          const links = waitingOn.map(d =>
-            `<button type="button" class="awaiting-decision-link underline decoration-dotted text-amber-200 hover:text-amber-100" data-decision-id="${esc(d.id)}">${esc(d.id)}${d.title ? `: ${esc(d.title)}` : ''}</button>`
-          ).join(', ');
-          const banner = document.createElement('div');
-          banner.className = 'awaiting-decision-banner p-2.5 bg-amber-950/40 border border-amber-800/80 rounded-lg flex items-center gap-2 text-xs mb-3';
-          banner.innerHTML = `${renderIcon('help-circle', 'w-3.5 h-3.5 text-amber-400 flex-shrink-0')}<span class="text-amber-200">Awaiting decision: ${links || 'unknown'}</span>`;
-          cardBody.insertBefore(banner, cardBody.firstChild);
-        }
-      }
-      walk(task.children);
-    });
-  }
-  walk(treeData);
+  // Rows are flat (no `.children`), and dependency_details lives on a watched body, not the
+  // row itself -- a task not yet expanded has no body to read the banner's links from, and
+  // it reappears here on its own once opening the card starts watching it.
+  window.tmStore.rows.forEach(task => {
+    if (task.kind !== 'task' || displayOf(task) !== 'AWAITING_DECISION') return;
+    const el = document.getElementById(`doc-node-${task.id}`);
+    const cardBody = el && el.querySelector('.task-body');
+    if (!cardBody || cardBody.querySelector('.awaiting-decision-banner')) return;
+    const body = window.tmStore.bodies.get(task.id);
+    const waitingOn = ((body && body.dependency_details) || []).filter(d => !d.finished);
+    const links = waitingOn.map(d =>
+      `<button type="button" class="awaiting-decision-link underline decoration-dotted text-amber-200 hover:text-amber-100" data-decision-id="${esc(d.id)}">${esc(d.id)}${d.title ? `: ${esc(d.title)}` : ''}</button>`
+    ).join(', ');
+    const banner = document.createElement('div');
+    banner.className = 'awaiting-decision-banner p-2.5 bg-amber-950/40 border border-amber-800/80 rounded-lg flex items-center gap-2 text-xs mb-3';
+    banner.innerHTML = `${renderIcon('help-circle', 'w-3.5 h-3.5 text-amber-400 flex-shrink-0')}<span class="text-amber-200">Awaiting decision: ${links || 'unknown'}</span>`;
+    cardBody.insertBefore(banner, cardBody.firstChild);
+  });
 }
 
 document.addEventListener('click', (e) => {
@@ -634,7 +681,7 @@ function attachInspectorGroupToggleHandlers(root, nodeId) {
       const id = header.getAttribute('data-group-id');
       if (collapsedGroups.has(id)) collapsedGroups.delete(id);
       else collapsedGroups.add(id);
-      showGraphInspector(nodeId);
+      renderGraphInspector(nodeId);
     };
   });
 }

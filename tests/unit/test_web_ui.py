@@ -732,7 +732,9 @@ def test_refresh_decisions_data_reads_the_paginated_envelopes_items() -> None:
     # /api/decisions answers {items, next}; reading the response itself as the list
     # breaks decisionsData.filter with no test catching it.
     refresh = _function_body(get_web_html(), "refreshDecisionsData")
-    assert "await api('GET', '/api/decisions')).items" in refresh
+    assert "const res = await api('GET', `/api/decisions?" in refresh
+    assert "decisionsData = res.items;" in refresh
+    assert "decisionsNextCursor = res.next;" in refresh
 
 
 def test_dialog_initial_focus_prefers_a_form_field_over_the_close_button() -> None:
@@ -910,7 +912,9 @@ def test_the_inspector_shows_the_lifecycle_panel() -> None:
         "landingChainText(n)",
     ):
         assert field in panel, field
-    assert "renderLifecycle(detail, editable)" in _function_body(html, "showGraphInspector")
+    # showGraphInspector only opens and watches the node; renderGraphInspector is the part
+    # that draws the panel, re-run by the store's own onChange on every later update too.
+    assert "renderLifecycle(detail, editable)" in _function_body(html, "renderGraphInspector")
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is needed to exercise the JS")
