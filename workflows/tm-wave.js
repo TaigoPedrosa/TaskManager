@@ -1,6 +1,6 @@
 export const meta = {
   name: 'tm-wave',
-  description: 'Choose claimable tm nodes and run each through its own loop: tm task start names the next step and its model, an agent does the step and closes it, and landings run as tm jobs',
+  description: 'Choose claimable tm nodes, claim each one\'s next step, run it, and stop: tm task start names the step and its model, an agent does it and closes it, a landing runs as a tm job, and the next tick claims the next step',
   whenToUse: 'Dispatcher tick. args: {session, worktreeDir, specs, slots, maxStrong, maxBatch, exclude, holdMerge, root, tm, agentTypes, reviewerTypes, capabilities, preamble, rulesDir, gateLane, models}. session and worktreeDir are required; specs defaults to every spec; root defaults to the session cwd and tm to the tm on PATH; agentTypes (repo -> agent type for implement and fix), reviewerTypes ({task, rereview, container} -> agent type), capabilities (agent type -> the requires values it serves), preamble (repo -> a line prepended to its briefs, plus a "default" key) and rulesDir default to none; gateLane (a string, or repo -> text with a "default" key; `{task}` becomes the node id) defaults to none; models (the family tm names on a claim -> model id) overrides the current Claude ids family by family.',
   phases: [
     { title: 'Discover', detail: '`tm wave discover` chooses the batch', model: 'haiku' },
@@ -54,9 +54,6 @@ const q = s => {
 }
 const TM = q(A.tm || 'tm')
 
-// tm's own caps end every real cycle long before this; a node reaching it means the script and
-// tm disagree about what comes next, and tm task get is what explains it.
-const MAX_STEPS = 24
 // tm job status --wait returns inside the runner's 10-minute command limit; a job still running
 // after MAX_POLLS waits keeps running on its own and a later tick picks it up.
 const WAIT_SECONDS = 540
@@ -318,25 +315,22 @@ When this node's own change is at fault, close with ${TM} job resume ${id} ${own
 async function run(n) {
   const trail = []
   const end = status => ({ id: n.id, status, trail })
-  let s = await read(n)
-  for (let step = 0; step < MAX_STEPS; step++) {
-    if (!s) return end('unreadable')
-    if (TERMINAL.has(s.status) || !s.next_action) return end(s.status)
-    if (s.next_action === 'merge' && HOLD_MERGE.has(n.id)) return trail.push('merge held by args.holdMerge'), end(s.status)
-    const c = await start(n, trail)
-    if (!c) return end(s.status)
-    if (c.action === 'blocked' && !c.job) return trail.push(`blocked: ${c.reason}`), end('blocked')
-    if (c.action in CLAIMED) {
-      s = await work(n, c, s, trail)
-      continue
-    }
-    // A merge claim of a node already MERGING, and every sync claim, is a hand-over of a stopped job.
-    const handed = c.action === 'sync' || (c.action === 'merge' && s.status === 'MERGING')
-    await land(n, c.action === 'blocked' ? { ...c, action: 'sync' } : c, trail, handed)
-    s = await read(n)
+  const s = await read(n)
+  if (!s) return end('unreadable')
+  if (TERMINAL.has(s.status) || !s.next_action) return end(s.status)
+  if (s.next_action === 'merge' && HOLD_MERGE.has(n.id)) return trail.push('merge held by args.holdMerge'), end(s.status)
+  const c = await start(n, trail)
+  if (!c) return end(s.status)
+  if (c.action === 'blocked' && !c.job) return trail.push(`blocked: ${c.reason}`), end('blocked')
+  if (c.action in CLAIMED) {
+    const after = await work(n, c, s, trail)
+    return end(after ? after.status : 'unreadable')
   }
-  log(`${n.id}: ${MAX_STEPS} steps without reaching COMPLETED, FAILED or blocked; tm task get ${n.id} shows where it stands`)
-  return end(s ? s.status : 'unreadable')
+  // A merge claim of a node already MERGING, and every sync claim, is a hand-over of a stopped job.
+  const handed = c.action === 'sync' || (c.action === 'merge' && s.status === 'MERGING')
+  await land(n, c.action === 'blocked' ? { ...c, action: 'sync' } : c, trail, handed)
+  const after = await read(n)
+  return end(after ? after.status : 'unreadable')
 }
 
 phase('Discover')
