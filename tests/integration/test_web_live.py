@@ -4,6 +4,7 @@
 import asyncio
 import functools
 import json
+import sys
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -24,6 +25,12 @@ from taskmanager.engine.snapshot import SnapshotBuilder
 from taskmanager.web.app import create_app
 from taskmanager.web.live import LiveHub, Session
 from taskmanager.web.rows import statuses_hash
+
+# tests/perf/estate.py has no __init__.py alongside it, so it is only importable once its own
+# directory is on sys.path -- true already when a full run collects it first, not when this
+# file's own suite runs alone (as `live-suite`'s verification does).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "perf"))
+from estate import seed as seed_estate
 
 
 def run_async[**P](fn: Callable[P, Awaitable[None]]) -> Callable[P, None]:
@@ -220,13 +227,15 @@ async def test_status_change_in_an_open_plan_sends_row_statuses_and_hash(estate:
     watcher_msg = _socket(watcher).sent[-1]
     assert watcher_msg["re"] is None
     ops = {item["op"] for item in watcher_msg["items"]}
-    assert {"row", "statuses"} <= ops
+    assert {"row", "plan_counts"} <= ops
     row_ids = {item["row"]["id"] for item in watcher_msg["items"] if item["op"] == "row"}
     assert "T1" in row_ids
     assert watcher_msg["hash"] == hub.hash
 
+    # Both sessions hold the same spec's whole entry already, so the count move travels as
+    # its own plan_counts item, never as a re-send of the whole (unchanged, single-plan) entry.
     onlooker_msg = _socket(onlooker).sent[-1]
-    assert {item["op"] for item in onlooker_msg["items"]} == {"statuses"}
+    assert {item["op"] for item in onlooker_msg["items"]} == {"plan_counts"}
 
 
 # -- a section write ---------------------------------------------------------------------------
@@ -417,42 +426,8 @@ def test_the_real_app_answers_ws_with_the_protocol(tmp_path: Path) -> None:
 # -- budgets on the 1,000-node estate -----------------------------------------------------------
 
 
-def _seed_1000_node_estate(
-    root: Path, specs: int = 25, plans: int = 4, tasks: int = 8
-) -> NodeRepository:
-    """25 specs of 4 plans of 8 tasks: ~925 nodes, spread the way a real estate is (a spec's
-    own `statuses` entry stays small), unlike `tests/perf/estate.py`'s single spec -- that
-    shape is fine for its own statement-count budgets, but would make every `statuses` item
-    here carry all 100 plans' counts regardless of which one actually changed."""
-    db = DatabaseManager(root / ".taskmanager")
-    db.init_all()
-    node_repo = NodeRepository(db)
-    for s in range(specs):
-        spec_id = f"S{s}"
-        node_repo.save_node(Node(id=spec_id, kind=NodeKind.SPEC, title=spec_id))
-        for p in range(plans):
-            plan_id = f"{spec_id}-P{p}"
-            node_repo.save_node(Node(id=plan_id, kind=NodeKind.PLAN, title=plan_id))
-            node_repo.add_relation(
-                NodeRelation(
-                    source_id=spec_id, target_id=plan_id, relation_type=RelationType.CONTAINS
-                )
-            )
-            for t in range(tasks):
-                task_id = f"{plan_id}-T{t}"
-                node_repo.save_node(
-                    Node(id=task_id, kind=NodeKind.TASK, title=task_id, target_repo=".")
-                )
-                node_repo.add_relation(
-                    NodeRelation(
-                        source_id=plan_id, target_id=task_id, relation_type=RelationType.CONTAINS
-                    )
-                )
-    return node_repo
-
-
 def test_budgets_on_the_1000_node_estate(tmp_path: Path) -> None:
-    node_repo = _seed_1000_node_estate(tmp_path)
+    node_repo = seed_estate(tmp_path, plans=100)
     estate = Estate(node_repo.db)
 
     async def run() -> tuple[dict[str, Any], dict[str, Any]]:
@@ -463,9 +438,9 @@ def test_budgets_on_the_1000_node_estate(tmp_path: Path) -> None:
         idle_snapshot = await subscribe(hub, idle, 1, reset=True)
 
         watcher = hub.open_session(FakeSocket())
-        await subscribe(hub, watcher, 1, open=["S0", "S0-P0"], reset=True)
+        await subscribe(hub, watcher, 1, open=["SPEC", "P0"], reset=True)
 
-        task = estate.node_repo.get_node("S0-P0-T0")
+        task = estate.node_repo.get_node("P0-T0")
         assert task is not None
         estate.node_repo.save_node(
             task.model_copy(update={"status": Status.IMPLEMENTING, "claimed_from": Status.READY})

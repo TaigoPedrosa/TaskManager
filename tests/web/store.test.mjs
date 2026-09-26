@@ -168,6 +168,79 @@ test('a reset subscribe followed by a snapshot leaves the store equal to the sna
   assert.equal(socket.sent.length, 1);
 });
 
+test('a plan_counts item sets, inserts and removes one plan under its spec, with a hash check after each', async () => {
+  const ctx = freshContext();
+  const store = ctx.createStore({ wsUrl: 'ws://x/ws' });
+  const socket = FakeSocket.instances[0];
+  socket.open();
+
+  const initialStatuses = [
+    {
+      spec: 'S1',
+      plans: [
+        { plan: 'P1', counts: { READY: 1 } },
+        { plan: 'P2', counts: { DONE: 1 } },
+      ],
+    },
+  ];
+  await socket.message({
+    type: 'snapshot', re: 1, hash: await ctx.sha256Hex(ctx.canonical(initialStatuses)),
+    statuses: initialStatuses, facets: {}, decisions_open: 0, rows: [], edges: [], bodies: {},
+  });
+
+  // set: P1's counts change in place, plan order unchanged.
+  let expected = [
+    {
+      spec: 'S1',
+      plans: [
+        { plan: 'P1', counts: { READY: 2 } },
+        { plan: 'P2', counts: { DONE: 1 } },
+      ],
+    },
+  ];
+  await socket.message({
+    type: 'update', re: null, hash: await ctx.sha256Hex(ctx.canonical(expected)),
+    items: [{ op: 'plan_counts', spec: 'S1', plan: 'P1', counts: { READY: 2 } }],
+  });
+  assert.deepEqual(plain(store.statuses), expected);
+
+  // insert: a new plan sorts into id order among its spec's existing plans, null first.
+  expected = [
+    {
+      spec: 'S1',
+      plans: [
+        { plan: null, counts: { BLOCKED: 1 } },
+        { plan: 'P1', counts: { READY: 2 } },
+        { plan: 'P2', counts: { DONE: 1 } },
+      ],
+    },
+  ];
+  await socket.message({
+    type: 'update', re: null, hash: await ctx.sha256Hex(ctx.canonical(expected)),
+    items: [{ op: 'plan_counts', spec: 'S1', plan: null, counts: { BLOCKED: 1 } }],
+  });
+  assert.deepEqual(plain(store.statuses), expected);
+
+  // remove: counts: null drops the plan, leaving the rest of its spec entry alone.
+  expected = [
+    {
+      spec: 'S1',
+      plans: [
+        { plan: null, counts: { BLOCKED: 1 } },
+        { plan: 'P1', counts: { READY: 2 } },
+      ],
+    },
+  ];
+  await socket.message({
+    type: 'update', re: null, hash: await ctx.sha256Hex(ctx.canonical(expected)),
+    items: [{ op: 'plan_counts', spec: 'S1', plan: 'P2', counts: null }],
+  });
+  assert.deepEqual(plain(store.statuses), expected);
+
+  // every message's declared hash matched the resulting statuses: no drift resubscribe fired.
+  assert.equal(socket.sent.length, 1);
+});
+
 test('a tampered statuses before an update produces exactly one subscribe with reset: true, and the state is consistent after the new snapshot', async () => {
   const ctx = freshContext();
   const store = ctx.createStore({ wsUrl: 'ws://x/ws' });

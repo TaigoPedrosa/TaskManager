@@ -123,7 +123,11 @@ class Session:
     # rather than from the hub's own last-published state.
     sent_rows: dict[str, str] = field(default_factory=dict)
     sent_edges: set[tuple[str, ...]] = field(default_factory=set)
-    sent_statuses: dict[str | None, str] = field(default_factory=dict)
+    # Which spec entries this socket holds (statuses items travel only on entry add/remove);
+    # per-(spec, plan) counts digest is tracked separately, since a count change travels as
+    # its own item instead.
+    sent_statuses: set[str | None] = field(default_factory=set)
+    sent_plan_counts: dict[tuple[str | None, str | None], str] = field(default_factory=dict)
     sent_facets: str | None = None
     sent_decisions_open: int | None = None
     sent_bodies: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -226,7 +230,8 @@ class LiveHub:
         if frame.reset:
             session.sent_rows = {}
             session.sent_edges = set()
-            session.sent_statuses = {}
+            session.sent_statuses = set()
+            session.sent_plan_counts = {}
             session.sent_facets = None
             session.sent_decisions_open = None
             session.sent_bodies = {}
@@ -246,7 +251,12 @@ class LiveHub:
         bodies = {i: self._bodies[i] for i in session.watch if i in self._bodies}
         session.sent_rows = {i: row_digest(self.rows[i]) for i in visible}
         session.sent_edges = {tuple(e) for e in edges}
-        session.sent_statuses = {e["spec"]: row_digest(e) for e in self.statuses}
+        session.sent_statuses = {e["spec"] for e in self.statuses}
+        session.sent_plan_counts = {
+            (e["spec"], p["plan"]): row_digest(p["counts"])
+            for e in self.statuses
+            for p in e["plans"]
+        }
         session.sent_facets = row_digest(facet_data)
         session.sent_decisions_open = self.decisions_open
         session.sent_bodies = dict(bodies)
@@ -291,15 +301,47 @@ class LiveHub:
             items.append({"op": "edges", "add": add, "remove": remove})
         session.sent_edges = new_edge_set
 
-        new_statuses_digest = {e["spec"]: row_digest(e) for e in self.statuses}
+        # A `statuses` item only ever carries a spec entry appearing or disappearing whole
+        # (a spec created or deleted, or the first/last plan under spec `null`); a count
+        # change inside an entry that stays travels as its own `plan_counts` item instead, so
+        # one plan's count moving never resends every other plan in the same spec.
         entry_by_spec = {e["spec"]: e for e in self.statuses}
-        for spec_id, digest in new_statuses_digest.items():
-            if session.sent_statuses.get(spec_id) != digest:
-                items.append({"op": "statuses", "spec": spec_id, "entry": entry_by_spec[spec_id]})
-        for spec_id in session.sent_statuses:
-            if spec_id not in new_statuses_digest:
-                items.append({"op": "statuses", "spec": spec_id, "entry": None})
-        session.sent_statuses = new_statuses_digest
+        new_spec_keys = set(entry_by_spec)
+        added_specs = new_spec_keys - session.sent_statuses
+        removed_specs = session.sent_statuses - new_spec_keys
+        for spec_id in added_specs:
+            items.append({"op": "statuses", "spec": spec_id, "entry": entry_by_spec[spec_id]})
+        for spec_id in removed_specs:
+            items.append({"op": "statuses", "spec": spec_id, "entry": None})
+        session.sent_statuses = new_spec_keys
+
+        new_plan_counts = {
+            (spec_id, p["plan"]): row_digest(p["counts"])
+            for spec_id, entry in entry_by_spec.items()
+            for p in entry["plans"]
+        }
+        for spec_id, entry in entry_by_spec.items():
+            if spec_id in added_specs:
+                continue  # already carried whole, inside the entry just sent above
+            for p in entry["plans"]:
+                key = (spec_id, p["plan"])
+                if session.sent_plan_counts.get(key) != new_plan_counts[key]:
+                    items.append(
+                        {
+                            "op": "plan_counts",
+                            "spec": spec_id,
+                            "plan": p["plan"],
+                            "counts": p["counts"],
+                        }
+                    )
+        for spec_id, plan_id in session.sent_plan_counts:
+            if spec_id in removed_specs:
+                continue  # already dropped whole, by the entry: None just sent above
+            if (spec_id, plan_id) not in new_plan_counts:
+                items.append(
+                    {"op": "plan_counts", "spec": spec_id, "plan": plan_id, "counts": None}
+                )
+        session.sent_plan_counts = new_plan_counts
 
         facets_digest = row_digest(facet_data)
         if facets_digest != session.sent_facets:

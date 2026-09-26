@@ -265,6 +265,13 @@ function compareSpecEntries(a, b) {
   return ka[1] < kb[1] ? -1 : ka[1] > kb[1] ? 1 : 0;
 }
 
+// Same "null first, else lexical" rule, for a spec entry's own plans.
+function comparePlanEntries(a, b) {
+  const ka = specSortKey(a.plan), kb = specSortKey(b.plan);
+  if (ka[0] !== kb[0]) return ka[0] - kb[0];
+  return ka[1] < kb[1] ? -1 : ka[1] > kb[1] ? 1 : 0;
+}
+
 // A body's sections arrive as a list (bodies.py's shape); kept as a {key: {header,content,
 // ordinal}} map internally so a "section" update item is an O(1) set/delete, not a list scan.
 function normalizeBody(body) {
@@ -401,6 +408,20 @@ function createStore(options) {
     }
   }
 
+  function applyPlanCountsItem(item) {
+    const specEntry = statuses.find(s => s.spec === item.spec);
+    if (!specEntry) return;
+    const idx = specEntry.plans.findIndex(p => p.plan === item.plan);
+    if (item.counts === null) {
+      if (idx !== -1) specEntry.plans.splice(idx, 1);
+    } else if (idx !== -1) {
+      specEntry.plans[idx] = { plan: item.plan, counts: item.counts };
+    } else {
+      specEntry.plans.push({ plan: item.plan, counts: item.counts });
+      specEntry.plans.sort(comparePlanEntries);
+    }
+  }
+
   function applyEdgesItem(item) {
     const key = e => e.join('\u0000');
     const removeKeys = new Set((item.remove || []).map(key));
@@ -439,6 +460,10 @@ function createStore(options) {
           break;
         case 'statuses':
           applyStatusesItem(item);
+          statusesChanged = true;
+          break;
+        case 'plan_counts':
+          applyPlanCountsItem(item);
           statusesChanged = true;
           break;
         case 'edges':
