@@ -213,6 +213,14 @@ class NodeRepository:
             rows = conn.execute(query, tuple(params)).fetchall()
             return [self._row_to_node(r) for r in rows]
 
+    def count_by_status(self, kind: NodeKind) -> dict[str, int]:
+        with self.db.get_state_connection() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) FROM nodes WHERE kind = ? GROUP BY status",
+                (kind.value,),
+            ).fetchall()
+            return dict(rows)
+
     def save_section(self, section: NodeSection) -> None:
         with self.db.get_state_connection() as conn:
             conn.execute(
