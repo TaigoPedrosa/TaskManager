@@ -63,27 +63,19 @@ def _static_data(html: str) -> dict:  # type: ignore[type-arg]
     return json.loads(match.group(1).replace("<\\/", "</"))  # type: ignore[no-any-return]
 
 
-def test_export_holds_every_decision_past_one_api_page(
-    tmp_path: Path,
-    monkeypatch,  # type: ignore[no-untyped-def]
-) -> None:
-    import taskmanager.web.app as app_mod
-
-    monkeypatch.setattr(app_mod, "_DEFAULT_DECISIONS_LIMIT", 2)
+def test_export_holds_every_decision_past_the_http_pages_default_limit(tmp_path: Path) -> None:
     db_mgr = DatabaseManager(tmp_path / ".taskmanager")
     db_mgr.init_all()
     node_repo = NodeRepository(db_mgr)
-    for suffix in ("a", "b", "c"):
+    # More than app.py's _DEFAULT_DECISIONS_LIMIT (50): the export lists decisions straight
+    # from node_repo, unpaginated, so none should be dropped where the HTTP page would cut off.
+    ids = [f"decision-{i}" for i in range(60)]
+    for node_id in ids:
         node_repo.save_node(
-            Node(
-                id=f"decision-{suffix}",
-                kind=NodeKind.DECISION,
-                title=f"Decision {suffix.upper()}?",
-                status=DecisionStatus.OPEN,
-            )
+            Node(id=node_id, kind=NodeKind.DECISION, title=node_id, status=DecisionStatus.OPEN)
         )
 
     out = export_static_html(tmp_path, tmp_path / "export.html")
     data = _static_data(out.read_text(encoding="utf-8"))
 
-    assert {d["id"] for d in data["decisions"]} == {"decision-a", "decision-b", "decision-c"}
+    assert {d["id"] for d in data["decisions"]} == set(ids)

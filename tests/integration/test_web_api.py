@@ -669,17 +669,7 @@ def test_delete_attachment_missing_is_404(
 # -- attachment size_bytes: read from the stored asset, in every place attachments render ---
 
 
-def _find_tree_node(tree: list[dict], node_id: str) -> dict:
-    for n in tree:
-        if n["id"] == node_id:
-            return n
-        found = _find_tree_node(n.get("children", []), node_id)
-        if found is not None:
-            return found
-    raise AssertionError(f"{node_id} not in tree")
-
-
-def test_tree_and_node_detail_carry_attachment_size_bytes(
+def test_bulk_and_single_node_detail_carry_attachment_size_bytes(
     api: tuple[TestClient, NodeRepository, LedgerRepository], tmp_path: Path
 ) -> None:
     client, _node_repo, _ledger_repo = api
@@ -689,9 +679,9 @@ def test_tree_and_node_detail_carry_attachment_size_bytes(
     )
     asset = up.json()["asset"]
 
-    tree = client.get("/api/tree").json()
-    task = _find_tree_node(tree, "SPEC-P1-T1")
-    assert task["frontmatter"]["attachments"][0]["size_bytes"] == len(_PNG_1PX)
+    page = client.get("/api/nodes", params={"ids": "SPEC-P1-T1", "include": "body"}).json()
+    task = page["items"][0]
+    assert task["body"]["node"]["frontmatter"]["attachments"][0]["size_bytes"] == len(_PNG_1PX)
 
     detail = client.get("/api/nodes/SPEC-P1-T1").json()
     assert detail["node"]["frontmatter"]["attachments"][0]["size_bytes"] == len(_PNG_1PX)
