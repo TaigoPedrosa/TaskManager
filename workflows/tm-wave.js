@@ -219,8 +219,14 @@ async function start(n, trail) {
   return d
 }
 
+// Only these: land() reads state, kind, repo, target, step and worktree off what this returns,
+// and from result only next and resumed -- a stopped job's own summary is the bulk of its row, and
+// the merge agent reads that itself with `tm job status`.
+const JOB_FIELDS = 'state,kind,repo,target,step,worktree,result.next,result.resumed'
+
 async function job(n, id, wait) {
-  const r = await opJson('job', n.id, `${TM} job status ${q(id)}${wait ? ` --wait ${WAIT_SECONDS}` : ''}`, { long: wait })
+  const r = await opJson('job', n.id,
+    `${TM} job status ${q(id)}${wait ? ` --wait ${WAIT_SECONDS}` : ''} --fields ${JOB_FIELDS}`, { long: wait })
   return r && r.exit === 0 && r.data && typeof r.data.state === 'string' ? r.data : null
 }
 
@@ -289,7 +295,7 @@ async function work(n, c, s, trail) {
   return after
 }
 
-const resumes = j => Number((j.result && j.result.resumed) || 0)
+const resumes = j => Number(j['result.resumed'] || 0)
 
 // tm parks the lease of a job stopped for an agent and refuses `tm job resume` to anyone a claim
 // did not hand it to, so an agent is dispatched only on the claim that handed the job over; any
@@ -301,18 +307,18 @@ async function land(n, c, trail, handed) {
     if (!j) return trail.push(`${c.action}: job ${id} status could not be read`)
     if (j.state === 'running') continue
     // A container lands one repository per job, each chained to the next under the same lease.
-    if (j.state === 'succeeded' && j.result && j.result.next) {
-      trail.push(`${c.action}: ${id} succeeded; following ${clip(j.result.next)}`)
-      id = q(j.result.next)
+    if (j.state === 'succeeded' && j['result.next']) {
+      trail.push(`${c.action}: ${id} succeeded; following ${clip(j['result.next'])}`)
+      id = q(j['result.next'])
       handed = false
       continue
     }
-    if (j.state !== 'needs_agent') return trail.push(`${c.action}: ${j.state}${j.result ? ` — ${clip(j.result)}` : ''}`)
+    if (j.state !== 'needs_agent') return trail.push(`${c.action}: ${j.state}; tm job status ${id} for detail`)
     if (!handed || id !== c.job) return trail.push(`${c.action} stopped for an agent; the next claim hands it over`)
     handed = false
     const fam = c.model
     const r = await agent(`${head(n, c, fam, 'merge')}
-Job: ${id}, a ${j.kind} of ${j.repo} onto ${j.target}, stopped at ${j.step}: ${clip(j.result)}
+Job: ${id}, a ${j.kind} of ${j.repo} onto ${j.target}, stopped at ${j.step}
 Worktree: ${j.worktree} — the one tm built for this job. Work only there, and never cd in a Bash command.
 Output: ${TM} job status ${id} prints what stopped it.
 When this node's own change is at fault, close with ${TM} job resume ${id} ${owner(n, c.token)} --own-defect "<the finding, one line>" instead.`,

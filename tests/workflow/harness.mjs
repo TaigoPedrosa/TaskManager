@@ -72,6 +72,17 @@ export function makeTm({ chosen = [], nodes = {}, start = {}, job = {}, parked =
       return {}
     }
   }
+  // A nested name whose run() never populated `result` resolves to null rather than being unknown:
+  // only the head segment names a real field.
+  const dottedGet = (doc, dotted) => {
+    const [head, ...rest] = dotted.split('.')
+    let cur = doc[head]
+    for (const part of rest) {
+      if (cur === null || typeof cur !== 'object' || !(part in cur)) return null
+      cur = cur[part]
+    }
+    return cur
+  }
   function answer(inner) {
     // Mirrors the real CLI: only the named fields come back, so a script reading one it never
     // requested gets undefined here exactly as it would against the real `tm task get --fields`.
@@ -88,12 +99,14 @@ export function makeTm({ chosen = [], nodes = {}, start = {}, job = {}, parked =
       if ((c.action === 'merge' || c.action === 'sync') && stopped.has(c.job)) handed.add(c.job)
       return reply
     }
-    m = inner.match(/^\S+ job status (\S+)(?: --wait \d+)?$/)
+    m = inner.match(/^\S+ job status (\S+)(?: --wait \d+)? --fields (\S+)$/)
     if (m && jobs[m[1]]) {
       const reply = jobs[m[1]]()
-      if (parse(reply.text).state === 'needs_agent') stopped.add(m[1])
+      const full = parse(reply.text)
+      if (full.state === 'needs_agent') stopped.add(m[1])
       else stopped.delete(m[1])
-      return reply
+      const picked = Object.fromEntries(m[2].split(',').map(f => [f, dottedGet(full, f)]))
+      return { ...reply, text: JSON.stringify(picked) }
     }
     throw new Error(`the fake tm has no reply for: ${inner}`)
   }
@@ -142,8 +155,10 @@ export async function runWave({ args, tm, agents = () => 'done' }) {
     if (m) {
       const rooted = m[1].match(TM_ROOT)
       const cmd = rooted ? rooted[2] : m[1]
-      calls.push({ kind: 'op', cmd, prompt, opts })
-      return tm.reply(cmd)
+      const reply = tm.reply(cmd)
+      // stdout is what a checked read actually copies back, so a test bounds that rather than cmd.
+      calls.push({ kind: 'op', cmd, prompt, opts, stdout: reply.stdout })
+      return reply
     }
     calls.push({ kind: 'agent', prompt, opts })
     return agents(prompt, opts)
