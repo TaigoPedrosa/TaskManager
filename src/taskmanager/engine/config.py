@@ -209,15 +209,24 @@ def _default(key: str) -> Any:
     return _lookup(ProjectConfig().model_dump(mode="json"), key)
 
 
+def _check_bound_pair(low_key: str, high_key: str, flat: dict[str, Any]) -> None:
+    low, high = flat.get(low_key, _default(low_key)), flat.get(high_key, _default(high_key))
+    if low > high:
+        low_name, high_name = low_key.rsplit(".", 1)[-1], high_key.rsplit(".", 1)[-1]
+        raise ConfigError(f"{low_key}: {low_name} must not exceed {high_name} ({low} > {high})")
+
+
 def _check_bounds(key: str, flat: dict[str, Any]) -> None:
     """`flat` is the file about to be written; a bound only applies once both sides are known."""
     for low_key, high_key in _DISPATCH_BOUNDS:
-        if key not in (low_key, high_key):
-            continue
-        low, high = flat.get(low_key, _default(low_key)), flat.get(high_key, _default(high_key))
-        if low > high:
-            low_name, high_name = low_key.rsplit(".", 1)[-1], high_key.rsplit(".", 1)[-1]
-            raise ConfigError(f"{key}: {low_name} must not exceed {high_name} ({low} > {high})")
+        if key in (low_key, high_key):
+            _check_bound_pair(low_key, high_key, flat)
+
+
+def _check_all_bounds(flat: dict[str, Any]) -> None:
+    """Every bound, for a write that replaces the whole document in one shot."""
+    for low_key, high_key in _DISPATCH_BOUNDS:
+        _check_bound_pair(low_key, high_key, flat)
 
 
 class ConfigStore:
@@ -250,6 +259,7 @@ class ConfigStore:
         _require_key(key)
         flat = self.read()
         flat.pop(key, None)
+        _check_bounds(key, flat)
         if flat:
             self._write(flat)
         else:
@@ -292,4 +302,6 @@ class ConfigStore:
         return _nest(self.read()) if self.path.exists() else None
 
     def replace(self, document: dict[str, Any]) -> None:
-        self._write({key: _typed(key, value) for key, value in _flatten(document)})
+        flat = {key: _typed(key, value) for key, value in _flatten(document)}
+        _check_all_bounds(flat)
+        self._write(flat)

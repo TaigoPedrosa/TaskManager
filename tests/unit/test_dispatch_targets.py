@@ -4,7 +4,7 @@ import pytest
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import app
-from taskmanager.engine.config import ConfigStore
+from taskmanager.engine.config import ConfigError, ConfigStore
 
 runner = CliRunner()
 
@@ -101,6 +101,22 @@ def test_lowering_the_high_value_below_an_already_stored_low_one_stays_refused(r
     assert code == 1
     assert "tick_min" in out and "tick_max" in out
     assert tm(root, "config", "get", "dispatch.tick_max") == (0, "900\n")
+
+
+def test_unset_that_would_break_a_bound_is_refused_and_leaves_the_pair_intact(root: Path) -> None:
+    assert tm(root, "config", "set", "dispatch.tick_min", "100")[0] == 0
+    assert tm(root, "config", "set", "dispatch.tick_max", "200")[0] == 0
+    code, out = tm(root, "config", "unset", "dispatch.tick_min")
+    assert code == 1
+    assert "tick_min" in out and "tick_max" in out
+    assert tm(root, "config", "get", "dispatch.tick_min") == (0, "100\n")
+
+
+def test_replace_that_would_break_a_bound_is_refused_and_writes_nothing(root: Path) -> None:
+    store = ConfigStore(root)
+    with pytest.raises(ConfigError):
+        store.replace({"dispatch": {"tick_min": 1000, "tick_max": 200}})
+    assert not store.path.exists()
 
 
 def test_guide_dispatch_prints_the_default_effective_values_as_the_typical_target(
