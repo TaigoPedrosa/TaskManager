@@ -655,9 +655,9 @@ class Claims:
         red_target_decision_after, blocking every landing it holds. A node mid-step cannot take
         a new edge and is linked on a later sweep; a refusal is logged, never raised, since
         every claim sweeps first."""
-        # One bulk read of every node with its conditions, in place of a `get_conditions` per
-        # node and a second `list_nodes()` pass: every sweep runs this, and discovery sweeps
-        # before every wave.
+        # One bulk read carries both the nodes and their conditions, so this sweep costs a fixed
+        # number of statements regardless of estate size: every claim runs it, and discovery
+        # sweeps before every wave.
         data = read_graph(self.nodes.db)
         parked: dict[tuple[str, str, str], list[tuple[str, datetime, list[str]]]] = {}
         for node in data.nodes.values():

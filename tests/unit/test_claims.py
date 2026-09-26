@@ -914,6 +914,30 @@ def test_main_and_a_container_branch_red_at_one_sha_each_get_their_own_decision(
         assert stored(claims, decision).title.startswith(f"{target} of api is red")
 
 
+def test_escalating_red_targets_selects_every_node_only_once(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path)
+    add(claims, "T1")
+
+    node_selects: list[str] = []
+
+    def trace(sql: str) -> None:
+        if "FROM nodes" in sql:
+            node_selects.append(sql)
+
+    with claims.nodes.db.get_state_connection() as conn:
+        conn.set_trace_callback(trace)
+    try:
+        claims._escalate_red_targets()
+    finally:
+        with claims.nodes.db.get_state_connection() as conn:
+            conn.set_trace_callback(None)
+
+    # `read_graph`'s own two selects (columns, then revisions), never `list_nodes`'s
+    # `WHERE 1=1` on top of them.
+    assert len(node_selects) == 2
+    assert all("WHERE 1=1" not in sql for sql in node_selects)
+
+
 def test_counting_a_stopped_job_keeps_an_edit_that_committed_after_the_count_began(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

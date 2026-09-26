@@ -21,6 +21,12 @@ def snap(*nodes: SnapNode, edges: list[tuple[str, str]] | None = None) -> Snapsh
     return Snapshot({n.id: n for n in nodes}, edges or [])
 
 
+def test_graph_data_raises_on_a_snapshot_built_without_a_bulk_read() -> None:
+    s = snap(SnapNode("S", SPEC))
+    with pytest.raises(ValueError, match="no bulk graph data"):
+        s.graph_data()
+
+
 def test_snapshot_walks_the_tree_and_inherits_ancestor_edges() -> None:
     s = snap(
         SnapNode("S", SPEC),
