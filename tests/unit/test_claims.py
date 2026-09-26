@@ -237,6 +237,29 @@ def test_a_refused_claim_answers_blocked_and_writes_nothing(
     assert claims.runtime.get_lease("T1") is None
 
 
+def test_a_completed_node_with_an_unmet_condition_reports_the_condition_not_no_next_action(
+    tmp_path: Path,
+) -> None:
+    """The condition check runs ahead of "has no next action", same as every other rule here:
+    a node with nothing left to do but an unmet condition still surfaces the condition."""
+    claims = make_estate(tmp_path)
+    add(claims, "T1", files=["api/app.py"], status=Status.COMPLETED)
+    claims.nodes.add_condition(
+        Condition(
+            node_id="T1",
+            idx=0,
+            needs="flag",
+            command=f"test -f {tmp_path / 'flag'}",
+            stage=ConditionStage.CLAIM,
+        )
+    )
+
+    result = claims.start("T1", "agent-1", "s1")
+
+    assert result.action == Action.BLOCKED
+    assert "condition unmet: flag" in (result.reason or "")
+
+
 def test_two_sessions_claiming_at_once_leave_exactly_one_lease(tmp_path: Path) -> None:
     claims = make_estate(tmp_path)
     add(claims, "T1")

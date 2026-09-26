@@ -102,11 +102,9 @@ def _conflicts(files: list[str], snap: Snapshot) -> dict[str, str]:
     return found
 
 
-def blocked_reason(
-    node: Node, snap: Snapshot, action: Action | None, *, repo_order: Sequence[str] = ()
-) -> str | None:
-    """Why `node` cannot be claimed now, the first reason in claimability order, everything but a
-    condition; None when nothing here blocks it."""
+def blocked_reason_before_condition(node: Node, snap: Snapshot) -> str | None:
+    """The claimability checks a condition's command must never wait behind: a live job, a held
+    lease, an open decision or an unsatisfied edge. None when none of these blocks `node`."""
     data = snap.graph_data()
     live = [j for j in data.jobs.get(node.id, []) if j.state in _LIVE_JOBS]
     if live:
@@ -126,6 +124,15 @@ def blocked_reason(
     ]
     if waiting:
         return f"waits on {', '.join(waiting)}"
+    return None
+
+
+def blocked_reason_after_condition(
+    node: Node, snap: Snapshot, action: Action | None, *, repo_order: Sequence[str] = ()
+) -> str | None:
+    """The claimability checks that come after a condition's command has run: whether there is a
+    next action at all, then target_repo and file-lock conflicts. None when none of these blocks
+    `node`."""
     if action is None:
         return f"{node.status} has no next action"
     if action == Action.IMPLEMENT and not node.target_repo:
@@ -136,6 +143,17 @@ def blocked_reason(
     if conflicts:
         return f"declared files locked: {', '.join(sorted(conflicts))}"
     return None
+
+
+def blocked_reason(
+    node: Node, snap: Snapshot, action: Action | None, *, repo_order: Sequence[str] = ()
+) -> str | None:
+    """Why `node` cannot be claimed now, the first reason in claimability order, everything but a
+    condition; None when nothing here blocks it."""
+    reason = blocked_reason_before_condition(node, snap)
+    if reason is not None:
+        return reason
+    return blocked_reason_after_condition(node, snap, action, repo_order=repo_order)
 
 
 def _in_scope(snap: Snapshot, node: Node, specs: list[str] | None) -> bool:

@@ -241,9 +241,17 @@ class Claims:
     def blocked_reason(self, node: Node, snap: Snapshot, action: Action | None) -> str | None:
         """Why `node` cannot be claimed now, the first reason in claimability order; None when
         it can. `engine.selection` holds the graph rules, read only from `snap`'s one bulk read;
-        a condition needs a command run, which only this live check can do."""
-        reason = selection.blocked_reason(node, snap, action, repo_order=self.config.repo_order)
-        return reason if reason is not None else self._condition_reason(node, snap, action)
+        a condition needs a command run, which only this live check can do, between the rules
+        that must block ahead of it and the ones (starting with "no next action") that don't."""
+        reason = selection.blocked_reason_before_condition(node, snap)
+        if reason is not None:
+            return reason
+        reason = self._condition_reason(node, snap, action)
+        if reason is not None:
+            return reason
+        return selection.blocked_reason_after_condition(
+            node, snap, action, repo_order=self.config.repo_order
+        )
 
     def _condition_reason(self, node: Node, snap: Snapshot, action: Action | None) -> str | None:
         data = snap.graph_data()
