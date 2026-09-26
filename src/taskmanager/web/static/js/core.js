@@ -2,7 +2,7 @@
 let graphData = { nodes: [], edges: [] };
 let selectedNodeId = null;
 let visNodesDS = null;
-let currentMode = window.VIEW_MODES.DOCUMENT;
+let currentMode = window.VIEW_MODES.WAVES;
 let networkInstance = null;
 let isStaticMode = typeof window.STATIC_DATA !== 'undefined';
 // A node's expand/collapse state now lives in the store's open and watch sets (open reveals
@@ -17,14 +17,11 @@ const expandedSections = new Set();
 // set stores only ids whose state differs from their default; see groupCollapsed().
 // Session-only, never persisted, same as the two sets above.
 const collapsedGroups = new Set();
-let allSectionIds = [];
 
 
 // DOM Elements
-const documentPane = document.getElementById('document-pane');
 const graphPane = document.getElementById('graph-pane');
 const sidebarPane = document.getElementById('sidebar-pane');
-const unifiedDocument = document.getElementById('unified-document');
 const treeList = document.getElementById('tree-list');
 const searchBox = document.getElementById('search-box');
 const statsDigest = document.getElementById('stats-digest');
@@ -33,9 +30,11 @@ const viewGraphBtn = document.getElementById('view-graph-btn');
 const graphFitBtn = document.getElementById('graph-fit-btn');
 const refreshBtn = document.getElementById('refresh-btn');
 const expandAllBtn = document.getElementById('expand-all-btn');
-const toggleSectionsBtn = document.getElementById('toggle-sections-btn');
 const sidebarResizeHandle = document.getElementById('sidebar-resize-handle');
 const graphInspector = document.getElementById('graph-inspector');
+const networkCanvas = document.getElementById('network-canvas');
+const graphFitWrap = document.getElementById('graph-fit-wrap');
+const wavesPane = document.getElementById('waves-pane');
 const inspectorCloseBtn = document.getElementById('inspector-close-btn');
 const brandIcon = document.getElementById('brand-icon');
 const brandIconTitle = document.getElementById('brand-icon-title');
@@ -56,7 +55,6 @@ const loadIndicator = document.getElementById('load-indicator');
 const dialogRoot = document.getElementById('dialog-root');
 const toastRoot = document.getElementById('toast-root');
 toastRoot.className = 'fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2 pointer-events-none';
-
 
 // Sidebar width: Graph view only, drag-resizable, remembered per browser.
 const SIDEBAR_MIN_WIDTH = 200;
@@ -128,7 +126,7 @@ function phaseChip(code, size = 'text-[10px]') {
 
 
 // Mode Switching. The sidebar is a graph-view tool for jumping to a node; it takes
-// no space in Document view so the document pane reads at its own full width.
+// no space in Waves view so that pane reads at its own full width.
 // The base shape (h-full aspect-square, matching index.html's own markup) stays fixed;
 // only the active/inactive colour classes toggle. Reassigning the whole className to a
 // differently-shaped string (px-3 py-1.5, no aspect-square) on the first switch was what
@@ -139,49 +137,32 @@ const VIEW_BTN_INACTIVE = `${VIEW_BTN_BASE} text-zinc-400 hover:text-white`;
 
 function setViewMode(mode) {
   currentMode = mode;
-  if (mode === window.VIEW_MODES.DOCUMENT) {
+  wavesPane.classList.toggle('hidden', mode !== window.VIEW_MODES.WAVES);
+  networkCanvas.classList.toggle('hidden', mode !== window.VIEW_MODES.GRAPH);
+  graphFitWrap.classList.toggle('hidden', mode !== window.VIEW_MODES.GRAPH);
+  if (mode === window.VIEW_MODES.WAVES) {
+    // The waves button reuses the toolbar's original view-switcher slot, so it lights up
+    // the same way that slot always has.
     viewDocBtn.className = VIEW_BTN_ACTIVE;
     viewGraphBtn.className = VIEW_BTN_INACTIVE;
-    documentPane.classList.remove('hidden');
-    graphPane.classList.add('hidden');
+    graphPane.classList.remove('hidden');
     sidebarPane.classList.add('hidden');
-    toggleSectionsBtn.classList.remove('hidden');
   } else {
     viewGraphBtn.className = VIEW_BTN_ACTIVE;
     viewDocBtn.className = VIEW_BTN_INACTIVE;
-    documentPane.classList.add('hidden');
     graphPane.classList.remove('hidden');
     sidebarPane.classList.remove('hidden');
-    toggleSectionsBtn.classList.add('hidden');
     if (networkInstance) {
       setTimeout(() => networkInstance.fit(), 50);
     }
   }
 }
 
-viewDocBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.DOCUMENT));
+viewDocBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.WAVES));
 viewGraphBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.GRAPH));
 graphFitBtn.addEventListener('click', () => networkInstance && networkInstance.fit());
 inspectorCloseBtn.addEventListener('click', () => graphInspector.classList.add('hidden'));
 refreshBtn.addEventListener('click', () => window.tmStore.resync());
-
-
-// Document sections: default collapsed, remembered for this session only (never persisted),
-// so a re-render after a filter change never surprise-collapses one the user just opened.
-function updateToggleSectionsButton() {
-  const label = expandedSections.size > 0 ? 'Collapse all sections' : 'Expand all sections';
-  toggleSectionsBtn.title = label;
-  toggleSectionsBtn.setAttribute('aria-label', label);
-}
-
-toggleSectionsBtn.addEventListener('click', () => {
-  if (expandedSections.size > 0) {
-    expandedSections.clear();
-  } else {
-    allSectionIds.forEach(id => expandedSections.add(id));
-  }
-  scheduleRender();
-});
 
 
 // Expand / Collapse All. A click opens every visible, still-collapsed container one level
@@ -383,9 +364,17 @@ function setBrandLive(state) {
 // The brand icon follows the store's connection state and the load indicator its `pending`
 // flag; both are read straight off the store rather than mirrored into local variables, so
 // there is exactly one place either can drift from what the store actually reports.
+// Waves' own fetch cycle runs entirely outside the store (waves.js is deliberately
+// self-contained), so it feeds the same bar through this flag instead.
+let wavesLoadPending = false;
+function setWavesLoadPending(pending) {
+  wavesLoadPending = pending;
+  syncConnectionUi();
+}
+
 function syncConnectionUi() {
   setBrandLive(isStaticMode ? 'static' : (window.tmStore.connected ? 'synced' : 'disconnected'));
-  loadIndicator.classList.toggle('hidden', !window.tmStore.pending);
+  loadIndicator.classList.toggle('hidden', !window.tmStore.pending && !wavesLoadPending);
 }
 
 // Re-render coalesced to at most once per animation frame: a subscription can update rows,

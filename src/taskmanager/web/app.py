@@ -254,10 +254,10 @@ _MAX_WAVE_DEPTH = 20
 _WAVE_MAX_STRONG = 5
 
 
-def _parse_bound(raw: int | None, default: int, lo: int, hi: int, name: str) -> int:
+def _parse_bound(raw: int | None, default: int, lo: int, hi: int, refusal: str) -> int:
     value = default if raw is None else raw
     if not (lo <= value <= hi):
-        raise HTTPException(400, f"{name} is {lo}..{hi}")
+        raise HTTPException(400, refusal)
     return value
 
 
@@ -606,8 +606,20 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         spec: Annotated[list[str] | None, Query()] = None,
     ) -> dict[str, Any]:
         dispatch = _dispatch_config()
-        depth = _parse_bound(depth, 1, _MIN_WAVE_DEPTH, _MAX_WAVE_DEPTH, "depth")
-        size = _parse_bound(size, dispatch.wave_size, 1, dispatch.tick_budget, "size")
+        depth = _parse_bound(
+            depth,
+            1,
+            _MIN_WAVE_DEPTH,
+            _MAX_WAVE_DEPTH,
+            f"depth is {_MIN_WAVE_DEPTH}..{_MAX_WAVE_DEPTH}",
+        )
+        size = _parse_bound(
+            size,
+            dispatch.wave_size,
+            1,
+            dispatch.tick_budget,
+            f"wave size must be 1–{dispatch.tick_budget} (this project's dispatch.tick_budget).",
+        )
         # One bulk read of state.db, however deep: every later wave replays over the snapshot
         # this built, in memory (see `engine.simulate`). Conditions are read from the cache once
         # here too, the same read a display uses -- a simulated wave has no real claim to run a
@@ -623,7 +635,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             repo_order=_repo_order(),
             cached_conditions=cached_conditions,
         )
-        return {"waves": [asdict(w) for w in waves]}
+        return {"waves": [asdict(w) for w in waves], "max_depth": _MAX_WAVE_DEPTH}
 
     @app.post("/api/specs", status_code=201)
     def create_spec(body: SpecCreate, actor: Actor) -> dict[str, str]:

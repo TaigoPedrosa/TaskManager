@@ -113,25 +113,23 @@ def test_document_sections_default_collapsed_and_remember_expand_state() -> None
     assert "expandedSections" in _function_body(html, "attachSectionToggleHandlers")
 
 
-def test_plan_and_task_headers_are_not_sticky() -> None:
+def test_no_toggle_all_sections_button_survives_the_document_view() -> None:
+    # The "Expand all sections" toolbar button only ever showed in the Document view; no
+    # other mode ever un-hid it, so it and its bookkeeping (an id list appended to on every
+    # renderSections() call, only ever cleared by the Document renderer) must go together.
     html = get_web_html()
-    assert "sticky" not in html
-    assert (
-        'class="h-12 px-4 rounded-t-xl bg-zinc-900/95 backdrop-blur-sm border-b border-zinc-800 flex items-center justify-between cursor-pointer plan-header"'
-        in html
-    )
-    assert (
-        'class="h-10 px-3 rounded-t-lg flex items-center justify-between cursor-pointer task-header bg-zinc-900/90 backdrop-blur-sm hover:bg-zinc-900"'
-        in html
-    )
+    assert 'id="toggle-sections-btn"' not in html
+    assert "toggleSectionsBtn" not in html
+    assert "allSectionIds" not in html
 
 
 def test_status_icon_carries_a_title_and_chip_is_legend_only() -> None:
     html = get_web_html()
     status_icon = _function_body(html, "statusIcon")
     assert 'title="${esc(t.label)}"' in status_icon
-    # statusChip (visible label) survives only in its own definition and the legend.
-    assert html.count("statusChip(") == 2
+    # statusChip (visible label) survives only in its own definition, the legend, and the
+    # waves view's from/to transition (a wave card names no other status marker at all).
+    assert html.count("statusChip(") == 3
     assert "renderLegend" in html
     legend = _function_body(html, "renderLegend")
     assert "statusChip(" in legend
@@ -146,10 +144,6 @@ def test_group_headers_default_all_collapsed() -> None:
     assert "groupCollapsed(groupId, true)" in render_sections
     assert "renderGroupHeader(groupId, 'Sections'" in render_sections
 
-    render_plan_card = _function_body(html, "renderPlanCard")
-    assert "groupCollapsed(tasksGroupId, true)" in render_plan_card
-    assert "renderGroupHeader(tasksGroupId, 'Tasks'" in render_plan_card
-
 
 def test_group_header_toggle_is_wired_independently_of_node_and_section_collapse() -> None:
     html = get_web_html()
@@ -157,17 +151,6 @@ def test_group_header_toggle_is_wired_independently_of_node_and_section_collapse
     assert "'.group-header'" in shared
     assert "collapsedGroups.has(id)) collapsedGroups.delete(id)" in shared
     assert "collapsedGroups.add(id)" in shared
-    attach = _function_body(html, "attachCollapsibleHandlers")
-    assert "attachGroupHeaderHandlers(document, renderUnifiedDocument)" in attach
-
-    # The all-sections toolbar button only ever touches expandedSections, never the groups.
-    toggle_sections_handler = re.search(
-        r"toggleSectionsBtn\.addEventListener\('click', \(\) => \{(.*?)\n\}\);",
-        html,
-        re.DOTALL,
-    )
-    assert toggle_sections_handler, "toggleSectionsBtn click handler not found"
-    assert "collapsedGroups" not in toggle_sections_handler.group(1)
 
 
 def test_group_header_is_keyboard_operable_everywhere_it_renders() -> None:
@@ -247,10 +230,11 @@ def test_page_inlines_every_static_js_file() -> None:
         "store.js": "function createStore(options)",
         "core.js": "function canEdit()",
         "filters.js": "function filtersToF()",
-        "tree.js": "function renderTaskCard(task)",
+        "tree.js": "function renderTree()",
         "graph.js": "const GRAPH_SHAPE_BY_KIND",
         "edit.js": "function openDialog(",
         "detail.js": "async function showGraphInspector(nodeId)",
+        "waves.js": "function fetchWaves()",
         "main.js": "readHash();\nrenderLegend();",
     }
     for source_file, needle in known_strings_by_file.items():
@@ -271,6 +255,7 @@ def test_static_files_are_packaged_and_resolve_at_runtime() -> None:
         "graph.js",
         "edit.js",
         "detail.js",
+        "waves.js",
         "main.js",
     ):
         assert static_dir.joinpath("js", name).is_file(), f"js/{name} did not ship"
@@ -579,14 +564,6 @@ def test_edit_dialog_only_offers_models_repo_and_frontmatter_for_tasks() -> None
     assert "isTask ? frontmatterEditorHtml(node.frontmatter) : ''" in body
 
 
-def test_decision_dependency_row_uses_open_answered_withdrawn_not_node_status() -> None:
-    html = get_web_html()
-    table = _function_body(html, "renderRelationTable")
-    assert "d.kind === 'decision'" in table
-    assert "decisionStatusIcon(d.status)" in table
-    assert "OPEN: 'help-circle'" in html
-
-
 def test_remove_confirmations_name_the_thing_not_its_internal_id() -> None:
     html = get_web_html()
     render_ver = _function_body(html, "renderVerifications")
@@ -743,7 +720,9 @@ def test_load_indicator_follows_the_stores_pending_flag() -> None:
     html = get_web_html()
     assert 'id="load-indicator"' in html
     body = _function_body(html, "syncConnectionUi")
-    assert "loadIndicator.classList.toggle('hidden', !window.tmStore.pending)" in body
+    assert "!window.tmStore.pending" in body
+    # Waves' own fetch cycle runs outside the store, so it feeds the same bar through this flag.
+    assert "!wavesLoadPending" in body
 
 
 def test_a_refused_subscribe_notifies_the_store_and_core_toasts_it() -> None:
@@ -972,10 +951,90 @@ def test_expand_collapse_drive_the_stores_open_and_watch_sets_not_a_local_flag()
     assert "window.tmStore.unwatch(closed)" in toggle
 
 
-def test_sections_and_relations_render_only_once_a_watched_body_arrives() -> None:
-    task_card = _function_body(get_web_html(), "renderTaskCard")
-    assert "bodyOf(task.id)" in task_card
-    assert "Loading…" in task_card
+def test_graph_inspector_shows_loading_until_watched_body_arrives() -> None:
+    inspector = _function_body(get_web_html(), "renderGraphInspector")
+    assert "window.tmStore.bodies.get(nodeId)" in inspector
+    assert "Loading" in inspector
+
+
+def _class_tokens(tag: str) -> list[str]:
+    match = re.search(r'class="([^"]*)"', tag)
+    assert match, f"no class attribute in {tag!r}"
+    return match.group(1).split()
+
+
+def test_waves_view_is_the_default_and_reuses_the_documents_toolbar_slot() -> None:
+    html = get_web_html()
+    assert "window.VIEW_MODES.WAVES;" in html
+    doc_btn = re.search(r'<button id="view-doc-btn"[^>]*>', html)
+    assert doc_btn, "view-doc-btn not found"
+    assert "Waves view" in doc_btn.group(0)
+    assert 'id="icon-file-text"' in html
+    waves_pane = re.search(r'<div id="waves-pane"[^>]*>', html)
+    graph_pane = re.search(r'<section id="graph-pane"[^>]*>', html)
+    network_canvas = re.search(r'<div id="network-canvas"[^>]*>', html)
+    assert waves_pane and "hidden" not in _class_tokens(waves_pane.group(0))
+    assert graph_pane and "hidden" not in _class_tokens(graph_pane.group(0))
+    assert network_canvas and "hidden" in _class_tokens(network_canvas.group(0))
+
+
+def test_waves_pane_nests_inside_graph_pane_ahead_of_its_inspector() -> None:
+    # Sharing graph-pane's own #graph-inspector (rather than a second copy of the drawer) is
+    # what lets a wave card open the same detail drawer showGraphInspector already provides.
+    html = get_web_html()
+    graph_pane = re.search(r'<section id="graph-pane".*?</section>', html, re.DOTALL)
+    assert graph_pane, "graph-pane not found"
+    body = graph_pane.group(0)
+    assert body.index('id="waves-pane"') < body.index('id="graph-inspector"')
+
+
+def test_set_view_mode_toggles_the_canvas_layer_and_waves_pane() -> None:
+    body = _function_body(get_web_html(), "setViewMode")
+    assert "wavesPane.classList.toggle('hidden', mode !== window.VIEW_MODES.WAVES)" in body
+    assert "networkCanvas.classList.toggle('hidden', mode !== window.VIEW_MODES.GRAPH)" in body
+    assert "graphFitWrap.classList.toggle('hidden', mode !== window.VIEW_MODES.GRAPH)" in body
+    assert (
+        "viewDocBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.WAVES))"
+        in _static_js("core.js")
+    )
+
+
+def test_wave_size_bounds_come_from_meta_never_a_constant() -> None:
+    # §"The wave-size input starts at /api/meta dispatch.wave_size and its maximum is
+    # dispatch.tick_budget; neither number appears as a constant in waves.js."
+    waves = _static_js("waves.js")
+    assert "meta.dispatch.wave_size" in waves
+    assert "meta.dispatch.tick_budget" in waves
+    for literal in ("= 10", "= 40", "|| 10", "|| 40"):
+        assert literal not in waves, literal
+
+
+def test_wave_status_chip_folds_implemented_and_reviewed_to_waiting() -> None:
+    waves = _static_js("waves.js")
+    assert "IMPLEMENTED: 'WAITING_REVIEW'" in waves
+    assert "REVIEWED: 'WAITING_MERGE'" in waves
+    assert "FIXED: 'WAITING_REVIEW'" in waves
+
+
+def test_wave_compute_disabled_while_loading_or_the_last_wave_is_empty() -> None:
+    body = _function_body(_static_js("waves.js"), "waveComputeDisabled")
+    assert "if (waveLoading) return true;" in body
+    assert "last.entries.length === 0" in body
+
+
+def test_wave_entry_card_is_a_focusable_button_naming_its_own_id_and_title() -> None:
+    body = _function_body(_static_js("waves.js"), "waveEntryHtml")
+    assert '<button type="button" class="wave-entry-card' in body
+    assert 'aria-label="${esc(entry.id)}: ${esc(entry.title)}"' in body
+    wire = _function_body(_static_js("waves.js"), "wireWavesHandlers")
+    assert "showGraphInspector(btn.getAttribute('data-node-id'))" in wire
+
+
+def test_wave_refetch_on_statuses_change_is_coalesced_per_frame() -> None:
+    schedule = _function_body(_static_js("waves.js"), "scheduleWavesRefetch")
+    assert "if (waveRefetchScheduled) return;" in schedule
+    assert "requestAnimationFrame(" in schedule
+    assert "patch.statusesChanged" in _static_js("waves.js")
 
 
 def test_a_filter_change_pushes_to_the_store_exactly_through_one_helper() -> None:
@@ -987,3 +1046,27 @@ def test_a_filter_change_pushes_to_the_store_exactly_through_one_helper() -> Non
     assert "writeHash()" in apply_change
     render_all = _function_body(html, "renderAll")
     assert "setFilters" not in render_all
+
+
+def test_a_filter_change_also_refetches_waves() -> None:
+    # waveSpecFilter() reads filters.specMode directly rather than taking it as an argument
+    # (waves.js's own doc comment), so a spec include/exclude change has no other way to reach
+    # it -- window.tmStore's own patch never reports statusesChanged for a filter change.
+    apply_change = _function_body(get_web_html(), "applyFilterChange")
+    assert "scheduleWavesRefetch()" in apply_change
+
+
+def test_no_dead_highlight_css_survives_the_tree_views_removal() -> None:
+    # selectNode's Document-view branch was the only code that ever added
+    # .node-highlighted; tree.js's Graph-only branch never does.
+    html = get_web_html()
+    assert "node-highlighted" not in html
+    assert "pulse-highlight" not in html
+    assert "networkInstance.selectNodes([nodeId])" in _static_js("tree.js")
+    assert "node-highlighted" not in _function_body(html, "selectNode")
+
+
+def test_page_carries_an_inline_favicon_so_the_browser_never_requests_favicon_ico() -> None:
+    # Without a <link rel="icon">, a browser falls back to GET /favicon.ico, a 404 console
+    # error on `tm web run` and on a served export alike.
+    assert re.search(r'<link rel="icon" href="data:image/svg\+xml,', get_web_html())

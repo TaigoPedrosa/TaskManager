@@ -91,13 +91,17 @@ function applyFilterChange() {
   writeHash();
   window.tmStore.setFilters(filtersToF());
   scheduleRender();
+  // Waves reads filters.specMode itself (waveSpecFilter) rather than taking it as an argument,
+  // so a spec include/exclude change needs its own nudge -- the store's own patch never reaches
+  // waves.js, since setFilters() (static: recomputeStatic, live: sendSubscribe) never reports
+  // statusesChanged.
+  scheduleWavesRefetch();
 }
 
 function renderAll() {
   updateStatsDigest();
   renderFilterControls();
   renderTree();
-  renderUnifiedDocument();
 }
 
 

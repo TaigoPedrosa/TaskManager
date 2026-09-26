@@ -18,8 +18,8 @@ function graphEdgeId(source, target, type) {
 }
 
 // A task's summary line is its status; a container's is the counts tree's roll-up
-// (countsForRow/progressText, both core.js's) -- a spec or plan has no single status of its
-// own worth naming on the node.
+// (countsForRow/progressText, both core.js's), which already folds in the container's own
+// unit once its own review/fix/merge cycle has started (rows.py's `statuses`).
 function graphVisNode(row) {
   const theme = getTheme(displayOf(row));
   const summary = row.kind === 'task' ? theme.label : progressText(countsForRow(row));

@@ -4,12 +4,18 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TaskManager — Interactive Visualizer</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2334d399' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolygon points='12 2 2 7 12 12 22 7 12 2'/%3E%3Cpolyline points='2 17 12 22 22 17'/%3E%3Cpolyline points='2 12 12 17 22 12'/%3E%3C/svg%3E">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
       darkMode: 'class',
       theme: {
         extend: {
+          // The CDN's own .font-mono rule is injected after app.css, so the face has to be set
+          // here for JetBrains Mono (loaded by app.css) to win over the ui-monospace default.
+          fontFamily: {
+            mono: ['"JetBrains Mono"', 'monospace'],
+          },
           colors: {
             brand: {
               50: '#f0fdf4',
@@ -46,7 +52,7 @@
       </div>
 
       <div class="h-8 bg-zinc-900 p-0.5 rounded-lg border border-zinc-800 flex text-xs flex-shrink-0">
-        <button id="view-doc-btn" title="Document view" aria-label="Document view" class="h-full aspect-square flex items-center justify-center rounded-md font-medium bg-zinc-800 text-white shadow-sm transition">
+        <button id="view-doc-btn" title="Waves view" aria-label="Waves view" class="h-full aspect-square flex items-center justify-center rounded-md font-medium bg-zinc-800 text-white shadow-sm transition">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-file-text"/></svg>
         </button>
         <button id="view-graph-btn" title="Graph view" aria-label="Graph view" class="h-full aspect-square flex items-center justify-center rounded-md font-medium text-zinc-400 hover:text-white transition">
@@ -84,9 +90,6 @@
       <div class="hidden sm:block w-px h-6 bg-zinc-800 flex-shrink-0"></div>
 
       <div class="flex items-center gap-1.5 flex-shrink-0 lg:ml-auto">
-        <button id="toggle-sections-btn" title="Expand all sections" aria-label="Expand all sections" class="h-8 aspect-square flex items-center justify-center rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition">
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-chevrons-up-down"/></svg>
-        </button>
         <button id="legend-btn" aria-expanded="false" aria-controls="legend-panel" title="Legend" aria-label="Legend" class="h-8 aspect-square flex items-center justify-center rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 hover:text-white transition">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-info"/></svg>
         </button>
@@ -100,7 +103,7 @@
   </header>
 
   <!-- A subscribe on the estate's own 541-task tree can still take a couple of seconds; with
-       nothing here the document/graph pane just stays blank for that whole stretch, on first
+       nothing here the waves/graph pane just stays blank for that whole stretch, on first
        load and again after every write, with no way to tell a slow load from a broken one. -->
   <div id="load-indicator" role="status" aria-live="polite" class="hidden fixed top-0 inset-x-0 z-50">
     <div class="h-0.5 bg-emerald-500 animate-pulse"></div>
@@ -135,22 +138,23 @@
       <div id="sidebar-resize-handle" title="Drag to resize" class="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-emerald-500/40"></div>
     </aside>
 
-    <!-- Document View Pane -->
-    <main id="document-pane" class="flex-1 overflow-y-auto p-6 space-y-8 bg-zinc-950">
-      <div id="unified-document" class="max-w-4xl mx-auto space-y-8 pb-16">
-        <!-- Dynamically rendered unified spec document -->
-      </div>
-    </main>
-
     <!-- Graph View Pane -->
-    <section id="graph-pane" class="hidden flex-1 flex flex-col bg-zinc-950/80 overflow-hidden relative">
-      <div class="absolute top-3 right-3 z-10 flex gap-2">
+    <section id="graph-pane" class="flex-1 flex flex-col bg-zinc-950/80 overflow-hidden relative">
+      <div id="graph-fit-wrap" class="hidden absolute top-3 right-3 z-10 flex gap-2">
         <button id="graph-fit-btn" class="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded bg-zinc-900/90 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 backdrop-blur">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-maximize-2"/></svg>
           <span>Fit View</span>
         </button>
       </div>
-      <div id="network-canvas" class="w-full h-full"></div>
+      <div id="network-canvas" class="hidden w-full h-full"></div>
+
+      <!-- Waves view (the plan's own title: "replaces the Document view"): rendered here,
+           inside graph-pane, so it shares this pane's #graph-inspector drawer -- core.js's
+           setViewMode(WAVES) keeps graph-pane itself visible and swaps #network-canvas/
+           #graph-fit-wrap for this instead. waves.js owns everything under #waves-content. -->
+      <div id="waves-pane" class="absolute inset-0 overflow-y-auto p-4 sm:p-6 bg-zinc-950">
+        <div id="waves-content" class="max-w-4xl mx-auto space-y-4 pb-16"></div>
+      </div>
 
       <!-- Graph Slide-over Node Inspector Drawer. Full width below lg: at 375/768 a fixed
            384px (w-96) panel next to a 320px sidebar left no usable canvas and, since the
@@ -214,6 +218,9 @@
   </script>
   <script>
 <!--slot:js-detail-->
+  </script>
+  <script>
+<!--slot:js-waves-->
   </script>
   <script>
 <!--slot:js-decisions-->

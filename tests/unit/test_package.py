@@ -4,7 +4,7 @@ from pathlib import Path
 
 import taskmanager
 
-RELEASE = "0.3.1"
+RELEASE = "0.3.2"
 REPO = Path(__file__).resolve().parents[2]
 
 

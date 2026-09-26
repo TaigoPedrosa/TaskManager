@@ -21,6 +21,7 @@ _JS_FILES = (
     "graph.js",
     "edit.js",
     "detail.js",
+    "waves.js",
     "decisions.js",
     "main.js",
 )
@@ -47,8 +48,8 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         f"    window.STATUS_GROUPS = {json.dumps(StatusVisual.groups_list())};\n"
         f"    window.PHASE_THEMES = {json.dumps(PhaseVisual.all_themes_dict())};\n"
         "    window.VIEW_MODES = {\n"
-        f"      DOCUMENT: '{WebViewMode.DOCUMENT.value}',\n"
-        f"      GRAPH: '{WebViewMode.GRAPH.value}'\n"
+        f"      GRAPH: '{WebViewMode.GRAPH.value}',\n"
+        f"      WAVES: '{WebViewMode.WAVES.value}'\n"
         "    };\n"
         "  </script>"
     )
