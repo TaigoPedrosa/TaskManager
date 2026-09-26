@@ -2,52 +2,10 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any
 
 import pytest
 
-from taskmanager.web.app import add_progress
 from taskmanager.web.ui import get_web_html
-
-
-def _task(status: str) -> dict[str, Any]:
-    return {"kind": "task", "display": status, "children": []}
-
-
-def test_add_progress_counts_set_aside_work_apart_from_completed() -> None:
-    plan: dict[str, Any] = {
-        "kind": "plan",
-        "children": [
-            _task("COMPLETED"),
-            _task("DEFERRED"),
-            _task("ABANDONED"),
-            _task("SUPERSEDED"),
-        ],
-    }
-    spec: dict[str, Any] = {"kind": "spec", "children": [plan, _task("READY")]}
-
-    add_progress(spec)
-
-    # Only the COMPLETED task counts: DEFERRED/ABANDONED/SUPERSEDED can never finish, so they
-    # are set aside rather than dragging `total` (and a bar built on it) down with them.
-    assert plan["progress"] == {
-        "done": 1,
-        "total": 1,
-        "set_aside": 3,
-        "counts": {"COMPLETED": 1, "DEFERRED": 1, "ABANDONED": 1, "SUPERSEDED": 1},
-    }
-    assert spec["progress"]["done"] == 1
-    assert spec["progress"]["total"] == 2  # the plan's one counted task + the spec's own READY one
-    assert spec["progress"]["set_aside"] == 3
-    assert spec["progress"]["counts"]["COMPLETED"] == 1
-
-
-def test_add_progress_of_a_plan_without_tasks_is_empty() -> None:
-    plan: dict[str, Any] = {"kind": "plan", "children": []}
-
-    add_progress(plan)
-
-    assert plan["progress"] == {"done": 0, "total": 0, "set_aside": 0, "counts": {}}
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is needed to syntax-check the page")
@@ -965,9 +923,9 @@ def _static_js(name: str) -> str:
 
 def test_no_whole_tree_fetch_survives_in_core_js() -> None:
     # core.js now opens on one subscribe and store.js's own rows/statuses/facets; a fetch of
-    # the whole tree, graph or stats, or a per-node fetch on load, would defeat that entirely.
+    # the whole tree on load, or a per-node fetch on load, would defeat that entirely.
     core = _static_js("core.js")
-    for word in ("loadAllData", "treeData", "/api/tree", "/api/graph", "/api/stats"):
+    for word in ("loadAllData", "treeData"):
         assert word not in core, word
 
 

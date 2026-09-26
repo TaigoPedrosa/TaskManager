@@ -1,4 +1,9 @@
-"""Static standalone HTML generator for TaskManager offline visualizer."""
+"""Static standalone HTML generator for TaskManager offline visualizer.
+
+Builds `STATIC_DATA` from `rows.py`, `visibility.py` and `bodies.py` directly -- the same
+read path the live view and `/ws` share -- rather than driving the HTTP app through a
+`TestClient`.
+"""
 
 import base64
 import mimetypes
@@ -6,10 +11,17 @@ import re
 from pathlib import Path
 from typing import Any
 
-from fastapi.testclient import TestClient
-
+from taskmanager.core.enums import NodeKind
+from taskmanager.db.cache_repo import CacheRepository
+from taskmanager.db.job_repo import JobRepository
+from taskmanager.db.node_repo import NodeRepository
+from taskmanager.di.container import create_container
 from taskmanager.engine.assets import ASSET_NAME_RE
-from taskmanager.web.app import create_app
+from taskmanager.engine.config import ConfigStore
+from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder
+from taskmanager.web.app import _decision_item
+from taskmanager.web.bodies import BodyRepos, build_bodies
+from taskmanager.web.rows import build_rows, statuses, statuses_hash
 from taskmanager.web.ui import get_web_html
 
 # Above this, an attachment ships as a name-only link in the static export rather than
@@ -23,10 +35,10 @@ _MAX_INLINE_ASSET_BYTES = 2 * 1024 * 1024
 _MD_IMAGE_RE = re.compile(r"(!\[[^\]]*\]\()([^)\s]+)(\))")
 
 
-def _embed_attachments(details: dict[str, Any], project_root: Path) -> None:
+def _embed_attachments(bodies: dict[str, Any], project_root: Path) -> None:
     assets_dir = project_root / ".taskmanager" / "assets"
-    for detail in details.values():
-        attachments = (detail.get("node") or {}).get("frontmatter", {}).get("attachments") or []
+    for body in bodies.values():
+        attachments = (body.get("node") or {}).get("frontmatter", {}).get("attachments") or []
         for entry in attachments:
             # Same pattern `/assets/{name}` enforces: a node's `attachments` frontmatter is
             # attacker-writable through `PATCH /api/nodes/{id}`, so an unvalidated name here
@@ -68,53 +80,44 @@ def _embed_section_images(sections: list[dict[str, Any]], root: Path) -> None:
             section["content"] = _MD_IMAGE_RE.sub(lambda m: _embed_one_image(m, root), content)
 
 
-def _embed_images_in_tree(node: dict[str, Any], root: Path) -> None:
-    _embed_section_images(node.get("sections") or [], root)
-    for child in node.get("children") or []:
-        _embed_images_in_tree(child, root)
-
-
-def _fetch_all_decisions(client: TestClient) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    cursor: str | None = None
-    while True:
-        params = {"cursor": cursor} if cursor else {}
-        page = client.get("/api/decisions", params=params).json()
-        items.extend(page["items"])
-        cursor = page["next"]
-        if cursor is None:
-            return items
-
-
 def export_static_html(project_root: Path, output_file: Path) -> Path:
-    app = create_app(project_root)
-    client = TestClient(app)
+    assets_dir = project_root / ".taskmanager" / "assets"
+    container = create_container(project_root)
+    node_repo = container.get(NodeRepository)
+    job_repo = container.get(JobRepository)
+    cache = container.get(CacheRepository)
+    snapshots = container.get(SnapshotBuilder)
+    condition_ttl = ConfigStore(project_root).project().condition_ttl
 
-    tree = client.get("/api/tree").json()
-    graph = client.get("/api/graph").json()
-    stats = client.get("/api/stats").json()
-    decisions = _fetch_all_decisions(client)
+    view = DisplayView(snapshots, cache, condition_ttl)
+    rows = build_rows(view)
+    entries = statuses(rows)
+    edges = [[source, target, "depends_on"] for source, target in view.snapshot.edges]
 
-    # Fetch details for all nodes
-    details: dict[str, Any] = {}
-    for node_item in graph.get("nodes", []):
-        node_id = node_item["id"]
-        res = client.get(f"/api/nodes/{node_id}")
-        if res.status_code == 200:
-            details[node_id] = res.json()
+    repos = BodyRepos(
+        node_repo=node_repo,
+        job_repo=job_repo,
+        cache=cache,
+        condition_ttl=condition_ttl,
+        assets_dir=assets_dir,
+    )
+    bodies = build_bodies(view, list(rows.keys()), repos=repos)
+    decisions = [
+        _decision_item(d, view, node_repo, assets_dir)
+        for d in node_repo.list_nodes(kind=NodeKind.DECISION)
+    ]
 
-    _embed_attachments(details, project_root)
+    _embed_attachments(bodies, project_root)
     root = project_root.resolve()
-    for root_node in tree:
-        _embed_images_in_tree(root_node, root)
-    for detail in details.values():
-        _embed_section_images(detail.get("sections") or [], root)
+    for body in bodies.values():
+        _embed_section_images(body.get("sections") or [], root)
 
     initial_data = {
-        "tree": tree,
-        "graph": graph,
-        "stats": stats,
-        "details": details,
+        "statuses": entries,
+        "hash": statuses_hash(entries),
+        "rows": rows,
+        "edges": edges,
+        "bodies": bodies,
         "decisions": decisions,
     }
 

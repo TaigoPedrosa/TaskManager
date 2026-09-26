@@ -37,20 +37,24 @@ def repo(root: Path) -> NodeRepository:
 
 
 def plan_children(client: TestClient) -> dict[str, dict[str, Any]]:
-    spec = next(n for n in client.get("/api/tree").json() if n["id"] == "S1")
-    return {t["id"]: t for t in spec["children"][0]["children"]}
+    items = client.get("/api/nodes", params={"parent": "S1-P1", "include": "body"}).json()
+    return {t["id"]: t for t in items["items"]}
 
 
-def test_tree_nodes_carry_the_stored_status_display_phase_and_flags(web: Web) -> None:
+def test_nodes_carry_the_stored_status_display_phase_and_flags(web: Web) -> None:
     client, _root = web
     tasks = plan_children(client)
     a, b = tasks["S1-P1-a"], tasks["S1-P1-b"]
     assert (a["status"], a["display"], a["phase"]) == ("READY", "READY", "QUEUED")
     assert (b["status"], b["display"], b["phase"]) == ("READY", "BLOCKED_BY_TASK", "QUEUED")
-    assert (a["review"], a["fix"], a["merge"], a["branch"]) == (True, True, "main", "tm/S1-P1-a")
+    assert (a["review"], a["fix"], a["merge"], a["body"]["node"]["branch"]) == (
+        True,
+        True,
+        "main",
+        "tm/S1-P1-a",
+    )
     assert "virtual_status" not in a
-    spec = next(n for n in client.get("/api/tree").json() if n["id"] == "S1")
-    plan = spec["children"][0]
+    plan = client.get("/api/nodes", params={"ids": "S1-P1"}).json()["items"][0]
     assert (plan["review"], plan["fix"], plan["display"]) == (True, True, "READY")
 
 
@@ -94,14 +98,12 @@ def test_a_prose_condition_is_refused(web: Web) -> None:
     assert res.status_code == 400 and "decision" in res.json()["detail"]
 
 
-def test_stats_count_every_display_status_and_phase_including_zeros(web: Web) -> None:
+def test_statuses_counts_each_occurring_display_status(web: Web) -> None:
     client, _root = web
-    stats = client.get("/api/stats").json()
-    assert stats["total"] == 2
-    assert set(stats["display"]) == {d.value for d in DisplayStatus}
-    assert set(stats["phase"]) == {p.value for p in Phase}
-    assert {k: v for k, v in stats["display"].items() if v} == {"READY": 1, "BLOCKED_BY_TASK": 1}
-    assert {k: v for k, v in stats["phase"].items() if v} == {"QUEUED": 2}
+    entries = client.get("/api/statuses").json()["statuses"]
+    entry = next(e for e in entries if e["spec"] == "S1")
+    plan = next(p for p in entry["plans"] if p["plan"] == "S1-P1")
+    assert plan["counts"] == {"READY": 1, "BLOCKED_BY_TASK": 1}
 
 
 def test_meta_lists_the_lifecycle_vocabularies(web: Web) -> None:
@@ -267,12 +269,11 @@ def test_a_node_lists_the_edges_it_inherits_from_its_container_as_not_its_own(we
     assert [
         (d["id"], d["finished"], d.get("inherited_from")) for d in detail["dependency_details"]
     ] == [("S1-P1-a", False, "S1-P2")]
-    spec = next(n for n in client.get("/api/tree").json() if n["id"] == "S1")
-    card = next(t for p in spec["children"] for t in p["children"] if t["id"] == "S1-P2-c")
-    assert [d["id"] for d in card["dependency_details"]] == ["S1-P1-a"]
+    card = client.get("/api/nodes", params={"ids": "S1-P2-c", "include": "body"}).json()["items"][0]
+    assert [d["id"] for d in card["body"]["dependency_details"]] == ["S1-P1-a"]
 
 
-def test_a_container_card_in_the_tree_shows_its_lease(web: Web) -> None:
+def test_a_container_card_shows_its_lease(web: Web) -> None:
     client, root = web
     node_repo = repo(root)
     plan = node_repo.get_node("S1-P1")
@@ -287,5 +288,5 @@ def test_a_container_card_in_the_tree_shows_its_lease(web: Web) -> None:
         ttl_seconds=3600,
     )
     assert RuntimeRepository(node_repo.db).claim(lease, [], plan, expected=Status.READY)
-    spec = next(n for n in client.get("/api/tree").json() if n["id"] == "S1")
-    assert spec["children"][0]["lease"]["agent_id"] == "reviewer"
+    plan_row = client.get("/api/nodes", params={"ids": "S1-P1"}).json()["items"][0]
+    assert plan_row["lease"]["agent_id"] == "reviewer"

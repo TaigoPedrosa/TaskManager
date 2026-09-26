@@ -6,7 +6,6 @@ import hashlib
 import json
 import mimetypes
 import tempfile
-from collections import Counter
 from collections.abc import AsyncGenerator, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
@@ -38,20 +37,10 @@ from taskmanager.db.node_repo import NodeRepository
 from taskmanager.di.container import TaskManagerProvider
 from taskmanager.engine.assets import ASSET_NAME_RE
 from taskmanager.engine.config import ConfigStore
-from taskmanager.engine.heuristics import score_every_task
 from taskmanager.engine.landing import Landing
 from taskmanager.engine.operations import OperationError, Operations
-from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder, phase_of, stored_status
-from taskmanager.web.bodies import (
-    BodyRepos,
-    attachments_with_size,
-    build_bodies,
-    dependency_details,
-    dependent_details,
-    frontmatter_with_attachment_sizes,
-    lease_dict,
-    lifecycle_fields,
-)
+from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder, stored_status
+from taskmanager.web.bodies import BodyRepos, attachments_with_size, build_bodies
 from taskmanager.web.live import LiveHub
 from taskmanager.web.rows import build_rows, canonical, decisions_open, statuses, statuses_hash
 from taskmanager.web.ui import get_web_html
@@ -235,41 +224,7 @@ def _refusals() -> Iterator[None]:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
-# A task in one of these cannot reach completion, so it is excluded from both the rollup and
-# the progress denominator until its status changes back.
-_SET_ASIDE_STATUSES = {Status.SUPERSEDED.value, Status.ABANDONED.value, Status.DEFERRED.value}
 _RESET_TARGETS = (Status.READY, Status.IMPLEMENTED, Status.REVIEWED, Status.FIXED, Status.COMPLETED)
-
-
-def add_progress(node: dict[str, Any]) -> tuple[Counter[str], int, int]:
-    """Returns (display counts, done, set_aside) for the subtree rooted at `node`, and -- on
-    every non-task node -- sets `node["progress"] = {done, total, set_aside, counts}`, where
-    `total` is `done + (non-set-aside, non-done)` and `counts` keeps every display, set-aside
-    included, so the caller can still render a full breakdown."""
-    counts: Counter[str] = Counter()
-    done = 0
-    set_aside = 0
-    if node["kind"] == NodeKind.TASK.value:
-        display = node["display"]
-        counts[display] += 1
-        if display in _SET_ASIDE_STATUSES:
-            set_aside += 1
-        elif display == Status.COMPLETED.value:
-            done += 1
-    for child in node["children"]:
-        child_counts, child_done, child_set_aside = add_progress(child)
-        counts += child_counts
-        done += child_done
-        set_aside += child_set_aside
-    if node["kind"] != NodeKind.TASK.value:
-        total = sum(counts.values()) - set_aside
-        node["progress"] = {
-            "done": done,
-            "total": total,
-            "set_aside": set_aside,
-            "counts": dict(counts),
-        }
-    return counts, done, set_aside
 
 
 _MAX_NODES_IDS = 200
@@ -543,131 +498,6 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         finally:
             live_hub.close_session(session)
 
-    @app.get("/api/tree")
-    def get_tree() -> list[dict[str, Any]]:
-        specs = node_repo.list_nodes(kind=NodeKind.SPEC)
-        plans = node_repo.list_nodes(kind=NodeKind.PLAN)
-        tasks = node_repo.list_nodes(kind=NodeKind.TASK)
-        view = new_view()
-        data = view.snapshot.graph_data()
-        task_scores = score_every_task(view.snapshot)
-
-        def node_to_dict(n: Any) -> dict[str, Any]:
-            sections = node_repo.get_all_sections(n.id)
-            verifications = node_repo.get_verifications(n.id) if n.kind == NodeKind.TASK else []
-            deps = node_repo.get_dependencies(n.id)
-            blocked_by = node_repo.get_blocked_by(n.id)
-
-            return {
-                "id": n.id,
-                "kind": n.kind.value,
-                "title": n.title,
-                **lifecycle_fields(n, view),
-                "priority": n.priority,
-                "score": task_scores.get(n.id) if n.kind == NodeKind.TASK else None,
-                "ordinal": n.ordinal,
-                "target_repo": n.target_repo,
-                "acceptable_models": n.acceptable_models,
-                "frontmatter": frontmatter_with_attachment_sizes(assets_dir, n.frontmatter),
-                "dependencies": deps,
-                "dependency_details": dependency_details(n.id, view, data.nodes, deps),
-                "blocked_by": blocked_by,
-                "dependent_details": dependent_details(n.id, view, data.nodes, blocked_by),
-                "sections": [
-                    {
-                        "key": s.section_key,
-                        "header": s.header,
-                        "content": s.content,
-                        "ordinal": s.ordinal,
-                    }
-                    for s in sections
-                ],
-                "verifications": [
-                    {
-                        "id": v.id,
-                        "type": v.verification_type.value,
-                        "target": v.target_path,
-                        "pattern": v.expected_pattern,
-                    }
-                    for v in verifications
-                ],
-                "lease": lease_dict(data.leases.get(n.id)),
-                "children": [],
-            }
-
-        tree: list[dict[str, Any]] = []
-
-        def plan_to_dict(pnode: Any) -> dict[str, Any]:
-            p_dict = node_to_dict(pnode)
-            task_children = []
-            for cid in node_repo.get_children(pnode.id):
-                cnode = node_repo.get_node(cid)
-                if cnode:
-                    task_children.append(node_to_dict(cnode))
-            p_dict["children"] = task_children
-            return p_dict
-
-        # A plan is nested under its spec when it has one; every other plan
-        # (this estate runs plenty of them) still needs a root of its own,
-        # so specs and standalone plans are both walked, never either/or.
-        spec_parented_plan_ids: set[str] = set()
-        for s in specs:
-            s_dict = node_to_dict(s)
-            plan_children: list[dict[str, Any]] = []
-            for pid in node_repo.get_children(s.id):
-                pnode = node_repo.get_node(pid)
-                if pnode and pnode.kind == NodeKind.PLAN:
-                    plan_children.append(plan_to_dict(pnode))
-                    spec_parented_plan_ids.add(pid)
-            s_dict["children"] = plan_children
-            tree.append(s_dict)
-
-        for p in plans:
-            if p.id not in spec_parented_plan_ids:
-                tree.append(plan_to_dict(p))
-
-        # Add any orphan tasks
-        parented_ids: set[str] = set()
-        for s in specs:
-            parented_ids.update(node_repo.get_children(s.id))
-        for p in plans:
-            parented_ids.update(node_repo.get_children(p.id))
-
-        for t in tasks:
-            if t.id not in parented_ids:
-                tree.append(node_to_dict(t))
-
-        for root in tree:
-            add_progress(root)
-        return tree
-
-    @app.get("/api/graph")
-    def get_graph() -> dict[str, Any]:
-        view = new_view()
-        task_scores = score_every_task(view.snapshot)
-        nodes_out = [
-            {
-                "id": n.id,
-                "title": n.title,
-                "kind": n.kind.value,
-                "status": stored_status(n).value,
-                "display": view.display(n),
-                "phase": phase_of(n),
-                "priority": n.priority,
-                "score": task_scores.get(n.id) if n.kind == NodeKind.TASK else None,
-                "ordinal": n.ordinal,
-                "target_repo": n.target_repo,
-                "acceptable_models": n.acceptable_models,
-            }
-            for n in node_repo.list_nodes()
-        ]
-        with db_mgr.get_state_connection() as conn:
-            rows = conn.execute(
-                "SELECT source_id, target_id, relation_type FROM node_relations"
-            ).fetchall()
-        edges_out = [{"source": r[0], "target": r[1], "type": r[2]} for r in rows]
-        return {"nodes": nodes_out, "edges": edges_out}
-
     @app.get("/api/nodes/{node_id}")
     def get_node_detail(node_id: str) -> dict[str, Any]:
         view = new_view()
@@ -714,20 +544,6 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             cursor=cursor,
             limit=limit,
         )
-
-    @app.get("/api/stats")
-    def get_stats() -> dict[str, Any]:
-        view = new_view()
-        tasks = node_repo.list_nodes(kind=NodeKind.TASK)
-        display: dict[str, int] = {d.value: 0 for d in DisplayStatus}
-        phases: dict[str, int] = {p.value: 0 for p in Phase}
-        for t in tasks:
-            code = view.display(t)
-            display[code] = display.get(code, 0) + 1
-            phase_code = phase_of(t)
-            if phase_code is not None:
-                phases[phase_code] += 1
-        return {"total": len(tasks), "display": display, "phase": phases}
 
     _DECISION_TAB_STATUS = {
         "open": DecisionStatus.OPEN,

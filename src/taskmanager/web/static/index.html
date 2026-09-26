@@ -99,10 +99,9 @@
     <div id="stats-digest" class="flex items-center justify-center gap-1 flex-wrap text-xs"></div>
   </header>
 
-  <!-- On the estate's own 541-task tree, /api/tree and /api/graph each take ~12s; with
-       nothing here the document/graph pane just stayed blank for that whole stretch, on
-       first load and again after every write, with no way to tell a slow load from a
-       broken one. -->
+  <!-- A subscribe on the estate's own 541-task tree can still take a couple of seconds; with
+       nothing here the document/graph pane just stays blank for that whole stretch, on first
+       load and again after every write, with no way to tell a slow load from a broken one. -->
   <div id="load-indicator" role="status" aria-live="polite" class="hidden fixed top-0 inset-x-0 z-50">
     <div class="h-0.5 bg-emerald-500 animate-pulse"></div>
     <span class="sr-only">Loading…</span>
