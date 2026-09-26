@@ -182,13 +182,13 @@ def test_overview_carries_the_cycle_and_the_cutover_runbook() -> None:
         assert needle in text, needle
 
 
-def test_fix_guide_requires_a_test_that_fails_when_reverted() -> None:
-    """A finding closes only with a test proven to fail when its fix is undone."""
+def test_fix_guide_requires_a_test_per_branch_that_fails_when_reverted() -> None:
+    """A finding closes only with a test per branch, each proven to fail when that branch alone is undone."""
     text = _guide_text("fix")
     steps, never = text.split("## Never", 1)
-    assert "revert" in steps.lower(), "fix guide's steps carry no revert-checked-test rule"
-    assert "revert" in never.lower(), "fix guide's Never list carries no revert-checked-test rule"
-    assert "present" in never.lower(), "fix guide's Never list says nothing about comment tense"
+    assert "each test fails when its branch alone is" in steps
+    assert "Never close a finding with a branch that nothing fails on" in never
+    assert "Never close a finding with nothing that fails when the fix is reverted" not in text
 
 
 def test_dispatch_guide_states_the_task_fix_round_cap() -> None:
