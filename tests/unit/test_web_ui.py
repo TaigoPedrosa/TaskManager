@@ -113,17 +113,14 @@ def test_document_sections_default_collapsed_and_remember_expand_state() -> None
     assert "expandedSections" in _function_body(html, "attachSectionToggleHandlers")
 
 
-def test_plan_and_task_headers_are_not_sticky() -> None:
+def test_no_toggle_all_sections_button_survives_the_document_view() -> None:
+    # The "Expand all sections" toolbar button only ever showed in the Document view; no
+    # other mode ever un-hid it, so it and its bookkeeping (an id list appended to on every
+    # renderSections() call, only ever cleared by the Document renderer) must go together.
     html = get_web_html()
-    assert "sticky" not in html
-    assert (
-        'class="h-12 px-4 rounded-t-xl bg-zinc-900/95 backdrop-blur-sm border-b border-zinc-800 flex items-center justify-between cursor-pointer plan-header"'
-        in html
-    )
-    assert (
-        'class="h-10 px-3 rounded-t-lg flex items-center justify-between cursor-pointer task-header bg-zinc-900/90 backdrop-blur-sm hover:bg-zinc-900"'
-        in html
-    )
+    assert 'id="toggle-sections-btn"' not in html
+    assert "toggleSectionsBtn" not in html
+    assert "allSectionIds" not in html
 
 
 def test_status_icon_carries_a_title_and_chip_is_legend_only() -> None:
@@ -147,10 +144,6 @@ def test_group_headers_default_all_collapsed() -> None:
     assert "groupCollapsed(groupId, true)" in render_sections
     assert "renderGroupHeader(groupId, 'Sections'" in render_sections
 
-    render_plan_card = _function_body(html, "renderPlanCard")
-    assert "groupCollapsed(tasksGroupId, true)" in render_plan_card
-    assert "renderGroupHeader(tasksGroupId, 'Tasks'" in render_plan_card
-
 
 def test_group_header_toggle_is_wired_independently_of_node_and_section_collapse() -> None:
     html = get_web_html()
@@ -158,17 +151,6 @@ def test_group_header_toggle_is_wired_independently_of_node_and_section_collapse
     assert "'.group-header'" in shared
     assert "collapsedGroups.has(id)) collapsedGroups.delete(id)" in shared
     assert "collapsedGroups.add(id)" in shared
-    attach = _function_body(html, "attachCollapsibleHandlers")
-    assert "attachGroupHeaderHandlers(document, renderUnifiedDocument)" in attach
-
-    # The all-sections toolbar button only ever touches expandedSections, never the groups.
-    toggle_sections_handler = re.search(
-        r"toggleSectionsBtn\.addEventListener\('click', \(\) => \{(.*?)\n\}\);",
-        html,
-        re.DOTALL,
-    )
-    assert toggle_sections_handler, "toggleSectionsBtn click handler not found"
-    assert "collapsedGroups" not in toggle_sections_handler.group(1)
 
 
 def test_group_header_is_keyboard_operable_everywhere_it_renders() -> None:
@@ -248,7 +230,7 @@ def test_page_inlines_every_static_js_file() -> None:
         "store.js": "function createStore(options)",
         "core.js": "function canEdit()",
         "filters.js": "function filtersToF()",
-        "tree.js": "function renderTaskCard(task)",
+        "tree.js": "function renderTree()",
         "graph.js": "const GRAPH_SHAPE_BY_KIND",
         "edit.js": "function openDialog(",
         "detail.js": "async function showGraphInspector(nodeId)",
@@ -580,14 +562,6 @@ def test_edit_dialog_only_offers_models_repo_and_frontmatter_for_tasks() -> None
     assert "isTask ? fieldRow('Acceptable models" in body
     assert "isTask ? fieldRow('Target repo" in body
     assert "isTask ? frontmatterEditorHtml(node.frontmatter) : ''" in body
-
-
-def test_decision_dependency_row_uses_open_answered_withdrawn_not_node_status() -> None:
-    html = get_web_html()
-    table = _function_body(html, "renderRelationTable")
-    assert "d.kind === 'decision'" in table
-    assert "decisionStatusIcon(d.status)" in table
-    assert "OPEN: 'help-circle'" in html
 
 
 def test_remove_confirmations_name_the_thing_not_its_internal_id() -> None:
@@ -977,10 +951,10 @@ def test_expand_collapse_drive_the_stores_open_and_watch_sets_not_a_local_flag()
     assert "window.tmStore.unwatch(closed)" in toggle
 
 
-def test_sections_and_relations_render_only_once_a_watched_body_arrives() -> None:
-    task_card = _function_body(get_web_html(), "renderTaskCard")
-    assert "bodyOf(task.id)" in task_card
-    assert "Loading…" in task_card
+def test_graph_inspector_shows_loading_until_watched_body_arrives() -> None:
+    inspector = _function_body(get_web_html(), "renderGraphInspector")
+    assert "window.tmStore.bodies.get(nodeId)" in inspector
+    assert "Loading" in inspector
 
 
 def _class_tokens(tag: str) -> list[str]:
@@ -997,11 +971,9 @@ def test_waves_view_is_the_default_and_reuses_the_documents_toolbar_slot() -> No
     assert "Waves view" in doc_btn.group(0)
     assert 'id="icon-file-text"' in html
     waves_pane = re.search(r'<div id="waves-pane"[^>]*>', html)
-    document_pane = re.search(r'<main id="document-pane"[^>]*>', html)
     graph_pane = re.search(r'<section id="graph-pane"[^>]*>', html)
     network_canvas = re.search(r'<div id="network-canvas"[^>]*>', html)
     assert waves_pane and "hidden" not in _class_tokens(waves_pane.group(0))
-    assert document_pane and "hidden" in _class_tokens(document_pane.group(0))
     assert graph_pane and "hidden" not in _class_tokens(graph_pane.group(0))
     assert network_canvas and "hidden" in _class_tokens(network_canvas.group(0))
 

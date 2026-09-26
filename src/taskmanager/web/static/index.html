@@ -84,9 +84,6 @@
       <div class="hidden sm:block w-px h-6 bg-zinc-800 flex-shrink-0"></div>
 
       <div class="flex items-center gap-1.5 flex-shrink-0 lg:ml-auto">
-        <button id="toggle-sections-btn" title="Expand all sections" aria-label="Expand all sections" class="h-8 aspect-square flex items-center justify-center rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition">
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-chevrons-up-down"/></svg>
-        </button>
         <button id="legend-btn" aria-expanded="false" aria-controls="legend-panel" title="Legend" aria-label="Legend" class="h-8 aspect-square flex items-center justify-center rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 hover:text-white transition">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-info"/></svg>
         </button>
@@ -100,7 +97,7 @@
   </header>
 
   <!-- A subscribe on the estate's own 541-task tree can still take a couple of seconds; with
-       nothing here the document/graph pane just stays blank for that whole stretch, on first
+       nothing here the waves/graph pane just stays blank for that whole stretch, on first
        load and again after every write, with no way to tell a slow load from a broken one. -->
   <div id="load-indicator" role="status" aria-live="polite" class="hidden fixed top-0 inset-x-0 z-50">
     <div class="h-0.5 bg-emerald-500 animate-pulse"></div>
@@ -134,13 +131,6 @@
       </div>
       <div id="sidebar-resize-handle" title="Drag to resize" class="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-emerald-500/40"></div>
     </aside>
-
-    <!-- Document View Pane -->
-    <main id="document-pane" class="hidden flex-1 overflow-y-auto p-6 space-y-8 bg-zinc-950">
-      <div id="unified-document" class="max-w-4xl mx-auto space-y-8 pb-16">
-        <!-- Dynamically rendered unified spec document -->
-      </div>
-    </main>
 
     <!-- Graph View Pane -->
     <section id="graph-pane" class="flex-1 flex flex-col bg-zinc-950/80 overflow-hidden relative">

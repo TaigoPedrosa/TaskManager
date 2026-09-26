@@ -511,7 +511,6 @@ def test_static_export_embeds_every_status_and_the_filter_ui(
         "clear-filters-btn",
         "legend-panel",
         "sidebar-resize-handle",
-        "toggle-sections-btn",
     ):
         assert f'id="{element_id}"' in html
     assert html.count('id="search-box"') == 1
