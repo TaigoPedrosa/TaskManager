@@ -257,7 +257,7 @@ function footerHtml() {
 function wavesHtml() {
   if (isStaticMode) {
     return `
-      <div class="border border-zinc-800/80 rounded-lg bg-zinc-950/40 p-6 text-xs text-zinc-400 text-center">Waves needs a live \`tm web run\` session; a static export has no \`/api/waves\` to simulate against.</div>
+      <div class="border border-zinc-800/80 rounded-lg bg-zinc-950/40 p-6 text-xs text-zinc-400 text-center">Waves needs a live <code>tm web run</code> session; a static export has no <code>/api/waves</code> to simulate against.</div>
     `;
   }
   if (waveError) {

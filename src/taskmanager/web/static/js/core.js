@@ -56,11 +56,6 @@ const dialogRoot = document.getElementById('dialog-root');
 const toastRoot = document.getElementById('toast-root');
 toastRoot.className = 'fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2 pointer-events-none';
 
-// A static export has no /api/waves to simulate against, so it opens on the one view its
-// embedded rows/edges can actually render.
-if (isStaticMode) setViewMode(window.VIEW_MODES.GRAPH);
-
-
 // Sidebar width: Graph view only, drag-resizable, remembered per browser.
 const SIDEBAR_MIN_WIDTH = 200;
 const SIDEBAR_MAX_WIDTH = 560;

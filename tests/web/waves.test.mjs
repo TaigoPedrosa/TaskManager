@@ -240,7 +240,10 @@ test('a static export never calls /api/meta or /api/waves, on load or on refetch
   const ctx = freshContext(undefined, { isStaticMode: true });
   await flushAsync();
   assert.equal(ctx.fetch.calls.length, 0, 'initWaves fired no request');
-  assert.match(ctx.contentHtml(), /needs a live/);
+  const html = ctx.contentHtml();
+  assert.match(html, /needs a live/);
+  assert.match(html, /<code>tm web run<\/code>/, 'the command name renders as code, not a literal backtick');
+  assert.doesNotMatch(html, /`/, 'no raw backtick reaches the page');
 
   ctx.window.tmStore.emit({ statusesChanged: true });
   ctx.flushRaf();
