@@ -175,8 +175,12 @@ const clip = v => String((typeof v === 'string' ? v : JSON.stringify(v)) ?? '').
 // preferred type is not known to serve goes to the default instead.
 const pickType = (type, requires = []) => (requires.every(x => (CAPS[type] || []).includes(x)) ? type : undefined)
 
+// Only these three: run() and work() read status, next_action and outcome off what this
+// returns, and nothing else -- a node's sections and job logs are the bulk of the row.
+const READ_FIELDS = 'status,next_action,outcome'
+
 async function read(n) {
-  const r = await opJson('read', n.id, `${TM} task get ${q(n.id)} --json`)
+  const r = await opJson('read', n.id, `${TM} task get ${q(n.id)} --json --fields ${READ_FIELDS}`)
   return r && r.exit === 0 && r.data && typeof r.data.status === 'string' ? r.data : null
 }
 
