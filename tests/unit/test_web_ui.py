@@ -1035,7 +1035,10 @@ def test_set_view_mode_handles_waves_graph_and_document() -> None:
 
 def test_document_view_button_switches_mode_and_toggle_sections_button_reappears() -> None:
     html = get_web_html()
-    assert "viewDocBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.DOCUMENT))" in html
+    assert (
+        "viewDocBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.DOCUMENT))"
+        in html
+    )
     set_view_mode = _function_body(html, "setViewMode")
     assert "toggleSectionsBtn.classList.remove('hidden')" in set_view_mode
 
@@ -1056,8 +1059,14 @@ def test_set_view_mode_toggles_the_canvas_layer_and_waves_pane() -> None:
     assert "networkCanvas.classList.toggle('hidden', mode !== window.VIEW_MODES.GRAPH)" in body
     assert "graphFitWrap.classList.toggle('hidden', mode !== window.VIEW_MODES.GRAPH)" in body
     core_js = _static_js("core.js")
-    assert "viewWavesBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.WAVES))" in core_js
-    assert "viewDocBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.DOCUMENT))" in core_js
+    assert (
+        "viewWavesBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.WAVES))"
+        in core_js
+    )
+    assert (
+        "viewDocBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.DOCUMENT))"
+        in core_js
+    )
 
 
 def test_wave_size_bounds_come_from_meta_never_a_constant() -> None:
