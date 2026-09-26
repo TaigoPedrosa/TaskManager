@@ -67,6 +67,18 @@ from taskmanager.engine.verification import VerificationEngine, VerificationResu
 GUIDE_NODE = "guide"
 
 
+def is_owed_key(section_key: str) -> bool:
+    return section_key.strip().lower() == "owed"
+
+
+def owed_refusal(node_id: str) -> str:
+    return (
+        "`owed` is not a section tm keeps: register the owed work as its own spec, plan or "
+        f"task (with `tm import`) whose `depends_on` names {node_id}, so it waits on {node_id} "
+        "instead of hiding in its text. Nothing was written."
+    )
+
+
 class OperationError(ValueError):
     """A refusal a user can act on; its message is shown verbatim by the CLI and the web."""
 
@@ -636,6 +648,8 @@ class Operations:
     def _write_section(
         self, node_id: str, section_key: str, content: str, header: str | None
     ) -> None:
+        if is_owed_key(section_key):
+            raise OperationError(owed_refusal(node_id), 400)
         sec_header = header or f"## {section_key.capitalize()}"
         existing_secs = self.node_repo.get_all_sections(node_id)
         existing = next((s for s in existing_secs if s.section_key == section_key), None)

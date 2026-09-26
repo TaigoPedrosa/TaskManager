@@ -35,7 +35,9 @@ Never write `kind`: position decides it. Never write `status`: a new node is `RE
 
 ## 2. Sections and frontmatter
 
-Section keys, in this order where they apply: `objective` (what is true when it is done), `acceptance` (the checks a reviewer runs, one per line), `body` (how, where the how is not obvious), `context` (what the agent would otherwise have to go and read), `owed` (what this node deliberately leaves open), `attestation` (a signed claim for work no assertion can measure). The header is `## <Key>` unless a section is given as `{header, content, ordinal}` instead of plain text. tm writes `:report`, `:review`, `:merge`, `:reopen` and `:deferral` itself, or its agents do.
+Section keys, in this order where they apply: `objective` (what is true when it is done), `acceptance` (the checks a reviewer runs, one per line), `body` (how, where the how is not obvious), `context` (what the agent would otherwise have to go and read), `attestation` (a signed claim for work no assertion can measure). The header is `## <Key>` unless a section is given as `{header, content, ordinal}` instead of plain text. tm writes `:report`, `:review`, `:merge`, `:reopen` and `:deferral` itself, or its agents do.
+
+Work this node deliberately leaves open is never a section: it is its own spec, plan or task, with `depends_on` naming this node so it waits on it instead of hiding in prose nobody discovers. tm refuses a section keyed `owed` and says so.
 
 Put shared context on the **plan**. Only the direct parent's `context` and `overview` reach `tm render <id> --view subagent`; a spec's sections never do.
 
@@ -228,7 +230,6 @@ plans:
         sections:
           objective: The route renders a template and hands the message to the sender.
           acceptance: A body missing `template_id` answers 422; an unknown template answers 404.
-          owed: Rate limiting per recipient is not in this task.
         verifications:
           - type: test_command
             target_path: api-suite
@@ -246,3 +247,5 @@ plans:
 - Never state a dependency or a precondition in prose: an id in `depends_on`, a decision, or a condition with its command.
 - Never write `status`.
 - Never give a node `review` without `fix` unless it lands on a parent that reviews and fixes.
+- Never write an `owed` section: owed work is its own node, with `depends_on` naming the node
+  that owed it; tm refuses the section.
