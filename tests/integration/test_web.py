@@ -103,7 +103,7 @@ def test_web_api_endpoints_and_ui(tmp_path: Path) -> None:
     assert node_detail["node"]["priority"] == 85
     assert node_detail["display"] == "READY"
     assert len(node_detail["sections"]) == 1
-    assert "## Steps" in node_detail["rendered_markdown"]
+    assert node_detail["sections"][0]["header"] == "## Steps"
     assert len(node_detail["verifications"]) == 1
 
     # 5. /api/nodes/nonexistent -> 404
@@ -160,8 +160,7 @@ def test_static_export_embeds_a_sections_own_markdown_image(tmp_path: Path) -> N
     out_file = tmp_path / "dashboard.html"
     content = export_static_html(tmp_path, out_file).read_text(encoding="utf-8")
 
-    # The section's own content is what tree.js/detail.js actually render as markdown client
-    # side; `rendered_markdown` is a separate, unused-by-the-page field this does not touch.
+    # The section's own content is what tree.js/detail.js render as markdown client side.
     static_match = re.search(r"window.STATIC_DATA = (\{.*?\});</script>", content)
     assert static_match
     static_data = json.loads(static_match.group(1))

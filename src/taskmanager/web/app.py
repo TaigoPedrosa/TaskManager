@@ -17,8 +17,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSock
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
-from taskmanager.core.enums import NodeKind, RenderView, TransferMode, VerificationType
-from taskmanager.core.models import Node
+from taskmanager.core.enums import NodeKind, TransferMode, VerificationType
 from taskmanager.core.status import (
     ConditionStage,
     DecisionEffect,
@@ -33,23 +32,23 @@ from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.node_repo import NodeRepository
-from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.di.container import TaskManagerProvider
 from taskmanager.engine.assets import ASSET_NAME_RE
-from taskmanager.engine.chains import base_chain, landing_chain, satisfied
 from taskmanager.engine.config import ConfigStore
 from taskmanager.engine.heuristics import score_every_task
 from taskmanager.engine.landing import Landing
 from taskmanager.engine.operations import OperationError, Operations
-from taskmanager.engine.snapshot import (
-    DisplayView,
-    SnapshotBuilder,
-    chain_holder,
-    phase_of,
-    stored_status,
-    waits_on,
+from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder, phase_of, stored_status
+from taskmanager.web.bodies import (
+    BodyRepos,
+    attachments_with_size,
+    build_bodies,
+    dependency_details,
+    dependent_details,
+    frontmatter_with_attachment_sizes,
+    lease_dict,
+    lifecycle_fields,
 )
-from taskmanager.renderers.markdown import MarkdownRenderer
 from taskmanager.web.ui import get_web_html
 
 
@@ -297,11 +296,10 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     allowed_hosts = _bound_hosts(host, port) if port is not None else None
     Actor = Annotated[str, Depends(_write_guard(allowed_hosts))]
     db_dir = project_root / ".taskmanager"
+    assets_dir = db_dir / "assets"
     container = make_container(TaskManagerProvider(project_root))
     db_mgr = container.get(DatabaseManager)
     node_repo = container.get(NodeRepository)
-    runtime_repo = container.get(RuntimeRepository)
-    renderer = container.get(MarkdownRenderer)
     operations = container.get(Operations).with_actor("web")
     snapshots = container.get(SnapshotBuilder)
     # A verb or a lease release may start or stop a landing, so the claims carry the engine.
@@ -359,127 +357,14 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         """One snapshot per request, so every display in one response reads the same tree."""
         return DisplayView(snapshots, cache, _condition_ttl())
 
-    def _finished(view: DisplayView, source_id: str, target: Node) -> bool:
-        if target.kind == NodeKind.DECISION:
-            return stored_status(target) != DecisionStatus.OPEN
-        nodes = view.snapshot.nodes
-        return (
-            source_id in nodes
-            and target.id in nodes
-            and satisfied(view.snapshot, source_id, target.id)
+    def _body_repos() -> BodyRepos:
+        return BodyRepos(
+            node_repo=node_repo,
+            job_repo=jobs,
+            cache=cache,
+            condition_ttl=_condition_ttl(),
+            assets_dir=assets_dir,
         )
-
-    def _relation_row(view: DisplayView, rel_id: str, finished: bool) -> dict[str, Any]:
-        rel = node_repo.get_node(rel_id)
-        return {
-            "id": rel_id,
-            "title": rel.title if rel else None,
-            "kind": rel.kind.value if rel else None,
-            "status": view.display(rel) if rel else None,
-            # A missing node blocks.
-            "finished": rel is not None and finished,
-        }
-
-    def dependency_details(
-        node_id: str, view: DisplayView, deps: list[str] | None = None
-    ) -> list[dict[str, Any]]:
-        own = deps if deps is not None else node_repo.get_dependencies(node_id)
-        rows = []
-        for dep_id in own:
-            dep = node_repo.get_node(dep_id)
-            rows.append(
-                _relation_row(view, dep_id, dep is not None and _finished(view, node_id, dep))
-            )
-        # What a container waits on its children wait on too, and a migration writer waits
-        # behind its chain's holder: both are named, marked as edges not its own.
-        snap = view.snapshot
-        node = node_repo.get_node(node_id)
-        if node is None or node_id not in snap.nodes:
-            return rows
-        work, decisions = waits_on(snap, node)
-        owners = snap.edge_owners(node_id)
-        for dep_id, owner in owners.items():
-            if owner != node_id and dep_id in snap.nodes:
-                row = _relation_row(view, dep_id, dep_id not in work and dep_id not in decisions)
-                rows.append(row | {"inherited_from": owner})
-        holder = chain_holder(snap, node)
-        if holder is not None and holder not in owners:
-            rows.append(_relation_row(view, holder, False) | {"migration_chain": node.target_repo})
-        return rows
-
-    def dependent_details(
-        node_id: str, view: DisplayView, blocked_by: list[str] | None = None
-    ) -> list[dict[str, Any]]:
-        node = node_repo.get_node(node_id)
-        return [
-            _relation_row(view, src_id, node is not None and _finished(view, src_id, node))
-            for src_id in (
-                blocked_by if blocked_by is not None else node_repo.get_blocked_by(node_id)
-            )
-        ]
-
-    def lifecycle_fields(n: Node, view: DisplayView) -> dict[str, Any]:
-        # Read through stored_status so a node saved under an old name shows its new one.
-        status = {"status": stored_status(n).value, "display": view.display(n)}
-        if n.kind == NodeKind.DECISION:
-            # A decision has no cycle: it is never claimed, reviewed, fixed or landed.
-            return status
-        return {
-            **status,
-            "phase": phase_of(n),
-            "review": n.review,
-            "fix": n.fix,
-            "merge": n.merge.value,
-            "outcome": n.outcome.value if n.outcome else None,
-            "verdict": n.verdict,
-            "fix_for": n.fix_for.value if n.fix_for else None,
-            "claimed_from": n.claimed_from.value if n.claimed_from else None,
-            "review_cycles": n.review_cycles,
-            "merge_attempts": n.merge_attempts,
-            "step_failures": n.step_failures,
-            "branch": n.branch or f"tm/{n.id}",
-            "requires": n.requires,
-            "land_order": n.land_order,
-            "landing_chain": landing_chain(view.snapshot, n.id),
-            "base_chain": base_chain(view.snapshot, n.id),
-        }
-
-    def lease_dict(node_id: str) -> dict[str, Any] | None:
-        lease = runtime_repo.get_lease(node_id)
-        if lease is None:
-            return None
-        return {
-            "agent_id": lease.agent_id,
-            "session_id": lease.session_id,
-            "branch_name": lease.branch_name,
-            "worktree_path": lease.worktree_path,
-            "action": lease.action.value if lease.action else None,
-            "ttl_seconds": lease.ttl_seconds,
-        }
-
-    def _attachment_size(asset_name: str) -> int | None:
-        # Same asset-name check and containment check as `get_asset` below: an attachment
-        # entry's `asset` is frontmatter, so a crafted or corrupted one is treated as missing
-        # rather than stat'd wherever it points.
-        if not ASSET_NAME_RE.fullmatch(asset_name):
-            return None
-        assets_dir = (db_dir / "assets").resolve()
-        candidate = (assets_dir / asset_name).resolve()
-        if not candidate.is_relative_to(assets_dir):
-            return None
-        try:
-            return candidate.stat().st_size
-        except OSError:
-            return None
-
-    def _attachments_with_size(attachments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [{**a, "size_bytes": _attachment_size(a.get("asset", ""))} for a in attachments]
-
-    def _frontmatter_with_attachment_sizes(frontmatter: dict[str, Any]) -> dict[str, Any]:
-        attachments = frontmatter.get("attachments")
-        if not attachments:
-            return frontmatter
-        return {**frontmatter, "attachments": _attachments_with_size(attachments)}
 
     @app.get("/", response_class=HTMLResponse)
     async def index() -> str:
@@ -500,6 +385,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         plans = node_repo.list_nodes(kind=NodeKind.PLAN)
         tasks = node_repo.list_nodes(kind=NodeKind.TASK)
         view = new_view()
+        data = view.snapshot.graph_data()
         task_scores = score_every_task(view.snapshot)
 
         def node_to_dict(n: Any) -> dict[str, Any]:
@@ -518,11 +404,11 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
                 "ordinal": n.ordinal,
                 "target_repo": n.target_repo,
                 "acceptable_models": n.acceptable_models,
-                "frontmatter": _frontmatter_with_attachment_sizes(n.frontmatter),
+                "frontmatter": frontmatter_with_attachment_sizes(assets_dir, n.frontmatter),
                 "dependencies": deps,
-                "dependency_details": dependency_details(n.id, view, deps),
+                "dependency_details": dependency_details(n.id, view, data.nodes, deps),
                 "blocked_by": blocked_by,
-                "dependent_details": dependent_details(n.id, view, blocked_by),
+                "dependent_details": dependent_details(n.id, view, data.nodes, blocked_by),
                 "sections": [
                     {
                         "key": s.section_key,
@@ -541,7 +427,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
                     }
                     for v in verifications
                 ],
-                "lease": lease_dict(n.id),
+                "lease": lease_dict(data.leases.get(n.id)),
                 "children": [],
             }
 
@@ -620,63 +506,16 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
 
     @app.get("/api/nodes/{node_id}")
     def get_node_detail(node_id: str) -> dict[str, Any]:
-        node = node_repo.get_node(node_id)
-        if not node:
-            raise HTTPException(status_code=404, detail="Node not found")
-
         view = new_view()
-        dependencies = node_repo.get_dependencies(node_id)
-        blocked_by = node_repo.get_blocked_by(node_id)
-        ttl = _condition_ttl()
+        body = build_bodies(view, [node_id], repos=_body_repos()).get(node_id)
+        if body is None:
+            raise HTTPException(status_code=404, detail="Node not found")
         return {
-            "node": {
-                "id": node.id,
-                "kind": node.kind.value,
-                "title": node.title,
-                **lifecycle_fields(node, view),
-                "priority": node.priority,
-                "ordinal": node.ordinal,
-                "target_repo": node.target_repo,
-                "acceptable_models": node.acceptable_models,
-                "frontmatter": _frontmatter_with_attachment_sizes(node.frontmatter),
-            },
-            "display": view.display(node),
-            "phase": phase_of(node),
-            "rendered_markdown": renderer.render(node_id, view=RenderView.FULL),
-            "dependencies": dependencies,
-            "dependency_details": dependency_details(node_id, view, dependencies),
-            "blocked_by": blocked_by,
-            "dependent_details": dependent_details(node_id, view, blocked_by),
-            "sections": [
-                {
-                    "key": s.section_key,
-                    "header": s.header,
-                    "content": s.content,
-                    "ordinal": s.ordinal,
-                }
-                for s in node_repo.get_all_sections(node_id)
-            ],
-            "verifications": [
-                {
-                    "id": v.id,
-                    "verification_type": v.verification_type.value,
-                    "target_path": v.target_path,
-                    "expected_pattern": v.expected_pattern,
-                }
-                for v in node_repo.get_verifications(node_id)
-            ],
-            "conditions": [
-                {
-                    "idx": c.idx,
-                    "needs": c.needs,
-                    "command": c.command,
-                    "stage": c.stage.value,
-                    "last_result": cache.get_condition(node_id, c.idx, c.command, ttl),
-                }
-                for c in node_repo.get_conditions(node_id)
-            ],
-            "jobs": [j.model_dump(mode="json") for j in jobs.for_node(node_id)],
-            "lease": lease_dict(node_id),
+            **body,
+            "display": body["node"]["display"],
+            "phase": body["node"].get("phase"),
+            "dependencies": node_repo.get_dependencies(node_id),
+            "blocked_by": node_repo.get_blocked_by(node_id),
         }
 
     @app.get("/api/stats")
@@ -953,7 +792,9 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
                 "waiting_count": len(node_repo.get_blocked_by(d.id)),
                 "blocks": blocks(d.id),
                 "decision": d.frontmatter.get("decision") or {},
-                "attachments": _attachments_with_size(d.frontmatter.get("attachments") or []),
+                "attachments": attachments_with_size(
+                    assets_dir, d.frontmatter.get("attachments") or []
+                ),
             }
             for d in decisions
         ]
