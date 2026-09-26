@@ -8,13 +8,14 @@ import mimetypes
 import tempfile
 from collections.abc import AsyncGenerator, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlsplit
 
 from dishka import make_container
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -36,9 +37,10 @@ from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.di.container import TaskManagerProvider
 from taskmanager.engine.assets import ASSET_NAME_RE
-from taskmanager.engine.config import ConfigStore
+from taskmanager.engine.config import ConfigStore, DispatchConfig
 from taskmanager.engine.landing import Landing
 from taskmanager.engine.operations import OperationError, Operations
+from taskmanager.engine.simulate import simulate
 from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder, stored_status
 from taskmanager.web.bodies import BodyRepos, attachments_with_size, build_bodies
 from taskmanager.web.live import LiveHub
@@ -246,6 +248,19 @@ def _parse_page_limit(raw: str | None, default: int) -> int:
     return limit
 
 
+_MIN_WAVE_DEPTH = 1
+_MAX_WAVE_DEPTH = 20
+# Not a config key: a simulated wave never holds a lease, so there is no session to cap.
+_WAVE_MAX_STRONG = 5
+
+
+def _parse_bound(raw: int | None, default: int, lo: int, hi: int, name: str) -> int:
+    value = default if raw is None else raw
+    if not (lo <= value <= hi):
+        raise HTTPException(400, f"{name} is {lo}..{hi}")
+    return value
+
+
 def _encode_nodes_cursor(ordinal: int, node_id: str, query_hash: str) -> str:
     payload = json.dumps({"o": ordinal, "i": node_id, "q": query_hash})
     return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
@@ -434,6 +449,9 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     def _condition_ttl() -> int:
         return ConfigStore(project_root).project().condition_ttl
 
+    def _dispatch_config() -> DispatchConfig:
+        return ConfigStore(project_root).project().dispatch
+
     live_hub = LiveHub(
         snapshots=snapshots,
         cache=cache,
@@ -554,7 +572,9 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     @app.get("/api/meta")
     def get_meta() -> dict[str, Any]:
         all_nodes = node_repo.list_nodes()
+        dispatch = _dispatch_config()
         return {
+            "dispatch": {"wave_size": dispatch.wave_size, "tick_budget": dispatch.tick_budget},
             "statuses": [s.value for s in Status],
             "display_statuses": [d.value for d in DisplayStatus],
             "phases": [p.value for p in Phase],
@@ -575,6 +595,21 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
                 {"id": p.id, "title": p.title} for p in node_repo.list_nodes(kind=NodeKind.PLAN)
             ],
         }
+
+    @app.get("/api/waves")
+    def get_waves(
+        depth: int = 1,
+        size: int | None = None,
+        spec: Annotated[list[str] | None, Query()] = None,
+    ) -> dict[str, Any]:
+        dispatch = _dispatch_config()
+        depth = _parse_bound(depth, 1, _MIN_WAVE_DEPTH, _MAX_WAVE_DEPTH, "depth")
+        size = _parse_bound(size, dispatch.wave_size, 1, dispatch.tick_budget, "size")
+        # One bulk read of state.db, however deep: every later wave replays over the snapshot
+        # this built, in memory (see `engine.simulate`).
+        snap = snapshots.build()
+        waves = simulate(snap, depth, size, _WAVE_MAX_STRONG, spec)
+        return {"waves": [asdict(w) for w in waves]}
 
     @app.post("/api/specs", status_code=201)
     def create_spec(body: SpecCreate, actor: Actor) -> dict[str, str]:
