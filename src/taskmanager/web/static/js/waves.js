@@ -66,6 +66,17 @@ async function fetchWaves() {
   waveError = null;
   setWavesLoadPending(true);
   renderWaves();
+  // The one bound the client already knows before ever asking the server: an out-of-range
+  // size would otherwise reach /api/waves, and its 400 response logs a browser console
+  // error no amount of catching in JS can silence.
+  if (waveSize !== null && waveMaxSize !== null && (waveSize < 1 || waveSize > waveMaxSize)) {
+    waveData = [];
+    waveError = `Could not compute waves: wave size must be 1–${waveMaxSize} (this project's dispatch.tick_budget).`;
+    waveLoading = false;
+    setWavesLoadPending(false);
+    renderWaves();
+    return;
+  }
   const params = new URLSearchParams({ depth: String(waveDepth) });
   if (waveSize !== null) params.set('size', String(waveSize));
   waveSpecFilter().forEach((s) => params.append('spec', s));
@@ -139,11 +150,13 @@ window.tmStore.onChange((patch) => {
 
 const ACTION_STATUS_CODE = { implement: 'IMPLEMENTING', review: 'REVIEWING', fix: 'FIXING', merge: 'MERGING' };
 
+// The frame's action chip is the lowercase action word itself, no icon -- unlike every
+// other status-coloured chip on the page (statusChip/phaseChip in core.js), which do carry
+// one.
 function actionChip(action) {
   const code = ACTION_STATUS_CODE[action] || 'STALE';
   const t = getTheme(code);
-  const label = action.charAt(0).toUpperCase() + action.slice(1);
-  return `<span class="st-chip st-${t.code} inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full font-medium text-[10px]" title="${esc(t.description)}">${renderIcon(t.icon, 'w-3 h-3')}<span>${esc(label)}</span></span>`;
+  return `<span class="st-chip st-${t.code} inline-flex items-center px-1.5 py-0.5 rounded-full font-medium text-[10px]" title="${esc(t.description)}">${esc(action)}</span>`;
 }
 
 // A wave entry's status_before/status_after are the raw Status a real claim would carry
@@ -155,18 +168,26 @@ const WAVE_STATUS_DISPLAY = {
   FIXED: 'WAITING_REVIEW',
 };
 
+// The frame labels a from/to chip with the raw status word itself (e.g. "Implemented"), in
+// the colour of the display status it folds to for a waiting one -- unlike statusChip()
+// (core.js), which would show that display status's own label ("Waiting Review") and icon.
 function waveStatusChip(rawStatus) {
-  return statusChip(WAVE_STATUS_DISPLAY[rawStatus] || rawStatus);
+  const t = getTheme(WAVE_STATUS_DISPLAY[rawStatus] || rawStatus);
+  const label = rawStatus.charAt(0) + rawStatus.slice(1).toLowerCase();
+  return `<span class="st-chip st-${t.code} inline-flex items-center px-1.5 py-0.5 rounded-full font-medium text-[10px]">${esc(label)}</span>`;
 }
 
 function heldRowHtml(row) {
   const sep = row.indexOf(': ');
   const id = sep === -1 ? '' : row.slice(0, sep);
   const reason = sep === -1 ? row : row.slice(sep + 2);
+  // At 375 the frame stacks id over reason instead of truncating the reason on one row --
+  // a long "waits on ..." list needs the room, and the rest of the page keeps this row's
+  // truncation from sm up, where it fits.
   return `
-    <div class="flex items-center gap-3 p-2 bg-zinc-950/60">
+    <div class="flex flex-col gap-0.5 sm:flex-row sm:items-center sm:gap-3 p-2 bg-zinc-950/60">
       <span class="text-zinc-300 flex-shrink-0">${esc(id)}</span>
-      <span class="text-zinc-400 truncate">${esc(reason)}</span>
+      <span class="text-zinc-400 sm:truncate">${esc(reason)}</span>
     </div>
   `;
 }
@@ -174,7 +195,11 @@ function heldRowHtml(row) {
 function waveEntryHtml(entry) {
   const pill = 'px-1.5 py-0.5 rounded border font-mono text-[10px]';
   const inFlight = entry.in_flight ? `<span class="${pill} bg-zinc-800 border-zinc-700 text-zinc-300">in flight</span>` : '';
-  const repoPills = entry.repos.map((r) => `<span class="${pill} bg-zinc-900 border-zinc-800 text-zinc-400">${esc(r)}</span>`).join('');
+  const repoPills = entry.repos.map((r) => `<span class="${pill} bg-zinc-900 border-zinc-800 text-cyan-400">${esc(r)}</span>`).join('');
+  const pillsInner = `${inFlight}<span class="${pill} bg-purple-950/60 border-purple-800/80 text-purple-300">${esc(entry.model)}</span>${repoPills}`;
+  // The frame moves this row from the header band (1440, 768) into the body, under the
+  // title (375) -- rendered twice, each half hidden by the page's own `sm` breakpoint,
+  // rather than reflowed with CSS alone.
   return `
     <button type="button" class="wave-entry-card block w-full text-left border border-zinc-800/80 rounded-lg bg-zinc-950/40 overflow-hidden hover:border-zinc-700 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500" data-node-id="${esc(entry.id)}" aria-label="${esc(entry.id)}: ${esc(entry.title)}">
       <div class="wave-entry-head flex items-center justify-between gap-2 flex-wrap px-3 py-2.5 bg-zinc-900/90">
@@ -182,14 +207,11 @@ function waveEntryHtml(entry) {
           <span class="font-mono text-xs font-bold text-emerald-400 truncate">${esc(entry.id)}</span>
           ${actionChip(entry.action)}
         </div>
-        <div class="flex items-center gap-1.5 flex-wrap">
-          ${inFlight}
-          <span class="${pill} bg-purple-950/60 border-purple-800/80 text-purple-300">${esc(entry.model)}</span>
-          ${repoPills}
-        </div>
+        <div class="hidden sm:flex items-center gap-1.5 flex-wrap">${pillsInner}</div>
       </div>
       <div class="wave-entry-body px-3.5 py-3 space-y-2.5 bg-zinc-950/80 border-t border-zinc-800/60">
         <div class="text-sm font-medium text-zinc-200 break-words">${esc(entry.title)}</div>
+        <div class="flex sm:hidden items-center gap-1.5 flex-wrap">${pillsInner}</div>
         <div class="flex items-center gap-1.5 flex-wrap">
           ${waveStatusChip(entry.status_before)}
           <span class="text-xs text-zinc-500">→</span>
@@ -219,7 +241,7 @@ function waveCardHtml(wave, waveNumber, index) {
         <span class="text-zinc-400">${wave.entries.length} task${wave.entries.length === 1 ? '' : 's'}</span>
       </div>
       <div class="p-4 space-y-2.5">
-        ${isEmpty ? '<div class="text-xs text-zinc-500 italic py-2">Nothing claimable.</div>' : wave.entries.map(waveEntryHtml).join('')}
+        ${isEmpty ? '<div class="text-sm text-zinc-400">Nothing claimable.</div>' : wave.entries.map(waveEntryHtml).join('')}
         ${heldHtml}
       </div>
     </section>
@@ -262,21 +284,31 @@ function footerHtml() {
 
 function wavesHtml() {
   if (waveError) {
+    // No retry control: the size input that caused the refusal already refetches on its
+    // own `change` event, and the frame draws no button here.
     return `
       ${controlsHtml()}
-      <div role="alert" class="border border-red-800/60 rounded-lg bg-red-950/40 text-red-200 text-xs p-4 flex items-center justify-between gap-3">
+      <div role="alert" class="border border-red-800/60 rounded-lg bg-red-950/40 text-red-200 text-xs p-4">
         <span>${esc(waveError)}</span>
-        <button id="wave-retry-btn" type="button" class="underline decoration-dotted flex-shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 rounded">Retry</button>
       </div>
     `;
   }
   if (waveLoading && waveData.length === 0) {
     // The pending cue itself is the shared #load-indicator bar (setWavesLoadPending, above);
     // this is only the content pane's placeholder for the stretch before any wave has ever
-    // rendered here.
+    // rendered here -- shaped like a real wave card, per the loading frame.
     return `
       ${controlsHtml()}
-      <div class="border border-zinc-800/80 rounded-lg bg-zinc-950/40 p-6 text-xs text-zinc-400 text-center">Loading&hellip;</div>
+      <section class="border border-zinc-800 rounded-xl bg-zinc-900/30 overflow-hidden">
+        <div class="wave-head flex items-center justify-between px-4 py-3.5 bg-zinc-900/95 border-b border-zinc-800 font-mono text-xs">
+          <h3 class="font-bold uppercase text-emerald-400">Wave 1</h3>
+          <span class="text-zinc-400">&hellip;</span>
+        </div>
+        <div class="p-4">
+          <div class="text-xs text-zinc-500 italic">Loading&hellip;</div>
+        </div>
+      </section>
+      ${footerHtml()}
     `;
   }
   return `
@@ -298,8 +330,6 @@ function wireWavesHandlers(root) {
   if (resetBtn) resetBtn.addEventListener('click', resetWaves);
   const computeBtn = root.querySelector('#wave-compute-btn');
   if (computeBtn) computeBtn.addEventListener('click', computeNextWave);
-  const retryBtn = root.querySelector('#wave-retry-btn');
-  if (retryBtn) retryBtn.addEventListener('click', fetchWaves);
   root.querySelectorAll('.wave-held-toggle').forEach((btn) => {
     btn.addEventListener('click', () => {
       const idx = Number(btn.getAttribute('data-wave-index'));

@@ -284,12 +284,93 @@ test('the wave card, task card, held list and controls follow the frame anatomy'
   assert.match(entryBody, /→/, 'from/to chips are separated by an arrow');
   assert.doesNotMatch(entryBody, /data-icon="chevron-right"/);
 
+  // Action chip: lowercase action word, no icon.
+  assert.match(entryHead, /<span class="st-chip st-X inline-flex items-center px-1\.5 py-0\.5 rounded-full font-medium text-\[10px\]"[^>]*>implement<\/span>/, 'the action chip is the lowercase action word with no icon');
+
+  // From/to chips: the raw status word, not the display status, and no icon.
+  assert.match(entryBody, /<span class="st-chip st-X inline-flex items-center px-1\.5 py-0\.5 rounded-full font-medium text-\[10px\]">Ready<\/span>/, 'the "from" chip reads the raw status, not a display status');
+  assert.match(entryBody, /<span class="st-chip st-X inline-flex items-center px-1\.5 py-0\.5 rounded-full font-medium text-\[10px\]">Implemented<\/span>/, 'the "to" chip reads the raw status, not a display status');
+
+  // Repo pill colour matches the frame's cyan, not zinc.
+  assert.match(entryHead, /class="[^"]*text-cyan-400[^"]*">api</, 'the repo pill reads cyan');
+
+  // Model+repo pills sit in the header at sm and up, and in the body (under the title) below it.
+  assert.match(entryHead, /<div class="hidden sm:flex items-center gap-1\.5 flex-wrap">/, 'desktop keeps the model+repo row in the header band');
+  assert.match(entryBody, /<div class="flex sm:hidden items-center gap-1\.5 flex-wrap">/, '375 moves the model+repo row into the body, under the title');
+
   assert.match(html, /<span>Held \(1\)<\/span><svg data-icon="chevron-right">/, 'the held chevron sits after the label');
   assert.ok(classOf(html, /class="(wave-held-toggle [^"]*)"/).includes('uppercase'));
   const rows = classOf(html, /class="(wave-held-rows [^"]*)"/);
   for (const c of ['border', 'rounded-lg', 'font-mono']) assert.ok(rows.includes(c), `held rows lack ${c}`);
 
+  // Held row at 375: id stacks over the reason, and the reason is not truncated there.
+  const heldRow = classOf(html, /class="(flex flex-col[^"]*p-2 bg-zinc-950\/60)"/);
+  for (const c of ['flex-col', 'sm:flex-row', 'sm:items-center', 'sm:gap-3']) {
+    assert.ok(heldRow.includes(c), `held row lacks ${c}`);
+  }
+  const reasonCls = classOf(html, /class="([^"]*)">waits on S-P-T/);
+  assert.ok(reasonCls.includes('sm:truncate'), 'the reason truncates from sm up');
+  assert.ok(!reasonCls.includes('truncate'), 'the reason is not truncated below sm, so the full text survives at 375');
+
   assert.ok(classOf(html, /class="(wave-controls [^"]*)"/).includes('justify-between'));
   assert.match(html, /id="wave-size-caption"[^>]*>[^<]*<\/span>\s*<\/div>\s*<button id="wave-reset-btn"/, 'Reset sits apart from the caption, at the row end');
   assert.ok(classOf(html, /id="wave-size-caption" class="([^"]*)"/).includes('text-zinc-400'), 'caption meets AA contrast on zinc-950');
+});
+
+test('an out-of-range wave size refuses locally, without ever calling /api/waves', async () => {
+  const ctx = freshContext();
+  await flushAsync();
+  const before = wavesCalls(ctx).length;
+
+  ctx.onWaveSizeChange(999); // waveMaxSize is 20 (metaResponse's tick_budget)
+  await flushAsync();
+
+  assert.equal(wavesCalls(ctx).length, before, 'no /api/waves request was ever made for the bad size');
+  const html = ctx.contentHtml();
+  assert.match(html, /Could not compute waves: wave size must be 1–20 \(this project's dispatch\.tick_budget\)\./);
+  assert.match(html, /role="alert"/);
+});
+
+test('the loading state renders inside a Wave 1 card, with a disabled compute button', () => {
+  const ctx = freshContext();
+  const html = ctx.contentHtml();
+  assert.match(html, /<h3 class="[^"]*">Wave 1<\/h3>/);
+  assert.match(html, /Loading&hellip;/);
+  assert.match(html, /id="wave-compute-btn"[^>]* disabled[^>]*>/, 'compute is disabled while the first request is in flight');
+});
+
+test('the empty wave body reads at AA contrast, not italic', async () => {
+  const ctx = freshContext(() => ({ waves: [{ entries: [], held: [] }] }));
+  await flushAsync();
+  const html = ctx.contentHtml();
+  const cls = classOf(html, /class="([^"]*)">Nothing claimable\./);
+  assert.ok(cls.includes('text-zinc-400'), 'meets AA contrast (text-zinc-500 measured 4.0:1)');
+  assert.ok(cls.includes('text-sm'), 'matches the frame\'s size');
+  assert.ok(!cls.includes('italic'), 'the frame draws this non-italic');
+});
+
+test('the error state carries no retry button, matching the error frame', async () => {
+  const ctx = freshContext();
+  await flushAsync();
+  ctx.fetch = async (url) => {
+    if (url.startsWith('/api/meta')) return metaResponse();
+    return { ok: false, status: 400, json: async () => ({ detail: 'boom' }) };
+  };
+  await ctx.fetchWaves();
+  const html = ctx.contentHtml();
+  assert.doesNotMatch(html, /wave-retry-btn/);
+  assert.doesNotMatch(html, />Retry</);
+});
+
+test("#waves-pane uses the frame's 16px gutter at 375, and 24px from sm up", () => {
+  const indexHtml = fs.readFileSync(
+    path.join(here, '../../src/taskmanager/web/static/index.html'),
+    'utf8',
+  );
+  const m = indexHtml.match(/id="waves-pane" class="([^"]*)"/);
+  assert.ok(m, '#waves-pane not found');
+  const cls = m[1].split(/\s+/);
+  assert.ok(cls.includes('p-4'), 'default (375) gutter is 16px');
+  assert.ok(cls.includes('sm:p-6'), '768 and 1440 keep the 24px gutter');
+  assert.ok(!cls.includes('p-6'), 'no unconditional 24px override');
 });
