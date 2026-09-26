@@ -85,6 +85,13 @@ class Estate:
                 )
             )
 
+    def depend(self, dependent: str, dependency: str) -> None:
+        self.node_repo.add_relation(
+            NodeRelation(
+                source_id=dependent, target_id=dependency, relation_type=RelationType.DEPENDS_ON
+            )
+        )
+
     def lease(
         self, node_id: str, ttl_seconds: int | None = 300, last_heartbeat: datetime | None = None
     ) -> None:
@@ -253,14 +260,6 @@ async def test_section_write_on_a_watched_node_sends_one_section_item(estate: Es
     await hub.refresh()
     session = hub.open_session(FakeSocket())
     await subscribe(hub, session, 1, open=[], watch=["T1"], reset=True)
-    # A rebuild only re-reads a watched id's body when its `rev` moved, and subscribing
-    # itself writes nothing -- so T1's body does not exist yet. Re-saving it unchanged still
-    # bumps its `rev` (the trigger fires whenever a write leaves `rev` untouched), which forces
-    # the one rebuild that builds it, before the write under test.
-    t1 = estate.node_repo.get_node("T1")
-    assert t1 is not None
-    estate.node_repo.save_node(t1)
-    await hub.refresh()
 
     estate.node_repo.save_section(
         NodeSection(node_id="T1", section_key="body", ordinal=0, header="## Body", content="x")
@@ -293,6 +292,41 @@ async def test_section_write_on_an_unwatched_invisible_node_sends_nothing(estate
     await hub.refresh()
 
     assert len(_socket(session).sent) == 1  # only the initial snapshot
+
+
+# -- watching a body on an otherwise idle estate ----------------------------------------------
+
+
+@run_async
+async def test_a_reset_subscribe_sends_a_newly_watched_body_with_no_write_at_all(
+    estate: Estate,
+) -> None:
+    estate.add("T1", NodeKind.TASK)
+
+    hub = estate.hub()
+    await hub.refresh()
+    session = hub.open_session(FakeSocket())
+
+    message = await subscribe(hub, session, 1, watch=["T1"], reset=True)
+
+    assert message["bodies"].keys() == {"T1"}
+    assert message["bodies"]["T1"]["node"]["id"] == "T1"
+
+
+@run_async
+async def test_watching_a_body_without_reset_sends_it_as_update_items(estate: Estate) -> None:
+    estate.add("T1", NodeKind.TASK)
+
+    hub = estate.hub()
+    await hub.refresh()
+    session = hub.open_session(FakeSocket())
+    await subscribe(hub, session, 1, watch=[], reset=True)
+
+    message = await subscribe(hub, session, 2, watch=["T1"])
+
+    assert message["type"] == "update"
+    body_ops = {item["part"] for item in message["items"] if item["op"] == "body"}
+    assert "node" in body_ops
 
 
 # -- leases ---------------------------------------------------------------------------------
@@ -340,6 +374,41 @@ async def test_a_lease_expiring_with_no_write_sends_its_stale_row_once_the_deadl
         item["row"] for item in msg["items"] if item["op"] == "row" and item["row"]["id"] == "T1"
     ]
     assert stale_rows and stale_rows[0]["display"] == "STALE"
+
+
+# -- a landed dependency, watched from its dependent's side ------------------------------------
+
+
+@run_async
+async def test_a_landed_dependency_refreshes_a_watched_dependents_stale_body(
+    estate: Estate,
+) -> None:
+    # B's own rev never moves when A lands: only `_runtime_parts` (lease/jobs/conditions)
+    # used to be re-read for a watched id whose rev stayed put, leaving `dependency_details`
+    # and `display` -- both cheap reads off the same rebuild's view -- stuck at A's old status.
+    estate.add("A", NodeKind.TASK, status=Status.READY)
+    estate.add("B", NodeKind.TASK, status=Status.READY)
+    estate.depend("B", "A")
+
+    hub = estate.hub()
+    await hub.refresh()
+    session = hub.open_session(FakeSocket())
+    snapshot = await subscribe(hub, session, 1, watch=["B"], reset=True)
+    assert snapshot["bodies"]["B"]["dependency_details"][0]["status"] == "READY"
+
+    a = estate.node_repo.get_node("A")
+    assert a is not None
+    estate.node_repo.save_node(a.model_copy(update={"status": Status.COMPLETED}))
+    await hub.refresh()
+
+    msg = _socket(session).sent[-1]
+    dep_item = next(
+        i
+        for i in msg["items"]
+        if i["op"] == "body" and i["id"] == "B" and i["part"] == "dependency_details"
+    )
+    assert dep_item["value"][0]["status"] == "COMPLETED"
+    assert dep_item["value"][0]["finished"] is True
 
 
 # -- malformed frames -------------------------------------------------------------------------

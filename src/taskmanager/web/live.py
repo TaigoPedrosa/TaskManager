@@ -6,7 +6,7 @@ import asyncio
 import json
 import sqlite3
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -29,6 +29,7 @@ from taskmanager.web.bodies import (
     body_items,
     build_bodies,
     lease_dict,
+    refresh_relations,
 )
 from taskmanager.web.rows import build_rows, decisions_open, row_digest, statuses, statuses_hash
 from taskmanager.web.visibility import Filters, facets, parse_filters, project_edges, visible_ids
@@ -199,9 +200,29 @@ class LiveHub:
     # -- incoming frames ------------------------------------------------------------------------
 
     async def handle_frame(self, session: Session, text: str) -> None:
+        # Off the event loop, same as a rebuild: building a newly-watched id's body below
+        # reads the state and cache dbs, and a subscribe frame must never block other sockets
+        # on that any more than `refresh()` blocks them on its own rebuild.
         async with self._lock:
-            message = self._process_frame(session, text)
+            message = await asyncio.to_thread(self._process_frame, session, text)
         await self._send(session, message)
+
+    def _ensure_bodies(self, ids: Iterable[str]) -> None:
+        """A session that starts watching an id must see its body right away, not once some
+        unrelated write next triggers a rebuild -- on an idle estate that rebuild may never
+        come. `wanted` is filtered to known rows so a bogus or stale id builds nothing."""
+        wanted = [i for i in dict.fromkeys(ids) if i not in self._bodies and i in self.rows]
+        if not wanted:
+            return
+        view = DisplayView(self._snapshots, self._cache, self._condition_ttl())
+        repos = BodyRepos(
+            node_repo=self._node_repo,
+            job_repo=self._job_repo,
+            cache=self._cache,
+            condition_ttl=self._condition_ttl(),
+            assets_dir=self._assets_dir,
+        )
+        self._bodies.update(build_bodies(view, wanted, repos=repos))
 
     def _process_frame(self, session: Session, text: str) -> dict[str, Any]:
         try:
@@ -226,6 +247,7 @@ class LiveHub:
         session.filters = new_filters
         session.open = set(frame.open)
         session.watch = set(frame.watch)
+        self._ensure_bodies(session.watch)
 
         if frame.reset:
             session.sent_rows = {}
@@ -426,8 +448,24 @@ class LiveHub:
             self._bodies.update(build_bodies(view, changed_ids, repos=repos))
         stale_ids = [i for i in watched if i not in changed_ids and i in self._bodies]
         if stale_ids:
+            relations = refresh_relations(view, data, stale_ids)
             for node_id, parts in _runtime_parts(repos, data, stale_ids).items():
-                self._bodies[node_id] = {**self._bodies[node_id], **parts}
+                body = self._bodies[node_id]
+                rel = relations.get(node_id)
+                node_part = (
+                    body["node"] if rel is None else {**body["node"], "display": rel["display"]}
+                )
+                self._bodies[node_id] = {
+                    **body,
+                    **parts,
+                    "node": node_part,
+                    "dependency_details": (
+                        body["dependency_details"] if rel is None else rel["dependency_details"]
+                    ),
+                    "dependent_details": (
+                        body["dependent_details"] if rel is None else rel["dependent_details"]
+                    ),
+                }
         for node_id in list(self._bodies):
             if node_id not in watched:
                 del self._bodies[node_id]

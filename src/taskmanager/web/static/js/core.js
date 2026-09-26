@@ -412,8 +412,9 @@ function scheduleRender() {
 window.tmStore = isStaticMode
   ? createStore({ staticData: window.STATIC_DATA })
   : createStore({});
-window.tmStore.onChange(() => {
+window.tmStore.onChange((patch) => {
   syncConnectionUi();
+  if (patch && patch.error) toast(patch.error, 'error');
   scheduleRender();
 });
 syncConnectionUi();

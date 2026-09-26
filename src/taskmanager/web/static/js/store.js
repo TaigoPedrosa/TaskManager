@@ -445,6 +445,7 @@ function createStore(options) {
     let statusesChanged = false;
     let facetsChanged = false;
     let edgesChanged = false;
+    let watchChanged = false;
     for (const item of msg.items || []) {
       switch (item.op) {
         case 'row':
@@ -454,7 +455,7 @@ function createStore(options) {
         case 'drop':
           rows.delete(item.id);
           bodies.delete(item.id);
-          watchSet.delete(item.id);
+          if (watchSet.delete(item.id)) watchChanged = true;
           rowIds.add(item.id);
           bodyIds.add(item.id);
           break;
@@ -500,15 +501,29 @@ function createStore(options) {
       edgesChanged,
       connectionChanged: false,
     });
+    // A dropped row's watch is forgotten locally above; the server keeps sending its
+    // section/body items off whatever subscribe last declared it watched until told
+    // otherwise, so that shrunk watch set must go back to it here, not just held locally.
+    if (watchChanged) sendSubscribe(false);
   }
 
   async function handleMessage(raw) {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
     if (msg.re !== undefined && msg.re !== null && msg.re === pendingId) pending = false;
-    if (msg.type === 'snapshot') applySnapshot(msg);
-    else if (msg.type === 'update') applyUpdate(msg);
-    else if (msg.type !== 'error') return;
+    if (msg.type === 'snapshot') {
+      applySnapshot(msg);
+    } else if (msg.type === 'update') {
+      applyUpdate(msg);
+    } else if (msg.type === 'error') {
+      notify({
+        rowIds: [], bodyIds: [], statusesChanged: false, facetsChanged: false,
+        edgesChanged: false, connectionChanged: false, error: msg.detail || 'subscribe refused',
+      });
+      return;
+    } else {
+      return;
+    }
     if (typeof msg.hash === 'string') {
       const ownHash = await statusesHash(statuses);
       if (ownHash !== msg.hash) sendSubscribe(true);

@@ -12,6 +12,7 @@ from taskmanager.core.enums import NodeKind, RelationType
 from taskmanager.core.models import Condition, Job, Lease, Node, NodeSection
 from taskmanager.core.status import DecisionStatus
 from taskmanager.db.cache_repo import CacheRepository, _command_hash
+from taskmanager.db.graph_reader import GraphData
 from taskmanager.db.job_repo import _COLUMNS as _JOB_COLUMNS
 from taskmanager.db.job_repo import JobRepository, _row_to_job
 from taskmanager.db.node_repo import NodeRepository
@@ -240,6 +241,40 @@ def _condition_result(
     return exit_code if command_hash == _command_hash(condition.command) else None
 
 
+def dependency_maps(data: GraphData) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    deps_by_source: dict[str, list[str]] = {}
+    blocked_by_target: dict[str, list[str]] = {}
+    for source, target in data.relations[RelationType.DEPENDS_ON]:
+        deps_by_source.setdefault(source, []).append(target)
+        blocked_by_target.setdefault(target, []).append(source)
+    return deps_by_source, blocked_by_target
+
+
+def refresh_relations(
+    view: DisplayView, data: GraphData, ids: Sequence[str]
+) -> dict[str, dict[str, Any]]:
+    """`dependency_details`, `dependent_details` and the node's own `display`, recomputed for a
+    watched id whose `rev` did not move: all three read the view already built for this rebuild,
+    at no query cost, and a neighbour landing or a chain's holder clearing can change any of them
+    with this node's own row untouched."""
+    deps_by_source, blocked_by_target = dependency_maps(data)
+    parts: dict[str, dict[str, Any]] = {}
+    for node_id in ids:
+        node = data.nodes.get(node_id)
+        if node is None:
+            continue
+        parts[node_id] = {
+            "dependency_details": dependency_details(
+                node_id, view, data.nodes, deps_by_source.get(node_id, [])
+            ),
+            "dependent_details": dependent_details(
+                node_id, view, data.nodes, blocked_by_target.get(node_id, [])
+            ),
+            "display": view.display(node),
+        }
+    return parts
+
+
 def build_bodies(
     view: DisplayView, ids: Sequence[str], *, repos: BodyRepos
 ) -> dict[str, dict[str, Any]]:
@@ -247,11 +282,7 @@ def build_bodies(
     wanted = list(dict.fromkeys(i for i in ids if i in data.nodes))
     if not wanted:
         return {}
-    deps_by_source: dict[str, list[str]] = {}
-    blocked_by_target: dict[str, list[str]] = {}
-    for source, target in data.relations[RelationType.DEPENDS_ON]:
-        deps_by_source.setdefault(source, []).append(target)
-        blocked_by_target.setdefault(target, []).append(source)
+    deps_by_source, blocked_by_target = dependency_maps(data)
     sections = _bulk_sections(repos.node_repo, wanted)
     jobs = _bulk_jobs(repos.job_repo, wanted)
     cached_conditions = repos.cache.all_conditions(repos.condition_ttl)

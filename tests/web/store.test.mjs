@@ -328,6 +328,45 @@ test("close(plan) also closes its open descendants and sends one subscribe; a dr
   assert.deepEqual(socket.sent[socket.sent.length - 1].watch, [], 'the dropped id is no longer watched');
 });
 
+test('an error frame notifies listeners with its detail and clears pending', async () => {
+  const ctx = freshContext();
+  const store = ctx.createStore({ wsUrl: 'ws://x/ws' });
+  const socket = FakeSocket.instances[0];
+  socket.open();
+  assert.equal(store.pending, true);
+
+  const patches = [];
+  store.onChange((patch) => patches.push(patch));
+  await socket.message({ type: 'error', re: 1, detail: 'watch holds at most 200 ids' });
+
+  assert.equal(store.pending, false);
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0].error, 'watch holds at most 200 ids');
+});
+
+test('a drop for a watched id resubscribes right away, without a separate close or resync', async () => {
+  const ctx = freshContext();
+  const store = ctx.createStore({ wsUrl: 'ws://x/ws' });
+  const socket = FakeSocket.instances[0];
+  socket.open();
+  await socket.message({
+    type: 'snapshot', re: 1, hash: await ctx.sha256Hex(ctx.canonical([])),
+    statuses: [], facets: {}, decisions_open: 0,
+    rows: [{ id: 'T1', kind: 'task', title: 'T1', parent: null, ordinal: 0, display: 'READY', score: 1 }],
+    edges: [], bodies: { T1: { node: { id: 'T1' }, sections: [] } },
+  });
+  store.watch(['T1']);
+  assert.deepEqual(socket.sent[socket.sent.length - 1].watch, ['T1']);
+
+  await socket.message({ type: 'update', re: null, items: [{ op: 'drop', id: 'T1' }] });
+
+  // The server keeps sending this id's body items off whatever subscribe last declared it
+  // watched: the drop must travel back on its own, not wait for the caller to close or resync.
+  const last = socket.sent[socket.sent.length - 1];
+  assert.deepEqual(last.watch, []);
+  assert.equal(last.reset, false);
+});
+
 test('pending is true from a subscribe until the reply carrying its re arrives', async () => {
   const ctx = freshContext();
   const store = ctx.createStore({ wsUrl: 'ws://x/ws' });

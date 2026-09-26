@@ -746,6 +746,19 @@ def test_load_indicator_follows_the_stores_pending_flag() -> None:
     assert "loadIndicator.classList.toggle('hidden', !window.tmStore.pending)" in body
 
 
+def test_a_refused_subscribe_notifies_the_store_and_core_toasts_it() -> None:
+    # A refused subscribe (bad filters, too many watched ids) clears `pending` internally, but
+    # nothing followed it back to the DOM until the store also notifies its listeners; core.js's
+    # listener is what turns that into the acceptance's toast.
+    html = get_web_html()
+    handle_message = _function_body(html, "handleMessage")
+    assert "msg.type === 'error'" in handle_message
+    assert "error: msg.detail" in handle_message
+    on_change = re.search(r"window\.tmStore\.onChange\(\(patch\) => \{(.*?)\}\);", html, re.DOTALL)
+    assert on_change, "onChange handler not found"
+    assert "toast(patch.error, 'error')" in on_change.group(1)
+
+
 def test_tri_state_buttons_use_the_icon_sprite_not_inline_svg() -> None:
     html = get_web_html()
     tri_btn = _function_body(html, "triBtn")
