@@ -96,7 +96,7 @@ function freshContext(wavesPayload, { isStaticMode = false } = {}) {
     fetch: makeFakeFetch(wavesPayload || oneEntryWave),
     filters: { specMode: new Map() },
     esc: (s) => String(s ?? ''),
-    renderIcon: () => '',
+    renderIcon: (name) => `<svg data-icon="${name}"></svg>`,
     getTheme: () => FAKE_THEME,
     statusChip: () => '',
     showGraphInspector: () => {},
@@ -214,13 +214,13 @@ test('a failed request shows the error and drops the stale cards, not a silent e
   await flushAsync();
   ctx.fetch = async (url) => {
     if (url.startsWith('/api/meta')) return metaResponse();
-    return { ok: false, status: 400, json: async () => ({ detail: "wave size must be 1–20 (this project's dispatch.tick_budget)" }) };
+    return { ok: false, status: 400, json: async () => ({ detail: "wave size must be 1–20 (this project's dispatch.tick_budget)." }) };
   };
 
   await ctx.fetchWaves();
 
   const html = ctx.contentHtml();
-  assert.match(html, /Could not compute waves: wave size must be 1–20 \(this project's dispatch\.tick_budget\)/);
+  assert.match(html, /Could not compute waves: wave size must be 1–20 \(this project's dispatch\.tick_budget\)\./);
   assert.match(html, /role="alert"/);
   assert.doesNotMatch(html, /Wave 1/);
   assert.match(html, /id="wave-size-input"[^>]*border-red-700/, 'a size-range refusal marks the size input itself invalid');
@@ -246,4 +246,50 @@ test('a static export never calls /api/meta or /api/waves, on load or on refetch
   ctx.flushRaf();
   await flushAsync();
   assert.equal(ctx.fetch.calls.length, 0, 'a later store change still fires nothing');
+});
+
+function classOf(html, pattern) {
+  const m = html.match(pattern);
+  assert.ok(m, `no element matches ${pattern}`);
+  return m[1].split(/\s+/);
+}
+
+test('the wave card, task card, held list and controls follow the frame anatomy', async () => {
+  const ctx = freshContext(() => ({
+    waves: [
+      {
+        entries: [
+          {
+            id: 'S-P-T', title: 'The title row', kind: 'task', action: 'implement', model: 'sonnet',
+            repos: ['api'], status_before: 'READY', status_after: 'IMPLEMENTED', in_flight: true,
+          },
+        ],
+        held: ['S-P-U: waits on S-P-T'],
+      },
+    ],
+  }));
+  await flushAsync();
+  const html = ctx.contentHtml();
+
+  const title = classOf(html, /<h3 class="([^"]*)">Wave 1<\/h3>/);
+  for (const c of ['uppercase', 'text-emerald-400']) assert.ok(title.includes(c), `wave title lacks ${c}`);
+  const head = classOf(html, /<div class="(wave-head [^"]*)">/);
+  for (const c of ['font-mono', 'bg-zinc-900/95', 'border-b']) assert.ok(head.includes(c), `wave header band lacks ${c}`);
+
+  const entryHead = html.slice(html.indexOf('wave-entry-head'), html.indexOf('wave-entry-body'));
+  const entryBody = html.slice(html.indexOf('wave-entry-body'), html.indexOf('</button>', html.indexOf('wave-entry-body')));
+  for (const text of ['S-P-T', 'in flight', 'sonnet', '>api<']) assert.ok(entryHead.includes(text), `task header band lacks ${text}`);
+  assert.ok(entryBody.includes('The title row'), 'the title sits in the body row');
+  assert.ok(!entryHead.includes('The title row'), 'the title is not in the header band');
+  assert.match(entryBody, /→/, 'from/to chips are separated by an arrow');
+  assert.doesNotMatch(entryBody, /data-icon="chevron-right"/);
+
+  assert.match(html, /<span>Held \(1\)<\/span><svg data-icon="chevron-right">/, 'the held chevron sits after the label');
+  assert.ok(classOf(html, /class="(wave-held-toggle [^"]*)"/).includes('uppercase'));
+  const rows = classOf(html, /class="(wave-held-rows [^"]*)"/);
+  for (const c of ['border', 'rounded-lg', 'font-mono']) assert.ok(rows.includes(c), `held rows lack ${c}`);
+
+  assert.ok(classOf(html, /class="(wave-controls [^"]*)"/).includes('justify-between'));
+  assert.match(html, /id="wave-size-caption"[^>]*>[^<]*<\/span>\s*<\/div>\s*<button id="wave-reset-btn"/, 'Reset sits apart from the caption, at the row end');
+  assert.ok(classOf(html, /id="wave-size-caption" class="([^"]*)"/).includes('text-zinc-400'), 'caption meets AA contrast on zinc-950');
 });

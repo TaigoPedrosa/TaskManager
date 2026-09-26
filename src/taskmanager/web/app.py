@@ -618,7 +618,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             dispatch.wave_size,
             1,
             dispatch.tick_budget,
-            f"wave size must be 1–{dispatch.tick_budget} (this project's dispatch.tick_budget)",
+            f"wave size must be 1–{dispatch.tick_budget} (this project's dispatch.tick_budget).",
         )
         # One bulk read of state.db, however deep: every later wave replays over the snapshot
         # this built, in memory (see `engine.simulate`). Conditions are read from the cache once
