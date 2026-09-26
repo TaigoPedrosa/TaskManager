@@ -334,27 +334,58 @@ def test_facts_see_a_declared_file_locked_only_when_the_next_action_locks_files(
         frontmatter={"declared_files": ["a.py"]},
     )
     estate.add("OTHER", status=Status.IMPLEMENTING, claimed_from=Status.READY)
-    estate.lease("OTHER", files=("a.py",))
+    estate.lease("OTHER", files=(":a.py",))
     assert estate.facts("T").files_locked is locked
 
 
 def test_a_container_declaring_no_files_locks_its_descendants_files(estate: Estate) -> None:
     estate.add("P", NodeKind.PLAN, status=Status.READY)
-    estate.add("T1", parent="P", frontmatter={"declared_files": ["a.py", "b.py"]})
-    estate.add("T2", parent="P", frontmatter={"declared_files": ["b.py", "c.py"]})
+    estate.add(
+        "T1", parent="P", target_repo="api", frontmatter={"declared_files": ["a.py", "b.py"]}
+    )
+    estate.add(
+        "T2", parent="P", target_repo="api", frontmatter={"declared_files": ["b.py", "c.py"]}
+    )
     snap = estate.builder.build()
-    assert estate.builder.lock_set("P", snap) == ["a.py", "b.py", "c.py"]
+    assert estate.builder.lock_set("P", snap) == ["api:a.py", "api:b.py", "api:c.py"]
     estate.add("Q", NodeKind.PLAN, status=Status.READY, frontmatter={"declared_files": ["q.py"]})
-    assert estate.builder.lock_set("Q", estate.builder.build()) == ["q.py"]
+    assert estate.builder.lock_set("Q", estate.builder.build()) == [":q.py"]
+
+
+def test_a_container_locks_each_descendants_files_under_its_own_repository(
+    estate: Estate,
+) -> None:
+    """A container spanning two repositories: same repo-relative path, different keys."""
+    estate.add("P", NodeKind.PLAN, status=Status.READY)
+    estate.add(
+        "T1", parent="P", target_repo="workers", frontmatter={"declared_files": ["pyproject.toml"]}
+    )
+    estate.add(
+        "T2",
+        parent="P",
+        target_repo="scheduler",
+        frontmatter={"declared_files": ["pyproject.toml"]},
+    )
+    snap = estate.builder.build()
+    assert estate.builder.lock_set("P", snap) == [
+        "workers:pyproject.toml",
+        "scheduler:pyproject.toml",
+    ]
 
 
 def test_a_container_locks_no_file_of_a_descendant_it_no_longer_counts(estate: Estate) -> None:
     estate.add("P", NodeKind.PLAN, status=Status.READY)
-    estate.add("T1", parent="P", frontmatter={"declared_files": ["a.py"]})
-    estate.add("T2", parent="P", status=Status.ABANDONED, frontmatter={"declared_files": ["b.py"]})
+    estate.add("T1", parent="P", target_repo="api", frontmatter={"declared_files": ["a.py"]})
+    estate.add(
+        "T2",
+        parent="P",
+        target_repo="api",
+        status=Status.ABANDONED,
+        frontmatter={"declared_files": ["b.py"]},
+    )
     estate.add("Q", NodeKind.PLAN, parent="P", status=Status.DEFERRED)
-    estate.add("T3", parent="Q", frontmatter={"declared_files": ["c.py"]})
-    assert estate.builder.lock_set("P", estate.builder.build()) == ["a.py"]
+    estate.add("T3", parent="Q", target_repo="api", frontmatter={"declared_files": ["c.py"]})
+    assert estate.builder.lock_set("P", estate.builder.build()) == ["api:a.py"]
 
 
 @pytest.mark.parametrize(

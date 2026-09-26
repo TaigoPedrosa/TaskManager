@@ -20,7 +20,7 @@ from taskmanager.core.status import (
 from taskmanager.db.cache_repo import CacheRepository, _command_hash
 from taskmanager.db.graph_reader import GraphData, read_graph
 from taskmanager.db.job_repo import JobRepository
-from taskmanager.db.node_repo import NodeRepository, declared_files_of
+from taskmanager.db.node_repo import NodeRepository, declared_files_of, locked_key
 from taskmanager.db.runtime_repo import RuntimeRepository, lease_alive
 from taskmanager.engine.chains import satisfied
 from taskmanager.engine.stepgraph import SnapNode, Snapshot, migration_holders
@@ -172,15 +172,19 @@ class SnapshotBuilder:
 
     def lock_set(self, node_id: str, snapshot: Snapshot) -> list[str]:
         """The files a claim of this node locks: its declared files, or for a container that
-        declares none, the union of its descendants'."""
+        declares none, the union of its descendants' -- each keyed to its own node's
+        target_repo, so the same repo-relative path in two repositories never collides."""
         data = snapshot.graph_data()
+        node = snapshot.nodes[node_id]
         own = self._declared_files(node_id, data)
-        if own or snapshot.nodes[node_id].kind not in CONTAINERS:
-            return own
-        files = [
-            f for d in snapshot.counted_descendants(node_id) for f in self._declared_files(d, data)
+        if own or node.kind not in CONTAINERS:
+            return [locked_key(node.repo, f) for f in own]
+        keys = [
+            locked_key(snapshot.nodes[d].repo, f)
+            for d in snapshot.counted_descendants(node_id)
+            for f in self._declared_files(d, data)
         ]
-        return list(dict.fromkeys(files))
+        return list(dict.fromkeys(keys))
 
     def conflicts(self, files: list[str], snapshot: Snapshot) -> dict[str, str]:
         """Every one of `files` a live lease other than its own currently holds, exactly as
