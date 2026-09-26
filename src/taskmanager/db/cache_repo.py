@@ -62,6 +62,22 @@ class CacheRepository:
         age = (datetime.now(tz=UTC) - parse_db_datetime(row[1])).total_seconds()
         return int(row[0]) if age <= max_age else None
 
+    def all_conditions(self, max_age: int) -> dict[tuple[str, int], tuple[str, int]]:
+        """Every condition result fresh within `max_age` seconds, keyed by `(node_id, idx)` to
+        its command hash and exit code: one read for a whole snapshot in place of a
+        `get_condition` per condition. A caller compares the hash against the condition it
+        holds, so a changed command reads as no result, exactly as `get_condition` does."""
+        now = datetime.now(tz=UTC)
+        with self.db.get_cache_connection() as conn:
+            rows = conn.execute(
+                "SELECT node_id, idx, command_hash, exit_code, checked_at FROM condition_results"
+            ).fetchall()
+        return {
+            (node_id, idx): (command_hash, exit_code)
+            for node_id, idx, command_hash, exit_code, checked_at in rows
+            if (now - parse_db_datetime(checked_at)).total_seconds() <= max_age
+        }
+
     def put_condition(self, node_id: str, idx: int, command: str, exit_code: int) -> None:
         with self.db.get_cache_connection() as conn:
             conn.execute(

@@ -66,6 +66,35 @@ _CYCLE_COLUMNS = frozenset(
         "step_failures",
     }
 )
+# A `test_command` or `codegraph_query` puts a label or a query in `target_path`, not a path, so
+# only these verification types name a file a claim locks.
+_PATHY_VERIFICATIONS = frozenset(
+    {
+        VerificationType.FILE_EXISTS,
+        VerificationType.FILE_ABSENT,
+        VerificationType.SYMBOL_SIGNATURE,
+        VerificationType.AST_EXPORT,
+    }
+)
+
+
+def declared_files_of(node: Node | None, verifications: list[NodeVerification]) -> list[str]:
+    """The paths `node`'s claim locks, from data already in hand: no query of its own, so a bulk
+    reader (`GraphData`) and `NodeRepository.declared_files` compute the same thing from the same
+    rule."""
+    files = [
+        v.target_path
+        for v in verifications
+        if v.verification_type in _PATHY_VERIFICATIONS and v.target_path
+    ]
+    declared = (
+        (node.frontmatter.get("declared_files") or node.frontmatter.get("files")) if node else None
+    )
+    if isinstance(declared, list):
+        files.extend(str(f) for f in declared)
+    elif isinstance(declared, str):
+        files.append(declared)
+    return list(dict.fromkeys(files))
 
 
 class NodeRepository:
@@ -483,33 +512,8 @@ class NodeRepository:
             self.db.spec_commit(conn)
 
     def declared_files(self, task_id: str) -> list[str]:
-        """The paths a task claims, which is what its lease locks and what `next` filters on.
-
-        A `test_command` or `codegraph_query` puts a label or a query in `target_path`, not a
-        path, so only the path-bearing verification types count.
-        """
-        pathy = {
-            VerificationType.FILE_EXISTS,
-            VerificationType.FILE_ABSENT,
-            VerificationType.SYMBOL_SIGNATURE,
-            VerificationType.AST_EXPORT,
-        }
-        files = [
-            v.target_path
-            for v in self.get_verifications(task_id)
-            if v.verification_type in pathy and v.target_path
-        ]
-        node = self.get_node(task_id)
-        declared = (
-            (node.frontmatter.get("declared_files") or node.frontmatter.get("files"))
-            if node
-            else None
-        )
-        if isinstance(declared, list):
-            files.extend(str(f) for f in declared)
-        elif isinstance(declared, str):
-            files.append(declared)
-        return list(dict.fromkeys(files))
+        """The paths a task claims, which is what its lease locks and what `next` filters on."""
+        return declared_files_of(self.get_node(task_id), self.get_verifications(task_id))
 
     def remove_verification(self, node_id: str, verification_id: int) -> bool:
         with self.db.get_state_connection() as conn:
