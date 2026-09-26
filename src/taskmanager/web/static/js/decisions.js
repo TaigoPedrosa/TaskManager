@@ -49,7 +49,7 @@ async function refreshDecisionsData() {
     decisionsData = (window.STATIC_DATA && window.STATIC_DATA.decisions) || [];
   } else {
     try {
-      decisionsData = await api('GET', '/api/decisions');
+      decisionsData = (await api('GET', '/api/decisions')).items;
       decisionsLoadFailed = false;
     } catch (e) {
       // A load failure used to read as "No open decisions." -- an empty queue, not a broken
