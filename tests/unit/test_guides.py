@@ -182,6 +182,15 @@ def test_overview_carries_the_cycle_and_the_cutover_runbook() -> None:
         assert needle in text, needle
 
 
+def test_fix_guide_requires_a_test_that_fails_when_reverted() -> None:
+    """A finding closes only with a test proven to fail when its fix is undone."""
+    text = _guide_text("fix")
+    steps, never = text.split("## Never", 1)
+    assert "revert" in steps.lower(), "fix guide's steps carry no revert-checked-test rule"
+    assert "revert" in never.lower(), "fix guide's Never list carries no revert-checked-test rule"
+    assert "present" in never.lower(), "fix guide's Never list says nothing about comment tense"
+
+
 def test_dispatch_guide_names_every_argument_tm_wave_reads() -> None:
     read = set(re.findall(r"\bA\.([A-Za-z]+)", WORKFLOW.read_text(encoding="utf-8")))
     assert read, "no argument found in the workflow script"
