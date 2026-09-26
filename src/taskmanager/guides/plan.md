@@ -124,6 +124,7 @@ One agent, one sitting, one branch: an objective of a sentence, acceptance of a 
 - A task that makes one implementation of something names the function that stays and each one it replaces; the replaced ones are deleted in the same task.
 - A brief never copies a figure from a source still under review or still being measured; it names the source, and the implementer reads the current value.
 - A task that removes a feature names what only that feature reached (its markup, handlers, styles, the state it reset) and deletes each one, or moves it to where it is still used; its acceptance lists them, each with a check that fails when it comes back.
+- A test of behaviour runs the code it tests: it calls the function, drives the page's scripts, or runs the command, and asserts what comes out. Searching the source for a call or a string is not a test of behaviour, even when it fails once the line is deleted.
 
 ## 9. Import it, then read it back
 

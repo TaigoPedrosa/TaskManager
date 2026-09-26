@@ -29,6 +29,7 @@ One commit per finding, or one commit naming them all — either way on the node
 - Anything else you notice goes in the report, not in the diff. Widening the scope is what spends the next round.
 - A landing failure whose red lies in files this node does not declare belongs to the node that caused it: find or file that node, then `tm task release <node-id> --agent <name> --token <token> --blocked --depends <that-node>`, and say so in the report.
 - A finding whose fix needs a call only the owner can make: `tm task release <node-id> --agent <name> --token <token> --blocked --decision "<question>" --option "a|Do X|why" --recommend a`, and answer it in the report as raised, not closed. A finding that turns on "the brief doesn't say" or "which of these is correct" is exactly that call, raised at once rather than guessed at.
+- A test of behaviour runs the code it tests: it calls the function, drives the page's scripts, or runs the command, and asserts what comes out. Searching the source for a call or a string is not a test of behaviour, even when it fails once the line is deleted.
 
 ## 3. Verify and keep the lease alive
 
