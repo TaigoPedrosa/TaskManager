@@ -1,0 +1,54 @@
+{
+  "statuses": [
+    {
+      "spec": null,
+      "plans": [
+        {
+          "plan": null,
+          "counts": {
+            "READY": 1
+          }
+        },
+        {
+          "plan": "plan-orphan",
+          "counts": {
+            "BLOCKED_BY_TASK": 2
+          }
+        }
+      ]
+    },
+    {
+      "spec": "spec-a",
+      "plans": [
+        {
+          "plan": "plan-a1",
+          "counts": {
+            "COMPLETED": 3,
+            "READY": 1
+          }
+        },
+        {
+          "plan": "plan-a2",
+          "counts": {}
+        }
+      ]
+    },
+    {
+      "spec": "spec-b",
+      "plans": []
+    },
+    {
+      "spec": "spéc-ñ",
+      "plans": [
+        {
+          "plan": "plan-ñ",
+          "counts": {
+            "FAILED": 1
+          }
+        }
+      ]
+    }
+  ],
+  "canonical": "[{\"plans\":[{\"counts\":{\"READY\":1},\"plan\":null},{\"counts\":{\"BLOCKED_BY_TASK\":2},\"plan\":\"plan-orphan\"}],\"spec\":null},{\"plans\":[{\"counts\":{\"COMPLETED\":3,\"READY\":1},\"plan\":\"plan-a1\"},{\"counts\":{},\"plan\":\"plan-a2\"}],\"spec\":\"spec-a\"},{\"plans\":[],\"spec\":\"spec-b\"},{\"plans\":[{\"counts\":{\"FAILED\":1},\"plan\":\"plan-ñ\"}],\"spec\":\"spéc-ñ\"}]",
+  "hash": "bb304155e50cf45607a142c05857c89b33fe9bfb0699351d60e5c449ad381bda"
+}
