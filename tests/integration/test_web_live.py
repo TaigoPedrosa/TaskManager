@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from taskmanager.core.enums import NodeKind, RelationType
-from taskmanager.core.models import FileLock, Lease, Node, NodeRelation, NodeSection
+from taskmanager.core.models import FileLock, Lease, LeaseAction, Node, NodeRelation, NodeSection
 from taskmanager.core.status import Action, Merge, Status
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
@@ -243,6 +243,58 @@ async def test_status_change_in_an_open_plan_sends_row_statuses_and_hash(estate:
     # its own plan_counts item, never as a re-send of the whole (unchanged, single-plan) entry.
     onlooker_msg = _socket(onlooker).sent[-1]
     assert {item["op"] for item in onlooker_msg["items"]} == {"plan_counts"}
+
+
+@run_async
+async def test_a_plans_own_review_fix_merge_cycle_pushes_live_and_matches_the_statuses_endpoint(
+    estate: Estate,
+) -> None:
+    estate.add("S1", NodeKind.SPEC)
+    estate.add("P1", NodeKind.PLAN, parent="S1", status=Status.IMPLEMENTED)
+    estate.add("T1", NodeKind.TASK, parent="P1", status=Status.COMPLETED)
+    estate.add("T2", NodeKind.TASK, parent="P1", status=Status.COMPLETED)
+
+    hub = estate.hub()
+    await hub.refresh()
+    watcher = hub.open_session(FakeSocket())
+    await subscribe(hub, watcher, 1, open=["S1", "P1"], reset=True)
+
+    client = TestClient(create_app(estate.db.taskmanager_dir.parent))
+
+    cycle: tuple[tuple[Status, Status, LeaseAction], ...] = (
+        (Status.REVIEWING, Status.IMPLEMENTED, Action.REVIEW),
+        (Status.FIXING, Status.REVIEWED, Action.FIX),
+        (Status.MERGING, Status.FIXED, Action.MERGE),
+    )
+    for status, claimed_from, action in cycle:
+        plan = estate.node_repo.get_node("P1")
+        assert plan is not None
+        estate.node_repo.save_node(
+            plan.model_copy(update={"status": status, "claimed_from": claimed_from})
+        )
+        estate.runtime_repo.acquire_lease(
+            Lease(
+                task_id="P1",
+                agent_id="agent-1",
+                session_id="s1",
+                branch_name="tm/P1",
+                action=action,
+            ),
+            [],
+        )
+        await hub.refresh()
+
+        pushed = next(
+            item["counts"]
+            for item in _socket(watcher).sent[-1]["items"]
+            if item["op"] == "plan_counts" and item["plan"] == "P1"
+        )
+
+        rest_entries = client.get("/api/statuses").json()["statuses"]
+        spec_entry = next(e for e in rest_entries if e["spec"] == "S1")
+        plan_entry = next(p for p in spec_entry["plans"] if p["plan"] == "P1")
+
+        assert pushed == plan_entry["counts"] == {"COMPLETED": 2, status.value: 1}
 
 
 # -- a section write ---------------------------------------------------------------------------

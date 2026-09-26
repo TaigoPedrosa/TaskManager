@@ -6,7 +6,7 @@ from collections import Counter
 from typing import Any
 
 from taskmanager.core.enums import NodeKind
-from taskmanager.core.status import DecisionStatus
+from taskmanager.core.status import SET_ASIDE, DecisionStatus, Status
 from taskmanager.engine.heuristics import score_every_task
 from taskmanager.engine.snapshot import DisplayView, phase_of, stored_status, waits_on
 from taskmanager.engine.stepgraph import Snapshot
@@ -70,6 +70,9 @@ def _sort_key(value: str | None) -> tuple[int, str]:
     return (0, "") if value is None else (1, value)
 
 
+_NOT_A_CYCLE = frozenset({Status.READY.value, *(status.value for status in SET_ASIDE)})
+
+
 def _nearest_ancestor(rows: dict[str, dict[str, Any]], node_id: str, kind: str) -> str | None:
     current: str | None = rows[node_id]["parent"]
     while current is not None:
@@ -94,6 +97,21 @@ def statuses(rows: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
             spec_id = _nearest_ancestor(rows, row["id"], NodeKind.SPEC.value)
             plan_id = _nearest_ancestor(rows, row["id"], NodeKind.PLAN.value)
             groups.setdefault(spec_id, {}).setdefault(plan_id, Counter())[row["display"]] += 1
+
+    # Once a container's own cycle has started (reviewed, fixed, merged, or done), that cycle
+    # is a unit of work too: count it in the same (spec, plan) group its children roll up into,
+    # under its own display. READY covers both "not started" and the in-progress roll-up
+    # (displayed IMPLEMENTING), so it never adds a unit here.
+    for row in rows.values():
+        if row["kind"] not in (NodeKind.SPEC.value, NodeKind.PLAN.value):
+            continue
+        if row["child_count"] == 0 or row["status"] in _NOT_A_CYCLE:
+            continue
+        if row["kind"] == NodeKind.SPEC.value:
+            groups[row["id"]].setdefault(None, Counter())[row["display"]] += 1
+        else:
+            spec_id = _nearest_ancestor(rows, row["id"], NodeKind.SPEC.value)
+            groups[spec_id][row["id"]][row["display"]] += 1
 
     return [
         {
