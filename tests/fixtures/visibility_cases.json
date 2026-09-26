@@ -1,0 +1,806 @@
+{
+  "rows": {
+    "S1": {
+      "id": "S1",
+      "kind": "spec",
+      "title": "Spec One",
+      "ordinal": 0,
+      "priority": 50,
+      "parent": null,
+      "status": null,
+      "display": null,
+      "phase": null,
+      "score": null,
+      "target_repo": null,
+      "acceptable_models": [],
+      "review": null,
+      "fix": null,
+      "merge": "parent",
+      "outcome": null,
+      "requires": [],
+      "lease": null,
+      "waits_on": [],
+      "child_count": 2,
+      "rev": 1
+    },
+    "P1": {
+      "id": "P1",
+      "kind": "plan",
+      "title": "Plan Alpha",
+      "ordinal": 0,
+      "priority": 50,
+      "parent": "S1",
+      "status": null,
+      "display": null,
+      "phase": null,
+      "score": null,
+      "target_repo": null,
+      "acceptable_models": [],
+      "review": null,
+      "fix": null,
+      "merge": "parent",
+      "outcome": null,
+      "requires": [],
+      "lease": null,
+      "waits_on": [],
+      "child_count": 2,
+      "rev": 1
+    },
+    "T1": {
+      "id": "T1",
+      "kind": "task",
+      "title": "Fix login bug",
+      "ordinal": 0,
+      "priority": 50,
+      "parent": "P1",
+      "status": "READY",
+      "display": "READY",
+      "phase": null,
+      "score": 10,
+      "target_repo": "repoA",
+      "acceptable_models": [
+        "claude-sonnet-5"
+      ],
+      "review": null,
+      "fix": null,
+      "merge": "parent",
+      "outcome": null,
+      "requires": [],
+      "lease": null,
+      "waits_on": [],
+      "child_count": 0,
+      "rev": 1
+    },
+    "T2": {
+      "id": "T2",
+      "kind": "task",
+      "title": "Login widget",
+      "ordinal": 1,
+      "priority": 50,
+      "parent": "P1",
+      "status": "BLOCKED_BY_TASK",
+      "display": "BLOCKED_BY_TASK",
+      "phase": "QUEUED",
+      "score": 55,
+      "target_repo": "repoB",
+      "acceptable_models": [
+        "claude-opus-5",
+        "claude-sonnet-5"
+      ],
+      "review": null,
+      "fix": null,
+      "merge": "parent",
+      "outcome": null,
+      "requires": [],
+      "lease": null,
+      "waits_on": [],
+      "child_count": 0,
+      "rev": 1
+    },
+    "P2": {
+      "id": "P2",
+      "kind": "plan",
+      "title": "Plan Gizmo",
+      "ordinal": 1,
+      "priority": 50,
+      "parent": "S1",
+      "status": null,
+      "display": null,
+      "phase": null,
+      "score": null,
+      "target_repo": null,
+      "acceptable_models": [],
+      "review": null,
+      "fix": null,
+      "merge": "parent",
+      "outcome": null,
+      "requires": [],
+      "lease": null,
+      "waits_on": [],
+      "child_count": 1,
+      "rev": 1
+    },
+    "T3": {
+      "id": "T3",
+      "kind": "task",
+      "title": "Gizmo feature",
+      "ordinal": 0,
+      "priority": 50,
+      "parent": "P2",
+      "status": "READY",
+      "display": "READY",
+      "phase": null,
+      "score": 80,
+      "target_repo": "repoA",
+      "acceptable_models": [
+        "claude-sonnet-5"
+      ],
+      "review": null,
+      "fix": null,
+      "merge": "parent",
+      "outcome": null,
+      "requires": [],
+      "lease": null,
+      "waits_on": [],
+      "child_count": 0,
+      "rev": 1
+    },
+    "S2": {
+      "id": "S2",
+      "kind": "spec",
+      "title": "Spec Two",
+      "ordinal": 1,
+      "priority": 50,
+      "parent": null,
+      "status": null,
+      "display": null,
+      "phase": null,
+      "score": null,
+      "target_repo": null,
+      "acceptable_models": [],
+      "review": null,
+      "fix": null,
+      "merge": "parent",
+      "outcome": null,
+      "requires": [],
+      "lease": null,
+      "waits_on": [],
+      "child_count": 1,
+      "rev": 1
+    },
+    "P3": {
+      "id": "P3",
+      "kind": "plan",
+      "title": "Plan Gamma",
+      "ordinal": 0,
+      "priority": 50,
+      "parent": "S2",
+      "status": null,
+      "display": null,
+      "phase": null,
+      "score": null,
+      "target_repo": null,
+      "acceptable_models": [],
+      "review": null,
+      "fix": null,
+      "merge": "parent",
+      "outcome": null,
+      "requires": [],
+      "lease": null,
+      "waits_on": [],
+      "child_count": 1,
+      "rev": 1
+    },
+    "T4": {
+      "id": "T4",
+      "kind": "task",
+      "title": "Report bug",
+      "ordinal": 0,
+      "priority": 50,
+      "parent": "P3",
+      "status": "COMPLETED",
+      "display": "COMPLETED",
+      "phase": null,
+      "score": 5,
+      "target_repo": "repoC",
+      "acceptable_models": [
+        "claude-haiku-5"
+      ],
+      "review": null,
+      "fix": null,
+      "merge": "parent",
+      "outcome": null,
+      "requires": [],
+      "lease": null,
+      "waits_on": [],
+      "child_count": 0,
+      "rev": 1
+    },
+    "P4": {
+      "id": "P4",
+      "kind": "plan",
+      "title": "Orphan Plan",
+      "ordinal": 2,
+      "priority": 50,
+      "parent": null,
+      "status": null,
+      "display": null,
+      "phase": null,
+      "score": null,
+      "target_repo": null,
+      "acceptable_models": [],
+      "review": null,
+      "fix": null,
+      "merge": "parent",
+      "outcome": null,
+      "requires": [],
+      "lease": null,
+      "waits_on": [],
+      "child_count": 1,
+      "rev": 1
+    },
+    "T5": {
+      "id": "T5",
+      "kind": "task",
+      "title": "Orphan task",
+      "ordinal": 0,
+      "priority": 50,
+      "parent": "P4",
+      "status": "READY",
+      "display": "READY",
+      "phase": null,
+      "score": 30,
+      "target_repo": "repoA",
+      "acceptable_models": [
+        "claude-sonnet-5"
+      ],
+      "review": null,
+      "fix": null,
+      "merge": "parent",
+      "outcome": null,
+      "requires": [],
+      "lease": null,
+      "waits_on": [],
+      "child_count": 0,
+      "rev": 1
+    },
+    "T6": {
+      "id": "T6",
+      "kind": "task",
+      "title": "Lone task",
+      "ordinal": 3,
+      "priority": 50,
+      "parent": null,
+      "status": "READY",
+      "display": "READY",
+      "phase": null,
+      "score": 60,
+      "target_repo": "repoB",
+      "acceptable_models": [
+        "claude-sonnet-5"
+      ],
+      "review": null,
+      "fix": null,
+      "merge": "parent",
+      "outcome": null,
+      "requires": [],
+      "lease": null,
+      "waits_on": [],
+      "child_count": 0,
+      "rev": 1
+    }
+  },
+  "edges": [
+    [
+      "T2",
+      "T1",
+      "depends_on"
+    ],
+    [
+      "T2",
+      "T1",
+      "depends_on"
+    ],
+    [
+      "T4",
+      "T1",
+      "depends_on"
+    ],
+    [
+      "T1",
+      "T3",
+      "depends_on"
+    ]
+  ],
+  "cases": [
+    {
+      "name": "nothing_open_no_filters",
+      "filters": {},
+      "open": [],
+      "visible": [
+        "S1",
+        "S2",
+        "P4",
+        "T6"
+      ],
+      "edges": [
+        [
+          "S2",
+          "S1",
+          "depends_on"
+        ]
+      ],
+      "facets": {
+        "status": {
+          "READY": 4,
+          "BLOCKED_BY_TASK": 1,
+          "COMPLETED": 1
+        },
+        "phase": {
+          "(none)": 5,
+          "QUEUED": 1
+        },
+        "repo": {
+          "repoA": 3,
+          "repoB": 2,
+          "repoC": 1
+        },
+        "model": {
+          "claude-sonnet-5": 5,
+          "claude-opus-5": 1,
+          "claude-haiku-5": 1
+        },
+        "spec": {
+          "S1": 3,
+          "S2": 1,
+          "(none)": 2
+        },
+        "score": {
+          "min": 5,
+          "max": 80
+        }
+      }
+    },
+    {
+      "name": "open_spec",
+      "filters": {},
+      "open": [
+        "S1"
+      ],
+      "visible": [
+        "S1",
+        "P1",
+        "P2",
+        "S2",
+        "P4",
+        "T6"
+      ],
+      "edges": [
+        [
+          "S2",
+          "P1",
+          "depends_on"
+        ],
+        [
+          "P1",
+          "P2",
+          "depends_on"
+        ],
+        [
+          "S1",
+          "P1",
+          "contains"
+        ],
+        [
+          "S1",
+          "P2",
+          "contains"
+        ]
+      ],
+      "facets": {
+        "status": {
+          "READY": 4,
+          "BLOCKED_BY_TASK": 1,
+          "COMPLETED": 1
+        },
+        "phase": {
+          "(none)": 5,
+          "QUEUED": 1
+        },
+        "repo": {
+          "repoA": 3,
+          "repoB": 2,
+          "repoC": 1
+        },
+        "model": {
+          "claude-sonnet-5": 5,
+          "claude-opus-5": 1,
+          "claude-haiku-5": 1
+        },
+        "spec": {
+          "S1": 3,
+          "S2": 1,
+          "(none)": 2
+        },
+        "score": {
+          "min": 5,
+          "max": 80
+        }
+      }
+    },
+    {
+      "name": "open_plan_inside_closed_spec_is_ignored",
+      "filters": {},
+      "open": [
+        "P1"
+      ],
+      "visible": [
+        "S1",
+        "S2",
+        "P4",
+        "T6"
+      ],
+      "edges": [
+        [
+          "S2",
+          "S1",
+          "depends_on"
+        ]
+      ],
+      "facets": {
+        "status": {
+          "READY": 4,
+          "BLOCKED_BY_TASK": 1,
+          "COMPLETED": 1
+        },
+        "phase": {
+          "(none)": 5,
+          "QUEUED": 1
+        },
+        "repo": {
+          "repoA": 3,
+          "repoB": 2,
+          "repoC": 1
+        },
+        "model": {
+          "claude-sonnet-5": 5,
+          "claude-opus-5": 1,
+          "claude-haiku-5": 1
+        },
+        "spec": {
+          "S1": 3,
+          "S2": 1,
+          "(none)": 2
+        },
+        "score": {
+          "min": 5,
+          "max": 80
+        }
+      }
+    },
+    {
+      "name": "status_include_hides_a_container_with_no_matching_task",
+      "filters": {
+        "status": "READY"
+      },
+      "open": [],
+      "visible": [
+        "S1",
+        "P4",
+        "T6"
+      ],
+      "edges": [],
+      "facets": {
+        "status": {
+          "READY": 4,
+          "BLOCKED_BY_TASK": 1,
+          "COMPLETED": 1
+        },
+        "phase": {
+          "(none)": 4
+        },
+        "repo": {
+          "repoA": 3,
+          "repoB": 1
+        },
+        "model": {
+          "claude-sonnet-5": 4
+        },
+        "spec": {
+          "S1": 2,
+          "(none)": 2
+        },
+        "score": {
+          "min": 5,
+          "max": 80
+        }
+      }
+    },
+    {
+      "name": "status_exclude",
+      "filters": {
+        "xstatus": "COMPLETED"
+      },
+      "open": [],
+      "visible": [
+        "S1",
+        "P4",
+        "T6"
+      ],
+      "edges": [],
+      "facets": {
+        "status": {
+          "READY": 4,
+          "BLOCKED_BY_TASK": 1,
+          "COMPLETED": 1
+        },
+        "phase": {
+          "(none)": 4,
+          "QUEUED": 1
+        },
+        "repo": {
+          "repoA": 3,
+          "repoB": 2
+        },
+        "model": {
+          "claude-sonnet-5": 5,
+          "claude-opus-5": 1
+        },
+        "spec": {
+          "S1": 3,
+          "(none)": 2
+        },
+        "score": {
+          "min": 5,
+          "max": 80
+        }
+      }
+    },
+    {
+      "name": "model_filter_matches_a_task_with_several_models",
+      "filters": {
+        "model": "claude-opus-5"
+      },
+      "open": [
+        "S1",
+        "P1"
+      ],
+      "visible": [
+        "S1",
+        "P1",
+        "T2"
+      ],
+      "edges": [
+        [
+          "T2",
+          "P1",
+          "depends_on"
+        ],
+        [
+          "P1",
+          "S1",
+          "depends_on"
+        ],
+        [
+          "S1",
+          "P1",
+          "contains"
+        ],
+        [
+          "P1",
+          "T2",
+          "contains"
+        ]
+      ],
+      "facets": {
+        "status": {
+          "BLOCKED_BY_TASK": 1
+        },
+        "phase": {
+          "QUEUED": 1
+        },
+        "repo": {
+          "repoB": 1
+        },
+        "model": {
+          "claude-sonnet-5": 5,
+          "claude-opus-5": 1,
+          "claude-haiku-5": 1
+        },
+        "spec": {
+          "S1": 1
+        },
+        "score": {
+          "min": 5,
+          "max": 80
+        }
+      }
+    },
+    {
+      "name": "spec_filter",
+      "filters": {
+        "spec": "S2"
+      },
+      "open": [
+        "S2",
+        "P3"
+      ],
+      "visible": [
+        "S2",
+        "P3",
+        "T4"
+      ],
+      "edges": [
+        [
+          "S2",
+          "P3",
+          "contains"
+        ],
+        [
+          "P3",
+          "T4",
+          "contains"
+        ]
+      ],
+      "facets": {
+        "status": {
+          "COMPLETED": 1
+        },
+        "phase": {
+          "(none)": 1
+        },
+        "repo": {
+          "repoC": 1
+        },
+        "model": {
+          "claude-haiku-5": 1
+        },
+        "spec": {
+          "S1": 3,
+          "S2": 1,
+          "(none)": 2
+        },
+        "score": {
+          "min": 5,
+          "max": 80
+        }
+      }
+    },
+    {
+      "name": "score_range",
+      "filters": {
+        "smin": "20",
+        "smax": "60"
+      },
+      "open": [],
+      "visible": [
+        "S1",
+        "P4",
+        "T6"
+      ],
+      "edges": [],
+      "facets": {
+        "status": {
+          "BLOCKED_BY_TASK": 1,
+          "READY": 2
+        },
+        "phase": {
+          "QUEUED": 1,
+          "(none)": 2
+        },
+        "repo": {
+          "repoB": 2,
+          "repoA": 1
+        },
+        "model": {
+          "claude-opus-5": 1,
+          "claude-sonnet-5": 3
+        },
+        "spec": {
+          "S1": 1,
+          "(none)": 2
+        },
+        "score": {
+          "min": 5,
+          "max": 80
+        }
+      }
+    },
+    {
+      "name": "q_matches_a_plan_title_shows_its_tasks_when_open",
+      "filters": {
+        "q": "gizmo"
+      },
+      "open": [
+        "S1",
+        "P2"
+      ],
+      "visible": [
+        "S1",
+        "P2",
+        "T3"
+      ],
+      "edges": [
+        [
+          "S1",
+          "T3",
+          "depends_on"
+        ],
+        [
+          "S1",
+          "P2",
+          "contains"
+        ],
+        [
+          "P2",
+          "T3",
+          "contains"
+        ]
+      ],
+      "facets": {
+        "status": {
+          "READY": 1
+        },
+        "phase": {
+          "(none)": 1
+        },
+        "repo": {
+          "repoA": 1
+        },
+        "model": {
+          "claude-sonnet-5": 1
+        },
+        "spec": {
+          "S1": 1
+        },
+        "score": {
+          "min": 5,
+          "max": 80
+        }
+      }
+    },
+    {
+      "name": "q_matches_only_a_task",
+      "filters": {
+        "q": "bug"
+      },
+      "open": [],
+      "visible": [
+        "S1",
+        "S2"
+      ],
+      "edges": [
+        [
+          "S2",
+          "S1",
+          "depends_on"
+        ]
+      ],
+      "facets": {
+        "status": {
+          "READY": 1,
+          "COMPLETED": 1
+        },
+        "phase": {
+          "(none)": 2
+        },
+        "repo": {
+          "repoA": 1,
+          "repoC": 1
+        },
+        "model": {
+          "claude-sonnet-5": 1,
+          "claude-haiku-5": 1
+        },
+        "spec": {
+          "S1": 1,
+          "S2": 1
+        },
+        "score": {
+          "min": 5,
+          "max": 80
+        }
+      }
+    }
+  ]
+}
