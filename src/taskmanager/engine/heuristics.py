@@ -1,11 +1,20 @@
 from dataclasses import dataclass
 
 from taskmanager.core.enums import NodeKind, RecommendationStrategy
+from taskmanager.core.models import Node
 from taskmanager.core.status import DisplayStatus, Status
 from taskmanager.db.cache_repo import CacheRepository
-from taskmanager.db.node_repo import NodeRepository
+from taskmanager.db.graph_reader import GraphData
+from taskmanager.db.node_repo import NodeRepository, declared_files_of
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder
+from taskmanager.engine.stepgraph import Snapshot
+
+
+def _graph_data(snapshot: Snapshot) -> GraphData:
+    if snapshot.data is None:
+        raise ValueError("snapshot has no bulk graph data; build it with SnapshotBuilder.build()")
+    return snapshot.data
 
 
 @dataclass
@@ -36,12 +45,43 @@ def _resolve_strategy(strategy: RecommendationStrategy | str) -> RecommendationS
     )
 
 
+def _plan_children(nodes: dict[str, Node], snapshot: Snapshot) -> dict[str, set[str]]:
+    return {
+        node_id: set(snapshot.children(node_id))
+        for node_id, node in nodes.items()
+        if node.kind == NodeKind.PLAN
+    }
+
+
+def _blocked_by(snapshot: Snapshot) -> dict[str, list[str]]:
+    blocked: dict[str, list[str]] = {}
+    for dependent, dependency in snapshot.edges:
+        blocked.setdefault(dependency, []).append(dependent)
+    return blocked
+
+
+def _ancestor_of_kind(
+    snapshot: Snapshot, nodes: dict[str, Node], node_id: str, kind: NodeKind
+) -> str | None:
+    visited: set[str] = set()
+    current = node_id
+    while True:
+        parent = snapshot.parent(current)
+        if parent is None or parent in visited:
+            return None
+        visited.add(parent)
+        if (node := nodes.get(parent)) is not None and node.kind == kind:
+            return parent
+        current = parent
+
+
 def _score_task(
     task_id: str,
     task_priority: int,
     parent_plan_id: str | None,
     plan_children: dict[str, set[str]],
-    node_repo: NodeRepository,
+    nodes: dict[str, Node],
+    blocked_by: dict[str, list[str]],
     weights: tuple[float, float, float, float],
 ) -> tuple[float, int]:
     """A task's dispatch score and its unblocking count, independent of readiness.
@@ -50,23 +90,21 @@ def _score_task(
     (every task, for the visualizer's score filter) so the formula lives once.
     """
     w_prio, w_unlock, w_close, w_adv = weights
-    parent_plan = node_repo.get_node(parent_plan_id) if parent_plan_id else None
-    plan_priority = parent_plan.priority if parent_plan else 50
+    plan_priority = nodes[parent_plan_id].priority if parent_plan_id else 50
 
     s_prio = (task_priority * 0.7) + (plan_priority * 0.3)
-    blocked_downstream = node_repo.get_blocked_by(task_id)
+    blocked_downstream = blocked_by.get(task_id, [])
     s_unlock = min(len(blocked_downstream) * 25.0, 100.0)
 
     s_close = 0.0
     s_adv = 0.0
     if parent_plan_id:
-        siblings = list(plan_children[parent_plan_id])
+        siblings = plan_children[parent_plan_id]
         if siblings:
             completed_count = sum(
                 1
                 for s in siblings
-                if (node := node_repo.get_node(s))
-                and node.status in (Status.COMPLETED, Status.SUPERSEDED)
+                if (node := nodes.get(s)) and node.status in (Status.COMPLETED, Status.SUPERSEDED)
             )
             total_siblings = len(siblings)
             s_close = (completed_count / total_siblings) * 100.0
@@ -80,23 +118,32 @@ def _score_task(
 
 
 def score_every_task(
-    node_repo: NodeRepository,
+    snapshot: Snapshot,
     strategy: RecommendationStrategy | str = RecommendationStrategy.BALANCED,
 ) -> dict[str, float]:
     """Every task's dispatch score, regardless of readiness -- for browsing/filtering,
     not for picking a batch (that stays `get_next_tasks`, which also prunes by
     readiness, model and file collisions)."""
     weights = _STRATEGY_WEIGHTS[_resolve_strategy(strategy)]
-    plans = node_repo.list_nodes(kind=NodeKind.PLAN)
-    plan_children = {p.id: set(node_repo.get_children(p.id)) for p in plans}
-    parent_of: dict[str, str] = {child_id: p.id for p in plans for child_id in plan_children[p.id]}
+    nodes = _graph_data(snapshot).nodes
+    plan_children = _plan_children(nodes, snapshot)
+    parent_of = {c: p for p, children in plan_children.items() for c in children}
+    blocked_by = _blocked_by(snapshot)
 
     scores: dict[str, float] = {}
-    for task in node_repo.list_nodes(kind=NodeKind.TASK):
+    for task_id, task in nodes.items():
+        if task.kind != NodeKind.TASK:
+            continue
         score, _ = _score_task(
-            task.id, task.priority, parent_of.get(task.id), plan_children, node_repo, weights
+            task_id,
+            task.priority,
+            parent_of.get(task_id),
+            plan_children,
+            nodes,
+            blocked_by,
+            weights,
         )
-        scores[task.id] = score
+        scores[task_id] = score
     return scores
 
 
@@ -126,21 +173,27 @@ class RecommendationEngine:
         weights = _STRATEGY_WEIGHTS[_resolve_strategy(strategy)]
 
         view = DisplayView(self.snapshots, self.cache, self.condition_ttl)
-        all_tasks = self.node_repo.list_nodes(kind=NodeKind.TASK)
-        plans = self.node_repo.list_nodes(kind=NodeKind.PLAN)
-        plan_children = {p.id: set(self.node_repo.get_children(p.id)) for p in plans}
+        snapshot = view.snapshot
+        data = _graph_data(snapshot)
+        nodes = data.nodes
+        plan_children = _plan_children(nodes, snapshot)
+        parent_of = {c: p for p, children in plan_children.items() for c in children}
+        blocked_by = _blocked_by(snapshot)
         # "none" reads as the sentinel for "no spec", so a task with no plan (parent_plan_id
         # None) matches it the same way a plan with no spec ancestor does: .get(None) is None.
         wanted_spec = None if spec_id in (None, "none") else spec_id
         plan_spec: dict[str | None, str | None] = (
-            {p.id: self.node_repo.get_ancestor_of_kind(p.id, NodeKind.SPEC) for p in plans}
+            {p: _ancestor_of_kind(snapshot, nodes, p, NodeKind.SPEC) for p in plan_children}
             if spec_id is not None
             else {}
         )
 
         scored: list[ScoredTask] = []
 
-        for task in all_tasks:
+        for task_id, task in nodes.items():
+            if task.kind != NodeKind.TASK:
+                continue
+
             if view.display(task) != DisplayStatus.READY.value:
                 continue
 
@@ -154,13 +207,9 @@ class RecommendationEngine:
             # A file-lock conflict already reads as BLOCKED_BY_LEASE, not READY, so the check
             # above already excludes it; declared_files is still needed below, for the batch's
             # own same-file collision guard.
-            declared_files = self.node_repo.declared_files(task.id)
+            declared_files = declared_files_of(task, data.verifications.get(task_id, []))
 
-            parent_plan_id: str | None = None
-            for p in plans:
-                if task.id in plan_children[p.id]:
-                    parent_plan_id = p.id
-                    break
+            parent_plan_id = parent_of.get(task_id)
 
             if plan_id is not None and parent_plan_id != plan_id:
                 continue
@@ -169,12 +218,12 @@ class RecommendationEngine:
                 continue
 
             total_score, unblocking_count = _score_task(
-                task.id, task.priority, parent_plan_id, plan_children, self.node_repo, weights
+                task_id, task.priority, parent_plan_id, plan_children, nodes, blocked_by, weights
             )
 
             scored.append(
                 ScoredTask(
-                    task_id=task.id,
+                    task_id=task_id,
                     title=task.title,
                     plan_id=parent_plan_id,
                     score=total_score,

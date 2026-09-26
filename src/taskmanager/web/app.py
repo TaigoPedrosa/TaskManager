@@ -499,8 +499,8 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         specs = node_repo.list_nodes(kind=NodeKind.SPEC)
         plans = node_repo.list_nodes(kind=NodeKind.PLAN)
         tasks = node_repo.list_nodes(kind=NodeKind.TASK)
-        task_scores = score_every_task(node_repo)
         view = new_view()
+        task_scores = score_every_task(view.snapshot)
 
         def node_to_dict(n: Any) -> dict[str, Any]:
             sections = node_repo.get_all_sections(n.id)
@@ -594,7 +594,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     @app.get("/api/graph")
     def get_graph() -> dict[str, Any]:
         view = new_view()
-        task_scores = score_every_task(node_repo)
+        task_scores = score_every_task(view.snapshot)
         nodes_out = [
             {
                 "id": n.id,

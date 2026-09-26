@@ -444,11 +444,11 @@ def test_score_every_task_ignores_a_decision_node(
 ) -> None:
     from taskmanager.engine.heuristics import score_every_task
 
-    node_repo, _runtime_repo, _graph, _engine = env
+    node_repo, _runtime_repo, snapshots, _engine = env
     node_repo.save_node(Node(id="T1", kind=NodeKind.TASK, title="Task"))
     node_repo.save_node(Node(id="decision-D1", kind=NodeKind.DECISION, title="Which way?"))
 
-    scores = score_every_task(node_repo)
+    scores = score_every_task(snapshots.build())
     assert set(scores) == {"T1"}
 
 
