@@ -767,8 +767,15 @@ def task_get(
     yaml_output: Annotated[
         bool, typer.Option("--yaml", help="Output as YAML (fewer tokens than JSON)")
     ] = False,
+    fields: Annotated[
+        str | None,
+        typer.Option("--fields", help="Comma-separated keys to print; requires --json"),
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    if fields is not None and not json_output:
+        print("[red]--fields requires --json[/red]")
+        raise typer.Exit(code=1)
     container = _get_container(_get_root(path))
     node_repo = container.get(NodeRepository)
     task = node_repo.get_node(task_id)
@@ -827,6 +834,14 @@ def task_get(
                 ],
             }
         )
+        if fields is not None:
+            requested = [f.strip() for f in fields.split(",") if f.strip()]
+            unknown = [f for f in requested if f not in doc]
+            if unknown:
+                valid = ", ".join(sorted(doc))
+                print(f"[red]unknown field(s): {', '.join(unknown)} (valid: {valid})[/red]")
+                raise typer.Exit(code=1)
+            doc = {f: doc[f] for f in requested}
         _emit(doc, yaml_output)
         return
     print(f"[bold cyan]Task:[/] {task.id}")

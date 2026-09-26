@@ -73,8 +73,14 @@ export function makeTm({ chosen = [], nodes = {}, start = {}, job = {}, parked =
     }
   }
   function answer(inner) {
-    let m = inner.match(/^\S+ task get (\S+) --json$/)
-    if (m) return state[m[1]] ? json(state[m[1]]) : { text: `Task '${m[1]}' not found`, exit: 1 }
+    // Mirrors the real CLI: only the named fields come back, so a script reading one it never
+    // requested gets undefined here exactly as it would against the real `tm task get --fields`.
+    let m = inner.match(/^\S+ task get (\S+) --json --fields (\S+)$/)
+    if (m) {
+      if (!state[m[1]]) return { text: `Task '${m[1]}' not found`, exit: 1 }
+      const picked = Object.fromEntries(m[2].split(',').map(f => [f, state[m[1]][f]]))
+      return json(picked)
+    }
     m = inner.match(/^\S+ task start (\S+) --agent wf-\S+ --session \S+ --worktree-dir \S+ --json$/)
     if (m && starts[m[1]]) {
       const reply = starts[m[1]]()

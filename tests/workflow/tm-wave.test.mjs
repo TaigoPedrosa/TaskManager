@@ -96,6 +96,20 @@ test('a READY task takes one step per run: implement, then review, then merge', 
   assert.deepEqual(releases([...implementTick.ops, ...reviewTick.ops, ...mergeTick.ops]), [])
 })
 
+test('read() names exactly the fields it uses, and never sees the rest', async () => {
+  // A poisoned row: fields run()/work() do not read, set to values that would misroute the
+  // tick if the fake (or the real CLI) leaked them past --fields.
+  const tm = makeTm({
+    chosen: [T1],
+    nodes: { T1: { ...node('READY', 'implement'), verdict: 'reject', branch: 'tm/other', jobs: ['poison'] } },
+    start: { T1: [() => (tm.set('T1', { status: 'IMPLEMENTING', next_action: null }), claim('implement', { worktree: '/wt/core-T1' }))] },
+  })
+  const agents = () => (tm.set('T1', { status: 'IMPLEMENTED', next_action: null }), 'done')
+  const { ops, result } = await runWave({ args: ARGS, tm, agents })
+  assert.match(gets(ops)[0], /tm task get T1 --json --fields status,next_action,outcome /)
+  assert.equal(result.results[0].status, 'IMPLEMENTED')
+})
+
 test('every agent runs under a phase the meta declares, across the run each step takes', async () => {
   const tm = makeTm({
     chosen: [T1],
