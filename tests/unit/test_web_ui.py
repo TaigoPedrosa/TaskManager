@@ -928,6 +928,98 @@ def test_decisions_read_open_answered_and_withdrawn_and_show_option_effects() ->
     assert "opt.effect && opt.effect !== 'none'" in card
 
 
+def test_decision_context_reads_first_and_expanded_above_the_options() -> None:
+    # Audit problem 1: context used to sit collapsed inside the generic "Sections" group,
+    # below the options -- it now reads on its own, always expanded, ahead of everything else.
+    html = get_web_html()
+    detail = _function_body(html, "renderDecisionDetail")
+    assert "contextSection = allSections.find(s => s.key === 'context')" in detail
+    assert "otherSections = allSections.filter(s => s.key !== 'context')" in detail
+    assert "dec-context-body" in detail
+    assert "renderSections(otherSections, node.id)" in detail
+    assert detail.index("${contextHtml}") < detail.index("${waitingHtml}")
+    assert detail.index("${contextHtml}") < detail.index("${sectionsHtml}")
+    assert detail.index("${contextHtml}") < detail.index("${chosenCards}")
+
+
+def test_decision_context_markdown_gets_real_type_hierarchy() -> None:
+    # Audit problem 2: the page loads Tailwind's CDN build with no Typography plugin, so a bare
+    # `.prose` class alone renders every marked.parse() heading/list/code tag at body weight.
+    html = get_web_html()
+    assert re.search(r"\.dec-context-body h2 \{[^}]*font-weight: 700", html)
+    assert re.search(r"\.dec-context-body h3 \{[^}]*font-weight: 600", html)
+    assert ".dec-context-body ul, .dec-context-body ol { padding-left: 1.25rem" in html
+    assert ".dec-context-body li::marker { color: #71717a; }" in html
+    assert ".dec-context-body code { color: #6ee7b7; }" in html
+
+
+def test_switching_decision_tabs_clears_a_stale_cross_tab_detail() -> None:
+    # Audit problem 4: an answered decision's detail used to stay shown after switching to
+    # Open, since only the list (not selectedDecisionId) was cleared on tab switch.
+    body = _function_body(get_web_html(), "renderDecisionsTabs")
+    assert "selectedDecisionId = null;" in body
+
+
+def test_every_decision_tab_shows_its_count_from_the_endpoints_counts() -> None:
+    # Audit problem 9: Answered/Withdrawn showed no count at all; /api/decisions now answers
+    # `counts` for every status on every page fetch.
+    html = get_web_html()
+    count_fn = _function_body(html, "decisionsTabCount")
+    assert "decisionsCounts[tab.key]" in count_fn
+    assert "window.tmStore.decisionsOpen" in count_fn
+    refresh = _function_body(html, "refreshDecisionsData")
+    assert "decisionsCounts = res.counts;" in refresh
+    load_more = _function_body(html, "loadMoreDecisions")
+    assert "decisionsCounts = res.counts;" in load_more
+
+
+def test_failed_decision_detail_fetch_offers_retry_distinct_from_a_real_404() -> None:
+    # Audit problem 10: a network/5xx failure used to read exactly like a real 404,
+    # "Decision not found.", with nothing to retry.
+    html = get_web_html()
+    fetch_fn = _function_body(html, "fetchNodeDetail")
+    assert "e.message === 'Node not found'" in fetch_fn
+    assert "throw e;" in fetch_fn
+    detail = _function_body(html, "renderDecisionDetail")
+    assert "Decision not found." in detail
+    assert "dec-detail-retry-btn" in detail
+    assert "This is a failed request, not a missing decision." in detail
+    assert "renderDecisionDetail(id)" in detail.split("catch(e =>")[1]
+
+
+def test_decision_answered_or_withdrawn_elsewhere_shows_an_in_place_notice() -> None:
+    # Audit problem 5: a decision answered elsewhere while open gave no signal beyond the
+    # badge dropping and the row leaving the list -- the open detail itself never changed.
+    html = get_web_html()
+    detail = _function_body(html, "renderDecisionDetail")
+    assert "decisionDetailLastStatus.get(id)" in detail
+    assert "changedElsewhere = previousStatus === 'OPEN' && node.status !== 'OPEN'" in detail
+    assert "dec-elsewhere-notice" in detail
+    assert detail.index("${elsewhereNoticeHtml}") < detail.index("${contextHtml}")
+    write = _function_body(html, "afterDecisionWrite")
+    # The owner's own write pre-seeds the tracked status, so it is never mistaken for a change
+    # made elsewhere by the very next render this same write triggers.
+    assert "decisionDetailLastStatus.set(decisionId, detail.node.status);" in write
+
+
+def test_a_blocked_node_chip_reopens_whichever_view_it_left_off_in() -> None:
+    # Audit problem 3: a "waiting on this" chip always forced the Document view, discarding
+    # whatever view (Waves, Graph) the owner had actually been reading.
+    html = get_web_html()
+    helper = _function_body(html, "openBlockedNodeDetail")
+    assert "showGraphInspector(nodeId)" in helper
+    assert "selectNode(nodeId)" in helper
+    # Carries every non-Decisions mode straight through; a DOCUMENT/else ternary here is the
+    # bug this pins -- it collapses GRAPH back to WAVES instead of reopening the graph pane.
+    assert "const target = viewModeBeforeDecisions;" in helper
+    assert "window.VIEW_MODES.WAVES" not in helper
+    detail = _function_body(html, "renderDecisionDetail")
+    assert "openBlockedNodeDetail(btn.getAttribute('data-task-id'))" in detail
+    set_view_mode = re.search(r"setViewMode = function \(mode\) \{(.*?)\n  \};", html, re.DOTALL)
+    assert set_view_mode, "decisions.js's setViewMode wrapper not found"
+    assert "viewModeBeforeDecisions = currentMode" in set_view_mode.group(1)
+
+
 def test_static_export_themes_every_display_status(tmp_path: Path) -> None:
     import json
 
