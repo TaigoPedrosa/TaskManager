@@ -1383,18 +1383,42 @@ def wave_discover(
         list[str] | None,
         typer.Option("--hold-merge", help="Node id whose merge is not offered, repeatable"),
     ] = None,
+    lines: Annotated[
+        bool,
+        typer.Option(
+            "--lines",
+            help="Quote-free lines instead of JSON: `N id action model kind repos requires`, "
+            "`H <held>`, `W <waiting>`; an empty list prints `-`",
+        ),
+    ] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     """One dispatch wave's batch: a JSON payload line, then `__CHECK n=<chosen> h=<djb2>`.
 
     A caller with no shell of its own (a Workflow script) echoes the two lines back verbatim;
-    the checksum lets the caller reject a transcription that is not byte-exact.
+    the checksum lets the caller reject a transcription that is not byte-exact. `--lines` exists
+    for a small-model runner, which drops keys when it retypes nested JSON into a string field.
     """
     claims = _claims(_get_root(path))
     payload, chosen_count = discover(
         claims, spec or None, session, slots, max_strong, exclude, hold_merge
     )
-    sys.stdout.write(f"{payload}\n__CHECK n={chosen_count} h={djb2(payload)}\n")
+    if not lines:
+        sys.stdout.write(f"{payload}\n__CHECK n={chosen_count} h={djb2(payload)}\n")
+        return
+    data = json.loads(payload)
+
+    def flat(values: list[str] | None) -> str:
+        return ",".join(values or []) or "-"
+
+    out = [
+        f"N {n['id']} {n['action']} {n['model']} {n['kind']} "
+        f"{flat(n.get('repos'))} {flat(n.get('requires'))}"
+        for n in data["chosen"]
+    ]
+    out += [f"H {held}" for held in data.get("held", [])]
+    out.append(f"W {data.get('waiting_for_slot', 0)}")
+    sys.stdout.write("\n".join(out) + "\n")
 
 
 @verify_app.command("add")
