@@ -60,6 +60,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
     )
 
     html = _read_static("index.html")
+    html = html.replace("<!--slot:tailwind-css-->", _read_static("tailwind.css"))
     html = html.replace("<!--slot:app-css-->", css)
     html = html.replace("<!--slot:runtime-data-->", runtime_data)
     html = html.replace("<!--slot:static-data-->", embedded_script)

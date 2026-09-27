@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from taskmanager.db.connection import DatabaseManager
+from taskmanager.web.static_export import export_static_html
 from taskmanager.web.ui import get_web_html
 
 
@@ -1243,3 +1245,9 @@ def test_decisions_toolbar_segment_names_the_open_count() -> None:
         "viewDecisionsBtn.setAttribute('aria-label', `Decisions view, ${openCount} open`)"
         in badge_fn
     )
+
+
+def test_the_exported_page_loads_no_tailwind_cdn_script(tmp_path: Path) -> None:
+    DatabaseManager(tmp_path / ".taskmanager").init_all()
+    html = export_static_html(tmp_path, tmp_path / "export.html").read_text(encoding="utf-8")
+    assert "cdn.tailwindcss.com" not in html
