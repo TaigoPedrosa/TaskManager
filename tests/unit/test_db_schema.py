@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from taskmanager.core.status import EXITS, IN_STEP, SET_ASIDE, STABLE, DisplayStatus, Status
 from taskmanager.db.connection import DatabaseManager
 
 
@@ -179,3 +180,24 @@ def test_foreign_key_violation_raises(tmp_path: Path) -> None:
                 """,
             ("NONEXISTENT", "details", 1, "Details", "Section content"),
         )
+
+
+def test_landed_is_stable_and_neither_an_exit_in_step_nor_set_aside() -> None:
+    assert Status.LANDED in STABLE
+    assert Status.LANDED not in EXITS
+    assert Status.LANDED not in IN_STEP
+    assert Status.LANDED not in SET_ASIDE
+    assert DisplayStatus.LANDED == "LANDED"
+
+
+def test_fresh_estate_accepts_a_landed_node(tmp_path: Path) -> None:
+    db_mgr = DatabaseManager(tmp_path)
+    db_mgr.init_all()
+
+    with db_mgr.get_state_connection() as conn:
+        conn.execute(
+            "INSERT INTO nodes (id, kind, title, status) VALUES ('T1', 'task', 'T', 'LANDED')"
+        )
+        conn.commit()
+        row = conn.execute("SELECT status FROM nodes WHERE id = 'T1'").fetchone()
+    assert row == ("LANDED",)

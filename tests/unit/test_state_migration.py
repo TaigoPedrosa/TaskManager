@@ -18,13 +18,13 @@ from taskmanager.core.models import (
     NodeSection,
     NodeVerification,
 )
-from taskmanager.core.status import JobKind, Status
+from taskmanager.core.status import DecisionStatus, JobKind, Status
 from taskmanager.db.connection import DatabaseManager, StateSchemaTooNew
 from taskmanager.db.graph_reader import read_graph
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
-from taskmanager.db.schema import SCHEMA_VERSION, STATE_SCHEMA_VERSION
+from taskmanager.db.schema import SCHEMA_VERSION, STATE_MIGRATIONS, STATE_SCHEMA_VERSION
 
 _FIXTURE = Path(__file__).parent.parent / "fixtures" / "state_v1.sql"
 runner = CliRunner()
@@ -69,7 +69,7 @@ def test_migrated_v1_estate_matches_a_fresh_init(tmp_path: Path) -> None:
     _build_v1_estate(old)
     migrated = DatabaseManager(old)
     with migrated.get_state_connection() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 3
 
     fresh = DatabaseManager(tmp_path / "fresh")
     fresh.init_all()
@@ -77,6 +77,146 @@ def test_migrated_v1_estate_matches_a_fresh_init(tmp_path: Path) -> None:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION
 
     assert _sqlite_master_rows(migrated) == _sqlite_master_rows(fresh)
+
+
+def _build_v2_estate(taskmanager_dir: Path) -> None:
+    """A `state.db` at schema 2, as 0.3.3 wrote it: its `nodes` CHECK has no LANDED."""
+    _build_v1_estate(taskmanager_dir)
+    conn = sqlite3.connect(taskmanager_dir / "state.db")
+    try:
+        conn.executescript(STATE_MIGRATIONS[2])
+        conn.execute("PRAGMA user_version = 2")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _seed_every_v2_status(taskmanager_dir: Path) -> None:
+    conn = sqlite3.connect(taskmanager_dir / "state.db")
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        # A deleted first row leaves a rowid gap, so a copy that renumbers rowids shows.
+        conn.execute("INSERT INTO nodes (id, kind, title) VALUES ('GAP', 'task', 'gap')")
+        cycle = [s for s in Status if s is not Status.LANDED]
+        for i, status in enumerate(cycle):
+            conn.execute(
+                "INSERT INTO nodes (id, kind, title, status, priority, ordinal, target_repo, "
+                "frontmatter_json, claimed_from, review, fix, merge, outcome, verdict, fix_for, "
+                "review_cycles, merge_attempts, step_failures, branch, requires, land_order, "
+                "created_at, updated_at) VALUES (?, 'task', ?, ?, ?, ?, 'backend', '{\"k\": 1}', "
+                "'READY', 1, 0, 'parent', 'reject', 'needs work', 'reject', 2, 1, 1, ?, "
+                "'[\"gpu\"]', '[\"a\"]', '2026-01-01 00:00:00', '2026-01-02 00:00:00')",
+                (f"T{i:02}", f"task {status}", status.value, 10 + i, i, f"tm/T{i:02}"),
+            )
+        for status in DecisionStatus:
+            conn.execute(
+                "INSERT INTO nodes (id, kind, title, status) VALUES (?, 'decision', ?, ?)",
+                (f"D-{status}", f"decision {status}", status.value),
+            )
+        conn.execute("DELETE FROM nodes WHERE id = 'GAP'")
+        conn.execute("UPDATE nodes SET title = title || '!' WHERE id = 'T00'")
+        conn.execute(
+            "INSERT INTO node_sections (node_id, section_key, ordinal, header, content) "
+            "VALUES ('T00', 'body', 1, '## Body', 'x')"
+        )
+        conn.execute(
+            "INSERT INTO node_relations (source_id, target_id, relation_type) "
+            "VALUES ('T00', 'T01', 'depends_on')"
+        )
+        conn.execute("INSERT INTO nodes_fts (rowid, node_id, title) VALUES (1, 'T00', 'task')")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _raw_rows(state_db: Path) -> dict[str, list[tuple[object, ...]]]:
+    conn = sqlite3.connect(state_db)
+    try:
+        return {
+            "nodes": conn.execute("SELECT rowid, * FROM nodes ORDER BY id").fetchall(),
+            "node_sections": conn.execute("SELECT * FROM node_sections").fetchall(),
+            "node_relations": conn.execute("SELECT * FROM node_relations").fetchall(),
+        }
+    finally:
+        conn.close()
+
+
+def _write_landed(state_db: Path) -> None:
+    conn = sqlite3.connect(state_db)
+    try:
+        conn.execute("UPDATE nodes SET status = 'LANDED' WHERE id = 'T00'")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_open_schema_2_estate_keeps_every_row_and_column_unchanged(tmp_path: Path) -> None:
+    old = tmp_path / "old"
+    _build_v2_estate(old)
+    _seed_every_v2_status(old)
+    before = _raw_rows(old / "state.db")
+    seeded = {row[4] for row in before["nodes"]}
+    assert seeded == {s.value for s in Status if s is not Status.LANDED} | set(DecisionStatus)
+
+    db = DatabaseManager(old)
+    with db.get_state_connection() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert conn.execute("PRAGMA legacy_alter_table").fetchone()[0] == 0
+    db.close()
+
+    assert _raw_rows(old / "state.db") == before
+    assert before["node_sections"] != []
+    assert before["node_relations"] != []
+
+
+def test_open_schema_2_estate_stores_the_fresh_nodes_sql_byte_for_byte(tmp_path: Path) -> None:
+    old = tmp_path / "old"
+    _build_v2_estate(old)
+    migrated = DatabaseManager(old)
+    fresh = DatabaseManager(tmp_path / "fresh")
+    fresh.init_all()
+
+    assert _sqlite_master_rows(migrated) == _sqlite_master_rows(fresh)
+    with migrated.get_state_connection() as conn:
+        (sql,) = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'nodes'").fetchone()
+    assert "'LANDED'" in sql
+
+
+def test_open_schema_2_estate_then_write_landed_succeeds(tmp_path: Path) -> None:
+    old = tmp_path / "old"
+    _build_v2_estate(old)
+    _seed_every_v2_status(old)
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+        _write_landed(old / "state.db")
+
+    db = DatabaseManager(old)
+    with db.get_state_connection():
+        pass
+    db.close()
+
+    _write_landed(old / "state.db")
+    conn = sqlite3.connect(old / "state.db")
+    try:
+        row = conn.execute("SELECT status FROM nodes WHERE id = 'T00'").fetchone()
+    finally:
+        conn.close()
+    assert row == ("LANDED",)
+
+
+def test_open_schema_3_estate_leaves_the_file_bytes_untouched(tmp_path: Path) -> None:
+    estate = tmp_path / "estate"
+    first = DatabaseManager(estate)
+    first.init_all()
+    first.close()
+    before = (estate / "state.db").read_bytes()
+
+    again = DatabaseManager(estate)
+    with again.get_state_connection() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 3
+    again.close()
+
+    assert (estate / "state.db").read_bytes() == before
 
 
 def test_uninitialised_directory_is_left_to_tm_init(tmp_path: Path) -> None:
@@ -126,13 +266,13 @@ def test_newer_schema_is_refused_and_nothing_is_written(tmp_path: Path) -> None:
     future = tmp_path / "future"
     _build_v1_estate(future)
     conn = sqlite3.connect(future / "state.db")
-    conn.execute("PRAGMA user_version = 3")
+    conn.execute("PRAGMA user_version = 4")
     conn.commit()
     conn.close()
     before = (future / "state.db").read_bytes()
 
     with (
-        pytest.raises(StateSchemaTooNew, match=r"schema 3.*\(2\)"),
+        pytest.raises(StateSchemaTooNew, match=r"schema 4.*\(3\)"),
         DatabaseManager(future).get_state_connection(),
     ):
         pass
@@ -150,7 +290,7 @@ def test_a_refused_connection_is_closed_not_leaked(
     future = tmp_path / "future"
     _build_v1_estate(future)
     conn = sqlite3.connect(future / "state.db")
-    conn.execute("PRAGMA user_version = 3")
+    conn.execute("PRAGMA user_version = 4")
     conn.commit()
     conn.close()
 
