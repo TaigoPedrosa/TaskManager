@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from taskmanager.db.connection import DatabaseManager
+from taskmanager.web.static_export import export_static_html
 from taskmanager.web.ui import get_web_html
 
 
@@ -1089,3 +1091,9 @@ def test_page_carries_an_inline_favicon_so_the_browser_never_requests_favicon_ic
     # Without a <link rel="icon">, a browser falls back to GET /favicon.ico, a 404 console
     # error on `tm web run` and on a served export alike.
     assert re.search(r'<link rel="icon" href="data:image/svg\+xml,', get_web_html())
+
+
+def test_the_exported_page_loads_no_tailwind_cdn_script(tmp_path: Path) -> None:
+    DatabaseManager(tmp_path / ".taskmanager").init_all()
+    html = export_static_html(tmp_path, tmp_path / "export.html").read_text(encoding="utf-8")
+    assert "cdn.tailwindcss.com" not in html

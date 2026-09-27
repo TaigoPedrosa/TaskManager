@@ -551,12 +551,10 @@ test('at 375 the wave body has a 12px side gutter and the empty-wave note sits u
 });
 
 test("the page's Tailwind config makes font-mono JetBrains Mono, the frames' mono face", () => {
-  const indexHtml = fs.readFileSync(path.join(here, '../../src/taskmanager/web/static/index.html'), 'utf8');
-  const script = [...indexHtml.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).find((src) => src.includes('tailwind.config'));
-  assert.ok(script, 'no inline Tailwind config script');
-  const context = vm.createContext({ tailwind: {} });
-  vm.runInContext(script, context);
-  const mono = context.tailwind.config.theme.extend.fontFamily?.mono;
+  const configSrc = fs.readFileSync(path.join(here, '../../tailwind.config.js'), 'utf8');
+  const context = vm.createContext({ module: { exports: {} } });
+  vm.runInContext(configSrc, context);
+  const mono = context.module.exports.theme.extend.fontFamily?.mono;
   assert.ok(Array.isArray(mono) && /JetBrains Mono/.test(mono[0]), `font-mono resolves to ${JSON.stringify(mono)}`);
 });
 
