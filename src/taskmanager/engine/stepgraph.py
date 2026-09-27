@@ -8,7 +8,7 @@ from graphlib import CycleError, TopologicalSorter
 from taskmanager.core.enums import CONTAINERS, NodeKind
 from taskmanager.core.status import EXITS, SET_ASIDE, DecisionStatus, Merge, Status
 from taskmanager.db.graph_reader import GraphData
-from taskmanager.engine.chains import landing_chain, meeting, satisfied
+from taskmanager.engine.chains import base_chain, landing_chain, landing_target, meeting, satisfied
 
 Graph = dict[str, set[str]]
 
@@ -41,6 +41,9 @@ class Snapshot:
     _edges_by_source: dict[str, list[str]] = field(
         init=False, repr=False, compare=False, default_factory=dict
     )
+    _descendants_cache: dict[str, list[str]] = field(
+        init=False, repr=False, compare=False, default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         for node_id in sorted(self.nodes):
@@ -63,11 +66,17 @@ class Snapshot:
         return list(self._children.get(node_id, ()))
 
     def descendants(self, node_id: str) -> list[str]:
-        found: list[str] = []
-        for child in self.children(node_id):
-            found.append(child)
-            found.extend(self.descendants(child))
-        return found
+        # Every edge on a container walks its descendants (`_base_graph`), so an uncached
+        # recursion here turns one cyclic write into an O(edges * subtree) scan; the tree
+        # shape (one parent per node) makes each node's subtree fixed for the snapshot's life.
+        cached = self._descendants_cache.get(node_id)
+        if cached is None:
+            cached = []
+            for child in self.children(node_id):
+                cached.append(child)
+                cached.extend(self.descendants(child))
+            self._descendants_cache[node_id] = cached
+        return list(cached)
 
     def counted_descendants(self, node_id: str) -> list[str]:
         """Descendants a container still counts: a set-aside node never lands, so it and its
@@ -115,6 +124,20 @@ def _base_graph(s: Snapshot) -> Graph:
     for n in work:
         if n.parent is not None and _is_work(s, n.parent) and n.status not in SET_ASIDE:
             graph[f"{n.id}.landed"].add(f"{n.parent}.implemented")
+    # base_chain/landing_chain depend only on a node's own ancestry, so caching them here turns
+    # a container edge's fan-out to every descendant from one chain-to-MAIN walk per descendant
+    # into one lookup: a plan with many children sharing a single dependency edge otherwise redoes
+    # the same walk once per child.
+    bases: dict[str, list[str]] = {}
+    landing_chains: dict[str, list[str]] = {}
+
+    def cached_meeting(x: str, y: str) -> str:
+        if x not in bases:
+            bases[x] = base_chain(s, x)
+        if y not in landing_chains:
+            landing_chains[y] = landing_chain(s, y)
+        return next(z for z in landing_chains[y] if landing_target(s, z) in bases[x])
+
     for dependent, dependency in s.edges:
         if not (_is_work(s, dependent) and _is_work(s, dependency)):
             continue
@@ -124,7 +147,7 @@ def _base_graph(s: Snapshot) -> Graph:
         # dependency's code reaches a branch that descendant builds on.
         for d in [dependent, *s.descendants(dependent)]:
             if _is_work(s, d):
-                graph[f"{meeting(s, d, dependency)}.landed"].add(f"{d}.start")
+                graph[f"{cached_meeting(d, dependency)}.landed"].add(f"{d}.start")
     return graph
 
 
@@ -188,9 +211,11 @@ def migration_holders(s: Snapshot, repo: str) -> dict[str, str]:
 
 
 def _with_migration_chain(s: Snapshot, graph: Graph) -> Graph:
+    repos = sorted({n.repo for n in s.nodes.values() if n.writes_migration and n.repo})
+    if not repos:
+        return graph
     chained = {vertex: set(successors) for vertex, successors in graph.items()}
     rank = _topological_rank(graph)
-    repos = sorted({n.repo for n in s.nodes.values() if n.writes_migration and n.repo})
     for repo in repos:
         order = _migration_order(s, repo, rank)
         for i, first in enumerate(order):
@@ -235,8 +260,9 @@ def _cycle(graph: Graph) -> list[str] | None:
 
 
 def find_cycle(s: Snapshot) -> list[str] | None:
-    graph = _base_graph(s)
-    return _cycle(graph) or _cycle(_with_migration_chain(s, graph))
+    # The migration-chained graph only adds edges to the base one, so a cycle in either is a
+    # cycle in it; one DFS over it covers both instead of walking the base graph twice.
+    return _cycle(_with_migration_chain(s, _base_graph(s)))
 
 
 def format_cycle(path: list[str]) -> str:

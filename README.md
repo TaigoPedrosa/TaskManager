@@ -71,3 +71,21 @@ uv sync
 uv run pytest
 node --test tests/
 ```
+
+### Rebuilding the web stylesheet
+
+`src/taskmanager/web/static/tailwind.css` is committed, built from `tailwind.config.js` and
+`src/taskmanager/web/static/tailwind.input.css` by Tailwind's standalone CLI (no Node package,
+pinned at v3.4.19). Fetch the binary for your platform from the release page and rebuild after
+touching `tailwind.config.js`, the input stylesheet, or any file its `content` globs cover:
+
+```bash
+curl -sSL -o tailwindcss \
+  https://github.com/tailwindlabs/tailwindcss/releases/download/v3.4.19/tailwindcss-macos-arm64
+chmod +x tailwindcss
+./tailwindcss -i src/taskmanager/web/static/tailwind.input.css -c tailwind.config.js \
+  -o src/taskmanager/web/static/tailwind.css
+```
+
+Swap `tailwindcss-macos-arm64` for `tailwindcss-linux-x64`, `tailwindcss-linux-arm64`,
+`tailwindcss-macos-x64` or a Windows build to match your platform.

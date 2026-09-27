@@ -1,0 +1,54 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.join(here, '../..');
+const COMMITTED_CSS = path.join(REPO_ROOT, 'src/taskmanager/web/static/tailwind.css');
+const INPUT_CSS = path.join(REPO_ROOT, 'src/taskmanager/web/static/tailwind.input.css');
+const CONFIG = path.join(REPO_ROOT, 'tailwind.config.js');
+
+// The standalone CLI ships as one binary per platform (see README, "Rebuilding the web
+// stylesheet"); it is never installed as a Node package, so it is looked up on PATH or at the
+// repo-root path the README's fetch command writes it to, never assumed present.
+function findTailwindCli() {
+  const candidates = [process.env.TAILWINDCSS_BIN, path.join(REPO_ROOT, 'tailwindcss')].filter(
+    Boolean,
+  );
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  try {
+    const finder = process.platform === 'win32' ? 'where' : 'which';
+    const found = execFileSync(finder, ['tailwindcss'], { encoding: 'utf8' }).trim().split('\n')[0];
+    if (found) return found;
+  } catch {
+    // not on PATH
+  }
+  return null;
+}
+
+test('the committed stylesheet matches a fresh build from tailwind.config.js', (t) => {
+  const cli = findTailwindCli();
+  if (!cli) {
+    t.skip('tailwindcss standalone CLI not found; see README "Rebuilding the web stylesheet"');
+    return;
+  }
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-tailwind-'));
+  try {
+    const outFile = path.join(outDir, 'tailwind.css');
+    execFileSync(cli, ['-i', INPUT_CSS, '-c', CONFIG, '-o', outFile], {
+      cwd: REPO_ROOT,
+      stdio: ['ignore', 'ignore', 'inherit'],
+    });
+    const fresh = fs.readFileSync(outFile, 'utf8');
+    const committed = fs.readFileSync(COMMITTED_CSS, 'utf8');
+    assert.equal(fresh, committed, 'tailwind.css is stale: rebuild it (see README) and commit the result');
+  } finally {
+    fs.rmSync(outDir, { recursive: true, force: true });
+  }
+});

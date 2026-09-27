@@ -85,6 +85,19 @@ class BulkImporter:
     )
     CONDITION_KEYS = frozenset({"needs", "command", "stage"})
 
+    @staticmethod
+    def _declared_nodes(data: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+        """Every node the document declares, each labelled by where it sits."""
+        nodes: list[tuple[str, dict[str, Any]]] = []
+        if isinstance(data.get("spec"), dict):
+            nodes.append(("spec", data["spec"]))
+        for plan in data.get("plans") or []:
+            nodes.append((f"plan {plan.get('id')}", plan))
+            nodes.extend((f"task {t.get('id')}", t) for t in plan.get("tasks") or [])
+        nodes.extend((f"task {t.get('id')}", t) for t in data.get("tasks") or [])
+        nodes.extend((f"decision {d.get('id')}", d) for d in data.get("decisions") or [])
+        return nodes
+
     def _refuse_unknown_keys(self, data: dict[str, Any]) -> None:
         """A key nothing reads would be dropped silently, and its content with it."""
         problems: list[str] = []
@@ -95,15 +108,7 @@ class BulkImporter:
                 problems.append(f"{where}: {', '.join(extra)}")
 
         check("document", data, self.DOCUMENT_KEYS)
-        nodes: list[tuple[str, dict[str, Any]]] = []
-        if isinstance(data.get("spec"), dict):
-            nodes.append(("spec", data["spec"]))
-        for plan in data.get("plans") or []:
-            nodes.append((f"plan {plan.get('id')}", plan))
-            nodes.extend((f"task {t.get('id')}", t) for t in plan.get("tasks") or [])
-        nodes.extend((f"task {t.get('id')}", t) for t in data.get("tasks") or [])
-        nodes.extend((f"decision {d.get('id')}", d) for d in data.get("decisions") or [])
-        for where, node in nodes:
+        for where, node in self._declared_nodes(data):
             check(where, node, self.NODE_KEYS)
             for v in node.get("verifications") or []:
                 check(f"{where} verification", v, self.VERIFICATION_KEYS)
@@ -116,8 +121,23 @@ class BulkImporter:
                 + "). Section text belongs under `sections:`, other data under `frontmatter:`."
             )
 
+    def _refuse_duplicate_ids(self, data: dict[str, Any]) -> None:
+        """Two nodes declaring the same id would silently overwrite one another on save; refuse
+        before the engine ever sees the document, and before any write transaction opens."""
+        wheres_by_id: dict[str, list[str]] = {}
+        for where, node in self._declared_nodes(data):
+            wheres_by_id.setdefault(str(node.get("id")), []).append(where)
+        dupes = {node_id: wheres for node_id, wheres in wheres_by_id.items() if len(wheres) > 1}
+        if dupes:
+            detail = "; ".join(
+                f"{node_id!r} at {' and '.join(wheres)}"
+                for node_id, wheres in sorted(dupes.items())
+            )
+            raise ValueError(f"{REFUSED}duplicate id {detail}")
+
     def import_dict(self, data: dict[str, Any]) -> None:
         self._refuse_unknown_keys(data)
+        self._refuse_duplicate_ids(data)
         nodes: list[Node] = []
         sections: list[NodeSection] = []
         relations: list[NodeRelation] = []
