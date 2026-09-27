@@ -60,6 +60,8 @@ class DecisionData(BaseModel):
     raised_by: str | None = None
     answer: DecisionAnswer | None = None
     withdrawn_reason: str = ""
+    withdrawn_by: str | None = None
+    withdrawn_at: datetime | None = None
     # The node the decision is about; `drop_edge` removes each blocked node's edge to it.
     subject: str | None = None
     # What a custom answer does, since it names no option to carry an effect.
