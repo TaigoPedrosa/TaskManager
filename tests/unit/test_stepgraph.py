@@ -105,6 +105,23 @@ def test_edges_to_decisions_are_left_out() -> None:
     assert find_cycle(s) is None
 
 
+def test_a_cycle_is_found_and_formatted_the_same_way_on_a_live_sized_estate() -> None:
+    # A fan-out that recomputes an unrelated dependent's chain per background node turns one
+    # DFS into one per node; 200 idle background nodes are enough to catch a regression there
+    # without depending on wall-clock timing in a unit test.
+    background = [SnapNode(f"BG{i}", TASK) for i in range(200)]
+    s = snap(
+        *background,
+        SnapNode("P", PLAN),
+        SnapNode("A", TASK, parent="P", merge=PARENT),
+        edges=[("A", "P")],
+    )
+    assert len(s.nodes) > 200
+    assert format_cycle(find_cycle(s) or []) == (
+        "A.start ← P.landed ← P.implemented ← A.landed ← A.implemented ← A.start"
+    )
+
+
 def _migration_estate(a_status: Status) -> Snapshot:
     # A writes a migration on tm/P; B writes one straight to main; C, also on tm/P, needs B.
     return snap(

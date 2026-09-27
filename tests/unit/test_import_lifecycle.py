@@ -1,10 +1,12 @@
 """Import on the lifecycle model: flags, conditions and kind-aware statuses, and a refused
 document writes nothing at all."""
 
+import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
+import yaml
 
 from taskmanager.core.status import ConditionStage, DecisionStatus, Merge, Status
 from taskmanager.db.connection import DatabaseManager
@@ -123,6 +125,54 @@ def test_a_refused_import_writes_nothing_and_says_why(
     if words is not None:
         assert words in str(exc.value)
     assert repo.list_nodes() == []
+
+
+def _via_yaml(data: dict[str, Any]) -> dict[str, Any]:
+    return cast("dict[str, Any]", yaml.safe_load(yaml.safe_dump(data)))
+
+
+def _via_json(data: dict[str, Any]) -> dict[str, Any]:
+    return cast("dict[str, Any]", json.loads(json.dumps(data)))
+
+
+def _via_markdown(data: dict[str, Any]) -> dict[str, Any]:
+    # A markdown import's document lives in the frontmatter block, parsed the same way as yaml.
+    content = f"---\n{yaml.safe_dump(data)}---\n\nbody\n"
+    _, frontmatter, _ = content.split("---", 2)
+    return cast("dict[str, Any]", yaml.safe_load(frontmatter))
+
+
+@pytest.mark.parametrize(
+    "round_trip", [_via_yaml, _via_json, _via_markdown], ids=["yaml", "json", "markdown"]
+)
+def test_two_nodes_sharing_an_id_are_refused_naming_the_id_and_both_places(
+    repo: NodeRepository, round_trip: Any
+) -> None:
+    document = round_trip(
+        {
+            "spec": {"id": "S", "title": "spec"},
+            "plans": [{"id": "S", "title": "plan", "tasks": [{"id": "S-a", "title": "a"}]}],
+        }
+    )
+    with pytest.raises(ValueError, match="nothing written") as exc:
+        BulkImporter(repo).import_dict(document)
+    assert "'S'" in str(exc.value)
+    assert "spec" in str(exc.value)
+    assert "plan S" in str(exc.value)
+    assert repo.list_nodes() == []
+
+
+def test_a_duplicate_id_refusal_never_opens_a_write_transaction(
+    repo: NodeRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _forbidden(_self: NodeRepository) -> Any:
+        raise AssertionError("a duplicate-id refusal must not open a write transaction")
+
+    monkeypatch.setattr(NodeRepository, "transaction", _forbidden)
+    with pytest.raises(ValueError, match="nothing written"):
+        BulkImporter(repo).import_dict(
+            {"spec": {"id": "S", "title": "spec"}, "plans": [{"id": "S", "title": "plan"}]}
+        )
 
 
 def test_importing_a_new_child_under_a_completed_plan_is_refused(repo: NodeRepository) -> None:
