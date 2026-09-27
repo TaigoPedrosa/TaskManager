@@ -131,7 +131,7 @@
   </div>
 
   <!-- Main View Area -->
-  <div class="flex-1 flex overflow-hidden">
+  <div class="flex-1 flex overflow-hidden relative">
     
     <!-- Sidebar / Hierarchical Navigation (Graph view only) -->
     <aside id="sidebar-pane" class="hidden relative border-r border-zinc-800 flex flex-col bg-zinc-900/40 flex-shrink-0" style="width:320px">
@@ -164,47 +164,50 @@
       </div>
       <div id="network-canvas" class="hidden w-full h-full"></div>
 
-      <!-- Waves view (the plan's own title: "replaces the Document view"): rendered here,
-           inside graph-pane, so it shares this pane's #graph-inspector drawer -- core.js's
-           setViewMode(WAVES) keeps graph-pane itself visible and swaps #network-canvas/
-           #graph-fit-wrap for this instead. waves.js owns everything under #waves-content. -->
+      <!-- Waves view: rendered inside graph-pane -- core.js's setViewMode(WAVES) keeps
+           graph-pane itself visible and swaps #network-canvas/#graph-fit-wrap for this
+           instead. waves.js owns everything under #waves-content. -->
       <div id="waves-pane" class="absolute inset-0 overflow-y-auto p-4 sm:p-6 bg-zinc-950">
         <div id="waves-content" class="max-w-4xl mx-auto space-y-4 pb-16"></div>
-      </div>
-
-      <!-- Graph Slide-over Node Inspector Drawer. Full width below lg: at 375/768 a fixed
-           384px (w-96) panel next to a 320px sidebar left no usable canvas and, since the
-           sidebar's own width did not yield first, overlapped its action bar outright. -->
-      <div id="graph-inspector" class="hidden absolute top-0 right-0 w-full lg:w-96 h-full bg-zinc-900/95 border-l border-zinc-800 backdrop-blur z-20 flex flex-col shadow-2xl transition-transform duration-200">
-        <div class="p-4 border-b border-zinc-800 flex items-start justify-between">
-          <div class="space-y-1">
-            <div class="flex items-center gap-2">
-              <span id="inspector-kind" class="px-1.5 py-0.5 rounded text-[10px] font-mono uppercase bg-zinc-800 text-zinc-400">TASK</span>
-              <span id="inspector-id" class="font-mono text-xs font-semibold text-emerald-400">---</span>
-            </div>
-            <h3 id="inspector-title" class="text-sm font-semibold text-zinc-100">---</h3>
-          </div>
-          <button id="inspector-close-btn" class="p-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-800">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor"><use href="#icon-x"/></svg>
-          </button>
-        </div>
-        <div id="inspector-body" class="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
-          <!-- Populated dynamically on node select -->
-        </div>
       </div>
     </section>
 
     <!-- Decisions View Pane (§6.4): list of open/answered/withdrawn decisions and a detail
-         panel, toggled on by decisions.js -- hidden by default like the graph pane. -->
-    <section id="decisions-pane" class="hidden flex-1 flex flex-col sm:flex-row overflow-hidden bg-zinc-950">
-      <aside class="w-full sm:w-80 md:w-96 max-h-[38vh] sm:max-h-none flex-shrink-0 border-b sm:border-b-0 sm:border-r border-zinc-800 flex flex-col overflow-hidden">
-        <div id="decisions-tabs" role="tablist" aria-label="Decision status" class="flex items-center gap-1 p-2 border-b border-zinc-800 flex-shrink-0"></div>
-        <div id="decisions-list" class="flex-1 overflow-y-auto p-2 space-y-1.5"></div>
+         panel, toggled on by decisions.js -- hidden by default like the graph pane. Below sm
+         the list stacks above the detail and the pane is the one scroll; from sm up the list
+         and the detail scroll side by side. The detail's 140px bottom padding below sm keeps
+         its last field clear of the fixed answer bar. decisions.js keeps both scroll offsets itself
+         across a re-render, so the browser's own scroll anchoring is off here. -->
+    <section id="decisions-pane" class="hidden flex-1 flex flex-col sm:flex-row overflow-y-auto sm:overflow-hidden [overflow-anchor:none] bg-zinc-950">
+      <aside class="w-full sm:w-80 md:w-96 flex-shrink-0 border-b sm:border-b-0 sm:border-r border-zinc-800 flex flex-col sm:overflow-hidden">
+        <div id="decisions-tabs" role="tablist" aria-label="Decision status" class="flex items-center gap-1 px-4 py-3 sm:px-3 flex-shrink-0"></div>
+        <div id="decisions-list" class="sm:flex-1 sm:overflow-y-auto px-4 pt-1 pb-3 sm:px-2 space-y-2"></div>
       </aside>
-      <div id="decisions-detail" class="flex-1 min-w-0 overflow-y-auto p-6">
-        <div class="max-w-2xl mx-auto text-sm text-zinc-500 italic pt-12 text-center">Select a decision to view it.</div>
+      <div id="decisions-detail" class="flex-1 min-w-0 sm:overflow-y-auto [overflow-anchor:none] px-4 pt-5 pb-[140px] sm:px-6 sm:pt-6 sm:pb-16">
+        <div class="max-w-2xl mx-auto text-sm text-zinc-400 italic pt-12 text-center">Select a decision to view it.</div>
       </div>
     </section>
+
+    <!-- Node detail drawer, shared by the Waves, Graph and Document views: it sits over
+         whichever pane is showing. Full width below lg: at 375/768 a fixed 384px (w-96)
+         panel next to a 320px sidebar left no usable canvas. -->
+    <div id="graph-inspector" class="hidden absolute top-0 right-0 w-full lg:w-96 h-full bg-zinc-900/95 border-l border-zinc-800 backdrop-blur z-20 flex flex-col shadow-2xl transition-transform duration-200">
+      <div class="p-4 border-b border-zinc-800 flex items-start justify-between">
+        <div class="space-y-1">
+          <div class="flex items-center gap-2">
+            <span id="inspector-kind" class="px-1.5 py-0.5 rounded text-[10px] font-mono uppercase bg-zinc-800 text-zinc-400">TASK</span>
+            <span id="inspector-id" class="font-mono text-xs font-semibold text-emerald-400">---</span>
+          </div>
+          <h3 id="inspector-title" class="text-sm font-semibold text-zinc-100">---</h3>
+        </div>
+        <button id="inspector-close-btn" class="p-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-800">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor"><use href="#icon-x"/></svg>
+        </button>
+      </div>
+      <div id="inspector-body" class="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
+        <!-- Populated dynamically on node select -->
+      </div>
+    </div>
 
   </div>
 

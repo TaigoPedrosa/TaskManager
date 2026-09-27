@@ -167,8 +167,12 @@ class MarkdownRenderer:
             lines.append(f"Answered by {answer.answered_by} at {answer.answered_at.isoformat()}")
             parts.append("\n".join(lines))
         elif stored_status(node) == DecisionStatus.WITHDRAWN:
-            body = f"\n\n{data.withdrawn_reason}" if data.withdrawn_reason else ""
-            parts.append(f"## Withdrawn{body}")
+            lines = ["## Withdrawn"]
+            if data.withdrawn_reason:
+                lines.append(data.withdrawn_reason)
+            if data.withdrawn_by and data.withdrawn_at:
+                lines.append(f"Withdrawn by {data.withdrawn_by} at {data.withdrawn_at.isoformat()}")
+            parts.append("\n\n".join(lines))
         return "\n\n".join(parts) + "\n"
 
     def _get_parent_ids(self, node_id: str) -> list[str]:
