@@ -45,9 +45,6 @@ def test_toolbar_holds_view_switcher_search_and_stats_in_one_row() -> None:
     toolbar = re.search(r'<header id="toolbar".*?</header>', html, re.DOTALL)
     assert toolbar, "single merged toolbar not found"
     row = toolbar.group(0)
-    assert 'id="view-waves-btn"' in row
-    assert 'id="view-graph-btn"' in row
-    assert 'id="view-doc-btn"' in row
     assert 'id="search-box"' in row
     assert 'id="stats-digest"' in row
     assert "lg:flex-nowrap" in row
@@ -133,7 +130,8 @@ def test_all_section_ids_reset_on_every_document_render() -> None:
 
 def test_plan_and_task_headers_are_not_sticky() -> None:
     html = get_web_html()
-    assert "sticky" not in html
+    assert "sticky" not in _function_body(html, "renderPlanCard")
+    assert "sticky" not in _function_body(html, "renderTaskCard")
     assert (
         'class="h-12 px-4 rounded-t-xl bg-zinc-900/95 backdrop-blur-sm border-b border-zinc-800 flex items-center justify-between cursor-pointer plan-header"'
         in html
@@ -931,6 +929,98 @@ def test_decisions_read_open_answered_and_withdrawn_and_show_option_effects() ->
     assert "opt.effect && opt.effect !== 'none'" in card
 
 
+def test_decision_context_reads_first_and_expanded_above_the_options() -> None:
+    # Audit problem 1: context used to sit collapsed inside the generic "Sections" group,
+    # below the options -- it now reads on its own, always expanded, ahead of everything else.
+    html = get_web_html()
+    detail = _function_body(html, "renderDecisionDetail")
+    assert "contextSection = allSections.find(s => s.key === 'context')" in detail
+    assert "otherSections = allSections.filter(s => s.key !== 'context')" in detail
+    assert "dec-context-body" in detail
+    assert "renderSections(otherSections, node.id)" in detail
+    assert detail.index("${contextHtml}") < detail.index("${waitingHtml}")
+    assert detail.index("${contextHtml}") < detail.index("${sectionsHtml}")
+    assert detail.index("${contextHtml}") < detail.index("${chosenCards}")
+
+
+def test_decision_context_markdown_gets_real_type_hierarchy() -> None:
+    # Audit problem 2: the page loads Tailwind's CDN build with no Typography plugin, so a bare
+    # `.prose` class alone renders every marked.parse() heading/list/code tag at body weight.
+    html = get_web_html()
+    assert re.search(r"\.dec-context-body h2 \{[^}]*font-weight: 700", html)
+    assert re.search(r"\.dec-context-body h3 \{[^}]*font-weight: 600", html)
+    assert ".dec-context-body ul, .dec-context-body ol { padding-left: 1.25rem" in html
+    assert ".dec-context-body li::marker { color: #71717a; }" in html
+    assert ".dec-context-body code { color: #6ee7b7; }" in html
+
+
+def test_switching_decision_tabs_clears_a_stale_cross_tab_detail() -> None:
+    # Audit problem 4: an answered decision's detail used to stay shown after switching to
+    # Open, since only the list (not selectedDecisionId) was cleared on tab switch.
+    body = _function_body(get_web_html(), "renderDecisionsTabs")
+    assert "selectedDecisionId = null;" in body
+
+
+def test_every_decision_tab_shows_its_count_from_the_endpoints_counts() -> None:
+    # Audit problem 9: Answered/Withdrawn showed no count at all; /api/decisions now answers
+    # `counts` for every status on every page fetch.
+    html = get_web_html()
+    count_fn = _function_body(html, "decisionsTabCount")
+    assert "decisionsCounts[tab.key]" in count_fn
+    assert "window.tmStore.decisionsOpen" in count_fn
+    refresh = _function_body(html, "refreshDecisionsData")
+    assert "decisionsCounts = res.counts;" in refresh
+    load_more = _function_body(html, "loadMoreDecisions")
+    assert "decisionsCounts = res.counts;" in load_more
+
+
+def test_failed_decision_detail_fetch_offers_retry_distinct_from_a_real_404() -> None:
+    # Audit problem 10: a network/5xx failure used to read exactly like a real 404,
+    # "Decision not found.", with nothing to retry.
+    html = get_web_html()
+    fetch_fn = _function_body(html, "fetchNodeDetail")
+    assert "e.message === 'Node not found'" in fetch_fn
+    assert "throw e;" in fetch_fn
+    detail = _function_body(html, "renderDecisionDetail")
+    assert "Decision not found." in detail
+    assert "dec-detail-retry-btn" in detail
+    assert "This is a failed request, not a missing decision." in detail
+    assert "renderDecisionDetail(id)" in detail.split("catch(e =>")[1]
+
+
+def test_decision_answered_or_withdrawn_elsewhere_shows_an_in_place_notice() -> None:
+    # Audit problem 5: a decision answered elsewhere while open gave no signal beyond the
+    # badge dropping and the row leaving the list -- the open detail itself never changed.
+    html = get_web_html()
+    detail = _function_body(html, "renderDecisionDetail")
+    assert "decisionDetailLastStatus.get(id)" in detail
+    assert "changedElsewhere = previousStatus === 'OPEN' && node.status !== 'OPEN'" in detail
+    assert "dec-elsewhere-notice" in detail
+    assert detail.index("${elsewhereNoticeHtml}") < detail.index("${contextHtml}")
+    write = _function_body(html, "afterDecisionWrite")
+    # The owner's own write pre-seeds the tracked status, so it is never mistaken for a change
+    # made elsewhere by the very next render this same write triggers.
+    assert "decisionDetailLastStatus.set(decisionId, detail.node.status);" in write
+
+
+def test_a_blocked_node_chip_reopens_whichever_view_it_left_off_in() -> None:
+    # Audit problem 3: a "waiting on this" chip always forced the Document view, discarding
+    # whatever view (Waves, Graph) the owner had actually been reading.
+    html = get_web_html()
+    helper = _function_body(html, "openBlockedNodeDetail")
+    assert "showGraphInspector(nodeId)" in helper
+    assert "selectNode(nodeId)" in helper
+    # Carries every non-Decisions mode straight through; a DOCUMENT/else ternary here is the
+    # bug this pins -- it collapses GRAPH back to WAVES instead of reopening the graph pane.
+    assert "const target = viewModeBeforeDecisions;" in helper
+    assert "window.VIEW_MODES.WAVES" not in helper
+    detail = _function_body(html, "renderDecisionDetail")
+    assert "openBlockedNodeDetail(btn.getAttribute('data-task-id'))" in detail
+    set_view_mode = re.search(r"setViewMode = function \(mode\) \{(.*?)\n  \};", html, re.DOTALL)
+    assert set_view_mode, "decisions.js's setViewMode wrapper not found"
+    assert "viewModeBeforeDecisions = currentMode" in set_view_mode.group(1)
+
+
 def test_static_export_themes_every_display_status(tmp_path: Path) -> None:
     import json
 
@@ -1006,14 +1096,11 @@ def _class_tokens(tag: str) -> list[str]:
 
 
 def test_waves_view_is_the_default() -> None:
+    # Which segment is selected and which pane responds to a click is pinned by
+    # tests/web/switcher.test.mjs, which runs the real setViewMode rather than grepping for it;
+    # this test only pins the default pane visibility index.html itself bakes in.
     html = get_web_html()
     assert "window.VIEW_MODES.WAVES;" in html
-    waves_btn = re.search(r'<button id="view-waves-btn"[^>]*>', html)
-    assert waves_btn, "view-waves-btn not found"
-    assert "Waves view" in waves_btn.group(0)
-    doc_btn = re.search(r'<button id="view-doc-btn"[^>]*>', html)
-    assert doc_btn, "view-doc-btn not found"
-    assert "Document view" in doc_btn.group(0)
     waves_pane = re.search(r'<div id="waves-pane"[^>]*>', html)
     graph_pane = re.search(r'<section id="graph-pane"[^>]*>', html)
     network_canvas = re.search(r'<div id="network-canvas"[^>]*>', html)
@@ -1022,25 +1109,6 @@ def test_waves_view_is_the_default() -> None:
     assert graph_pane and "hidden" not in _class_tokens(graph_pane.group(0))
     assert network_canvas and "hidden" in _class_tokens(network_canvas.group(0))
     assert document_pane and "hidden" in _class_tokens(document_pane.group(0))
-
-
-def test_set_view_mode_handles_waves_graph_and_document() -> None:
-    html = get_web_html()
-    set_view_mode = _function_body(html, "setViewMode")
-    assert "window.VIEW_MODES.WAVES" in set_view_mode
-    assert "window.VIEW_MODES.DOCUMENT" in set_view_mode
-    assert "documentPane.classList" in set_view_mode
-    assert "toggleSectionsBtn.classList" in set_view_mode
-
-
-def test_document_view_button_switches_mode_and_toggle_sections_button_reappears() -> None:
-    html = get_web_html()
-    assert (
-        "viewDocBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.DOCUMENT))"
-        in html
-    )
-    set_view_mode = _function_body(html, "setViewMode")
-    assert "toggleSectionsBtn.classList.remove('hidden')" in set_view_mode
 
 
 def test_waves_pane_nests_inside_graph_pane_ahead_of_its_inspector() -> None:
@@ -1139,3 +1207,39 @@ def test_page_carries_an_inline_favicon_so_the_browser_never_requests_favicon_ic
     # Without a <link rel="icon">, a browser falls back to GET /favicon.ico, a 404 console
     # error on `tm web run` and on a served export alike.
     assert re.search(r'<link rel="icon" href="data:image/svg\+xml,', get_web_html())
+
+
+def test_decision_options_are_a_radiogroup_with_roving_tabindex_and_arrow_keys() -> None:
+    # A selectable option card used to be a plain button with no tabindex management, so Tab
+    # stopped on every option in turn and arrow keys did nothing -- neither is how a radiogroup
+    # behaves.
+    html = get_web_html()
+    option_fn = _function_body(html, "optionCardHtml")
+    assert 'role="radio" aria-checked="${isChosen}" tabindex="${isChosen || isTabbable' in option_fn
+    detail_fn = _function_body(html, "renderDecisionDetail")
+    assert "options.map((o, i) => optionCardHtml(o, false, true, i === 0))" in detail_fn
+    wire_fn = _function_body(html, "wireDecisionAnswerForm")
+    assert "e.key !== 'ArrowDown' && e.key !== 'ArrowUp'" in wire_fn
+    assert "next.focus();\n      next.click();" in wire_fn
+    assert "c.setAttribute('tabindex'" in wire_fn
+
+
+def test_answer_and_withdraw_controls_are_a_sticky_bottom_bar() -> None:
+    # At a narrow width the context above (sections, attachments) routinely runs longer than
+    # the viewport; the actions to actually answer or withdraw the decision stay reachable at
+    # the bottom of the pane instead of scrolling out of view above a long context.
+    detail_fn = _function_body(get_web_html(), "renderDecisionDetail")
+    assert re.search(r"dec-answer-bar sticky bottom-0[^`]*\$\{answerFormHtml\}", detail_fn)
+
+
+def test_decisions_toolbar_segment_names_the_open_count() -> None:
+    # aria-label="Decisions view" (index.html) already gives the icon-only button a tooltip
+    # and a base accessible name; a screen reader still had no way to hear how many were open
+    # without switching into the view first.
+    html = get_web_html()
+    assert 'title="Decisions view"' in html
+    badge_fn = _function_body(html, "updateDecisionsBadge")
+    assert (
+        "viewDecisionsBtn.setAttribute('aria-label', `Decisions view, ${openCount} open`)"
+        in badge_fn
+    )

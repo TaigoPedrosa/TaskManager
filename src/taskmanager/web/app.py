@@ -846,9 +846,14 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             decisions, status=status, cursor=cursor, limit=page_limit
         )
         view = new_view()
+        by_status = node_repo.count_by_status(NodeKind.DECISION)
+        counts = {
+            tab: by_status.get(wanted.value, 0) for tab, wanted in _DECISION_TAB_STATUS.items()
+        }
         return {
             "items": [_decision_item(d, view, node_repo, assets_dir) for d in page],
             "next": next_cursor,
+            "counts": counts,
         }
 
     @app.post("/api/decisions", status_code=201)

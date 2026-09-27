@@ -11,6 +11,17 @@ let decisionsNextCursor = null;
 let decisionsLoading = false;
 let selectedDecisionId = null;
 let decisionsTab = 'open';
+// /api/decisions' own per-status totals, refreshed on every page fetch -- the only source for
+// the Answered/Withdrawn tab counts, since (unlike Open) nothing pushes those live.
+let decisionsCounts = null;
+// The view mode active right before the toolbar switched into Decisions, so a blocked-node
+// chip can send the owner back to a view that actually shows the drawer (Waves/Graph) instead
+// of always forcing Document.
+let viewModeBeforeDecisions = window.VIEW_MODES.WAVES;
+// Last status this session saw a given decision hold, keyed by id -- a later render seeing a
+// different status than this is a change made elsewhere while the owner was looking, not the
+// owner's own write (afterDecisionWrite pre-seeds the new status, so its own render never diffs).
+const decisionDetailLastStatus = new Map();
 const DECISIONS_PAGE_LIMIT = 50;
 
 const decisionsPane = document.getElementById('decisions-pane');
@@ -69,6 +80,7 @@ async function refreshDecisionsData() {
       const res = await api('GET', `/api/decisions?${decisionsQueryParams()}`);
       decisionsData = res.items;
       decisionsNextCursor = res.next;
+      decisionsCounts = res.counts;
       decisionsLoadFailed = false;
     } catch (e) {
       // A load failure used to read as "No open decisions." -- an empty queue, not a broken
@@ -77,6 +89,7 @@ async function refreshDecisionsData() {
       console.error('Failed to load decisions:', e);
       decisionsData = [];
       decisionsNextCursor = null;
+      decisionsCounts = null;
       decisionsLoadFailed = true;
       toast(`Could not load decisions: ${e.message}`, 'error');
     }
@@ -92,6 +105,7 @@ async function loadMoreDecisions() {
     const res = await api('GET', `/api/decisions?${decisionsQueryParams(decisionsNextCursor)}`);
     decisionsData = decisionsData.concat(res.items);
     decisionsNextCursor = res.next;
+    decisionsCounts = res.counts;
   } catch (e) {
     toast(e.message, 'error');
   } finally {
@@ -113,41 +127,36 @@ window.tmStore.onChange(() => {
 });
 
 
-// Toolbar entry point: a badge-carrying button in #view-extra-buttons, and setViewMode
+// Toolbar entry point: the switcher's own fourth segment (index.html), and setViewMode
 // wrapped so a fourth mode exists without touching core.js's own Document/Graph/Waves switch.
 
-function renderDecisionsToolbarButton() {
-  const extra = document.getElementById('view-extra-buttons');
-  if (!extra || document.getElementById('view-decisions-btn')) return;
-  extra.insertAdjacentHTML('beforeend', `
-    <button id="view-decisions-btn" title="Decisions view" aria-label="Decisions view" class="relative h-8 px-2.5 flex items-center gap-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white text-xs font-medium transition">
-      ${renderIcon('help-circle', 'w-3.5 h-3.5')}<span class="hidden sm:inline">Decisions</span>
-      <span id="decisions-badge" class="hidden absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-1 rounded-full bg-amber-500 text-black text-[10px] font-bold leading-4 text-center">0</span>
-    </button>
-  `);
-  document.getElementById('view-decisions-btn').addEventListener('click', () => setViewMode(window.VIEW_MODES.DECISIONS));
-}
-renderDecisionsToolbarButton();
+const viewDecisionsBtn = document.getElementById('view-decisions-btn');
+const decisionsBadgeEl = document.getElementById('decisions-badge');
+viewDecisionsBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.DECISIONS));
 
 function updateDecisionsBadge() {
-  const badge = document.getElementById('decisions-badge');
-  if (!badge) return;
   // Live everywhere the store is (decisions_open travels with every snapshot/update); a
   // static export has no store push at all, so it counts the one page it was seeded with.
   const openCount = isStaticMode ? decisionsData.filter(d => d.status === 'OPEN').length : window.tmStore.decisionsOpen;
   if (openCount > 0) {
-    badge.textContent = openCount > 99 ? '99+' : String(openCount);
-    badge.classList.remove('hidden');
+    decisionsBadgeEl.textContent = openCount > 99 ? '99+' : String(openCount);
+    decisionsBadgeEl.classList.remove('hidden');
   } else {
-    badge.classList.add('hidden');
+    decisionsBadgeEl.classList.add('hidden');
   }
+  // The badge span is a sighted-only count; aria-label is what a screen reader (or, below
+  // `sm`, a caption-less icon button) actually reads, so the count belongs there too.
+  viewDecisionsBtn.setAttribute('aria-label', `Decisions view, ${openCount} open`);
 }
 
 if (typeof setViewMode === 'function') {
   const previousSetViewMode = setViewMode;
+  // The badge is absolutely positioned against this segment, so it stays relative in both states.
+  const DECISIONS_BTN_ACTIVE = `${VIEW_BTN_ACTIVE} relative`;
+  const DECISIONS_BTN_INACTIVE = `${VIEW_BTN_INACTIVE} relative`;
   setViewMode = function (mode) {
-    const decisionsBtn = document.getElementById('view-decisions-btn');
     if (mode === window.VIEW_MODES.DECISIONS) {
+      if (currentMode !== window.VIEW_MODES.DECISIONS) viewModeBeforeDecisions = currentMode;
       currentMode = mode;
       documentPane.classList.add('hidden');
       graphPane.classList.add('hidden');
@@ -157,15 +166,13 @@ if (typeof setViewMode === 'function') {
       viewWavesBtn.className = VIEW_BTN_INACTIVE;
       viewGraphBtn.className = VIEW_BTN_INACTIVE;
       viewDocBtn.className = VIEW_BTN_INACTIVE;
-      if (decisionsBtn) decisionsBtn.className = decisionsBtn.className.replace('bg-zinc-900', 'bg-zinc-800').replace('text-zinc-400', 'text-white');
+      viewDecisionsBtn.className = DECISIONS_BTN_ACTIVE;
       renderDecisionsView();
       refreshDecisionsData();
       return;
     }
     decisionsPane.classList.add('hidden');
-    if (decisionsBtn) {
-      decisionsBtn.className = 'relative h-8 px-2.5 flex items-center gap-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white text-xs font-medium transition';
-    }
+    viewDecisionsBtn.className = DECISIONS_BTN_INACTIVE;
     previousSetViewMode(mode);
   };
 }
@@ -179,17 +186,29 @@ function goToDecision(decisionId) {
   setViewMode(window.VIEW_MODES.DECISIONS);
 }
 
+// The reverse trip: a blocked/raising task chip inside a decision's own detail. This used to
+// force the Document view every time, discarding whatever view the owner had actually been in;
+// it now reopens the view it left off in, showing the node in its own drawer (Waves and Graph
+// share showGraphInspector) or, for Document, the same expand/scroll/highlight selectNode
+// already does there.
+function openBlockedNodeDetail(nodeId) {
+  const target = viewModeBeforeDecisions;
+  setViewMode(target);
+  if (target === window.VIEW_MODES.DOCUMENT) selectNode(nodeId);
+  else showGraphInspector(nodeId);
+}
+
 
 // List -----------------------------------------------------------------------------------------
 
-// Only the Open tab has a live total (decisions_open); a page of Answered/Withdrawn is
-// however many /api/decisions has sent this tab so far, no more meaningful as a grand total
-// than the rows already on screen, so it carries no count at all in live mode. Static mode
-// still holds every decision at once, so its tabs keep their exact counts.
+// The Open tab's count is the live total (decisions_open), pushed with every snapshot/update
+// with no fetch needed; Answered/Withdrawn have no live push, so they read the snapshot
+// /api/decisions took of every status the last time any tab was fetched. Static mode holds
+// every decision at once, so its tabs count straight off it instead.
 function decisionsTabCount(tab) {
   if (isStaticMode) return decisionsData.filter(d => decisionTabFor(d.status) === tab.key).length;
   if (tab.key === 'open') return window.tmStore.decisionsOpen;
-  return null;
+  return decisionsCounts ? decisionsCounts[tab.key] : null;
 }
 
 function renderDecisionsTabs() {
@@ -206,6 +225,9 @@ function renderDecisionsTabs() {
     decisionsTab = key;
     decisionsData = [];
     decisionsNextCursor = null;
+    // A decision from the old tab stayed selected under the new one otherwise -- its detail is
+    // not wrong, just no longer listed under any tab the owner can see it come from.
+    selectedDecisionId = null;
     renderDecisionsView();
     refreshDecisionsData();
     if (focusIt) {
@@ -288,16 +310,21 @@ function visibleTaskRows() {
   return [...window.tmStore.rows.values()].filter(r => r.kind === 'task');
 }
 
+// A 404 ("Node not found", GET /api/nodes/{id}'s own detail) is a real answer -- there is no
+// such decision -- so it resolves to null exactly as before; any other failure (network, 5xx)
+// rethrows, so the caller can tell "not found" apart from "the request itself failed" instead
+// of folding both into the same not-found copy.
 async function fetchNodeDetail(id) {
   if (isStaticMode) return (window.STATIC_DATA.bodies || {})[id] || null;
   try {
     return await api('GET', `/api/nodes/${id}`);
   } catch (e) {
-    return null;
+    if (e.message === 'Node not found') return null;
+    throw e;
   }
 }
 
-function optionCardHtml(opt, isChosen, selectable) {
+function optionCardHtml(opt, isChosen, selectable, isTabbable = false) {
   const base = 'w-full text-left p-3 rounded-lg border transition space-y-1';
   const cls = isChosen
     ? `${base} bg-emerald-950/40 border-emerald-600`
@@ -305,7 +332,11 @@ function optionCardHtml(opt, isChosen, selectable) {
   const tag = selectable ? 'button' : 'div';
   // At most one option is ever chosen at a time, so a selectable card is a radio, not a
   // plain toggle button -- a screen reader otherwise never announces which one is selected.
-  const roleAttrs = selectable ? `type="button" role="radio" aria-checked="${isChosen}"` : '';
+  // Roving tabindex: only the checked card (or, with none checked yet, the first) is a tab
+  // stop, so Tab enters the group once instead of stopping on every option in turn.
+  const roleAttrs = selectable
+    ? `type="button" role="radio" aria-checked="${isChosen}" tabindex="${isChosen || isTabbable ? '0' : '-1'}"`
+    : '';
   const effect = opt.effect && opt.effect !== 'none'
     ? `<span class="px-1.5 py-0.5 rounded-full bg-amber-950/60 text-amber-300 border border-amber-800/60 text-[10px] font-medium">Then: ${esc(opt.effect.replace('_', ' '))} the blocked nodes</span>`
     : '';
@@ -323,7 +354,7 @@ function optionCardHtml(opt, isChosen, selectable) {
 }
 
 function renderDecisionDetail(id) {
-  decisionsDetailEl.innerHTML = '<div class="max-w-2xl mx-auto text-sm text-zinc-500 italic pt-12 text-center">Loading&hellip;</div>';
+  decisionsDetailEl.innerHTML = `<div class="max-w-2xl mx-auto text-sm text-zinc-500 italic pt-12 text-center">Loading decision-${esc(id)}&hellip;</div>`;
   fetchNodeDetail(id).then(detail => {
     if (selectedDecisionId !== id) return; // a later click superseded this fetch
     if (!detail) {
@@ -336,6 +367,28 @@ function renderDecisionDetail(id) {
     const isAnswered = node.status === 'ANSWERED';
     const editable = canEdit();
     const attachments = (node.frontmatter && node.frontmatter.attachments) || [];
+
+    // A status seen as OPEN on a previous render, now something else, is a live push: someone
+    // else answered or withdrew it while it sat open in this pane. The owner's own write
+    // (afterDecisionWrite) seeds this map with the new status first, so that path never diffs.
+    const previousStatus = decisionDetailLastStatus.get(id);
+    const changedElsewhere = previousStatus === 'OPEN' && node.status !== 'OPEN';
+    decisionDetailLastStatus.set(id, node.status);
+    let elsewhereNoticeHtml = '';
+    if (changedElsewhere && node.status === 'ANSWERED' && data.answer) {
+      const chosenLabel = data.answer.option
+        ? (data.options.find(o => o.key === data.answer.option) || {}).label
+        : null;
+      elsewhereNoticeHtml = `
+        <div role="status" class="dec-elsewhere-notice p-2.5 bg-amber-950/40 border border-amber-800/80 rounded-lg text-xs text-amber-200">
+          Answered by ${esc(data.answer.answered_by)} &middot; ${esc(new Date(data.answer.answered_at).toLocaleString())}: ${esc(chosenLabel || data.answer.text || '(no answer text)')}
+        </div>`;
+    } else if (changedElsewhere && node.status === 'WITHDRAWN') {
+      elsewhereNoticeHtml = `
+        <div role="status" class="dec-elsewhere-notice p-2.5 bg-amber-950/40 border border-amber-800/80 rounded-lg text-xs text-amber-200">
+          Withdrawn elsewhere${data.withdrawn_reason ? `: ${esc(data.withdrawn_reason)}` : '.'}
+        </div>`;
+    }
 
     const raisedByHtml = data.raised_by ? `
       <button type="button" class="dec-raised-by-link text-xs font-mono text-emerald-400 hover:text-emerald-300 underline decoration-dotted" data-task-id="${esc(data.raised_by)}">
@@ -361,7 +414,17 @@ function renderDecisionDetail(id) {
         </div>
       </div>` : '';
 
-    const sectionsHtml = renderSections(detail.sections, node.id);
+    // The context section reads first and expanded, above the options -- not folded into the
+    // generic collapsed "Sections" group every other section (rare on a decision) still uses.
+    const allSections = detail.sections || [];
+    const contextSection = allSections.find(s => s.key === 'context');
+    const otherSections = allSections.filter(s => s.key !== 'context');
+    const contextHtml = contextSection ? `
+      <div class="space-y-1.5">
+        <div class="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Context</div>
+        <div class="dec-context-body prose prose-invert max-w-none p-3 rounded-lg bg-zinc-900/40 border border-zinc-800">${renderSectionBody(contextSection.content)}</div>
+      </div>` : '';
+    const sectionsHtml = renderSections(otherSections, node.id);
     const attachmentsHtml = renderAttachments(node, attachments, editable);
 
     let answerHtml = '';
@@ -387,7 +450,7 @@ function renderDecisionDetail(id) {
       const options = data.options || [];
       answerFormHtml = `
         <form class="dec-answer-form space-y-3">
-          ${options.length ? `<div class="grid gap-2" role="radiogroup" aria-label="Options">${options.map(o => optionCardHtml(o, false, true)).join('')}</div>` : ''}
+          ${options.length ? `<div class="grid gap-2" role="radiogroup" aria-label="Options">${options.map((o, i) => optionCardHtml(o, false, true, i === 0)).join('')}</div>` : ''}
           ${data.allow_custom !== false ? `
             <div class="dec-custom-card p-3 rounded-lg border border-zinc-800 bg-zinc-900/60 space-y-1.5">
               <div class="text-xs font-medium text-zinc-300">Custom answer</div>
@@ -412,8 +475,18 @@ function renderDecisionDetail(id) {
       ? `<div class="grid gap-2">${(data.options || []).map(o => optionCardHtml(o, o.key === data.answer.option, false)).join('')}</div>`
       : '';
 
+    // Answer/Withdraw are the one action the owner is here to take, so they stay pinned to
+    // the bottom of the scrolling detail pane (sticky, not fixed, so they never float over a
+    // shorter decision's content) instead of scrolling away below a long context/sections list
+    // at narrow widths. The -mx-6/px-6 pair cancels decisionsDetailEl's own p-6 so the bar's
+    // background spans full width while its content still lines up with the column above.
+    const answerBarHtml = answerFormHtml ? `
+      <div class="dec-answer-bar sticky bottom-0 -mx-6 px-6 pt-3 pb-4 bg-zinc-950 border-t border-zinc-800">
+        <div class="max-w-2xl mx-auto">${answerFormHtml}</div>
+      </div>` : '';
+
     decisionsDetailEl.innerHTML = `
-      <div class="max-w-2xl mx-auto space-y-5 pb-16">
+      <div class="max-w-2xl mx-auto space-y-5 pb-4">
         <div class="space-y-2">
           <div class="flex items-center gap-2">
             <span class="px-2 py-0.5 rounded text-[11px] font-mono uppercase bg-amber-500/10 text-amber-300 border border-amber-500/30">decision</span>
@@ -425,13 +498,15 @@ function renderDecisionDetail(id) {
           <h1 class="text-xl font-bold tracking-tight text-white">${esc(node.title)}</h1>
           ${raisedByHtml}
         </div>
+        ${elsewhereNoticeHtml}
+        ${contextHtml}
         ${waitingHtml}
         ${sectionsHtml}
         ${attachmentsHtml}
         ${chosenCards}
         ${answerHtml}
-        ${answerFormHtml}
       </div>
+      ${answerBarHtml}
     `;
 
     attachSectionToggleHandlers(decisionsDetailEl);
@@ -439,10 +514,7 @@ function renderDecisionDetail(id) {
     wireAttachmentControls(decisionsDetailEl, node, attachments, editable, () => renderDecisionDetail(id));
 
     decisionsDetailEl.querySelectorAll('.dec-task-link, .dec-raised-by-link').forEach(btn => {
-      btn.addEventListener('click', () => {
-        setViewMode(window.VIEW_MODES.DOCUMENT);
-        selectNode(btn.getAttribute('data-task-id'));
-      });
+      btn.addEventListener('click', () => openBlockedNodeDetail(btn.getAttribute('data-task-id')));
     });
 
     decisionsDetailEl.querySelectorAll('.dec-block-remove').forEach(btn => {
@@ -499,6 +571,20 @@ function renderDecisionDetail(id) {
         }
       });
     }
+  }).catch(e => {
+    if (selectedDecisionId !== id) return;
+    // A real 404 already resolved to null above and took the "not found" branch; anything
+    // reaching here is the request itself failing (network, 5xx) -- distinct copy and a retry,
+    // since retrying a genuinely missing decision would only fail the same way again.
+    decisionsDetailEl.innerHTML = `
+      <div class="max-w-2xl mx-auto text-sm text-center space-y-2 pt-12">
+        <div role="alert" class="text-red-400">${esc(e.message)}</div>
+        <div class="text-xs text-zinc-500">This is a failed request, not a missing decision.</div>
+        <button type="button" class="dec-detail-retry-btn h-8 px-3 rounded-lg text-xs font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 transition">Retry</button>
+      </div>
+    `;
+    const retryBtn = decisionsDetailEl.querySelector('.dec-detail-retry-btn');
+    if (retryBtn) retryBtn.addEventListener('click', () => renderDecisionDetail(id));
   });
 }
 
@@ -518,13 +604,17 @@ function wireDecisionAnswerForm(root, decisionId) {
   // which card (if any) is actually highlighted -- typing a custom answer used to leave the
   // previously picked card's highlight in place even though it no longer had chosenOption.
   function paintChosen(chosenCard) {
-    form.querySelectorAll('.dec-option-card').forEach(c => {
+    const cards = form.querySelectorAll('.dec-option-card');
+    cards.forEach((c, i) => {
       const isChosen = c === chosenCard;
       c.classList.toggle('border-emerald-600', isChosen);
       c.classList.toggle('bg-emerald-950/40', isChosen);
       c.classList.toggle('bg-zinc-900/60', !isChosen);
       c.classList.toggle('border-zinc-800', !isChosen);
       c.setAttribute('aria-checked', String(isChosen));
+      // Roving tabindex follows the checked card; with none checked (a custom answer typed
+      // instead) the first card stays the group's one tab stop.
+      c.setAttribute('tabindex', isChosen || (!chosenCard && i === 0) ? '0' : '-1');
     });
   }
 
@@ -534,6 +624,18 @@ function wireDecisionAnswerForm(root, decisionId) {
       if (customText) customText.value = '';
       paintChosen(card);
       updateSubmitEnabled();
+    });
+    // Standard ARIA radiogroup pattern: ArrowUp/ArrowDown move focus and check the option
+    // together (Space checks the focused option for free -- a real <button> fires its own
+    // click on Space, no handler needed here).
+    card.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      e.preventDefault();
+      const cards = Array.from(form.querySelectorAll('.dec-option-card'));
+      const i = cards.indexOf(card);
+      const next = cards[(i + (e.key === 'ArrowDown' ? 1 : cards.length - 1)) % cards.length];
+      next.focus();
+      next.click();
     });
   });
   if (customText) {
@@ -595,8 +697,19 @@ function wireDecisionAnswerForm(root, decisionId) {
 // belongs under current.
 async function afterDecisionWrite(decisionId) {
   selectedDecisionId = decisionId;
-  const detail = await fetchNodeDetail(decisionId);
-  if (detail) decisionsTab = decisionTabFor(detail.node.status);
+  let detail = null;
+  try {
+    detail = await fetchNodeDetail(decisionId);
+  } catch (e) {
+    // Left null: the render below re-fetches on its own and shows this same failure there.
+  }
+  if (detail) {
+    decisionsTab = decisionTabFor(detail.node.status);
+    // The owner's own write, not a change seen elsewhere -- seed the tracked status with the
+    // new one now, so renderDecisionDetail's own fetch (below, via renderDecisionsView) finds
+    // no diff and never mistakes this write for an "answered elsewhere" notice.
+    decisionDetailLastStatus.set(decisionId, detail.node.status);
+  }
   await refreshDecisionsData();
   renderDecisionsView();
 }
