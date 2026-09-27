@@ -189,9 +189,7 @@ function goToDecision(decisionId) {
 // share showGraphInspector) or, for Document, the same expand/scroll/highlight selectNode
 // already does there.
 function openBlockedNodeDetail(nodeId) {
-  const target = viewModeBeforeDecisions === window.VIEW_MODES.DOCUMENT
-    ? window.VIEW_MODES.DOCUMENT
-    : window.VIEW_MODES.WAVES;
+  const target = viewModeBeforeDecisions;
   setViewMode(target);
   if (target === window.VIEW_MODES.DOCUMENT) selectNode(nodeId);
   else showGraphInspector(nodeId);

@@ -1009,7 +1009,10 @@ def test_a_blocked_node_chip_reopens_whichever_view_it_left_off_in() -> None:
     helper = _function_body(html, "openBlockedNodeDetail")
     assert "showGraphInspector(nodeId)" in helper
     assert "selectNode(nodeId)" in helper
-    assert "viewModeBeforeDecisions === window.VIEW_MODES.DOCUMENT" in helper
+    # Carries every non-Decisions mode straight through; a DOCUMENT/else ternary here is the
+    # bug this pins -- it collapses GRAPH back to WAVES instead of reopening the graph pane.
+    assert "const target = viewModeBeforeDecisions;" in helper
+    assert "window.VIEW_MODES.WAVES" not in helper
     detail = _function_body(html, "renderDecisionDetail")
     assert "openBlockedNodeDetail(btn.getAttribute('data-task-id'))" in detail
     set_view_mode = re.search(r"setViewMode = function \(mode\) \{(.*?)\n  \};", html, re.DOTALL)
