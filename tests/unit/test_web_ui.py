@@ -130,7 +130,8 @@ def test_all_section_ids_reset_on_every_document_render() -> None:
 
 def test_plan_and_task_headers_are_not_sticky() -> None:
     html = get_web_html()
-    assert "sticky" not in html
+    assert "sticky" not in _function_body(html, "renderPlanCard")
+    assert "sticky" not in _function_body(html, "renderTaskCard")
     assert (
         'class="h-12 px-4 rounded-t-xl bg-zinc-900/95 backdrop-blur-sm border-b border-zinc-800 flex items-center justify-between cursor-pointer plan-header"'
         in html
@@ -1206,3 +1207,39 @@ def test_page_carries_an_inline_favicon_so_the_browser_never_requests_favicon_ic
     # Without a <link rel="icon">, a browser falls back to GET /favicon.ico, a 404 console
     # error on `tm web run` and on a served export alike.
     assert re.search(r'<link rel="icon" href="data:image/svg\+xml,', get_web_html())
+
+
+def test_decision_options_are_a_radiogroup_with_roving_tabindex_and_arrow_keys() -> None:
+    # A selectable option card used to be a plain button with no tabindex management, so Tab
+    # stopped on every option in turn and arrow keys did nothing -- neither is how a radiogroup
+    # behaves.
+    html = get_web_html()
+    option_fn = _function_body(html, "optionCardHtml")
+    assert 'role="radio" aria-checked="${isChosen}" tabindex="${isChosen || isTabbable' in option_fn
+    detail_fn = _function_body(html, "renderDecisionDetail")
+    assert "options.map((o, i) => optionCardHtml(o, false, true, i === 0))" in detail_fn
+    wire_fn = _function_body(html, "wireDecisionAnswerForm")
+    assert "e.key !== 'ArrowDown' && e.key !== 'ArrowUp'" in wire_fn
+    assert "next.focus();\n      next.click();" in wire_fn
+    assert "c.setAttribute('tabindex'" in wire_fn
+
+
+def test_answer_and_withdraw_controls_are_a_sticky_bottom_bar() -> None:
+    # At a narrow width the context above (sections, attachments) routinely runs longer than
+    # the viewport; the actions to actually answer or withdraw the decision stay reachable at
+    # the bottom of the pane instead of scrolling out of view above a long context.
+    detail_fn = _function_body(get_web_html(), "renderDecisionDetail")
+    assert re.search(r"dec-answer-bar sticky bottom-0[^`]*\$\{answerFormHtml\}", detail_fn)
+
+
+def test_decisions_toolbar_segment_names_the_open_count() -> None:
+    # aria-label="Decisions view" (index.html) already gives the icon-only button a tooltip
+    # and a base accessible name; a screen reader still had no way to hear how many were open
+    # without switching into the view first.
+    html = get_web_html()
+    assert 'title="Decisions view"' in html
+    badge_fn = _function_body(html, "updateDecisionsBadge")
+    assert (
+        "viewDecisionsBtn.setAttribute('aria-label', `Decisions view, ${openCount} open`)"
+        in badge_fn
+    )

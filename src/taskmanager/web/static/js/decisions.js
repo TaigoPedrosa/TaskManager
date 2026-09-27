@@ -144,6 +144,9 @@ function updateDecisionsBadge() {
   } else {
     decisionsBadgeEl.classList.add('hidden');
   }
+  // The badge span is a sighted-only count; aria-label is what a screen reader (or, below
+  // `sm`, a caption-less icon button) actually reads, so the count belongs there too.
+  viewDecisionsBtn.setAttribute('aria-label', `Decisions view, ${openCount} open`);
 }
 
 if (typeof setViewMode === 'function') {
@@ -321,7 +324,7 @@ async function fetchNodeDetail(id) {
   }
 }
 
-function optionCardHtml(opt, isChosen, selectable) {
+function optionCardHtml(opt, isChosen, selectable, isTabbable = false) {
   const base = 'w-full text-left p-3 rounded-lg border transition space-y-1';
   const cls = isChosen
     ? `${base} bg-emerald-950/40 border-emerald-600`
@@ -329,7 +332,11 @@ function optionCardHtml(opt, isChosen, selectable) {
   const tag = selectable ? 'button' : 'div';
   // At most one option is ever chosen at a time, so a selectable card is a radio, not a
   // plain toggle button -- a screen reader otherwise never announces which one is selected.
-  const roleAttrs = selectable ? `type="button" role="radio" aria-checked="${isChosen}"` : '';
+  // Roving tabindex: only the checked card (or, with none checked yet, the first) is a tab
+  // stop, so Tab enters the group once instead of stopping on every option in turn.
+  const roleAttrs = selectable
+    ? `type="button" role="radio" aria-checked="${isChosen}" tabindex="${isChosen || isTabbable ? '0' : '-1'}"`
+    : '';
   const effect = opt.effect && opt.effect !== 'none'
     ? `<span class="px-1.5 py-0.5 rounded-full bg-amber-950/60 text-amber-300 border border-amber-800/60 text-[10px] font-medium">Then: ${esc(opt.effect.replace('_', ' '))} the blocked nodes</span>`
     : '';
@@ -443,7 +450,7 @@ function renderDecisionDetail(id) {
       const options = data.options || [];
       answerFormHtml = `
         <form class="dec-answer-form space-y-3">
-          ${options.length ? `<div class="grid gap-2" role="radiogroup" aria-label="Options">${options.map(o => optionCardHtml(o, false, true)).join('')}</div>` : ''}
+          ${options.length ? `<div class="grid gap-2" role="radiogroup" aria-label="Options">${options.map((o, i) => optionCardHtml(o, false, true, i === 0)).join('')}</div>` : ''}
           ${data.allow_custom !== false ? `
             <div class="dec-custom-card p-3 rounded-lg border border-zinc-800 bg-zinc-900/60 space-y-1.5">
               <div class="text-xs font-medium text-zinc-300">Custom answer</div>
@@ -468,8 +475,18 @@ function renderDecisionDetail(id) {
       ? `<div class="grid gap-2">${(data.options || []).map(o => optionCardHtml(o, o.key === data.answer.option, false)).join('')}</div>`
       : '';
 
+    // Answer/Withdraw are the one action the owner is here to take, so they stay pinned to
+    // the bottom of the scrolling detail pane (sticky, not fixed, so they never float over a
+    // shorter decision's content) instead of scrolling away below a long context/sections list
+    // at narrow widths. The -mx-6/px-6 pair cancels decisionsDetailEl's own p-6 so the bar's
+    // background spans full width while its content still lines up with the column above.
+    const answerBarHtml = answerFormHtml ? `
+      <div class="dec-answer-bar sticky bottom-0 -mx-6 px-6 pt-3 pb-4 bg-zinc-950 border-t border-zinc-800">
+        <div class="max-w-2xl mx-auto">${answerFormHtml}</div>
+      </div>` : '';
+
     decisionsDetailEl.innerHTML = `
-      <div class="max-w-2xl mx-auto space-y-5 pb-16">
+      <div class="max-w-2xl mx-auto space-y-5 pb-4">
         <div class="space-y-2">
           <div class="flex items-center gap-2">
             <span class="px-2 py-0.5 rounded text-[11px] font-mono uppercase bg-amber-500/10 text-amber-300 border border-amber-500/30">decision</span>
@@ -488,8 +505,8 @@ function renderDecisionDetail(id) {
         ${attachmentsHtml}
         ${chosenCards}
         ${answerHtml}
-        ${answerFormHtml}
       </div>
+      ${answerBarHtml}
     `;
 
     attachSectionToggleHandlers(decisionsDetailEl);
@@ -587,13 +604,17 @@ function wireDecisionAnswerForm(root, decisionId) {
   // which card (if any) is actually highlighted -- typing a custom answer used to leave the
   // previously picked card's highlight in place even though it no longer had chosenOption.
   function paintChosen(chosenCard) {
-    form.querySelectorAll('.dec-option-card').forEach(c => {
+    const cards = form.querySelectorAll('.dec-option-card');
+    cards.forEach((c, i) => {
       const isChosen = c === chosenCard;
       c.classList.toggle('border-emerald-600', isChosen);
       c.classList.toggle('bg-emerald-950/40', isChosen);
       c.classList.toggle('bg-zinc-900/60', !isChosen);
       c.classList.toggle('border-zinc-800', !isChosen);
       c.setAttribute('aria-checked', String(isChosen));
+      // Roving tabindex follows the checked card; with none checked (a custom answer typed
+      // instead) the first card stays the group's one tab stop.
+      c.setAttribute('tabindex', isChosen || (!chosenCard && i === 0) ? '0' : '-1');
     });
   }
 
@@ -603,6 +624,18 @@ function wireDecisionAnswerForm(root, decisionId) {
       if (customText) customText.value = '';
       paintChosen(card);
       updateSubmitEnabled();
+    });
+    // Standard ARIA radiogroup pattern: ArrowUp/ArrowDown move focus and check the option
+    // together (Space checks the focused option for free -- a real <button> fires its own
+    // click on Space, no handler needed here).
+    card.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      e.preventDefault();
+      const cards = Array.from(form.querySelectorAll('.dec-option-card'));
+      const i = cards.indexOf(card);
+      const next = cards[(i + (e.key === 'ArrowDown' ? 1 : cards.length - 1)) % cards.length];
+      next.focus();
+      next.click();
     });
   });
   if (customText) {
