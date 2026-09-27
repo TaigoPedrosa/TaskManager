@@ -42,6 +42,13 @@ subscribe protocol, and a handful of paginated HTTP reads.
   server-side over one snapshot of `state.db` and the cached conditions, and returns
   `{"waves": [...], "max_depth": n}`; `depth` and `size` are bounds-checked server-side
   regardless of what the client sends, and the page stops "Compute next wave" at `max_depth`.
+- The fourth view, Decisions (`web/static/js/decisions.js`), pages `GET /api/decisions`
+  (`status=open|answered|withdrawn`, cursor-paginated) into three tabs; the Open badge tracks
+  the live `decisions_open` count from every snapshot/update. Opening a decision shows its
+  question, context and options in the same drawer the Waves and Graph views use
+  (`showGraphInspector`, `detail.js`). An open decision answers with a picked option or a
+  custom answer, plus an optional rationale, over `POST /api/decisions/{id}/answer`; withdrawing
+  takes a reason over `POST /api/decisions/{id}/withdraw`, and either can be reopened.
 
 ## Upgrading from 0.2
 
