@@ -101,11 +101,11 @@ def export_static_html(project_root: Path, output_file: Path) -> Path:
         condition_ttl=condition_ttl,
         assets_dir=assets_dir,
     )
-    bodies = build_bodies(view, list(rows.keys()), repos=repos)
-    decisions = [
-        _decision_item(d, view, node_repo, assets_dir)
-        for d in node_repo.list_nodes(kind=NodeKind.DECISION)
-    ]
+    decision_nodes = node_repo.list_nodes(kind=NodeKind.DECISION)
+    # `rows` excludes decisions (rows.py skips them), but the Decisions view opens one by id
+    # through the same `bodies` map every other node detail comes from.
+    bodies = build_bodies(view, [*rows.keys(), *(d.id for d in decision_nodes)], repos=repos)
+    decisions = [_decision_item(d, view, node_repo, assets_dir) for d in decision_nodes]
 
     _embed_attachments(bodies, project_root)
     root = project_root.resolve()

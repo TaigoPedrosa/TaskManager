@@ -288,6 +288,33 @@ def test_markdown_renderer_renders_a_decision(tmp_path: Path) -> None:
     assert "owner" in rendered
 
 
+def test_markdown_renderer_renders_a_withdrawn_decisions_who_and_when(tmp_path: Path) -> None:
+    from taskmanager.engine.decisions import DecisionData
+
+    db = DatabaseManager(tmp_path)
+    db.init_all()
+    repo = NodeRepository(db)
+
+    data = DecisionData(
+        withdrawn_reason="no longer relevant",
+        withdrawn_by="owner",
+        withdrawn_at="2026-01-02T00:00:00",  # type: ignore[arg-type]
+    )
+    node = Node(
+        id="decision-D2",
+        kind=NodeKind.DECISION,
+        title="Which way?",
+        status=DecisionStatus.WITHDRAWN,
+        frontmatter={"decision": data.model_dump(mode="json")},
+    )
+    repo.save_node(node)
+
+    rendered = MarkdownRenderer(repo).render("decision-D2")
+    assert "## Withdrawn" in rendered
+    assert "no longer relevant" in rendered
+    assert "Withdrawn by owner at 2026-01-02T00:00:00" in rendered
+
+
 def test_bulk_importer_top_level_decisions_key(tmp_path: Path) -> None:
     db = DatabaseManager(tmp_path)
     db.init_all()

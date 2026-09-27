@@ -965,6 +965,8 @@ class Operations:
         data = read_decision(node)
         data.answer = None
         data.withdrawn_reason = ""
+        data.withdrawn_by = None
+        data.withdrawn_at = None
         write_decision(node, data)
         node.status = DecisionStatus.OPEN
         node.updated_at = datetime.now(tz=UTC)
@@ -975,6 +977,8 @@ class Operations:
         node = self._get_decision(decision_id)
         data = read_decision(node)
         data.withdrawn_reason = reason
+        data.withdrawn_by = self.actor
+        data.withdrawn_at = datetime.now(tz=UTC)
         write_decision(node, data)
         node.status = DecisionStatus.WITHDRAWN
         node.updated_at = datetime.now(tz=UTC)
