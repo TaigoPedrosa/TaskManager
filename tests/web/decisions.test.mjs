@@ -1,0 +1,479 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { loadPage, jsonResponse, key, type } from './dom.mjs';
+
+const CONTEXT = [
+  '## DECIDE — decisions UX',
+  '',
+  'The decisions pane is redesigned for the owner\'s queue:',
+  'answering, reading options and their effects.',
+  '',
+  '### What the audit found',
+  '',
+  '1. Reading a decision\'s context takes two clicks.',
+  '2. Option cards are `role="radio"` without arrow keys.',
+].join('\n');
+
+function d5(overrides = {}) {
+  return {
+    id: 'decision-D5',
+    title: 'Authorize spec DECIDE (decisions UX, 0.3.3) as designed?',
+    status: 'OPEN',
+    context: CONTEXT,
+    options: [
+      { key: 'authorize', label: 'Authorize as designed', description: 'Every DECIDE node starts once WAVE has shipped', recommended: true, effect: 'none' },
+      { key: 'changes', label: 'Authorize with changes', description: 'Write the changes in your answer', recommended: false, effect: 'none' },
+      { key: 'abandon', label: 'Abandon it', description: 'The work is dropped', recommended: false, effect: 'abandon' },
+    ],
+    dependents: [{ id: 'DECIDE', title: 'Decisions UX', kind: 'spec', status: 'AWAITING_DECISION', finished: false }],
+    ...overrides,
+  };
+}
+
+function d6() {
+  return { id: 'decision-D6', title: 'Approve the decisions pane frames?', status: 'OPEN', options: [], dependents: [] };
+}
+
+// An in-memory /api for the pane: decisions by id, list pages per status with `counts`, and
+// per-id failures a test can switch on (a status code, or a thrown network error).
+function fakeServer(decisions) {
+  const byId = new Map(decisions.map((d) => [d.id, d]));
+  const failures = new Map();
+  const writes = [];
+  function body(d) {
+    return {
+      node: {
+        id: d.id, kind: 'decision', title: d.title, status: d.status, display: d.status,
+        frontmatter: {
+          decision: {
+            options: d.options, allow_custom: true, raised_by: d.raised_by || null,
+            answer: d.answer || null, withdrawn_reason: d.withdrawn_reason || '',
+            withdrawn_by: d.withdrawn_by || null, withdrawn_at: d.withdrawn_at || null,
+          },
+        },
+      },
+      sections: d.context ? [{ key: 'context', header: '## Context', content: d.context, ordinal: 1 }] : [],
+      dependent_details: d.dependents,
+    };
+  }
+  const counts = () => {
+    const c = { open: 0, answered: 0, withdrawn: 0 };
+    byId.forEach((d) => { c[d.status.toLowerCase()] += 1; });
+    return c;
+  };
+  const fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    const nodeMatch = url.match(/^\/api\/nodes\/([^/?]+)$/);
+    if (nodeMatch) {
+      const failure = failures.get(nodeMatch[1]);
+      if (failure === 'network') throw new TypeError('Failed to fetch');
+      if (failure) return jsonResponse(failure, { detail: 'Service Unavailable' });
+      const d = byId.get(nodeMatch[1]);
+      return d ? jsonResponse(200, body(d)) : jsonResponse(404, { detail: 'Node not found' });
+    }
+    if (url.startsWith('/api/decisions?')) {
+      const status = new URLSearchParams(url.split('?')[1]).get('status');
+      const items = [...byId.values()].filter((d) => d.status === status).map((d) => ({
+        id: d.id, title: d.title, status: d.status, priority: 50,
+        created_at: '2026-09-26T10:00:00+00:00', waiting_count: d.dependents.length,
+      }));
+      return jsonResponse(200, { items, next: null, counts: counts() });
+    }
+    const write = url.match(/^\/api\/decisions\/([^/]+)\/(answer|withdraw|reopen)$/);
+    if (write && method === 'POST') {
+      writes.push({ id: write[1], verb: write[2], body: JSON.parse(opts.body || '{}') });
+      const d = byId.get(write[1]);
+      if (write[2] === 'answer') {
+        const sent = JSON.parse(opts.body);
+        d.status = 'ANSWERED';
+        d.answer = { option: sent.option, text: sent.text, rationale: sent.rationale, answered_by: 'owner', answered_at: '2026-09-26T10:26:20+00:00' };
+      }
+      return jsonResponse(200, {});
+    }
+    return undefined;
+  };
+  return { fetch, byId, failures, writes, counts };
+}
+
+async function openPane(server, { open = 2 } = {}) {
+  const page = loadPage({ fetch: server.fetch });
+  page.socket.open();
+  page.socket.message({ type: 'update', items: [{ op: 'decisions_open', count: open }] });
+  await page.settle();
+  page.$('#view-decisions-btn').click();
+  await page.settle();
+  return page;
+}
+
+async function openDecision(page, id) {
+  page.$(`.dec-row[data-decision-id="${id}"]`).click();
+  await page.settle();
+}
+
+// Another client answers: the server's record changes and the live open count drops, which
+// is the only push the pane gets.
+async function answerElsewhere(page, server, id, optionKey) {
+  const d = server.byId.get(id);
+  d.status = 'ANSWERED';
+  d.answer = { option: optionKey, text: '', rationale: '', answered_by: 'owner', answered_at: '2026-09-26T10:26:20+00:00' };
+  page.socket.message({ type: 'update', items: [{ op: 'decisions_open', count: server.counts().open }] });
+  await page.settle();
+}
+
+function detailText(page) {
+  return page.$('#decisions-detail').textContent.replace(/\s+/g, ' ');
+}
+
+function hasHiddenAncestor(el) {
+  for (let n = el; n && n.classList; n = n.parentNode) if (n.classList.contains('hidden')) return true;
+  return false;
+}
+
+test('Answer and Withdraw sit under the form from sm up, and below sm only they and the picked answer ride in the bottom bar', async () => {
+  const page = await openPane(fakeServer([d5(), d6()]));
+  await openDecision(page, 'decision-D5');
+
+  const bar = page.$('.dec-answer-bar');
+  assert.ok(bar, 'an open decision offers the answer bar');
+  for (const cls of ['fixed', 'bottom-0', 'sm:hidden']) assert.ok(bar.classList.contains(cls), `bar carries ${cls}`);
+  assert.deepEqual(bar.querySelectorAll('button').map((b) => b.textContent.trim()), ['Answer', 'Withdraw…']);
+  assert.ok(bar.querySelector('.dec-answer-pick'), 'the bar names the picked answer');
+  for (const sel of ['[role="radiogroup"]', '.dec-custom-text', '.dec-rationale']) {
+    assert.equal(bar.querySelector(sel), null, `${sel} scrolls with the detail, not in the bar`);
+    assert.ok(page.$(`#decisions-detail ${sel}`), `${sel} is still in the detail`);
+  }
+
+  const inline = page.$('.dec-answer-actions');
+  assert.ok(inline.classList.contains('hidden') && inline.classList.contains('sm:block'), 'inline actions show from sm up');
+  assert.deepEqual(inline.querySelectorAll('button').map((b) => b.textContent.trim()), ['Answer', 'Withdraw…']);
+  assert.ok(page.$('#decisions-detail').classList.contains('pb-[140px]'), 'the detail keeps 140px clear of the bar below sm');
+});
+
+test('below sm the list and the detail share the pane\'s one scroll; from sm up each scrolls on its own', () => {
+  const page = loadPage();
+  const pane = page.$('#decisions-pane');
+  const aside = pane.querySelector('aside');
+  const list = page.$('#decisions-list');
+  const detail = page.$('#decisions-detail');
+  assert.ok(pane.classList.contains('overflow-y-auto') && pane.classList.contains('sm:overflow-hidden'));
+  assert.ok(!aside.className.includes('max-h'), 'the list is not a capped box of its own below sm');
+  for (const el of [aside, list, detail]) {
+    assert.ok(!el.classList.contains('overflow-y-auto') && !el.classList.contains('overflow-hidden'), `${el.id || 'aside'} does not scroll below sm`);
+  }
+  assert.ok(list.classList.contains('sm:overflow-y-auto') && detail.classList.contains('sm:overflow-y-auto'));
+});
+
+test('a decision answered elsewhere re-renders in place: no loading placeholder, the scroll stays, the notice leads the detail', async () => {
+  const server = fakeServer([d5(), d6()]);
+  const page = await openPane(server);
+  await openDecision(page, 'decision-D5');
+  const detail = page.$('#decisions-detail');
+  detail.scrollTop = 250;
+  page.$('#decisions-pane').scrollTop = 40;
+  const mutationsBefore = page.document.mutations.length;
+  const seen = [];
+  const origOnMutate = page.document.onMutate.bind(page.document);
+  page.document.onMutate = (el) => { if (el === detail) seen.push(detail.innerHTML); origOnMutate(el); };
+
+  await answerElsewhere(page, server, 'decision-D5', 'authorize');
+
+  assert.ok(page.document.mutations.length > mutationsBefore, 'the detail re-rendered');
+  assert.ok(seen.length > 0 && seen.every((html) => !html.includes('Loading')), 'never passed through the loading placeholder');
+  assert.equal(detail.scrollTop, 250, 'the detail kept its scroll');
+  assert.equal(page.$('#decisions-pane').scrollTop, 40, 'the pane kept its scroll');
+
+  const column = detail.querySelector('.max-w-2xl');
+  const notice = column.children[0];
+  assert.ok(notice.classList.contains('dec-elsewhere-notice'), 'the notice is the first thing in the detail');
+  assert.equal(notice.getAttribute('role'), 'status');
+  const text = notice.textContent.replace(/\s+/g, ' ');
+  assert.match(text, /Answered elsewhere while you were reading/);
+  assert.match(text, /owner answered “Authorize as designed” at .+\. This decision is no longer open; the page stays where it was\./);
+
+  assert.equal(page.$('.dec-answer-form'), null, 'the form is gone');
+  const chosen = page.$$('.dec-option-card[data-chosen="true"]');
+  assert.deepEqual(chosen.map((c) => c.getAttribute('data-option-key')), ['authorize'], 'the chosen option reads checked');
+  assert.ok(page.$('.dec-reopen-btn'), 'Reopen is offered');
+  assert.equal(page.$('#dec-tab-open .dec-tab-count').textContent, '1', 'the Open count dropped');
+  assert.equal(page.$('.dec-row[data-decision-id="decision-D5"]'), null, 'the row left the Open list');
+
+  // The notice stays with the decision across later pushes until the owner moves on.
+  page.socket.message({ type: 'update', items: [{ op: 'decisions_open', count: 7 }] });
+  await page.settle();
+  assert.ok(page.$('.dec-elsewhere-notice'), 'a later push keeps the notice');
+});
+
+test('a decision withdrawn elsewhere names who withdrew it, when and why', async () => {
+  const server = fakeServer([d5(), d6()]);
+  const page = await openPane(server);
+  await openDecision(page, 'decision-D5');
+  Object.assign(server.byId.get('decision-D5'), {
+    status: 'WITHDRAWN', withdrawn_by: 'owner', withdrawn_at: '2026-09-26T11:00:00+00:00', withdrawn_reason: 'superseded by D6',
+  });
+  page.socket.message({ type: 'update', items: [{ op: 'decisions_open', count: 1 }] });
+  await page.settle();
+  const text = page.$('.dec-elsewhere-notice').textContent.replace(/\s+/g, ' ');
+  assert.match(text, /Withdrawn elsewhere while you were reading/);
+  assert.match(text, /owner withdrew it at .+: superseded by D6\. This decision is no longer open/);
+});
+
+test('the owner\'s own answer never reads as answered elsewhere', async () => {
+  const server = fakeServer([d5(), d6()]);
+  const page = await openPane(server);
+  await openDecision(page, 'decision-D5');
+  page.$('.dec-option-card[data-option-key="changes"]').click();
+  page.$('.dec-answer-form').dispatchEvent(new page.window.Event('submit'));
+  await page.settle();
+  assert.deepEqual(server.writes.map((w) => [w.verb, w.body.option]), [['answer', 'changes']]);
+  assert.match(detailText(page), /Answered/);
+  assert.equal(page.$('.dec-elsewhere-notice'), null);
+});
+
+test('loading reads "Loading decision-D5…", once', async () => {
+  const server = fakeServer([d5(), d6()]);
+  const page = await openPane(server);
+  page.$('.dec-row[data-decision-id="decision-D5"]').click();
+  assert.equal(detailText(page).trim(), 'Loading decision-D5…');
+});
+
+test('a failed detail fetch names the request and its status, offers Retry, and a real 404 stays "Decision not found."', async () => {
+  const server = fakeServer([d5(), d6()]);
+  const page = await openPane(server);
+  server.failures.set('decision-D5', 503);
+  await openDecision(page, 'decision-D5');
+  const alert = page.$('#decisions-detail [role="alert"]');
+  assert.equal(alert.textContent, 'Could not load decision-D5: GET /api/nodes/decision-D5 failed (503).');
+  assert.match(detailText(page), /This is a failed request, not a missing decision\./);
+
+  server.failures.set('decision-D5', 'network');
+  page.$('.dec-detail-retry-btn').click();
+  await page.settle();
+  assert.equal(page.$('#decisions-detail [role="alert"]').textContent, 'Could not load decision-D5: GET /api/nodes/decision-D5 failed (network error).');
+
+  server.failures.delete('decision-D5');
+  page.$('.dec-detail-retry-btn').click();
+  await page.settle();
+  assert.match(detailText(page), /Authorize spec DECIDE/, 'Retry recovers');
+
+  server.byId.delete('decision-D6');
+  await openDecision(page, 'decision-D6');
+  assert.equal(detailText(page).trim(), 'Decision not found.');
+});
+
+test('with nothing picked, Answer is disabled and says why, inline and in the bar; a pick or a custom answer enables it', async () => {
+  const page = await openPane(fakeServer([d5(), d6()]));
+  await openDecision(page, 'decision-D5');
+  const submits = page.$$('.dec-answer-submit');
+  const hint = page.$('.dec-answer-hint');
+  const pick = page.$('.dec-answer-pick');
+  assert.equal(submits.length, 2);
+  assert.ok(submits.every((b) => b.disabled));
+  assert.equal(hint.textContent, 'Pick an option or write a custom answer');
+  assert.ok(!hint.classList.contains('hidden'));
+  assert.equal(pick.textContent, 'Nothing picked yet — pick an option or write a custom answer');
+
+  page.$('.dec-option-card[data-option-key="authorize"]').click();
+  assert.ok(submits.every((b) => !b.disabled));
+  assert.ok(hint.classList.contains('hidden'));
+  assert.equal(pick.textContent, 'Authorize as designed');
+
+  type(page.$('.dec-custom-text'), 'Ship it after the export fix');
+  assert.equal(pick.textContent, 'Ship it after the export fix');
+  assert.ok(submits.every((b) => !b.disabled));
+  type(page.$('.dec-custom-text'), '');
+  assert.ok(submits.every((b) => b.disabled), 'clearing the custom answer disables Answer again');
+  assert.ok(!hint.classList.contains('hidden'));
+});
+
+test('each blocked node is one row: display chip, mono id, title that wraps under them below lg, and a chevron; the row opens it', async () => {
+  const page = await openPane(fakeServer([d5(), d6()]));
+  await openDecision(page, 'decision-D5');
+  const rows = page.$$('.dec-waiting-row');
+  assert.equal(rows.length, 1);
+  const link = rows[0].querySelector('.dec-task-link');
+  const chip = link.querySelector('.st-chip');
+  assert.ok(chip.classList.contains('st-AWAITING_DECISION'));
+  assert.equal(chip.textContent, 'Awaiting Decision');
+  assert.equal(link.querySelector('.font-mono').textContent, 'DECIDE');
+  assert.equal(link.querySelector('.dec-waiting-title').textContent, 'Decisions UX');
+  const stack = link.querySelector('.dec-waiting-title').parentNode;
+  assert.ok(stack.classList.contains('flex-col') && stack.classList.contains('lg:flex-row'), 'title under the chip below lg, beside it from lg');
+  assert.ok(link.querySelector('use[href="#icon-chevron-right"]'), 'a chevron closes the row');
+});
+
+test('options are a labelled radiogroup: radio dot, label and Recommended, description, then the effect or "Effect: none"', async () => {
+  const page = await openPane(fakeServer([d5(), d6()]));
+  await openDecision(page, 'decision-D5');
+  const group = page.$('[role="radiogroup"]');
+  assert.equal(page.$(`#${group.getAttribute('aria-labelledby')}`).textContent, 'Options');
+  const cards = group.querySelectorAll('.dec-option-card');
+  assert.equal(cards.length, 3);
+  for (const card of cards) {
+    assert.equal(card.getAttribute('role'), 'radio');
+    assert.ok(card.querySelector('.dec-radio-dot'), 'each option has a radio dot');
+  }
+  const order = (card) => card.querySelectorAll('.dec-option-desc, span').map((el) => el.textContent.trim()).filter(Boolean);
+  const first = order(cards[0]);
+  assert.ok(first.indexOf('Recommended') < first.findIndex((t) => t.startsWith('Every DECIDE')));
+  assert.equal(first.at(-1), 'Effect: none', 'the effect line comes last');
+  assert.equal(order(cards[2]).at(-1), 'Then: abandon the blocked nodes');
+});
+
+test('every tab carries its count as a pill, Open live from the store and the rest from the endpoint\'s counts', async () => {
+  const server = fakeServer([d5(), d6(), { ...d6(), id: 'decision-D1', status: 'ANSWERED' }, { ...d6(), id: 'decision-D2', status: 'ANSWERED' }]);
+  const page = await openPane(server);
+  const pill = (tab) => page.$(`#dec-tab-${tab} .dec-tab-count`);
+  assert.equal(pill('open').textContent, '2');
+  assert.equal(pill('answered').textContent, '2');
+  assert.equal(pill('withdrawn').textContent, '0');
+  assert.ok(pill('open').classList.contains('rounded-full'));
+  assert.equal(page.$('#dec-tab-open').textContent.replace(/\s+/g, ' ').trim(), 'Open 2');
+});
+
+for (const [view, button] of [['Waves', 'view-waves-btn'], ['Graph', 'view-graph-btn'], ['Document', 'view-doc-btn']]) {
+  test(`a blocked node opened from the Decisions view reopens ${view} with the detail drawer on that node`, async () => {
+    const page = await openPane(fakeServer([d5(), d6()]));
+    page.$(`#${button}`).click();
+    page.$('#view-decisions-btn').click();
+    await page.settle();
+    await openDecision(page, 'decision-D5');
+    page.$('.dec-task-link').click();
+    await page.settle();
+
+    assert.ok(page.$(`#${button}`).className.includes('bg-zinc-800'), `${view} is the selected view again`);
+    const drawer = page.$('#graph-inspector');
+    assert.ok(!hasHiddenAncestor(drawer), 'the drawer is open and nothing around it is hidden');
+    assert.equal(page.$('#inspector-id').textContent, 'DECIDE');
+  });
+}
+
+test('entering the Decisions view closes an open drawer', async () => {
+  const page = await openPane(fakeServer([d5(), d6()]));
+  await openDecision(page, 'decision-D5');
+  page.$('.dec-task-link').click();
+  await page.settle();
+  assert.ok(!page.$('#graph-inspector').classList.contains('hidden'));
+  page.$('#view-decisions-btn').click();
+  await page.settle();
+  assert.ok(page.$('#graph-inspector').classList.contains('hidden'));
+});
+
+function zinc500Texts(root) {
+  return root.querySelectorAll('*').filter((el) => el.classList.contains('text-zinc-500')).map((el) => el.outerHTML.slice(0, 80));
+}
+
+test('no text in the pane uses zinc-500 in any state: empty, loading, placeholder, detail, answered, error', async () => {
+  const server = fakeServer([d5()]);
+  const page = await openPane(server, { open: 1 });
+  const pane = page.$('#decisions-pane');
+  assert.deepEqual(zinc500Texts(pane), [], 'placeholder state');
+  page.$('.dec-row').click();
+  assert.deepEqual(zinc500Texts(pane), [], 'loading state');
+  await page.settle();
+  assert.deepEqual(zinc500Texts(pane), [], 'open detail');
+  for (const ta of pane.querySelectorAll('textarea')) assert.ok(!ta.classList.contains('placeholder-zinc-500'), 'placeholders meet AA too');
+  await answerElsewhere(page, server, 'decision-D5', 'authorize');
+  assert.deepEqual(zinc500Texts(pane), [], 'answered detail');
+  page.$('#dec-tab-open').click();
+  await page.settle();
+  assert.match(page.$('#decisions-list').textContent, /No open decisions\./);
+  assert.deepEqual(zinc500Texts(pane), [], 'empty list');
+  server.byId.set('decision-D5', d5());
+  server.failures.set('decision-D5', 503);
+  page.$('#dec-tab-open').click();
+  await page.settle();
+  await openDecision(page, 'decision-D5');
+  assert.deepEqual(zinc500Texts(pane), [], 'error state');
+});
+
+test('options follow the WAI-ARIA radio pattern: one tab stop, Right/Down and Left/Up move and check, wrapping', async () => {
+  const page = await openPane(fakeServer([d5(), d6()]));
+  await openDecision(page, 'decision-D5');
+  const cards = () => page.$$('.dec-option-card');
+  const checked = () => cards().map((c) => c.getAttribute('aria-checked'));
+  const tabStops = () => cards().filter((c) => c.getAttribute('tabindex') === '0').length;
+  assert.equal(tabStops(), 1);
+  assert.equal(cards()[0].getAttribute('tabindex'), '0');
+
+  for (const [k, expected] of [['ArrowRight', 1], ['ArrowDown', 2], ['ArrowRight', 0], ['ArrowLeft', 2], ['ArrowUp', 1]]) {
+    const ev = key(page.document.activeElement.classList?.contains('dec-option-card') ? page.document.activeElement : cards()[0], k);
+    assert.ok(ev.defaultPrevented, `${k} is handled`);
+    assert.equal(page.document.activeElement, cards()[expected], `${k} moves focus`);
+    assert.deepEqual(checked(), cards().map((_, i) => String(i === expected)), `${k} checks the focused option`);
+    assert.equal(tabStops(), 1);
+  }
+});
+
+test('the context renders its markdown with the app\'s type scale as classes, not raw colours', async () => {
+  const page = await openPane(fakeServer([d5(), d6()]));
+  await openDecision(page, 'decision-D5');
+  const has = (sel, classes) => {
+    const el = page.$(`.dec-context-body ${sel}`);
+    assert.ok(el, `${sel} rendered`);
+    for (const c of classes) assert.ok(el.classList.contains(c), `${sel} carries ${c}`);
+  };
+  // The page loads marked from a CDN, which node does not; this stand-in turns the fixture's
+  // headings, numbered items, code spans and paragraphs into the tags marked would emit.
+  page.run(`var marked = { parse: (md) => md.split('\\n\\n').map((block) => {
+    const inline = (t) => t.replace(/\`([^\`]+)\`/g, '<code>$1</code>');
+    if (block.startsWith('### ')) return '<h3>' + inline(block.slice(4)) + '</h3>';
+    if (block.startsWith('## ')) return '<h2>' + inline(block.slice(3)) + '</h2>';
+    if (/^\\d+\\. /.test(block)) return '<ol>' + block.split('\\n').map((l) => '<li>' + inline(l.replace(/^\\d+\\. /, '')) + '</li>').join('') + '</ol>';
+    return '<p>' + block.split('\\n').map(inline).join('<br>') + '</p>';
+  }).join('') };`);
+  page.$('.dec-row[data-decision-id="decision-D6"]').click();
+  await page.settle();
+  await openDecision(page, 'decision-D5');
+  has('h2', ['text-base', 'leading-6', 'font-bold', 'text-white']);
+  has('h3', ['text-sm', 'leading-5', 'font-semibold', 'text-zinc-100']);
+  has('p', ['text-xs', 'leading-5', 'text-zinc-300']);
+  has('ol', ['list-decimal', 'pl-5', 'marker:text-zinc-400']);
+  has('li', ['text-xs', 'text-zinc-300']);
+  has('code', ['font-mono', 'text-emerald-300']);
+  const paragraph = page.$('.dec-context-body p');
+  assert.equal(paragraph.querySelector('br'), null, 'a hard-wrapped paragraph reflows');
+  assert.equal(paragraph.textContent, 'The decisions pane is redesigned for the owner\'s queue: answering, reading options and their effects.');
+  assert.equal(page.document.querySelector('.dec-context-body').closest('details'), null, 'the context is never folded into a collapsed section');
+  const column = page.$('#decisions-detail .max-w-2xl');
+  const order = column.children.map((c) => (c.querySelector('.dec-context-body') ? 'context' : c.querySelector('.dec-waiting-row') ? 'waiting' : c.classList.contains('dec-answer-form') ? 'form' : null)).filter(Boolean);
+  assert.deepEqual(order, ['context', 'waiting', 'form'], 'context reads first, above the blocked nodes and the options');
+});
+
+test('rows, tabs, Answer, Withdraw and Reopen each show a themed focus ring and a pressed state', async () => {
+  const server = fakeServer([d5(), d6()]);
+  const page = await openPane(server);
+  await openDecision(page, 'decision-D5');
+  const controls = [
+    ['row', page.$$('.dec-row').find((r) => r.getAttribute('data-decision-id') === 'decision-D6')],
+    ['tab', page.$('#dec-tab-answered')],
+    ['Answer', page.$('.dec-answer-submit')],
+    ['Withdraw', page.$('.dec-withdraw-btn')],
+  ];
+  await answerElsewhere(page, server, 'decision-D5', 'authorize');
+  controls.push(['Reopen', page.$('.dec-reopen-btn')]);
+  for (const [name, el] of controls) {
+    assert.ok(el.classList.contains('focus-visible:ring-2') && el.classList.contains('focus-visible:ring-emerald-500'), `${name} has a focus ring`);
+    assert.ok(el.className.split(/\s+/).some((c) => c.startsWith('active:')), `${name} has a pressed state`);
+  }
+});
+
+test('switching tabs clears a detail selected under the old tab', async () => {
+  const server = fakeServer([d5(), d6(), { ...d6(), id: 'decision-D1', status: 'ANSWERED', title: 'An answered one' }]);
+  const page = await openPane(server);
+  page.$('#dec-tab-answered').click();
+  await page.settle();
+  await openDecision(page, 'decision-D1');
+  assert.match(detailText(page), /An answered one/);
+  page.$('#dec-tab-open').click();
+  await page.settle();
+  assert.equal(detailText(page).trim(), 'Select a decision to view it.');
+});
+
+test('the Decisions segment\'s accessible name carries the live open count', () => {
+  const page = loadPage();
+  page.socket.open();
+  page.socket.message({ type: 'update', items: [{ op: 'decisions_open', count: 2 }] });
+  assert.equal(page.$('#view-decisions-btn').getAttribute('aria-label'), 'Decisions view, 2 open');
+  page.socket.message({ type: 'update', items: [{ op: 'decisions_open', count: 0 }] });
+  assert.equal(page.$('#view-decisions-btn').getAttribute('aria-label'), 'Decisions view, 0 open');
+});

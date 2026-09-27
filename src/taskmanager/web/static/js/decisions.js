@@ -127,6 +127,7 @@ window.tmStore.onChange(() => {
 });
 
 
+
 // Toolbar entry point: the switcher's own fourth segment (index.html), and setViewMode
 // wrapped so a fourth mode exists without touching core.js's own Document/Graph/Waves switch.
 
@@ -149,6 +150,12 @@ function updateDecisionsBadge() {
   viewDecisionsBtn.setAttribute('aria-label', `Decisions view, ${openCount} open`);
 }
 
+// The detail drawer overlays every view (index.html), so a view that has no use for it
+// closes it on the way in; the close button's own handlers also release the drawer's watch.
+function closeDetailDrawer() {
+  if (!graphInspector.classList.contains('hidden')) inspectorCloseBtn.click();
+}
+
 if (typeof setViewMode === 'function') {
   const previousSetViewMode = setViewMode;
   // The badge is absolutely positioned against this segment, so it stays relative in both states.
@@ -157,6 +164,7 @@ if (typeof setViewMode === 'function') {
   setViewMode = function (mode) {
     if (mode === window.VIEW_MODES.DECISIONS) {
       if (currentMode !== window.VIEW_MODES.DECISIONS) viewModeBeforeDecisions = currentMode;
+      closeDetailDrawer();
       currentMode = mode;
       documentPane.classList.add('hidden');
       graphPane.classList.add('hidden');
@@ -171,6 +179,7 @@ if (typeof setViewMode === 'function') {
       refreshDecisionsData();
       return;
     }
+    if (mode === window.VIEW_MODES.DOCUMENT) closeDetailDrawer();
     decisionsPane.classList.add('hidden');
     viewDecisionsBtn.className = DECISIONS_BTN_INACTIVE;
     previousSetViewMode(mode);
@@ -186,17 +195,21 @@ function goToDecision(decisionId) {
   setViewMode(window.VIEW_MODES.DECISIONS);
 }
 
-// The reverse trip: a blocked/raising task chip inside a decision's own detail. This used to
-// force the Document view every time, discarding whatever view the owner had actually been in;
-// it now reopens the view it left off in, showing the node in its own drawer (Waves and Graph
-// share showGraphInspector) or, for Document, the same expand/scroll/highlight selectNode
-// already does there.
+// The reverse trip: a blocked/raising node inside a decision's own detail reopens the view
+// the owner left off in and opens the detail drawer on that node. In the Document view the
+// node is also expanded and scrolled to, under the drawer.
 function openBlockedNodeDetail(nodeId) {
   const target = viewModeBeforeDecisions;
   setViewMode(target);
   if (target === window.VIEW_MODES.DOCUMENT) selectNode(nodeId);
-  else showGraphInspector(nodeId);
+  showGraphInspector(nodeId);
 }
+
+
+// Shared by every control in the pane: the UA's default focus outline is a 1px line that
+// barely shows on zinc-950, and nothing else marked a pressed control.
+const DEC_FOCUS = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950';
+const DEC_MUTED = 'text-zinc-400'; // zinc-500 on zinc-950 is 4.1:1, under AA for 12-14px text
 
 
 // List -----------------------------------------------------------------------------------------
@@ -217,8 +230,9 @@ function renderDecisionsTabs() {
     const active = t.key === decisionsTab;
     const cls = active
       ? 'bg-zinc-800 text-white'
-      : 'text-zinc-400 hover:text-white hover:bg-zinc-900';
-    return `<button type="button" id="dec-tab-${t.key}" role="tab" aria-selected="${active}" aria-controls="decisions-list" tabindex="${active ? '0' : '-1'}" data-tab="${t.key}" class="dec-tab-btn h-7 px-2.5 rounded-md text-xs font-medium transition ${cls}">${t.label}${count === null ? '' : ` (${count})`}</button>`;
+      : 'text-zinc-400 hover:text-white hover:bg-zinc-900 active:bg-zinc-800';
+    const pill = count === null ? '' : ` <span class="dec-tab-count px-1.5 py-0.5 rounded-full border text-[10px] font-medium leading-none ${active ? 'bg-zinc-700 border-transparent text-zinc-100' : 'bg-zinc-900 border-zinc-700 text-zinc-400'}">${count}</span>`;
+    return `<button type="button" id="dec-tab-${t.key}" role="tab" aria-selected="${active}" aria-controls="decisions-list" tabindex="${active ? '0' : '-1'}" data-tab="${t.key}" class="dec-tab-btn h-7 px-2.5 flex items-center gap-1.5 rounded-md text-xs font-medium transition ${cls} ${DEC_FOCUS}">${t.label}${pill}</button>`;
   }).join('');
   const tabs = Array.from(decisionsTabsEl.querySelectorAll('.dec-tab-btn'));
   function activate(key, focusIt) {
@@ -261,25 +275,25 @@ function renderDecisionsList() {
       : (new Date(b.created_at) - new Date(a.created_at)));
 
   if (decisionsLoadFailed) {
-    decisionsListEl.innerHTML = `<div role="alert" class="text-xs text-red-400 px-2 py-6 text-center">Could not load decisions. <button type="button" class="dec-retry-btn underline">Retry</button></div>`;
+    decisionsListEl.innerHTML = `<div role="alert" class="text-xs text-red-400 px-2 py-6 text-center">Could not load decisions. <button type="button" class="dec-retry-btn underline rounded ${DEC_FOCUS}">Retry</button></div>`;
     const retryBtn = decisionsListEl.querySelector('.dec-retry-btn');
     if (retryBtn) retryBtn.addEventListener('click', refreshDecisionsData);
     return;
   }
   if (rows.length === 0) {
-    decisionsListEl.innerHTML = `<div class="text-xs text-zinc-500 italic px-2 py-6 text-center">No ${decisionsTab} decisions.</div>`;
+    decisionsListEl.innerHTML = `<div class="text-xs ${DEC_MUTED} italic px-2 pt-6 pb-2 text-center">No ${decisionsTab} decisions.</div>`;
     return;
   }
 
   const loadMoreHtml = decisionsNextCursor
-    ? `<button type="button" id="dec-load-more-btn" class="w-full h-8 rounded-lg text-xs font-medium text-zinc-300 hover:text-white hover:bg-zinc-900 border border-dashed border-zinc-700 transition" ${decisionsLoading ? 'disabled' : ''}>${decisionsLoading ? 'Loading…' : 'Load more'}</button>`
+    ? `<button type="button" id="dec-load-more-btn" class="w-full h-8 rounded-lg text-xs font-medium text-zinc-300 hover:text-white hover:bg-zinc-900 active:bg-zinc-800 border border-dashed border-zinc-700 transition ${DEC_FOCUS}" ${decisionsLoading ? 'disabled' : ''}>${decisionsLoading ? 'Loading…' : 'Load more'}</button>`
     : '';
 
   decisionsListEl.innerHTML = rows.map(d => {
     const active = d.id === selectedDecisionId;
     return `
-      <button type="button" class="dec-row w-full text-left p-2.5 rounded-lg border transition ${active ? 'bg-zinc-800 border-zinc-700' : 'bg-zinc-900/50 border-zinc-800 hover:bg-zinc-900 hover:border-zinc-700'}" data-decision-id="${esc(d.id)}">
-        <div class="text-xs font-medium text-zinc-100 line-clamp-2">${esc(d.title)}</div>
+      <button type="button" class="dec-row w-full text-left p-2.5 rounded-lg border transition ${active ? 'bg-zinc-800 border-zinc-700' : 'bg-zinc-900/50 border-zinc-800 hover:bg-zinc-900 hover:border-zinc-700 active:bg-zinc-800'} ${DEC_FOCUS}" data-decision-id="${esc(d.id)}" ${active ? 'aria-current="true"' : ''}>
+        <div class="text-xs leading-4 font-medium text-zinc-100 line-clamp-2">${esc(d.title)}</div>
         <div class="flex items-center gap-2 mt-1.5 text-[10px] text-zinc-400">
           <span class="font-mono">${esc(d.id)}</span>
           ${d.waiting_count > 0 ? `<span class="px-1.5 py-0.5 rounded-full bg-amber-950/60 text-amber-300 border border-amber-800/60">${d.waiting_count} waiting</span>` : ''}
@@ -292,6 +306,8 @@ function renderDecisionsList() {
   decisionsListEl.querySelectorAll('.dec-row').forEach(btn => {
     btn.addEventListener('click', () => {
       selectedDecisionId = btn.getAttribute('data-decision-id');
+      decisionsChangedElsewhere.delete(selectedDecisionId);
+      renderedDecisionId = null;
       renderDecisionsList();
       renderDecisionDetail(selectedDecisionId);
     });
@@ -303,6 +319,17 @@ function renderDecisionsList() {
 
 // Detail -----------------------------------------------------------------------------------------
 
+// The decision whose detail is on screen now, so a re-render of that same decision (a live
+// status change, the owner's own write) swaps the markup in place instead of passing through
+// the loading placeholder, which would drop the reader's scroll position with it.
+let renderedDecisionId = null;
+// Decisions answered or withdrawn elsewhere while open in this pane: the notice stays with the
+// decision until the owner selects it again or acts on it themselves.
+const decisionsChangedElsewhere = new Set();
+
+const ANSWER_HINT = 'Pick an option or write a custom answer';
+const NOTHING_PICKED = 'Nothing picked yet — pick an option or write a custom answer';
+
 // Every task row the store currently holds -- the same "on the store" candidate source
 // edit.js's own dependency picker uses, since a task picker here has nothing else to draw
 // on without a whole-tree fetch the store no longer keeps around.
@@ -310,61 +337,227 @@ function visibleTaskRows() {
   return [...window.tmStore.rows.values()].filter(r => r.kind === 'task');
 }
 
-// A 404 ("Node not found", GET /api/nodes/{id}'s own detail) is a real answer -- there is no
-// such decision -- so it resolves to null exactly as before; any other failure (network, 5xx)
-// rethrows, so the caller can tell "not found" apart from "the request itself failed" instead
-// of folding both into the same not-found copy.
+// A 404 is a real answer -- there is no such decision -- so it resolves to null; any other
+// failure rethrows with the request and its status in the message, which the error state
+// shows as-is.
 async function fetchNodeDetail(id) {
   if (isStaticMode) return (window.STATIC_DATA.bodies || {})[id] || null;
+  const path = `/api/nodes/${id}`;
+  let res;
   try {
-    return await api('GET', `/api/nodes/${id}`);
+    res = await fetch(path);
   } catch (e) {
-    if (e.message === 'Node not found') return null;
-    throw e;
+    throw new Error(`Could not load ${id}: GET ${path} failed (network error).`);
   }
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Could not load ${id}: GET ${path} failed (${res.status}).`);
+  return res.json();
 }
 
-function optionCardHtml(opt, isChosen, selectable, isTabbable = false) {
-  const base = 'w-full text-left p-3 rounded-lg border transition space-y-1';
-  const cls = isChosen
-    ? `${base} bg-emerald-950/40 border-emerald-600`
-    : `${base} bg-zinc-900/60 border-zinc-800 ${selectable ? 'hover:border-zinc-600 cursor-pointer' : ''}`;
-  const tag = selectable ? 'button' : 'div';
-  // At most one option is ever chosen at a time, so a selectable card is a radio, not a
-  // plain toggle button -- a screen reader otherwise never announces which one is selected.
-  // Roving tabindex: only the checked card (or, with none checked yet, the first) is a tab
-  // stop, so Tab enters the group once instead of stopping on every option in turn.
-  const roleAttrs = selectable
-    ? `type="button" role="radio" aria-checked="${isChosen}" tabindex="${isChosen || isTabbable ? '0' : '-1'}"`
-    : '';
-  const effect = opt.effect && opt.effect !== 'none'
-    ? `<span class="px-1.5 py-0.5 rounded-full bg-amber-950/60 text-amber-300 border border-amber-800/60 text-[10px] font-medium">Then: ${esc(opt.effect.replace('_', ' '))} the blocked nodes</span>`
-    : '';
-  return `
-    <${tag} ${roleAttrs} class="dec-option-card ${cls}" data-option-key="${esc(opt.key)}">
+function chosenOptionLabel(data) {
+  const key = data.answer && data.answer.option;
+  const opt = key ? (data.options || []).find(o => o.key === key) : null;
+  return opt ? opt.label : null;
+}
+
+function optionEffectHtml(opt) {
+  return opt.effect && opt.effect !== 'none'
+    ? `<span class="self-start px-1.5 py-0.5 rounded-full bg-amber-950/60 text-amber-300 border border-amber-800/60 text-[10px] font-medium">Then: ${esc(opt.effect.replace('_', ' '))} the blocked nodes</span>`
+    : `<span class="text-[11px] ${DEC_MUTED}">Effect: none</span>`;
+}
+
+// An option reads the same selectable or not: label and Recommended, then the description,
+// then the effect. A selectable one is a radio whose colours follow its own aria-checked; a
+// read-only one (an answered decision) marks the chosen card with a check instead of a dot.
+function optionCardHtml(opt, { selectable = false, chosen = false, tabbable = false } = {}) {
+  const body = `
+    <div class="flex-1 min-w-0 flex flex-col gap-1">
       <div class="flex items-center gap-2">
         <span class="text-sm font-medium text-zinc-100">${esc(opt.label)}</span>
         ${opt.recommended ? '<span class="px-1.5 py-0.5 rounded-full bg-emerald-950/60 text-emerald-300 border border-emerald-800/60 text-[10px] font-medium">Recommended</span>' : ''}
-        ${effect}
-        ${isChosen ? `<span class="ml-auto">${renderIcon('check-circle-2', 'w-4 h-4 text-emerald-400')}</span>` : ''}
+        ${chosen && !selectable ? `<span class="ml-auto text-emerald-400" title="Chosen">${renderIcon('check-circle-2', 'w-3.5 h-3.5')}</span>` : ''}
       </div>
-      ${opt.description ? `<div class="prose prose-invert prose-sm max-w-none text-xs text-zinc-400">${renderSectionBody(opt.description)}</div>` : ''}
-    </${tag}>
-  `;
+      ${opt.description ? `<div class="dec-option-desc text-xs leading-[18px] ${DEC_MUTED}">${renderSectionBody(opt.description)}</div>` : ''}
+      ${optionEffectHtml(opt)}
+    </div>`;
+  if (!selectable) {
+    const cls = chosen ? 'bg-emerald-950/40 border-emerald-600' : 'bg-zinc-900/60 border-zinc-800';
+    return `<div class="dec-option-card flex items-start p-3 rounded-lg border ${cls}" data-option-key="${esc(opt.key)}"${chosen ? ' data-chosen="true"' : ''}>${body}</div>`;
+  }
+  // Roving tabindex: only the checked card (or, with none checked yet, the first) is a tab
+  // stop, so Tab enters the group once instead of stopping on every option in turn.
+  return `
+    <button type="button" role="radio" aria-checked="false" tabindex="${tabbable ? '0' : '-1'}" data-option-key="${esc(opt.key)}"
+      class="dec-option-card group w-full text-left flex items-start gap-2.5 p-3 rounded-lg border transition bg-zinc-900/60 border-zinc-800 hover:border-zinc-600 active:bg-zinc-900 aria-checked:bg-emerald-950/40 aria-checked:border-emerald-600 ${DEC_FOCUS}">
+      <span class="pt-px flex-shrink-0" aria-hidden="true">
+        <span class="dec-radio-dot flex items-center justify-center w-4 h-4 rounded-full border-[1.5px] border-zinc-500 group-aria-checked:border-emerald-500">
+          <span class="hidden w-2 h-2 rounded-full bg-emerald-500 group-aria-checked:block"></span>
+        </span>
+      </span>
+      ${body}
+    </button>`;
+}
+
+// One row per blocked node: its display chip, id and title, then a chevron. Below lg the
+// title wraps under the chip and id.
+function waitingRowHtml(t, canEditBlocks) {
+  const theme = getTheme(t.status || 'STALE');
+  return `
+    <div class="dec-waiting-row flex items-stretch rounded-lg bg-zinc-900/60 border border-zinc-800 hover:border-zinc-700 transition">
+      <button type="button" class="dec-task-link flex-1 min-w-0 flex items-center gap-2 px-2.5 py-2 text-left rounded-lg active:bg-zinc-900 ${DEC_FOCUS}" data-task-id="${esc(t.id)}">
+        <span class="flex-1 min-w-0 flex flex-col gap-1 lg:flex-row lg:items-center lg:gap-2">
+          <span class="flex items-center gap-2 flex-shrink-0">
+            <span class="st-chip st-${theme.code} px-1.5 py-0.5 rounded text-[10px] font-medium" title="${esc(theme.description)}">${esc(theme.label)}</span>
+            <span class="font-mono text-[11px] text-zinc-200">${esc(t.id)}</span>
+          </span>
+          <span class="dec-waiting-title min-w-0 text-xs text-zinc-400">${esc(t.title || '')}</span>
+        </span>
+        <span class="flex-shrink-0 text-zinc-400" aria-hidden="true">${renderIcon('chevron-right', 'w-3.5 h-3.5')}</span>
+      </button>
+      ${canEditBlocks ? `<button type="button" class="dec-block-remove flex-shrink-0 px-2 rounded-r-lg text-zinc-400 hover:text-red-400 hover:bg-zinc-800 active:bg-zinc-700 ${DEC_FOCUS}" data-task-id="${esc(t.id)}" aria-label="Stop ${esc(t.id)} waiting on this decision">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
+    </div>`;
+}
+
+// lucide's alert-circle, inline: the page's icon sprite carries no exclamation-in-circle.
+const ALERT_CIRCLE_SVG = '<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>';
+
+function localTime(iso) {
+  return new Date(iso).toLocaleString();
+}
+
+function elsewhereNoticeHtml(node, data) {
+  let heading;
+  let what;
+  if (node.status === 'ANSWERED' && data.answer) {
+    heading = 'Answered elsewhere while you were reading';
+    const answered = chosenOptionLabel(data) || data.answer.text || '(no answer text)';
+    what = `${data.answer.answered_by} answered “${answered}” at ${localTime(data.answer.answered_at)}.`;
+  } else {
+    heading = 'Withdrawn elsewhere while you were reading';
+    const when = data.withdrawn_at ? ` at ${localTime(data.withdrawn_at)}` : '';
+    const why = data.withdrawn_reason ? `: ${data.withdrawn_reason}` : '';
+    what = `${data.withdrawn_by || 'Someone'} withdrew it${when}${why}.`;
+  }
+  return `
+    <div role="status" class="dec-elsewhere-notice flex items-start gap-2.5 px-3 py-2.5 rounded-lg bg-amber-950/60 border border-amber-800/60">
+      <span class="flex-shrink-0 pt-px text-amber-300">${ALERT_CIRCLE_SVG}</span>
+      <div class="flex-1 min-w-0 space-y-0.5 text-xs">
+        <div class="font-semibold text-amber-300">${esc(heading)}</div>
+        <div class="leading-[18px] text-zinc-300">${esc(what)} This decision is no longer open; the page stays where it was.</div>
+      </div>
+    </div>`;
+}
+
+// A decision's context is real markdown (marked.parse); the page's Tailwind build carries no
+// Typography plugin, so each rendered tag gets the app's own type scale as classes.
+const CONTEXT_TYPE = {
+  h1: 'text-base leading-6 font-bold text-white mb-2',
+  h2: 'text-base leading-6 font-bold text-white mb-2',
+  h3: 'text-sm leading-5 font-semibold text-zinc-100 mt-3 mb-1.5',
+  h4: 'text-xs leading-5 font-semibold text-zinc-100 mt-3 mb-1',
+  p: 'text-xs leading-5 text-zinc-300 mb-2',
+  ul: 'list-disc pl-5 mb-2 marker:text-zinc-400',
+  ol: 'list-decimal pl-5 mb-2 marker:text-zinc-400',
+  li: 'text-xs leading-5 text-zinc-300',
+  code: 'font-mono text-[11px] text-emerald-300',
+  a: 'text-emerald-400 underline',
+};
+
+function contextBodyHtml(markdown) {
+  // renderSectionBody's output is already sanitised; DOMParser keeps the walk below inert (no
+  // image request, no handler) while the tags get their classes.
+  const doc = new DOMParser().parseFromString(renderSectionBody(markdown), 'text/html');
+  // Paragraphs reflow to the card's width: under renderSectionBody's `breaks: true` a brief
+  // hard-wrapped at 100 columns reads as ragged short lines.
+  doc.body.querySelectorAll('p br, li br').forEach(br => br.replaceWith(' '));
+  Object.entries(CONTEXT_TYPE).forEach(([tag, cls]) => {
+    doc.body.querySelectorAll(tag).forEach(el => el.classList.add(...cls.split(' ')));
+  });
+  return doc.body.innerHTML;
+}
+
+function resolvedHtml(node, data, editable) {
+  const reopen = editable
+    ? `<button type="button" class="dec-reopen-btn h-8 px-3 rounded-lg text-xs font-medium bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-200 border border-zinc-700 transition ${DEC_FOCUS}">Reopen</button>`
+    : '';
+  if (node.status === 'ANSWERED' && data.answer) {
+    const a = data.answer;
+    const cards = a.option
+      ? `<div class="grid gap-2">${(data.options || []).map(o => optionCardHtml(o, { chosen: o.key === a.option })).join('')}</div>`
+      : '';
+    return `
+      <div class="dec-answer space-y-2">
+        <div class="text-[11px] font-semibold text-emerald-400 uppercase tracking-wider">Answer</div>
+        ${cards}
+        ${a.text || !a.option ? `<div class="text-sm text-zinc-100">${esc(a.text || '(no answer text)')}</div>` : ''}
+        ${a.rationale ? `<div class="text-xs ${DEC_MUTED}"><span class="font-semibold text-zinc-300">Rationale:</span> ${esc(a.rationale)}</div>` : ''}
+        <div class="text-[11px] ${DEC_MUTED}">by ${esc(a.answered_by)} &middot; ${esc(localTime(a.answered_at))}</div>
+        ${reopen}
+      </div>`;
+  }
+  if (node.status === 'WITHDRAWN') {
+    const who = [data.withdrawn_by ? `by ${esc(data.withdrawn_by)}` : '', data.withdrawn_at ? esc(localTime(data.withdrawn_at)) : ''].filter(Boolean).join(' &middot; ');
+    return `
+      <div class="dec-answer space-y-2">
+        <div class="text-[11px] font-semibold ${DEC_MUTED} uppercase tracking-wider">Withdrawn</div>
+        ${data.withdrawn_reason ? `<div class="text-sm text-zinc-100">${esc(data.withdrawn_reason)}</div>` : ''}
+        ${who ? `<div class="text-[11px] ${DEC_MUTED}">${who}</div>` : ''}
+        ${reopen}
+      </div>`;
+  }
+  return '';
+}
+
+// Options, custom answer and rationale scroll with the detail. Answer and Withdraw sit under
+// them from sm up; below sm they live in a bar fixed to the bottom of the viewport, with the
+// picked answer, and the detail's bottom padding (index.html) keeps the last field clear of it.
+function answerFormHtml(data) {
+  const options = data.options || [];
+  const textarea = TEXTAREA_CLS.replace('placeholder-zinc-500', 'placeholder-zinc-400');
+  const submit = `<button type="submit" class="dec-answer-submit h-8 px-3 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-black transition disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-600 ${DEC_FOCUS}" disabled>Answer</button>`;
+  const withdraw = `<button type="button" class="dec-withdraw-btn h-8 px-3 rounded-lg text-xs font-medium bg-zinc-900 hover:bg-red-950 active:bg-red-900 text-red-300 border border-red-900/60 transition ${DEC_FOCUS}">Withdraw&hellip;</button>`;
+  return `
+    <form class="dec-answer-form space-y-3">
+      ${options.length ? `
+        <div class="space-y-3">
+          <div id="dec-options-label" class="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Options</div>
+          <div class="grid gap-2" role="radiogroup" aria-labelledby="dec-options-label">${options.map((o, i) => optionCardHtml(o, { selectable: true, tabbable: i === 0 })).join('')}</div>
+        </div>` : ''}
+      ${data.allow_custom !== false ? `
+        <label class="dec-custom-card block p-3 rounded-lg border border-zinc-800 bg-zinc-900/60 space-y-1.5">
+          <span class="block text-xs font-medium text-zinc-300">Custom answer</span>
+          <textarea class="dec-custom-text ${textarea}" rows="2" placeholder="Write a custom answer instead of picking an option"></textarea>
+        </label>` : ''}
+      ${fieldRow('Rationale', `<textarea class="dec-rationale ${textarea}" rows="2" placeholder="(optional)"></textarea>`)}
+      <div class="dec-answer-actions hidden sm:block space-y-2 pt-1">
+        <div class="flex items-center gap-2">${submit}<span class="flex-1"></span>${withdraw}</div>
+        <p class="dec-answer-hint text-[11px] ${DEC_MUTED}">${ANSWER_HINT}</p>
+      </div>
+      <div class="dec-answer-bar sm:hidden fixed inset-x-0 bottom-0 z-10 px-4 pt-2.5 pb-3.5 space-y-2 bg-zinc-900 border-t border-zinc-800">
+        <div class="flex items-center gap-1.5">
+          <span class="flex-shrink-0 text-[11px] ${DEC_MUTED}">Answer:</span>
+          <span class="dec-answer-pick flex-1 min-w-0 text-xs font-medium ${DEC_MUTED}">${NOTHING_PICKED}</span>
+        </div>
+        <div class="flex items-center gap-2">${submit}<span class="flex-1"></span>${withdraw}</div>
+      </div>
+    </form>`;
 }
 
 function renderDecisionDetail(id) {
-  decisionsDetailEl.innerHTML = `<div class="max-w-2xl mx-auto text-sm text-zinc-500 italic pt-12 text-center">Loading decision-${esc(id)}&hellip;</div>`;
+  if (renderedDecisionId !== id) {
+    renderedDecisionId = null;
+    decisionsDetailEl.innerHTML = `<div class="max-w-2xl mx-auto text-sm ${DEC_MUTED} italic pt-12 text-center">Loading ${esc(id)}&hellip;</div>`;
+  }
   fetchNodeDetail(id).then(detail => {
     if (selectedDecisionId !== id) return; // a later click superseded this fetch
     if (!detail) {
+      renderedDecisionId = null;
       decisionsDetailEl.innerHTML = '<div class="max-w-2xl mx-auto text-sm text-red-400 pt-12 text-center">Decision not found.</div>';
       return;
     }
     const node = detail.node;
     const data = (node.frontmatter && node.frontmatter.decision) || {};
     const isOpen = node.status === 'OPEN';
-    const isAnswered = node.status === 'ANSWERED';
     const editable = canEdit();
     const attachments = (node.frontmatter && node.frontmatter.attachments) || [];
 
@@ -372,46 +565,26 @@ function renderDecisionDetail(id) {
     // else answered or withdrew it while it sat open in this pane. The owner's own write
     // (afterDecisionWrite) seeds this map with the new status first, so that path never diffs.
     const previousStatus = decisionDetailLastStatus.get(id);
-    const changedElsewhere = previousStatus === 'OPEN' && node.status !== 'OPEN';
+    if (previousStatus === 'OPEN' && !isOpen) decisionsChangedElsewhere.add(id);
+    if (isOpen) decisionsChangedElsewhere.delete(id);
     decisionDetailLastStatus.set(id, node.status);
-    let elsewhereNoticeHtml = '';
-    if (changedElsewhere && node.status === 'ANSWERED' && data.answer) {
-      const chosenLabel = data.answer.option
-        ? (data.options.find(o => o.key === data.answer.option) || {}).label
-        : null;
-      elsewhereNoticeHtml = `
-        <div role="status" class="dec-elsewhere-notice p-2.5 bg-amber-950/40 border border-amber-800/80 rounded-lg text-xs text-amber-200">
-          Answered by ${esc(data.answer.answered_by)} &middot; ${esc(new Date(data.answer.answered_at).toLocaleString())}: ${esc(chosenLabel || data.answer.text || '(no answer text)')}
-        </div>`;
-    } else if (changedElsewhere && node.status === 'WITHDRAWN') {
-      elsewhereNoticeHtml = `
-        <div role="status" class="dec-elsewhere-notice p-2.5 bg-amber-950/40 border border-amber-800/80 rounded-lg text-xs text-amber-200">
-          Withdrawn elsewhere${data.withdrawn_reason ? `: ${esc(data.withdrawn_reason)}` : '.'}
-        </div>`;
-    }
+    const noticeHtml = decisionsChangedElsewhere.has(id) ? elsewhereNoticeHtml(node, data) : '';
 
     const raisedByHtml = data.raised_by ? `
-      <button type="button" class="dec-raised-by-link text-xs font-mono text-emerald-400 hover:text-emerald-300 underline decoration-dotted" data-task-id="${esc(data.raised_by)}">
+      <button type="button" class="dec-raised-by-link text-xs font-mono text-emerald-400 hover:text-emerald-300 hover:underline active:text-emerald-200 rounded ${DEC_FOCUS}" data-task-id="${esc(data.raised_by)}">
         Raised by ${esc(data.raised_by)}
       </button>` : '';
 
     // §6.4: open decisions offer editing of blocked tasks. A withdrawn/answered decision only
-    // ever shows the read-only chip list -- removing a block from one that already resolved
+    // ever shows the read-only list -- removing a block from one that already resolved
     // wouldn't change anything downstream, since the tasks it unblocked have already moved on.
     const canEditBlocks = isOpen && editable;
     const waiting = detail.dependent_details || [];
     const waitingHtml = (waiting.length || canEditBlocks) ? `
-      <div class="space-y-1.5">
+      <div class="space-y-2">
         <div class="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Waiting on this (${waiting.length})</div>
-        <div class="flex flex-wrap gap-1.5 items-center">
-          ${waiting.map(t => `
-            <span class="dec-waiting-chip flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-lg bg-zinc-900/60 border border-zinc-800">
-              <button type="button" class="dec-task-link flex items-center gap-1.5" data-task-id="${esc(t.id)}">${statusIcon(t.status, 'w-3.5 h-3.5')}<span class="font-mono text-[11px] text-zinc-300">${esc(t.id)}</span></button>
-              ${canEditBlocks ? `<button type="button" class="dec-block-remove p-0.5 rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-800" data-task-id="${esc(t.id)}" aria-label="Stop ${esc(t.id)} waiting on this decision">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
-            </span>
-          `).join('')}
-          ${canEditBlocks ? `<button type="button" class="dec-block-add h-7 px-2 rounded-md text-[11px] font-medium text-emerald-400 hover:text-emerald-300 hover:bg-zinc-800 border border-dashed border-zinc-700 transition">+ Add task</button>` : ''}
-        </div>
+        ${waiting.map(t => waitingRowHtml(t, canEditBlocks)).join('')}
+        ${canEditBlocks ? `<button type="button" class="dec-block-add h-7 px-2 rounded-md text-[11px] font-medium text-emerald-400 hover:text-emerald-300 hover:bg-zinc-800 active:bg-zinc-700 border border-dashed border-zinc-700 transition ${DEC_FOCUS}">+ Add task</button>` : ''}
       </div>` : '';
 
     // The context section reads first and expanded, above the options -- not folded into the
@@ -420,97 +593,43 @@ function renderDecisionDetail(id) {
     const contextSection = allSections.find(s => s.key === 'context');
     const otherSections = allSections.filter(s => s.key !== 'context');
     const contextHtml = contextSection ? `
-      <div class="space-y-1.5">
+      <div class="space-y-2.5">
         <div class="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Context</div>
-        <div class="dec-context-body prose prose-invert max-w-none p-3 rounded-lg bg-zinc-900/40 border border-zinc-800">${renderSectionBody(contextSection.content)}</div>
+        <div class="dec-context-body max-w-none px-4 pt-3.5 pb-2 rounded-lg bg-zinc-900/40 border border-zinc-800">${contextBodyHtml(contextSection.content)}</div>
       </div>` : '';
     const sectionsHtml = renderSections(otherSections, node.id);
     const attachmentsHtml = renderAttachments(node, attachments, editable);
+    const actionHtml = isOpen ? (editable ? answerFormHtml(data) : '') : resolvedHtml(node, data, editable);
 
-    let answerHtml = '';
-    if (isAnswered && data.answer) {
-      const chosenLabel = data.answer.option
-        ? (data.options.find(o => o.key === data.answer.option) || {}).label
-        : null;
-      answerHtml = `
-        <div class="space-y-2">
-          <div class="text-[11px] font-semibold text-emerald-400 uppercase tracking-wider">Answer</div>
-          <div class="text-sm text-zinc-100">${esc(chosenLabel || data.answer.text || '(no answer text)')}</div>
-          ${chosenLabel && data.answer.text ? `<div class="text-xs text-zinc-400">${esc(data.answer.text)}</div>` : ''}
-          ${data.answer.rationale ? `<div class="text-xs text-zinc-400"><span class="font-semibold text-zinc-300">Rationale:</span> ${esc(data.answer.rationale)}</div>` : ''}
-          <div class="text-[11px] text-zinc-400">by ${esc(data.answer.answered_by)} &middot; ${esc(new Date(data.answer.answered_at).toLocaleString())}</div>
-        </div>
-      `;
-    } else if (node.status === 'WITHDRAWN') {
-      answerHtml = `<div class="text-xs text-zinc-400">Withdrawn${data.withdrawn_reason ? `: ${esc(data.withdrawn_reason)}` : '.'}</div>`;
-    }
-
-    let answerFormHtml = '';
-    if (isOpen && editable) {
-      const options = data.options || [];
-      answerFormHtml = `
-        <form class="dec-answer-form space-y-3">
-          ${options.length ? `<div class="grid gap-2" role="radiogroup" aria-label="Options">${options.map((o, i) => optionCardHtml(o, false, true, i === 0)).join('')}</div>` : ''}
-          ${data.allow_custom !== false ? `
-            <div class="dec-custom-card p-3 rounded-lg border border-zinc-800 bg-zinc-900/60 space-y-1.5">
-              <div class="text-xs font-medium text-zinc-300">Custom answer</div>
-              <textarea class="dec-custom-text ${TEXTAREA_CLS}" rows="2" placeholder="Write a custom answer instead of picking an option"></textarea>
-            </div>` : ''}
-          ${fieldRow('Rationale', `<textarea class="dec-rationale ${TEXTAREA_CLS}" rows="2" placeholder="(optional)"></textarea>`)}
-          <div class="flex items-center justify-between gap-2 pt-1">
-            <button type="submit" class="dec-answer-submit h-8 px-3 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-black transition disabled:opacity-40 disabled:cursor-not-allowed" disabled>Answer</button>
-            <div class="flex items-center gap-2">
-              <button type="button" class="dec-withdraw-btn h-8 px-3 rounded-lg text-xs font-medium bg-zinc-900 hover:bg-red-950 text-red-300 border border-red-900/60 transition">Withdraw&hellip;</button>
-            </div>
-          </div>
-        </form>
-      `;
-    } else if (isAnswered && editable) {
-      answerFormHtml = `<button type="button" class="dec-reopen-btn h-8 px-3 rounded-lg text-xs font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 transition">Reopen</button>`;
-    } else if (node.status === 'WITHDRAWN' && editable) {
-      answerFormHtml = `<button type="button" class="dec-reopen-btn h-8 px-3 rounded-lg text-xs font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 transition">Reopen</button>`;
-    }
-
-    const chosenCards = (isAnswered && data.answer && data.answer.option)
-      ? `<div class="grid gap-2">${(data.options || []).map(o => optionCardHtml(o, o.key === data.answer.option, false)).join('')}</div>`
-      : '';
-
-    // Answer/Withdraw are the one action the owner is here to take, so they stay pinned to
-    // the bottom of the scrolling detail pane (sticky, not fixed, so they never float over a
-    // shorter decision's content) instead of scrolling away below a long context/sections list
-    // at narrow widths. The -mx-6/px-6 pair cancels decisionsDetailEl's own p-6 so the bar's
-    // background spans full width while its content still lines up with the column above.
-    const answerBarHtml = answerFormHtml ? `
-      <div class="dec-answer-bar sticky bottom-0 -mx-6 px-6 pt-3 pb-4 bg-zinc-950 border-t border-zinc-800">
-        <div class="max-w-2xl mx-auto">${answerFormHtml}</div>
-      </div>` : '';
-
+    const scroll = [decisionsDetailEl.scrollTop, decisionsPane.scrollTop];
+    const inPlace = renderedDecisionId === id;
     decisionsDetailEl.innerHTML = `
-      <div class="max-w-2xl mx-auto space-y-5 pb-4">
+      <div class="max-w-2xl mx-auto space-y-5">
+        ${noticeHtml}
         <div class="space-y-2">
           <div class="flex items-center gap-2">
-            <span class="px-2 py-0.5 rounded text-[11px] font-mono uppercase bg-amber-500/10 text-amber-300 border border-amber-500/30">decision</span>
+            <span class="px-1.5 py-0.5 rounded text-[10px] font-mono uppercase bg-amber-500/10 text-amber-300 border border-amber-500/30">decision</span>
             <span class="font-mono text-xs font-semibold text-zinc-400">${esc(node.id)}</span>
-            ${decisionStatusIcon(node.status, 'w-4 h-4')}
+            ${decisionStatusIcon(node.status, 'w-3.5 h-3.5')}
             <span class="text-xs font-medium text-zinc-300">${esc(decisionStatusLabel(node.status))}</span>
             ${copyIdButton(node.id)}
           </div>
           <h1 class="text-xl font-bold tracking-tight text-white">${esc(node.title)}</h1>
           ${raisedByHtml}
         </div>
-        ${elsewhereNoticeHtml}
         ${contextHtml}
         ${waitingHtml}
         ${sectionsHtml}
         ${attachmentsHtml}
-        ${chosenCards}
-        ${answerHtml}
+        ${actionHtml}
       </div>
-      ${answerBarHtml}
     `;
+    renderedDecisionId = id;
+    if (inPlace) [decisionsDetailEl.scrollTop, decisionsPane.scrollTop] = scroll;
 
     attachSectionToggleHandlers(decisionsDetailEl);
     attachGroupHeaderHandlers(decisionsDetailEl, () => renderDecisionDetail(id));
+    attachCopyHandlers(decisionsDetailEl);
     wireAttachmentControls(decisionsDetailEl, node, attachments, editable, () => renderDecisionDetail(id));
 
     decisionsDetailEl.querySelectorAll('.dec-task-link, .dec-raised-by-link').forEach(btn => {
@@ -557,7 +676,7 @@ function renderDecisionDetail(id) {
       });
     }
 
-    wireDecisionAnswerForm(decisionsDetailEl, node.id);
+    wireDecisionAnswerForm(decisionsDetailEl, node.id, data);
 
     const reopenBtn = decisionsDetailEl.querySelector('.dec-reopen-btn');
     if (reopenBtn) {
@@ -573,14 +692,15 @@ function renderDecisionDetail(id) {
     }
   }).catch(e => {
     if (selectedDecisionId !== id) return;
+    renderedDecisionId = null;
     // A real 404 already resolved to null above and took the "not found" branch; anything
     // reaching here is the request itself failing (network, 5xx) -- distinct copy and a retry,
     // since retrying a genuinely missing decision would only fail the same way again.
     decisionsDetailEl.innerHTML = `
-      <div class="max-w-2xl mx-auto text-sm text-center space-y-2 pt-12">
-        <div role="alert" class="text-red-400">${esc(e.message)}</div>
-        <div class="text-xs text-zinc-500">This is a failed request, not a missing decision.</div>
-        <button type="button" class="dec-detail-retry-btn h-8 px-3 rounded-lg text-xs font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 transition">Retry</button>
+      <div class="max-w-2xl mx-auto text-center space-y-3 pt-12">
+        <div role="alert" class="text-sm text-red-400">${esc(e.message)}</div>
+        <div class="text-xs ${DEC_MUTED}">This is a failed request, not a missing decision.</div>
+        <button type="button" class="dec-detail-retry-btn h-8 px-3 rounded-lg text-xs font-medium bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-200 border border-zinc-700 transition ${DEC_FOCUS}">Retry</button>
       </div>
     `;
     const retryBtn = decisionsDetailEl.querySelector('.dec-detail-retry-btn');
@@ -588,29 +708,32 @@ function renderDecisionDetail(id) {
   });
 }
 
-function wireDecisionAnswerForm(root, decisionId) {
+function wireDecisionAnswerForm(root, decisionId, data) {
   const form = root.querySelector('.dec-answer-form');
   if (!form) return;
-  const submitBtn = form.querySelector('.dec-answer-submit');
+  const submitBtns = form.querySelectorAll('.dec-answer-submit');
+  const hint = form.querySelector('.dec-answer-hint');
+  const pick = form.querySelector('.dec-answer-pick');
+  const cards = Array.from(form.querySelectorAll('.dec-option-card'));
   let chosenOption = null;
   const customText = form.querySelector('.dec-custom-text');
 
-  function updateSubmitEnabled() {
-    const hasCustom = customText && customText.value.trim().length > 0;
-    submitBtn.disabled = !chosenOption && !hasCustom;
+  function updateAnswerState() {
+    const custom = customText ? customText.value.trim() : '';
+    const chosen = chosenOption ? (data.options || []).find(o => o.key === chosenOption) : null;
+    const picked = chosen ? chosen.label : custom;
+    submitBtns.forEach(btn => { btn.disabled = !picked; });
+    hint.classList.toggle('hidden', Boolean(picked));
+    pick.textContent = picked || NOTHING_PICKED;
+    pick.classList.toggle('text-zinc-100', Boolean(picked));
+    pick.classList.toggle('text-zinc-400', !picked);
   }
 
   // Shared by an option click and a custom-text edit, so the two can never disagree about
-  // which card (if any) is actually highlighted -- typing a custom answer used to leave the
-  // previously picked card's highlight in place even though it no longer had chosenOption.
+  // which card (if any) is checked. The card's colours follow aria-checked (optionCardHtml).
   function paintChosen(chosenCard) {
-    const cards = form.querySelectorAll('.dec-option-card');
     cards.forEach((c, i) => {
       const isChosen = c === chosenCard;
-      c.classList.toggle('border-emerald-600', isChosen);
-      c.classList.toggle('bg-emerald-950/40', isChosen);
-      c.classList.toggle('bg-zinc-900/60', !isChosen);
-      c.classList.toggle('border-zinc-800', !isChosen);
       c.setAttribute('aria-checked', String(isChosen));
       // Roving tabindex follows the checked card; with none checked (a custom answer typed
       // instead) the first card stays the group's one tab stop.
@@ -618,22 +741,21 @@ function wireDecisionAnswerForm(root, decisionId) {
     });
   }
 
-  form.querySelectorAll('.dec-option-card').forEach(card => {
+  cards.forEach((card, i) => {
     card.addEventListener('click', () => {
       chosenOption = card.getAttribute('data-option-key');
       if (customText) customText.value = '';
       paintChosen(card);
-      updateSubmitEnabled();
+      updateAnswerState();
     });
-    // Standard ARIA radiogroup pattern: ArrowUp/ArrowDown move focus and check the option
-    // together (Space checks the focused option for free -- a real <button> fires its own
-    // click on Space, no handler needed here).
+    // WAI-ARIA radio group: Down/Right move to the next option and Up/Left to the previous,
+    // wrapping, checking it as focus lands (Space checks the focused option for free -- a real
+    // <button> fires its own click on Space).
     card.addEventListener('keydown', (e) => {
-      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key];
+      if (!step) return;
       e.preventDefault();
-      const cards = Array.from(form.querySelectorAll('.dec-option-card'));
-      const i = cards.indexOf(card);
-      const next = cards[(i + (e.key === 'ArrowDown' ? 1 : cards.length - 1)) % cards.length];
+      const next = cards[(i + step + cards.length) % cards.length];
       next.focus();
       next.click();
     });
@@ -644,7 +766,7 @@ function wireDecisionAnswerForm(root, decisionId) {
         chosenOption = null;
         paintChosen(null);
       }
-      updateSubmitEnabled();
+      updateAnswerState();
     });
   }
 
@@ -665,8 +787,7 @@ function wireDecisionAnswerForm(root, decisionId) {
     }
   });
 
-  const withdrawBtn = root.querySelector('.dec-withdraw-btn');
-  if (withdrawBtn) {
+  form.querySelectorAll('.dec-withdraw-btn').forEach(withdrawBtn => {
     withdrawBtn.addEventListener('click', () => {
       // §6.4: a decision is withdrawn with a reason, so this is a full dialog (a text field)
       // rather than confirmDialog's plain message-only shape.
@@ -687,7 +808,7 @@ function wireDecisionAnswerForm(root, decisionId) {
         }
       });
     });
-  }
+  });
 }
 
 // A decision write never reloads anything either -- but a decision is not a row, so nothing
@@ -697,6 +818,7 @@ function wireDecisionAnswerForm(root, decisionId) {
 // belongs under current.
 async function afterDecisionWrite(decisionId) {
   selectedDecisionId = decisionId;
+  decisionsChangedElsewhere.delete(decisionId);
   let detail = null;
   try {
     detail = await fetchNodeDetail(decisionId);
@@ -715,12 +837,18 @@ async function afterDecisionWrite(decisionId) {
 }
 
 function renderDecisionsView() {
+  // Below sm the list sits above the detail in one page scroll; a list that grows or shrinks
+  // (a row leaving Open) would shift the detail under the reader, so the pane's scroll takes
+  // up the difference.
+  const detailTop = decisionsDetailEl.getBoundingClientRect().top;
   renderDecisionsTabs();
   renderDecisionsList();
+  decisionsPane.scrollTop += decisionsDetailEl.getBoundingClientRect().top - detailTop;
   if (selectedDecisionId) {
     renderDecisionDetail(selectedDecisionId);
   } else {
-    decisionsDetailEl.innerHTML = '<div class="max-w-2xl mx-auto text-sm text-zinc-500 italic pt-12 text-center">Select a decision to view it.</div>';
+    renderedDecisionId = null;
+    decisionsDetailEl.innerHTML = `<div class="max-w-2xl mx-auto text-sm ${DEC_MUTED} italic pt-12 text-center">Select a decision to view it.</div>`;
   }
 }
 
