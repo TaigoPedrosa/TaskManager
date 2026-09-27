@@ -1,6 +1,6 @@
 {
   "name": "taskmanager",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Local agentic task tracker system powered by SQLite, DAG heuristics, worktrees and live visualizer",
   "author": {
     "name": "Taigo Pedrosa"
