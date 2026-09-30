@@ -53,7 +53,7 @@ tm job resume <job> --agent <name> --token <token> --push
 
 A resume runs on in the background. `tm job status <job> --wait 540` blocks until the job leaves `running` or nine minutes pass, and prints where it went. A job that stops again is handed back: tm parks it, counts the stop against the node, and refuses your next `resume`. On your own, claim the node again with `tm task start`, which hands it to you with a new token; under a workflow, report and stop, and the workflow claims it again.
 
-Append what you found and did to the node's `:merge` section (`tm section get <node-id>:merge` first, then `tm section set <node-id>:merge --file <path>`).
+Append what you found and did to the node's `:merge` section (`tm section get <node-id>:merge > <path>` first — content lands on stdout, header on stderr, so this never captures the header — then `tm section set <node-id>:merge --file <path>`).
 
 ## Waiting on something that takes time
 

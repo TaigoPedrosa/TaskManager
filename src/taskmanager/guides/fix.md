@@ -45,9 +45,11 @@ Exit 1 names the failing rows. `No verifications to run.` exits 2 and is no evid
 Answer each finding by its number, with the commit that closed it or the words "not done" and why, appended to the report:
 
 ```
-tm section get <node-id>:report
+tm section get <node-id>:report > <path>
 tm section set <node-id>:report --file <path> --header "## Report"
 ```
+
+`tm section get` writes the header to stderr and the content alone to stdout, so `> <path>` captures content only and the round trip above never folds the header back in.
 
 Then the `tm verify run` exit code, and anything you found and did not touch.
 

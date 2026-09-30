@@ -1242,8 +1242,11 @@ def section_get(
     if not sec:
         print(f"[red]Section '{qp.section_key}' not found on node '{qp.node_id}'[/red]")
         raise typer.Exit(code=1)
-    output = f"{sec.header}\n{sec.content}" if sec.header else sec.content
-    sys.stdout.write(output + "\n")
+    # Header on stderr, content alone on stdout, no added newline: `tm section get id:key > f`
+    # then `tm section set id:key -f f` round-trips byte-identical.
+    if sec.header:
+        sys.stderr.write(f"{sec.header}\n")
+    sys.stdout.write(sec.content)
 
 
 @section_app.command("set")
