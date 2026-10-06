@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(here, '../..');
@@ -52,5 +52,21 @@ test('the committed stylesheet matches a fresh build from tailwind.config.js', (
     assert.equal(fresh, committed, 'tailwind.css is stale: rebuild it (see README) and commit the result');
   } finally {
     fs.rmSync(outDir, { recursive: true, force: true });
+  }
+});
+
+// The README's fetch writes the binary to the repository root. A scratch repository holding only
+// the project's .gitignore keeps the check off the developer's global excludes, and works when
+// the tree under test is an export with no .git of its own.
+test('the tailwindcss binary at the repository root is git-ignored', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-gitignore-'));
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    fs.copyFileSync(path.join(REPO_ROOT, '.gitignore'), path.join(repo, '.gitignore'));
+    const args = ['-c', 'core.excludesFile=/dev/null', 'check-ignore', '-q', 'tailwindcss'];
+    const check = spawnSync('git', args, { cwd: repo });
+    assert.equal(check.status, 0, '.gitignore does not ignore /tailwindcss, so `git add -A` commits the CLI');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
   }
 });
