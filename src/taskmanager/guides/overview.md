@@ -10,14 +10,17 @@ Every task, plan and spec stores one status: its position in this cycle. Everyth
 
 ```
 READY ──claim──▶ IMPLEMENTING ──complete──▶ IMPLEMENTED
-IMPLEMENTED ──claim, review on──▶ REVIEWING ──review──▶ REVIEWED
+IMPLEMENTED ──claim, a task with review on──▶ REVIEWING ──review──▶ REVIEWED
 IMPLEMENTED ──claim, review off──▶ MERGING
+IMPLEMENTED ──claim, a plan or spec with review on──▶ MERGING ──landed and verified──▶ LANDED ──claim──▶ REVIEWING
+REVIEWING ──approved, claimed from LANDED──▶ COMPLETED
 REVIEWED ──claim: approved, or rejected with fix off──▶ MERGING
 REVIEWED ──claim: rejected with fix on, or a failed landing──▶ FIXING ──complete──▶ FIXED
-FIXED ──claim──▶ REVIEWING
+FIXED ──claim, not sensitive──▶ MERGING
+FIXED ──claim, sensitive──▶ REVIEWING
 MERGING ──landed and verified──▶ COMPLETED
 MERGING ──own defect, attempts left, fix on──▶ REVIEWED, outcome merge_failed
-a cap reached ──▶ FAILED ──the owner answers investigate──▶ reopened
+a cap reached, a rejected re-review, or a rejection at LANDED with fix off ──▶ FAILED ──the owner answers investigate──▶ reopened
 set by a verb, from any stable status but COMPLETED: DEFERRED, ABANDONED, SUPERSEDED
 ```
 
@@ -26,25 +29,25 @@ set by a verb, from any stable status but COMPLETED: DEFERRED, ABANDONED, SUPERS
 | `action` | Claimed from | Locks the declared files | Closed with |
 |:--|:--|:--|:--|
 | `implement` | `READY` | yes | `tm task complete <id> --agent <name> --token <token>` |
-| `review` | `IMPLEMENTED`, `FIXED` | no | `tm task review <id> --agent <name> --token <token> --approve`, or `--reject` |
+| `review` | `IMPLEMENTED` for a task, `LANDED` for a plan or spec, `FIXED` for a sensitive node | no | `tm task review <id> --agent <name> --token <token> --approve`, or `--reject` |
 | `fix` | `REVIEWED` | yes | `tm task complete <id> --agent <name> --token <token>` |
-| `merge` | `IMPLEMENTED`, `REVIEWED` | no | nothing: tm lands it as a job, and hands the job to an agent only when it stops |
+| `merge` | `IMPLEMENTED`, `REVIEWED`, `FIXED` | no | nothing: tm lands it as a job, and hands the job to an agent only when it stops |
 | `sync` | a container branch behind its base | no | nothing: tm merges it as a job, and hands the job to an agent only when it stops |
 | `blocked` | nothing is claimed; exit 3 | | the printed `reason` says what it waits on |
 
-The printout also names the `model` family the step runs on (`haiku`, `sonnet`, `opus` or `fable`), the `repos` it touches, the `branch`, its `base` (`main`, or the container branch it lands on), and for `implement` and `fix` the `worktree`, with `worktrees` naming one per repository when a plan or spec spans several. It also prints the claim's `token`. `--agent <name>` on a closing verb is refused unless the live lease is that agent's, and `--token <token>` unless it is that claim's, so a step closes only for whoever holds it, even when a later claim reuses the agent name. A step that cannot go on ends with `tm task release <id> --agent <name> --token <token> --blocked` naming what it now waits on; `tm task release <id> --agent <name> --token <token>` alone ends it as a failed step. `tm task heartbeat <id>` renews the lease, which lasts `lease_ttl.<action>` seconds.
+The printout also names the `model` family the step runs on (`haiku`, `sonnet`, `opus` or `fable`), the `repos` it touches, the `branch` (for a review claimed from `LANDED`, the target its code landed on), its `base` (`main`, or the container branch it lands on), and for `implement` and `fix` the `worktree`, with `worktrees` naming one per repository when a plan or spec spans several. It also prints the claim's `token`. `--agent <name>` on a closing verb is refused unless the live lease is that agent's, and `--token <token>` unless it is that claim's, so a step closes only for whoever holds it, even when a later claim reuses the agent name. A step that cannot go on ends with `tm task release <id> --agent <name> --token <token> --blocked` naming what it now waits on; `tm task release <id> --agent <name> --token <token>` alone ends it as a failed step. `tm task heartbeat <id>` renews the lease, which lasts `lease_ttl.<action>` seconds.
 
-Three flags on every node decide the path through the cycle: `review` (a review follows implement), `fix` (this node fixes its own rejections; it needs `review`) and `merge` (`main`, or `parent` to land on the branch of the plan or spec above it). A task has `review` and `fix` on and lands on `main` unless its plan says otherwise; a plan or spec has both off.
+Three flags on every node decide the path through the cycle: `review` (a review follows implement, or for a plan or spec, its landing), `fix` (this node fixes its own rejections; it needs `review`) and `merge` (`main`, or `parent` to land on the branch of the plan or spec above it). A task has `review` and `fix` on and lands on `main` unless the document says otherwise, and a plan or spec has both off. Children under a reviewed plan or spec take `review: false` and `fix: false` by default, because its one review covers them; an explicit `review: true` still wins. A fix lands without a re-review unless the node is sensitive: its `sensitive:` key names an area, or it writes a migration (`tm guide plan`, §2).
 
 ## Plans and specs
 
-A plan or spec is a container: it is never implemented itself, and its status follows its children in the same write that moves any of them. Once every counted child (not `DEFERRED`, `ABANDONED` or `SUPERSEDED`) is `COMPLETED`, the container is `IMPLEMENTED`, and from there it is reviewed, fixed and landed like a task when its flags say so. A container whose branches hold nothing their base lacks completes at once: there is nothing to review.
+A plan or spec is a container: it is never implemented itself, and its status follows its children in the same write that moves any of them. Once every counted child (not `DEFERRED`, `ABANDONED` or `SUPERSEDED`) is `COMPLETED`, the container is `IMPLEMENTED`, and from there it lands before any review. With `review` off, the landing completes it. With `review` on it reads `LANDED`: its code is on its target, and its one review runs there. An approval completes it; a rejection is fixed on a branch cut from that target, the spent branch set aside as `tm/<container-id>@<n>`, and the fix lands without a second review unless the container is sensitive. A container whose branches hold nothing its base lacks has its code on its target already: it completes at once, or with `review` on reads `LANDED` and still takes its one review.
 
-Children with `merge: parent` land on the container's branch, `tm/<container-id>`, a local branch in each repository they touch that is never pushed. Their code reaches `main` only when the container lands. A container review reads the whole branch, so it sees what is true only between children; its fix works on that branch. A container that touched several repositories lands them one at a time, in its `land_order`.
+Children with `merge: parent` land on the container's branch, `tm/<container-id>`, a local branch in each repository they touch that is never pushed. Their code reaches `main` only when the container lands. A container's review reads its whole landing on the target, so it sees what is true only between children. A container that touched several repositories lands them one at a time, in its `land_order`.
 
 ## What a node waits on
 
-- **An edge.** `depends_on` points at another node or at a decision. An edge to a node is satisfied once that node's code has landed on a branch this node builds on: the dependency itself when both land on the same container, the container above it when it lands there, and so on up to `main`. An edge on a container holds every node under it. When a dependency has landed further up than this node's base, the claim first syncs it down into each container branch in between.
+- **An edge.** `depends_on` points at another node or at a decision. An edge to a node is satisfied once that node's code has landed on a branch this node builds on, a container at `LANDED` included: the dependency itself when both land on the same container, the container above it when it lands there, and so on up to `main`. An edge on a container holds every node under it. When a dependency has landed further up than this node's base, the claim first syncs it down into each container branch in between.
 - **A decision.** A question only the owner answers, raised with `tm decision add` or opened by tm itself. The node waits until it is answered or withdrawn, and an answer may carry an effect on every node it blocks: abandon, defer, reopen, or drop the edge.
 - **A condition.** A state outside the corpus plus a shell command that exits 0 once it holds (`tm task condition add`). A `claim` condition holds every claim; a `landing` condition holds only the landing. tm runs it before the claim and caches the result for `condition_ttl` seconds.
 
@@ -61,16 +64,17 @@ Children with `merge: parent` land on the container's branch, `tm/<container-id>
 | `BLOCKED_BY_SYNC` | a sync its claim needs is running or waiting |
 | `BLOCKED_BY_LEASE` | its next step's files are locked by another lease |
 | `IMPLEMENTING` | a container at `READY` with a child already past `READY` |
-| `WAITING_REVIEW` | `IMPLEMENTED` with `review` on, or `FIXED` |
+| `LANDED` | `LANDED`: its code on its target, its one review owed |
+| `WAITING_REVIEW` | a task at `IMPLEMENTED` with `review` on, or a sensitive node at `FIXED` |
 | `WAITING_FIX` | `REVIEWED` after a rejection it fixes, or after a failed landing |
-| `WAITING_MERGE` | `IMPLEMENTED` with `review` off, or `REVIEWED` to be landed |
+| `WAITING_MERGE` | a task at `IMPLEMENTED` with `review` off, a plan or spec at `IMPLEMENTED`, `FIXED` on a node that is not sensitive, or `REVIEWED` to be landed |
 | `READY` | `READY` |
 
 ## Counters and FAILED
 
 Nothing loops. Three counters end every repeated failure at `FAILED`:
 
-- **Fix rounds**, `max_fix_rounds` (2 for a task, 3 for a container). A rejection with no round left fails the node.
+- **Fix rounds**, `max_fix_rounds` (2 for a task, 3 for a container). A rejection buys one fix, which lands without a re-review unless the node is sensitive. A sensitive fix whose re-review rejects fails the node, never a second fix, and so does a rejection at `LANDED` with `fix` off, since that code is already on its target. The cap bounds only the sensitive path: a fix past round 1 follows only a `tm task reset` that kept an earlier count.
 - **Own-defect landing failures**, `max_merge_attempts` (3): a red on the node's own verifications, failures the merged tip adds, a red verification after landing, or a defect an agent recorded. A conflict, a race or a red `main` never counts here.
 - **Failed steps**, `max_step_failures` (3): a plain release, an expired lease, a landing job an agent left unresolved.
 
@@ -79,7 +83,7 @@ Entering `FAILED` opens a decision on the node, "abandon, or investigate?", carr
 ## Repairs
 
 - `tm task reopen <id> --note "<why>"`: `FAILED`, `DEFERRED` or `ABANDONED` back into the cycle, counters and outcome cleared, the note kept in `:reopen`. The branch is kept for the next implementer; `--new-branch` starts clean instead. Refused while an open decision blocks the node.
-- `tm task reset <id> --to IMPLEMENTED --note "<why>"`: a ledgered repair to `READY`, `IMPLEMENTED`, `REVIEWED`, `FIXED` or `COMPLETED` (with `--outcome` for `REVIEWED`). A reset to `COMPLETED` is refused unless the branch is already on its target and the node's verifications pass there.
+- `tm task reset <id> --to IMPLEMENTED --note "<why>"`: a ledgered repair to `READY`, `IMPLEMENTED`, `REVIEWED`, `FIXED`, `LANDED` or `COMPLETED` (with `--outcome` for `REVIEWED` and `FIXED`). A reset to `LANDED` or `COMPLETED` is refused unless the branch is already on its target and the node's verifications pass there.
 - `tm task defer <id> --note "<why>"` and `tm task abandon <id> --note "<why>"`: from any stable status but `COMPLETED`; the note goes to `:deferral` or `:abandonment`.
 - `tm task supersede <old-id> <new-id> --transfer-blocks all`: the old node is `SUPERSEDED` and every dependent points at the new one.
 

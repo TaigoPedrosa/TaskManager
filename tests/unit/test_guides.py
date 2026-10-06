@@ -509,3 +509,24 @@ def test_dispatcher_skill_lands_a_reviewed_container_first_and_never_re_reviews_
     text = _doc_text(doc)
     assert "reads `LANDED` until its one review, on its landed target, runs" in text
     assert "never re-dispatch a review of a fix that is not sensitive" in text
+
+
+def test_overview_lands_a_reviewed_container_before_its_one_review(
+    rendered: Callable[[str], str],
+) -> None:
+    text = rendered("overview")
+    assert (
+        "IMPLEMENTED ──claim, a plan or spec with review on──▶ MERGING ──landed and verified──▶ "
+        "LANDED ──claim──▶ REVIEWING"
+    ) in text
+    assert "| `review` | `IMPLEMENTED` for a task, `LANDED` for a plan or spec," in text
+
+
+def test_overview_lands_a_fix_without_a_re_review_unless_the_node_is_sensitive(
+    rendered: Callable[[str], str],
+) -> None:
+    text = rendered("overview")
+    assert "FIXED ──claim, not sensitive──▶ MERGING" in text
+    assert "FIXED ──claim, sensitive──▶ REVIEWING" in text
+    assert "FIXED ──claim──▶ REVIEWING" not in text
+    assert "`FIXED` for a sensitive node" in text
