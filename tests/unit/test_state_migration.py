@@ -141,10 +141,13 @@ def _raw_rows(state_db: Path) -> dict[str, list[tuple[object, ...]]]:
         conn.close()
 
 
-def _write_landed(state_db: Path) -> None:
+def _write_landed(state_db: Path, status: str, claimed_from: str | None) -> None:
     conn = sqlite3.connect(state_db)
     try:
-        conn.execute("UPDATE nodes SET status = 'LANDED' WHERE id = 'T00'")
+        conn.execute(
+            "UPDATE nodes SET status = ?, claimed_from = ? WHERE id = 'T00'",
+            (status, claimed_from),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -183,25 +186,32 @@ def test_open_schema_2_estate_stores_the_fresh_nodes_sql_byte_for_byte(tmp_path:
     assert "'LANDED'" in sql
 
 
-def test_open_schema_2_estate_then_write_landed_succeeds(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("status", "claimed_from"),
+    [("LANDED", None), ("REVIEWING", "LANDED")],
+    ids=["landed-node", "review-claimed-from-landed"],
+)
+def test_open_schema_2_estate_then_write_landed_succeeds(
+    tmp_path: Path, status: str, claimed_from: str | None
+) -> None:
     old = tmp_path / "old"
     _build_v2_estate(old)
     _seed_every_v2_status(old)
     with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
-        _write_landed(old / "state.db")
+        _write_landed(old / "state.db", status, claimed_from)
 
     db = DatabaseManager(old)
     with db.get_state_connection():
         pass
     db.close()
 
-    _write_landed(old / "state.db")
+    _write_landed(old / "state.db", status, claimed_from)
     conn = sqlite3.connect(old / "state.db")
     try:
-        row = conn.execute("SELECT status FROM nodes WHERE id = 'T00'").fetchone()
+        row = conn.execute("SELECT status, claimed_from FROM nodes WHERE id = 'T00'").fetchone()
     finally:
         conn.close()
-    assert row == ("LANDED",)
+    assert row == (status, claimed_from)
 
 
 def test_open_schema_3_estate_leaves_the_file_bytes_untouched(tmp_path: Path) -> None:

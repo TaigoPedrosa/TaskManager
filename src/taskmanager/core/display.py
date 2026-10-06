@@ -52,6 +52,8 @@ def display_status(c: Cycle, f: Facts) -> DisplayStatus:
     if c.status == Status.READY:
         started = c.container and f.descendant_started
         return DisplayStatus.IMPLEMENTING if started else DisplayStatus.READY
+    if c.status == Status.LANDED:
+        return DisplayStatus.LANDED
     action = next_action(c)
     assert action is not None, f"{c.status} is stable and not READY, so it has a next step"
     return _WAITING[action]

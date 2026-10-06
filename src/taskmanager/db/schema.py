@@ -26,7 +26,9 @@ _NODES_BODY_SQL = (
     target_repo TEXT,
     acceptable_models TEXT NOT NULL DEFAULT '[]',
     frontmatter_json TEXT NOT NULL DEFAULT '{}',
-    claimed_from TEXT CHECK (claimed_from IN ('READY', 'IMPLEMENTED', 'REVIEWED', 'FIXED')),
+    claimed_from TEXT CHECK (
+        claimed_from IN ('READY', 'IMPLEMENTED', 'REVIEWED', 'FIXED', 'LANDED')
+    ),
     review INTEGER NOT NULL DEFAULT 1 CHECK (review IN (0, 1)),
     fix INTEGER NOT NULL DEFAULT 1 CHECK (fix IN (0, 1)),
     merge TEXT NOT NULL DEFAULT 'main' CHECK (merge IN ('parent', 'main')),

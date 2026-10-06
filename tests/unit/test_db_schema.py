@@ -190,7 +190,7 @@ def test_landed_is_stable_and_neither_an_exit_in_step_nor_set_aside() -> None:
     assert DisplayStatus.LANDED == "LANDED"
 
 
-def test_fresh_estate_accepts_a_landed_node(tmp_path: Path) -> None:
+def test_fresh_estate_accepts_a_landed_node_and_a_review_claimed_from_it(tmp_path: Path) -> None:
     db_mgr = DatabaseManager(tmp_path)
     db_mgr.init_all()
 
@@ -198,6 +198,10 @@ def test_fresh_estate_accepts_a_landed_node(tmp_path: Path) -> None:
         conn.execute(
             "INSERT INTO nodes (id, kind, title, status) VALUES ('T1', 'task', 'T', 'LANDED')"
         )
+        conn.execute(
+            "INSERT INTO nodes (id, kind, title, status, claimed_from) "
+            "VALUES ('T2', 'task', 'T', 'REVIEWING', 'LANDED')"
+        )
         conn.commit()
-        row = conn.execute("SELECT status FROM nodes WHERE id = 'T1'").fetchone()
-    assert row == ("LANDED",)
+        rows = conn.execute("SELECT id, status, claimed_from FROM nodes ORDER BY id").fetchall()
+    assert rows == [("T1", "LANDED", None), ("T2", "REVIEWING", "LANDED")]

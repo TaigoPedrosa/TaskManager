@@ -74,6 +74,17 @@ def test_css_defines_both_theme_variables_for_every_status_and_phase() -> None:
             assert re.search(rf"\.dark \.{prefix}-{code}\{{--st-fg:#\w+;--st-bg:#\w+\}}", css)
 
 
+def test_the_landed_theme_follows_completed_and_names_its_owed_review() -> None:
+    # Bar segments and the progress text follow the theme order, and the text lowercases the
+    # label: "5 completed · 3 landed".
+    codes = list(StatusVisual.all_themes_dict())
+    assert codes.index("LANDED") == codes.index("COMPLETED") + 1
+    landed = StatusVisual.LANDED.value
+    assert landed.label == "Landed"
+    assert landed.description.startswith("Landed, review owed: ")
+    assert landed.group == StatusGroup.WAITING
+
+
 def test_app_icon_sprite_carries_the_new_status_icons() -> None:
     sprite = AppIcon.generate_svg_sprite()
     assert 'id="icon-git-merge"' in sprite and 'id="icon-octagon-x"' in sprite
