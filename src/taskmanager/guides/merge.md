@@ -39,6 +39,8 @@ The claim prints the lease's `token`; pass it, with your name, to `tm job resume
 
 It is tm's own merge worktree, holding the merge in progress. Resolve there, commit there with an explicit pathspec, and push nothing: tm pushes when it resumes. Never rebase, never force, and never merge in the project's own checkout or on its local `main`.
 
+- A generated file (a built stylesheet, a lockfile, a schema dump) is regenerated, never edited or hand-merged: a branch that changes any of its inputs rebuilds it before closing, and a conflict on it is resolved by rebuilding it on the merged tree.
+
 ## 3. Resume
 
 ```

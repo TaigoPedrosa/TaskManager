@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 import typer.main
+from typer.testing import CliRunner
 
 from taskmanager.cli.main import _guide_topics, app
 
@@ -417,3 +418,30 @@ def test_dispatch_guide_closes_a_wording_only_rejection_without_another_fix_roun
         "ruling is already made, does not buy another fix round: the findings go in the node's "
         "`report` section and the node closes as the ruling stands."
     ) in _guide_text("dispatch")
+
+
+GENERATOR_MISSING_FAILS = (
+    "- A test that checks a generated artifact against its generator fails, never skips, when the "
+    "generator is missing: a skipped check reads as a pass in every gate that runs it."
+)
+GENERATED_FILE_IS_REBUILT = (
+    "- A generated file (a built stylesheet, a lockfile, a schema dump) is regenerated, never "
+    "edited or hand-merged: a branch that changes any of its inputs rebuilds it before closing, "
+    "and a conflict on it is resolved by rebuilding it on the merged tree."
+)
+GENERATED_ARTIFACT_RULES = [
+    ("plan", GENERATOR_MISSING_FAILS),
+    ("fix", GENERATOR_MISSING_FAILS),
+    ("implement", GENERATED_FILE_IS_REBUILT),
+    ("merge", GENERATED_FILE_IS_REBUILT),
+]
+
+
+@pytest.mark.parametrize(
+    "topic,rule", GENERATED_ARTIFACT_RULES, ids=[t for t, _ in GENERATED_ARTIFACT_RULES]
+)
+def test_tm_guide_prints_the_generated_artifact_rule(topic: str, rule: str, tmp_path: Path) -> None:
+    """A stale built file reached main because its freshness check skipped without the generator."""
+    result = CliRunner().invoke(app, ["guide", topic, "--builtin", "-C", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert rule in result.stdout
