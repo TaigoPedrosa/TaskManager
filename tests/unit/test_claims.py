@@ -332,24 +332,15 @@ def test_a_review_verdict_is_refused_until_the_review_section_changes(tmp_path: 
     assert (node.outcome, node.verdict, node.review_cycles) == (Outcome.APPROVE, "ship it", 1)
 
 
-def test_a_task_rejected_with_no_fix_round_left_fails_and_opens_a_decision(tmp_path: Path) -> None:
+def test_a_landed_plan_rejected_with_fix_off_fails_and_opens_a_decision(tmp_path: Path) -> None:
     claims = make_estate(tmp_path)
-    add(claims, "T1")
-    claims.start("T1", "implementer", "s1")
-    claims.complete("T1")
+    add(claims, "P", NodeKind.PLAN, review=True, fix=False, status=Status.LANDED)
 
-    status = Status.READY
-    for round_ in range(3):
-        assert claims.start("T1", "reviewer", "s1").action == Action.REVIEW
-        claims.ops.set_section("T1", "review", f"finding {round_}")
-        status = claims.review("T1", approve=False)
-        if round_ < 2:
-            assert status == Status.REVIEWED
-            assert claims.start("T1", "fixer", "s1").action == Action.FIX
-            assert claims.complete("T1") == Status.FIXED
+    assert claims.start("P", "reviewer", "s1").action == Action.REVIEW
+    claims.ops.set_section("P", "review", "the landed target breaks the gate")
 
-    assert status == Status.FAILED
-    assert len(decisions_blocking(claims, "T1")) == 1
+    assert claims.review("P", approve=False) == Status.FAILED
+    assert len(decisions_blocking(claims, "P")) == 1
 
 
 def test_transient_releases_count_step_failures_until_the_cap_fails_the_node(
@@ -529,15 +520,16 @@ def test_a_container_with_code_on_its_branch_stops_at_implemented(tmp_path: Path
     assert stored(claims, "P").status == Status.IMPLEMENTED
 
 
-def test_a_reset_to_completed_is_refused_while_the_branch_is_not_on_its_target(
-    tmp_path: Path,
+@pytest.mark.parametrize("to", [Status.LANDED, Status.COMPLETED])
+def test_a_reset_to_landed_code_is_refused_while_the_branch_is_not_on_its_target(
+    tmp_path: Path, to: Status
 ) -> None:
     claims = make_estate(tmp_path)
     add(claims, "T1", status=Status.REVIEWED, outcome=Outcome.APPROVE)
     on_branch(claims.root / "api", "tm/T1", "a.py", "a = 1\n")
 
     with pytest.raises(OperationError, match="is not on main"):
-        claims.reset("T1", Status.COMPLETED, "landed by hand")
+        claims.reset("T1", to, "landed by hand")
     assert stored(claims, "T1").status == Status.REVIEWED
 
 

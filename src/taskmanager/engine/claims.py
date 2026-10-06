@@ -803,7 +803,7 @@ class Claims:
     def reset(self, node_id: str, to: Status, note: str, outcome: Outcome | None = None) -> Status:
         node = self.node(node_id)
         self._idle(node_id)
-        if to == Status.COMPLETED:
+        if to in (Status.LANDED, Status.COMPLETED):
             self._prove_landed(node_id)
         try:
             nxt = lifecycle.reset(self.snapshots.cycle(node), to, outcome)

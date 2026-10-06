@@ -4,7 +4,7 @@ from taskmanager.core.status import EXITS, IN_STEP, SET_ASIDE, Status
 
 # Owned by the container's own cycle or by an explicit verb, never re-derived from children:
 # a step in flight, landed code, a failure awaiting its decision, and an exit someone chose.
-_KEPT = IN_STEP | EXITS | {Status.COMPLETED, Status.FAILED}
+_KEPT = IN_STEP | EXITS | {Status.LANDED, Status.COMPLETED, Status.FAILED}
 
 
 def rollup(current: Status, children: Sequence[Status]) -> Status:
