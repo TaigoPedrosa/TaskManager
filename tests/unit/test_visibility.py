@@ -19,13 +19,14 @@ FIXTURE = json.loads(
 
 @pytest.mark.parametrize("case", FIXTURE["cases"], ids=[c["name"] for c in FIXTURE["cases"]])
 def test_visibility_case_matches_its_golden_vector(case: dict[str, Any]) -> None:
-    rows = FIXTURE["rows"]
+    estate = case.get("estate", FIXTURE)
+    rows = estate["rows"]
     filters = parse_filters(case["filters"])
 
     visible = visible_ids(rows, filters, case["open"])
 
     assert visible == case["visible"]
-    assert project_edges(FIXTURE["edges"], rows, visible) == case["edges"]
+    assert project_edges(estate["edges"], rows, visible) == case["edges"]
     assert facets(rows, filters) == case["facets"]
 
 

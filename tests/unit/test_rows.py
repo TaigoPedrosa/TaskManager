@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
+from typing import Any
 
+import pytest
 from lifecycle_estate import add, make_estate
 
 from taskmanager.core.enums import NodeKind
@@ -12,6 +14,7 @@ from taskmanager.engine.snapshot import DisplayView, waits_on
 from taskmanager.web.rows import (
     build_rows,
     canonical,
+    counts_as_work,
     decisions_open,
     row_digest,
     statuses,
@@ -19,6 +22,9 @@ from taskmanager.web.rows import (
 )
 
 FIXTURE = json.loads((Path(__file__).parent.parent / "fixtures" / "statuses_hash.json").read_text())
+COUNTS_AS_WORK = json.loads(
+    (Path(__file__).parent.parent / "fixtures" / "visibility_cases.json").read_text()
+)["counts_as_work"]
 
 _ROW_FIELDS = {
     "id",
@@ -340,6 +346,15 @@ def test_a_childless_plan_past_ready_adds_no_unit(tmp_path: Path) -> None:
     [plan_entry] = [p for e in statuses(rows) if e["spec"] == "S1" for p in e["plans"]]
 
     assert plan_entry["counts"] == {}
+
+
+@pytest.mark.parametrize(
+    "case", COUNTS_AS_WORK, ids=lambda case: "-".join(map(str, case["row"].values()))
+)
+def test_counts_as_work_holds_for_a_task_or_a_started_container_with_children(
+    case: dict[str, Any],
+) -> None:
+    assert counts_as_work(case["row"]) is case["counts"]
 
 
 def test_building_rows_and_statuses_reads_only_the_views_own_bulk_read(

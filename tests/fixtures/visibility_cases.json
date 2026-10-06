@@ -7,7 +7,7 @@
       "ordinal": 0,
       "priority": 50,
       "parent": null,
-      "status": null,
+      "status": "READY",
       "display": null,
       "phase": null,
       "score": null,
@@ -30,7 +30,7 @@
       "ordinal": 0,
       "priority": 50,
       "parent": "S1",
-      "status": null,
+      "status": "READY",
       "display": null,
       "phase": null,
       "score": null,
@@ -104,7 +104,7 @@
       "ordinal": 1,
       "priority": 50,
       "parent": "S1",
-      "status": null,
+      "status": "READY",
       "display": null,
       "phase": null,
       "score": null,
@@ -152,7 +152,7 @@
       "ordinal": 1,
       "priority": 50,
       "parent": null,
-      "status": null,
+      "status": "READY",
       "display": null,
       "phase": null,
       "score": null,
@@ -175,7 +175,7 @@
       "ordinal": 0,
       "priority": 50,
       "parent": "S2",
-      "status": null,
+      "status": "READY",
       "display": null,
       "phase": null,
       "score": null,
@@ -223,7 +223,7 @@
       "ordinal": 2,
       "priority": 50,
       "parent": null,
-      "status": null,
+      "status": "READY",
       "display": null,
       "phase": null,
       "score": null,
@@ -801,6 +801,662 @@
           "max": 80
         }
       }
+    },
+    {
+      "name": "a_plan_in_its_own_review_shows_under_its_status_without_its_tasks",
+      "estate": {
+        "rows": {
+          "S1": {
+            "id": "S1",
+            "kind": "spec",
+            "title": "Spec One",
+            "ordinal": 0,
+            "priority": 50,
+            "parent": null,
+            "status": "READY",
+            "display": "IMPLEMENTING",
+            "phase": "QUEUED",
+            "score": null,
+            "target_repo": null,
+            "acceptable_models": [],
+            "review": false,
+            "fix": false,
+            "merge": "main",
+            "outcome": null,
+            "requires": [],
+            "lease": null,
+            "waits_on": [],
+            "child_count": 1,
+            "rev": 1
+          },
+          "P1": {
+            "id": "P1",
+            "kind": "plan",
+            "title": "Plan Alpha",
+            "ordinal": 0,
+            "priority": 50,
+            "parent": "S1",
+            "status": "REVIEWING",
+            "display": "REVIEWING",
+            "phase": "DISPATCHED",
+            "score": null,
+            "target_repo": "repoA",
+            "acceptable_models": [
+              "claude-opus-5"
+            ],
+            "review": false,
+            "fix": false,
+            "merge": "main",
+            "outcome": null,
+            "requires": [],
+            "lease": {
+              "agent_id": "agent-1",
+              "action": "review"
+            },
+            "waits_on": [],
+            "child_count": 2,
+            "rev": 1
+          },
+          "T1": {
+            "id": "T1",
+            "kind": "task",
+            "title": "Fix login bug",
+            "ordinal": 0,
+            "priority": 50,
+            "parent": "P1",
+            "status": "COMPLETED",
+            "display": "COMPLETED",
+            "phase": "COMPLETED",
+            "score": 37.5,
+            "target_repo": "repoA",
+            "acceptable_models": [
+              "claude-sonnet-5"
+            ],
+            "review": true,
+            "fix": true,
+            "merge": "main",
+            "outcome": null,
+            "requires": [],
+            "lease": null,
+            "waits_on": [],
+            "child_count": 0,
+            "rev": 1
+          },
+          "T2": {
+            "id": "T2",
+            "kind": "task",
+            "title": "Login widget",
+            "ordinal": 1,
+            "priority": 50,
+            "parent": "P1",
+            "status": "COMPLETED",
+            "display": "COMPLETED",
+            "phase": "COMPLETED",
+            "score": 37.5,
+            "target_repo": "repoA",
+            "acceptable_models": [
+              "claude-sonnet-5"
+            ],
+            "review": true,
+            "fix": true,
+            "merge": "main",
+            "outcome": null,
+            "requires": [],
+            "lease": null,
+            "waits_on": [],
+            "child_count": 0,
+            "rev": 1
+          }
+        },
+        "edges": []
+      },
+      "filters": {
+        "status": "REVIEWING"
+      },
+      "open": [
+        "S1",
+        "P1"
+      ],
+      "visible": [
+        "S1",
+        "P1"
+      ],
+      "edges": [
+        [
+          "S1",
+          "P1",
+          "contains"
+        ]
+      ],
+      "facets": {
+        "status": {
+          "REVIEWING": 1,
+          "COMPLETED": 2
+        },
+        "phase": {
+          "DISPATCHED": 1
+        },
+        "repo": {
+          "repoA": 1
+        },
+        "model": {
+          "claude-opus-5": 1
+        },
+        "spec": {
+          "S1": 1
+        },
+        "score": {
+          "min": 37.5,
+          "max": 37.5
+        }
+      }
+    },
+    {
+      "name": "a_ready_plan_with_an_implementing_roll_up_adds_nothing",
+      "estate": {
+        "rows": {
+          "S1": {
+            "id": "S1",
+            "kind": "spec",
+            "title": "Spec One",
+            "ordinal": 0,
+            "priority": 50,
+            "parent": null,
+            "status": "READY",
+            "display": "IMPLEMENTING",
+            "phase": "QUEUED",
+            "score": null,
+            "target_repo": null,
+            "acceptable_models": [],
+            "review": false,
+            "fix": false,
+            "merge": "main",
+            "outcome": null,
+            "requires": [],
+            "lease": null,
+            "waits_on": [],
+            "child_count": 1,
+            "rev": 1
+          },
+          "P1": {
+            "id": "P1",
+            "kind": "plan",
+            "title": "Plan Alpha",
+            "ordinal": 0,
+            "priority": 50,
+            "parent": "S1",
+            "status": "READY",
+            "display": "IMPLEMENTING",
+            "phase": "QUEUED",
+            "score": null,
+            "target_repo": null,
+            "acceptable_models": [],
+            "review": false,
+            "fix": false,
+            "merge": "main",
+            "outcome": null,
+            "requires": [],
+            "lease": null,
+            "waits_on": [],
+            "child_count": 1,
+            "rev": 1
+          },
+          "T1": {
+            "id": "T1",
+            "kind": "task",
+            "title": "Fix login bug",
+            "ordinal": 0,
+            "priority": 50,
+            "parent": "P1",
+            "status": "IMPLEMENTED",
+            "display": "WAITING_REVIEW",
+            "phase": "DISPATCHED",
+            "score": 32.5,
+            "target_repo": "repoA",
+            "acceptable_models": [],
+            "review": true,
+            "fix": true,
+            "merge": "main",
+            "outcome": null,
+            "requires": [],
+            "lease": null,
+            "waits_on": [],
+            "child_count": 0,
+            "rev": 1
+          }
+        },
+        "edges": []
+      },
+      "filters": {
+        "status": "IMPLEMENTING"
+      },
+      "open": [
+        "S1",
+        "P1"
+      ],
+      "visible": [],
+      "edges": [],
+      "facets": {
+        "status": {
+          "WAITING_REVIEW": 1
+        },
+        "phase": {},
+        "repo": {},
+        "model": {},
+        "spec": {},
+        "score": {
+          "min": 32.5,
+          "max": 32.5
+        }
+      }
+    },
+    {
+      "name": "a_deferred_plan_adds_nothing",
+      "estate": {
+        "rows": {
+          "S1": {
+            "id": "S1",
+            "kind": "spec",
+            "title": "Spec One",
+            "ordinal": 0,
+            "priority": 50,
+            "parent": null,
+            "status": "READY",
+            "display": "IMPLEMENTING",
+            "phase": "QUEUED",
+            "score": null,
+            "target_repo": null,
+            "acceptable_models": [],
+            "review": false,
+            "fix": false,
+            "merge": "main",
+            "outcome": null,
+            "requires": [],
+            "lease": null,
+            "waits_on": [],
+            "child_count": 1,
+            "rev": 1
+          },
+          "P1": {
+            "id": "P1",
+            "kind": "plan",
+            "title": "Plan Alpha",
+            "ordinal": 0,
+            "priority": 50,
+            "parent": "S1",
+            "status": "DEFERRED",
+            "display": "DEFERRED",
+            "phase": "DEFERRED",
+            "score": null,
+            "target_repo": null,
+            "acceptable_models": [],
+            "review": false,
+            "fix": false,
+            "merge": "main",
+            "outcome": null,
+            "requires": [],
+            "lease": null,
+            "waits_on": [],
+            "child_count": 1,
+            "rev": 1
+          },
+          "T1": {
+            "id": "T1",
+            "kind": "task",
+            "title": "Fix login bug",
+            "ordinal": 0,
+            "priority": 50,
+            "parent": "P1",
+            "status": "COMPLETED",
+            "display": "COMPLETED",
+            "phase": "COMPLETED",
+            "score": 37.5,
+            "target_repo": "repoA",
+            "acceptable_models": [],
+            "review": true,
+            "fix": true,
+            "merge": "main",
+            "outcome": null,
+            "requires": [],
+            "lease": null,
+            "waits_on": [],
+            "child_count": 0,
+            "rev": 1
+          }
+        },
+        "edges": []
+      },
+      "filters": {
+        "status": "DEFERRED"
+      },
+      "open": [
+        "S1",
+        "P1"
+      ],
+      "visible": [],
+      "edges": [],
+      "facets": {
+        "status": {
+          "COMPLETED": 1
+        },
+        "phase": {},
+        "repo": {},
+        "model": {},
+        "spec": {},
+        "score": {
+          "min": 37.5,
+          "max": 37.5
+        }
+      }
+    },
+    {
+      "name": "a_childless_plan_adds_nothing",
+      "estate": {
+        "rows": {
+          "S1": {
+            "id": "S1",
+            "kind": "spec",
+            "title": "Spec One",
+            "ordinal": 0,
+            "priority": 50,
+            "parent": null,
+            "status": "READY",
+            "display": "IMPLEMENTING",
+            "phase": "QUEUED",
+            "score": null,
+            "target_repo": null,
+            "acceptable_models": [],
+            "review": false,
+            "fix": false,
+            "merge": "main",
+            "outcome": null,
+            "requires": [],
+            "lease": null,
+            "waits_on": [],
+            "child_count": 2,
+            "rev": 1
+          },
+          "P1": {
+            "id": "P1",
+            "kind": "plan",
+            "title": "Plan Alpha",
+            "ordinal": 0,
+            "priority": 50,
+            "parent": "S1",
+            "status": "REVIEWING",
+            "display": "REVIEWING",
+            "phase": "DISPATCHED",
+            "score": null,
+            "target_repo": null,
+            "acceptable_models": [],
+            "review": false,
+            "fix": false,
+            "merge": "main",
+            "outcome": null,
+            "requires": [],
+            "lease": {
+              "agent_id": "agent-1",
+              "action": "review"
+            },
+            "waits_on": [],
+            "child_count": 0,
+            "rev": 1
+          },
+          "T1": {
+            "id": "T1",
+            "kind": "task",
+            "title": "Fix login bug",
+            "ordinal": 0,
+            "priority": 50,
+            "parent": "P2",
+            "status": "COMPLETED",
+            "display": "COMPLETED",
+            "phase": "COMPLETED",
+            "score": 37.5,
+            "target_repo": "repoA",
+            "acceptable_models": [],
+            "review": true,
+            "fix": true,
+            "merge": "main",
+            "outcome": null,
+            "requires": [],
+            "lease": null,
+            "waits_on": [],
+            "child_count": 0,
+            "rev": 1
+          },
+          "P2": {
+            "id": "P2",
+            "kind": "plan",
+            "title": "Plan Gizmo",
+            "ordinal": 1,
+            "priority": 50,
+            "parent": "S1",
+            "status": "READY",
+            "display": "IMPLEMENTING",
+            "phase": "QUEUED",
+            "score": null,
+            "target_repo": null,
+            "acceptable_models": [],
+            "review": false,
+            "fix": false,
+            "merge": "main",
+            "outcome": null,
+            "requires": [],
+            "lease": null,
+            "waits_on": [],
+            "child_count": 1,
+            "rev": 1
+          }
+        },
+        "edges": []
+      },
+      "filters": {
+        "status": "REVIEWING"
+      },
+      "open": [
+        "S1",
+        "P1"
+      ],
+      "visible": [],
+      "edges": [],
+      "facets": {
+        "status": {
+          "COMPLETED": 1
+        },
+        "phase": {},
+        "repo": {},
+        "model": {},
+        "spec": {},
+        "score": {
+          "min": 37.5,
+          "max": 37.5
+        }
+      }
+    },
+    {
+      "name": "a_spec_in_its_own_review_counts_once",
+      "estate": {
+        "rows": {
+          "S1": {
+            "id": "S1",
+            "kind": "spec",
+            "title": "Spec One",
+            "ordinal": 0,
+            "priority": 50,
+            "parent": null,
+            "status": "REVIEWING",
+            "display": "REVIEWING",
+            "phase": "DISPATCHED",
+            "score": null,
+            "target_repo": null,
+            "acceptable_models": [],
+            "review": false,
+            "fix": false,
+            "merge": "main",
+            "outcome": null,
+            "requires": [],
+            "lease": {
+              "agent_id": "agent-1",
+              "action": "review"
+            },
+            "waits_on": [],
+            "child_count": 1,
+            "rev": 1
+          },
+          "P1": {
+            "id": "P1",
+            "kind": "plan",
+            "title": "Plan Alpha",
+            "ordinal": 0,
+            "priority": 50,
+            "parent": "S1",
+            "status": "COMPLETED",
+            "display": "COMPLETED",
+            "phase": "COMPLETED",
+            "score": null,
+            "target_repo": null,
+            "acceptable_models": [],
+            "review": false,
+            "fix": false,
+            "merge": "main",
+            "outcome": null,
+            "requires": [],
+            "lease": null,
+            "waits_on": [],
+            "child_count": 1,
+            "rev": 1
+          },
+          "T1": {
+            "id": "T1",
+            "kind": "task",
+            "title": "Fix login bug",
+            "ordinal": 0,
+            "priority": 50,
+            "parent": "P1",
+            "status": "COMPLETED",
+            "display": "COMPLETED",
+            "phase": "COMPLETED",
+            "score": 37.5,
+            "target_repo": "repoA",
+            "acceptable_models": [],
+            "review": true,
+            "fix": true,
+            "merge": "main",
+            "outcome": null,
+            "requires": [],
+            "lease": null,
+            "waits_on": [],
+            "child_count": 0,
+            "rev": 1
+          }
+        },
+        "edges": []
+      },
+      "filters": {
+        "status": "REVIEWING"
+      },
+      "open": [
+        "S1"
+      ],
+      "visible": [
+        "S1"
+      ],
+      "edges": [],
+      "facets": {
+        "status": {
+          "REVIEWING": 1,
+          "COMPLETED": 2
+        },
+        "phase": {
+          "DISPATCHED": 1
+        },
+        "repo": {
+          "(none)": 1
+        },
+        "model": {},
+        "spec": {
+          "S1": 1
+        },
+        "score": {
+          "min": 37.5,
+          "max": 37.5
+        }
+      }
+    }
+  ],
+  "counts_as_work": [
+    {
+      "row": {
+        "kind": "task",
+        "status": "READY",
+        "child_count": 0
+      },
+      "counts": true
+    },
+    {
+      "row": {
+        "kind": "plan",
+        "status": "REVIEWING",
+        "child_count": 2
+      },
+      "counts": true
+    },
+    {
+      "row": {
+        "kind": "spec",
+        "status": "COMPLETED",
+        "child_count": 1
+      },
+      "counts": true
+    },
+    {
+      "row": {
+        "kind": "plan",
+        "status": "FAILED",
+        "child_count": 1
+      },
+      "counts": true
+    },
+    {
+      "row": {
+        "kind": "plan",
+        "status": "READY",
+        "child_count": 1
+      },
+      "counts": false
+    },
+    {
+      "row": {
+        "kind": "plan",
+        "status": "DEFERRED",
+        "child_count": 1
+      },
+      "counts": false
+    },
+    {
+      "row": {
+        "kind": "spec",
+        "status": "ABANDONED",
+        "child_count": 1
+      },
+      "counts": false
+    },
+    {
+      "row": {
+        "kind": "plan",
+        "status": "SUPERSEDED",
+        "child_count": 1
+      },
+      "counts": false
+    },
+    {
+      "row": {
+        "kind": "plan",
+        "status": "REVIEWING",
+        "child_count": 0
+      },
+      "counts": false
     }
   ]
 }
