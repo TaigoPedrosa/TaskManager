@@ -45,6 +45,7 @@ Frontmatter keys the estate reads:
 
 - `declared_files`: every repo-relative path the task will create or modify. This is what an implement or fix claim locks and what discovery keeps disjoint, so an unlisted file is a collision nobody sees and a listed file nobody touches holds a task out of a wave for nothing. Tests count.
 - `review_models`: who reviews this node, as model ids; tm routes the review to that family. A task that is cheap to write can be expensive to check, and a migration, a row-level security policy or a crypto boundary is reviewed on the strongest model whatever wrote it.
+- `sensitive`: where a fix of this node is re-reviewed before it lands, as one of `tenant`, `rls`, `crypto` or `migration`, or a list of them: `sensitive: migration`, `sensitive: [tenant, rls]`. tm refuses any other name. A node that writes a migration, a path under `migrations/versions/` in its `declared_files`, is sensitive without the key. A sensitive node's fix gets one re-review, scoped to its open findings; every other fix lands without one.
 - `soft_depends_on`: ids this task builds against a stub until they land. It creates no edge and holds nothing back; it tells the implementer what the stub is for.
 - `gate_lane`: where this task's own gate can run. It is a claim about this task's files, so its author owns it.
 
@@ -58,14 +59,14 @@ Frontmatter keys the estate reads:
 
 - `merge: main` (the default) cuts the node's branch from `origin/main` and lands it on `main`.
 - `merge: parent` cuts it from the branch of the plan or spec above it, `tm/<parent-id>`, and lands it there. It reaches `main` only when that parent lands. A spec cannot land on a parent.
-- `review` puts a review after implement; `fix` makes this node fix its own rejections, and needs `review`. A task has both on unless the document says otherwise; a plan or spec has both off.
+- `review` puts a review after implement, or for a plan or spec, after its landing; `fix` makes this node fix its own rejections, and needs `review`. A task has both on unless the document says otherwise, and a plan or spec has both off. Children under a reviewed plan or spec take `review: false` and `fix: false` by default, because its one review covers them; an explicit `review: true` still wins.
 
 Two shapes cover most work:
 
 - **Each task reviewed and landed alone.** Tasks keep the defaults and land on `main`; the plan is a grouping only.
-- **One review for the whole plan.** Tasks carry `merge: parent`, the plan carries `review: true` and `fix: true`, and the plan's review reads its whole branch once every task has landed on it. A task may keep its own review with `fix: false`: a rejection then lands on the plan's branch unfixed, and the plan's review is where it gets fixed. tm refuses `review` without `fix` anywhere else, because a rejection nobody below fixes must land where a review above will see it.
+- **One review for the whole plan.** Tasks carry `merge: parent` and no review of their own, and the plan carries `review: true` and `fix: true`. Once every task has landed on the plan's branch, the plan lands on its own target and reads `LANDED`: its code is there, its one review owed. That review reads the landing; an approval completes the plan, and a rejection is fixed on a branch cut from the target, which lands without a second review unless the plan is sensitive. A task may keep its own review with `review: true` and `fix: false`: a rejection then lands on the plan's branch unfixed, and the plan's review is where it gets fixed. tm refuses `review` without `fix` anywhere else, because a rejection nobody below fixes must land where a review above will see it.
 
-A plan or spec that touched several repositories lands them one at a time, in `land_order` (else the project's `repo_order`). A container whose tasks changed nothing completes without a review. One whose counted tasks name no `target_repo` has no repository to show that in, so it stays `IMPLEMENTED` rather than complete on a claim nothing proves; once its verification passes, complete it by hand with `tm task reset <id> --to COMPLETED --note "<why nothing lands>"`.
+A plan or spec that touched several repositories lands them one at a time, in `land_order` (else the project's `repo_order`). A container whose tasks changed nothing has its code on its target already: it completes, or with `review` on reads `LANDED` and still takes its one review. One whose counted tasks name no `target_repo` has no repository to show that in, so it stays `IMPLEMENTED` rather than complete on a claim nothing proves; once its verification passes, complete it by hand with `tm task reset <id> --to COMPLETED --note "<why nothing lands>"`.
 
 ## 5. What a node waits on
 
@@ -165,7 +166,7 @@ tm task update <id> --merge main
 
 ## Worked example
 
-Imports as written: every task lands on the plan's branch, the plan is reviewed once, and `tm wave discover` offers `NOTIFY-EMAIL-SENDER` and `NOTIFY-EMAIL-TEMPLATES` first.
+Imports as written: every task lands on the plan's branch with no review of its own, the plan lands on `main` and is reviewed there once, and `tm wave discover` offers `NOTIFY-EMAIL-SENDER` and `NOTIFY-EMAIL-TEMPLATES` first.
 
 <!-- tm:example -->
 
@@ -214,7 +215,6 @@ plans:
         title: Template rendering
         target_repo: backend
         merge: parent
-        fix: false
         acceptable_models: [claude-sonnet-5]
         frontmatter:
           declared_files: [src/notify/email/templates.py, tests/notify/test_templates.py]
