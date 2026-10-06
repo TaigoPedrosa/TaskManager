@@ -12,3 +12,4 @@ spec-dashboard.html
 .coverage
 coverage.xml
 htmlcov/
+/tailwindcss
