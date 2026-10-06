@@ -114,9 +114,7 @@ class DatabaseManager:
             except BaseException:
                 conn.close()
                 raise
-        # Only after the migration: a table rebuild drops `nodes`, and under enforced foreign keys
-        # that drop cascades into every table referencing it. SQLite ignores this pragma inside a
-        # transaction, so it cannot be switched off around the migration instead.
+        # Only after the migration, which runs with foreign keys off.
         conn.execute("PRAGMA foreign_keys = ON;")
         # After any refusal above: turning WAL on rewrites the file's header even for a
         # database this call is about to refuse outright, and a refusal must leave it untouched.
@@ -145,6 +143,10 @@ class DatabaseManager:
         ).fetchone()
         if not has_nodes:
             return  # uninitialised directory: `tm init` creates it at the current version
+        # Off explicitly, not left to the build's SQLITE_DEFAULT_FOREIGN_KEYS: a rebuild drops
+        # `nodes`, and under enforced foreign keys that drop cascades into every table
+        # referencing it. Before BEGIN, because SQLite ignores this pragma inside a transaction.
+        conn.execute("PRAGMA foreign_keys = OFF")
         conn.execute("BEGIN IMMEDIATE")
         try:
             version = conn.execute("PRAGMA user_version").fetchone()[0]

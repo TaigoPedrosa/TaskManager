@@ -3,6 +3,7 @@ import sys
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -123,6 +124,18 @@ def _seed_every_v2_status(taskmanager_dir: Path) -> None:
             "INSERT INTO node_relations (source_id, target_id, relation_type) "
             "VALUES ('T00', 'T01', 'depends_on')"
         )
+        conn.execute(
+            "INSERT INTO node_verifications (node_id, verification_type, target_path) "
+            "VALUES ('T00', 'file_exists', 'a.py')"
+        )
+        conn.execute(
+            "INSERT INTO node_conditions (node_id, idx, needs, command) "
+            "VALUES ('T00', 0, 'X', 'true')"
+        )
+        conn.execute(
+            "INSERT INTO jobs (id, kind, node_id, repo, target, state, heartbeat) "
+            "VALUES ('J1', 'land', 'T00', 'backend', 'main', 'running', '2026-01-01 00:00:00')"
+        )
         conn.execute("INSERT INTO nodes_fts (rowid, node_id, title) VALUES (1, 'T00', 'task')")
         conn.commit()
     finally:
@@ -136,6 +149,9 @@ def _raw_rows(state_db: Path) -> dict[str, list[tuple[object, ...]]]:
             "nodes": conn.execute("SELECT rowid, * FROM nodes ORDER BY id").fetchall(),
             "node_sections": conn.execute("SELECT * FROM node_sections").fetchall(),
             "node_relations": conn.execute("SELECT * FROM node_relations").fetchall(),
+            "node_verifications": conn.execute("SELECT * FROM node_verifications").fetchall(),
+            "node_conditions": conn.execute("SELECT * FROM node_conditions").fetchall(),
+            "jobs": conn.execute("SELECT * FROM jobs").fetchall(),
         }
     finally:
         conn.close()
@@ -169,8 +185,33 @@ def test_open_schema_2_estate_keeps_every_row_and_column_unchanged(tmp_path: Pat
     db.close()
 
     assert _raw_rows(old / "state.db") == before
-    assert before["node_sections"] != []
-    assert before["node_relations"] != []
+    assert all(before.values())
+
+
+def test_open_schema_2_estate_on_a_foreign_keys_on_build_keeps_every_child_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = tmp_path / "old"
+    _build_v2_estate(old)
+    _seed_every_v2_status(old)
+    before = _raw_rows(old / "state.db")
+    real_connect = sqlite3.connect
+
+    # What a SQLite compiled with SQLITE_DEFAULT_FOREIGN_KEYS=1 hands back.
+    def connect_foreign_keys_on(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        conn = real_connect(*args, **kwargs)
+        conn.execute("PRAGMA foreign_keys = ON")
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", connect_foreign_keys_on)
+    db = DatabaseManager(old)
+    with db.get_state_connection() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    db.close()
+
+    assert _raw_rows(old / "state.db") == before
+    assert all(before.values())
 
 
 def test_open_schema_2_estate_stores_the_fresh_nodes_sql_byte_for_byte(tmp_path: Path) -> None:
