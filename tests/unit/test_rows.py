@@ -7,7 +7,7 @@ from lifecycle_estate import add, make_estate
 
 from taskmanager.core.enums import NodeKind
 from taskmanager.core.models import FileLock, Lease, LeaseAction, Node
-from taskmanager.core.status import Action, DecisionStatus, Merge, Outcome, Status
+from taskmanager.core.status import SET_ASIDE, Action, DecisionStatus, Merge, Outcome, Status
 from taskmanager.engine.claims import Claims
 from taskmanager.engine.heuristics import score_every_task
 from taskmanager.engine.snapshot import DisplayView, waits_on
@@ -355,6 +355,20 @@ def test_counts_as_work_holds_for_a_task_or_a_started_container_with_children(
     case: dict[str, Any],
 ) -> None:
     assert counts_as_work(case["row"]) is case["counts"]
+
+
+def test_counts_as_work_cases_name_every_status_a_started_container_never_counts_under() -> None:
+    # store.js hard-codes this set and runs the same cases, so a status added to SET_ASIDE alone
+    # has to reach the cases, and through them the JS mirror
+    never = {
+        case["row"]["status"]
+        for case in COUNTS_AS_WORK
+        if case["row"]["kind"] != NodeKind.TASK.value
+        and case["row"]["child_count"]
+        and not case["counts"]
+    }
+
+    assert never == {Status.READY.value, *(status.value for status in SET_ASIDE)}
 
 
 def test_building_rows_and_statuses_reads_only_the_views_own_bulk_read(
