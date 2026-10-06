@@ -441,7 +441,7 @@ GENERATED_ARTIFACT_RULES = [
     "topic,rule", GENERATED_ARTIFACT_RULES, ids=[t for t, _ in GENERATED_ARTIFACT_RULES]
 )
 def test_tm_guide_prints_the_generated_artifact_rule(topic: str, rule: str, tmp_path: Path) -> None:
-    """A stale built file reached main because its freshness check skipped without the generator."""
+    """A freshness check that skips without its generator reads as a pass in every gate that runs it."""
     result = CliRunner().invoke(app, ["guide", topic, "--builtin", "-C", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert rule in result.stdout
