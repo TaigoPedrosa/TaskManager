@@ -446,23 +446,14 @@ class LiveHub:
         )
         if changed_ids:
             self._bodies.update(build_bodies(view, changed_ids, repos=repos))
-        stale_ids = [i for i in watched if i not in changed_ids and i in self._bodies]
-        if stale_ids:
-            relations = refresh_relations(view, data, stale_ids)
-            for node_id, parts in _runtime_parts(repos, data, stale_ids).items():
-                body = self._bodies[node_id]
-                rel = relations.get(node_id)
-                node_part = body["node"] if rel is None else {**body["node"], **rel["lifecycle"]}
+        stale = {i: self._bodies[i] for i in watched if i not in changed_ids and i in self._bodies}
+        if stale:
+            relations = refresh_relations(view, data, stale)
+            for node_id, parts in _runtime_parts(repos, data, list(stale)).items():
                 self._bodies[node_id] = {
-                    **body,
+                    **self._bodies[node_id],
                     **parts,
-                    "node": node_part,
-                    "dependency_details": (
-                        body["dependency_details"] if rel is None else rel["dependency_details"]
-                    ),
-                    "dependent_details": (
-                        body["dependent_details"] if rel is None else rel["dependent_details"]
-                    ),
+                    **relations.get(node_id, {}),
                 }
         for node_id in list(self._bodies):
             if node_id not in watched:

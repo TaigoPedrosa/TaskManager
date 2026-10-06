@@ -1,5 +1,6 @@
 import sqlite3
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -7,14 +8,15 @@ import pytest
 
 from taskmanager.core.enums import NodeKind, RelationType
 from taskmanager.core.models import Condition, Job, Lease, Node, NodeRelation, NodeSection
-from taskmanager.core.status import JobKind, JobState, Status
+from taskmanager.core.status import Action, JobKind, JobState, Status
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder
-from taskmanager.web.bodies import BodyRepos, body_items, build_bodies
+from taskmanager.web.bodies import BodyRepos, body_items, build_bodies, refresh_relations
+from taskmanager.web.rows import build_rows
 
 
 class Estate:
@@ -90,6 +92,87 @@ def test_build_bodies_carries_lifecycle_relations_sections_and_lease(estate: Est
     ]
     assert body["lease"] is not None
     assert body["lease"]["agent_id"] == "agent-a"
+
+
+def test_build_bodies_carries_the_rows_display_and_phase_for_a_node_awaiting_a_decision(
+    estate: Estate,
+) -> None:
+    estate.add("D1", NodeKind.DECISION)
+    estate.add("T1", status=Status.READY)
+    estate.depend("T1", "D1")
+    view = estate.view()
+
+    body = build_bodies(view, ["T1"], repos=estate.repos())["T1"]
+    row = build_rows(view)["T1"]
+
+    assert body["display"] == row["display"] == "AWAITING_DECISION"
+    assert body["phase"] == row["phase"] == "QUEUED"
+
+
+def test_build_bodies_carries_a_live_leases_acquired_at_and_last_heartbeat(
+    estate: Estate,
+) -> None:
+    acquired = datetime(2026, 10, 6, 9, 0, tzinfo=UTC)
+    heartbeat = datetime.now(tz=UTC)
+    estate.add("T1", status=Status.IMPLEMENTING, claimed_from=Status.READY)
+    estate.runtime_repo.acquire_lease(
+        Lease(
+            task_id="T1",
+            agent_id="agent-a",
+            session_id="s1",
+            branch_name="tm/T1",
+            action=Action.IMPLEMENT,
+            acquired_at=acquired,
+            last_heartbeat=heartbeat,
+            ttl_seconds=3600,
+        ),
+        [],
+    )
+
+    lease = build_bodies(estate.view(), ["T1"], repos=estate.repos())["T1"]["lease"]
+
+    assert datetime.fromisoformat(lease["acquired_at"]) == acquired
+    assert datetime.fromisoformat(lease["last_heartbeat"]) == heartbeat
+    assert lease["ttl_seconds"] == 3600
+
+
+def test_build_bodies_carries_a_finished_landing_jobs_heartbeat(estate: Estate) -> None:
+    landed_at = datetime(2026, 10, 1, 8, 30, tzinfo=UTC)
+    estate.add("T1", status=Status.COMPLETED)
+    estate.job_repo.create(
+        Job(
+            kind=JobKind.LAND,
+            node_id="T1",
+            repo="core",
+            target="main",
+            state=JobState.SUCCEEDED,
+            heartbeat=landed_at,
+        )
+    )
+
+    jobs = build_bodies(estate.view(), ["T1"], repos=estate.repos())["T1"]["jobs"]
+
+    assert datetime.fromisoformat(jobs[0]["heartbeat"]) == landed_at
+
+
+def test_refresh_relations_moves_a_stale_bodys_display_once_its_dependency_completes(
+    estate: Estate,
+) -> None:
+    estate.add("A", status=Status.READY)
+    estate.add("B", status=Status.READY)
+    estate.depend("B", "A")
+    stale = build_bodies(estate.view(), ["B"], repos=estate.repos())
+    assert stale["B"]["display"] != "READY"
+
+    a = estate.node_repo.get_node("A")
+    assert a is not None
+    estate.node_repo.save_node(a.model_copy(update={"status": Status.COMPLETED}))
+    view = estate.view()
+
+    refreshed = refresh_relations(view, view.snapshot.graph_data(), stale)["B"]
+
+    assert refreshed["display"] == refreshed["node"]["display"] == "READY"
+    assert refreshed["phase"] == refreshed["node"]["phase"] == "QUEUED"
 
 
 def test_build_bodies_lists_a_dependent_the_dependency_finds(estate: Estate) -> None:
@@ -200,6 +283,8 @@ def test_build_bodies_issues_the_same_statement_count_for_200_ids_as_for_2(
 def _body(sections: list[dict[str, Any]], **parts: Any) -> dict[str, Any]:
     body = {
         "node": {"id": "T1"},
+        "display": "READY",
+        "phase": "QUEUED",
         "dependency_details": [],
         "dependent_details": [],
         "verifications": [],
@@ -230,7 +315,17 @@ def test_body_items_with_no_prior_body_reports_every_section_and_part() -> None:
         "section": {"header": "H", "content": "c", "ordinal": 1},
     } in items
     assert sum(1 for i in items if i["op"] == "section") == 1
-    assert sum(1 for i in items if i["op"] == "body") == 7
+    assert {i["part"] for i in items if i["op"] == "body"} == {
+        "node",
+        "display",
+        "phase",
+        "dependency_details",
+        "dependent_details",
+        "verifications",
+        "conditions",
+        "jobs",
+        "lease",
+    }
 
 
 def test_body_items_reports_an_added_a_changed_and_a_removed_section_each_once() -> None:

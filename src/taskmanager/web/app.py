@@ -281,8 +281,6 @@ def _node_details(ids: list[str], view: DisplayView, repos: BodyRepos) -> dict[s
     return {
         node_id: {
             **body,
-            "display": body["node"]["display"],
-            "phase": body["node"].get("phase"),
             "dependencies": repos.node_repo.get_dependencies(node_id),
             "blocked_by": repos.node_repo.get_blocked_by(node_id),
         }

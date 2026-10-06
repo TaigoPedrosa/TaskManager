@@ -1,17 +1,20 @@
 """Integration tests for the write API (§5), decisions (§3), attachments and file serving (§4)."""
 
 import base64
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from taskmanager.core.enums import NodeKind, RelationType, VerificationType
-from taskmanager.core.models import Lease, Node, NodeRelation, NodeVerification
-from taskmanager.core.status import Action, DecisionStatus, Status
+from taskmanager.core.models import Job, Lease, Node, NodeRelation, NodeVerification
+from taskmanager.core.status import Action, DecisionStatus, JobKind, JobState, Status
 from taskmanager.db.connection import DatabaseManager
+from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
+from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine.snapshot import stored_status
 from taskmanager.web.app import create_app
 
@@ -377,12 +380,40 @@ def test_delete_lease_gives_the_claimed_step_back(
         action=Action.IMPLEMENT,
         ttl_seconds=3600,
     )
-    from taskmanager.db.runtime_repo import RuntimeRepository
 
     assert RuntimeRepository(node_repo.db).claim(lease, [], node)
     res = client.delete("/api/nodes/SPEC-P1-T1/lease", headers=JSON)
     assert res.status_code == 200
     assert res.json() == {"id": "SPEC-P1-T1", "status": "READY"}
+
+
+def test_node_detail_carries_a_live_leases_acquired_at_and_last_heartbeat(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, node_repo, _ledger_repo = api
+    node = node_repo.get_node("SPEC-P1-T1")
+    assert node is not None
+    node.status, node.claimed_from = Status.IMPLEMENTING, Status.READY
+    acquired = datetime(2026, 10, 6, 9, 0, tzinfo=UTC)
+    heartbeat = datetime.now(tz=UTC)
+    lease = Lease(
+        task_id="SPEC-P1-T1",
+        agent_id="a",
+        session_id="s",
+        branch_name="tm/SPEC-P1-T1",
+        action=Action.IMPLEMENT,
+        acquired_at=acquired,
+        last_heartbeat=heartbeat,
+        ttl_seconds=3600,
+    )
+    assert RuntimeRepository(node_repo.db).claim(lease, [], node)
+
+    detail = client.get("/api/nodes/SPEC-P1-T1").json()
+
+    assert detail["display"] == "IMPLEMENTING"
+    assert datetime.fromisoformat(detail["lease"]["acquired_at"]) == acquired
+    assert datetime.fromisoformat(detail["lease"]["last_heartbeat"]) == heartbeat
+    assert detail["lease"]["ttl_seconds"] == 3600
 
 
 def test_post_sweep_returns_swept_list(
@@ -451,6 +482,27 @@ def _seed_decision(node_repo: NodeRepository, decision_id: str = "decision-D1") 
             },
         )
     )
+
+
+def test_node_detail_carries_the_rows_display_and_phase_for_a_node_awaiting_a_decision(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, node_repo, _ledger_repo = api
+    _seed_decision(node_repo)
+    node_repo.add_relation(
+        NodeRelation(
+            source_id="SPEC-P1-T1",
+            target_id="decision-D1",
+            relation_type=RelationType.DEPENDS_ON,
+        )
+    )
+
+    detail = client.get("/api/nodes/SPEC-P1-T1").json()
+    page = client.get("/api/nodes", params={"ids": "SPEC-P1-T1", "include": "body"}).json()
+    row, body = page["items"][0], page["items"][0]["body"]
+
+    assert detail["display"] == body["display"] == row["display"] == "AWAITING_DECISION"
+    assert detail["phase"] == body["phase"] == row["phase"] == "QUEUED"
 
 
 def test_answer_decision_unblocks_dependent_task(
@@ -690,6 +742,28 @@ def test_bulk_and_single_node_detail_carry_attachment_size_bytes(
     (tmp_path / ".taskmanager" / "assets" / asset).unlink()
     detail2 = client.get("/api/nodes/SPEC-P1-T1").json()
     assert detail2["node"]["frontmatter"]["attachments"][0]["size_bytes"] is None
+
+
+def test_node_detail_carries_a_finished_landing_jobs_heartbeat(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, node_repo, _ledger_repo = api
+    landed_at = datetime(2026, 10, 1, 8, 30, tzinfo=UTC)
+    JobRepository(node_repo.db).create(
+        Job(
+            kind=JobKind.LAND,
+            node_id="SPEC-P1-T1",
+            repo=".",
+            target="main",
+            state=JobState.SUCCEEDED,
+            heartbeat=landed_at,
+        )
+    )
+
+    detail = client.get("/api/nodes/SPEC-P1-T1").json()
+
+    assert detail["jobs"][0]["state"] == "succeeded"
+    assert datetime.fromisoformat(detail["jobs"][0]["heartbeat"]) == landed_at
 
 
 def test_decisions_list_carries_attachment_size_bytes(
