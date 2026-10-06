@@ -5,15 +5,18 @@ A step's own close (complete, review, landing, release) is the lease holder's wr
 through the lifecycle, and does not come here: rule 7 guards a busy node against everyone else."""
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Final, Protocol
 
 from taskmanager.core.enums import NodeKind
 from taskmanager.core.lifecycle import REOPENABLE
 from taskmanager.core.status import EXITS, IN_STEP, Merge, Status
-from taskmanager.engine.chains import MAIN, landing_target
+from taskmanager.engine.chains import MAIN, ON_TARGET, landing_target
 from taskmanager.engine.stepgraph import SnapNode, Snapshot, find_cycle, format_cycle
 
 _SET_ASIDE_OR_FAILED = EXITS | {Status.FAILED}
+# What a `sensitive:` key may name: a fix touching one of these gets one review scoped to its
+# findings before it lands.
+SENSITIVE_AREAS: Final = ("tenant", "rls", "crypto", "migration")
 
 
 @dataclass(frozen=True)
@@ -51,6 +54,16 @@ def _flags(after: Snapshot, n: SnapNode) -> list[Refusal]:
         refusals.append(
             Refusal(n.id, 3, f"{n.id}: a spec or a parentless node lands on main; set merge=main")
         )
+    unknown = [area for area in n.sensitive if area not in SENSITIVE_AREAS]
+    if unknown:
+        refusals.append(
+            Refusal(
+                n.id,
+                9,
+                f"{n.id}: sensitive names {', '.join(map(repr, unknown))}; it takes "
+                f"{', '.join(SENSITIVE_AREAS)}",
+            )
+        )
     if n.merge == Merge.PARENT and n.literal_origin_main:
         refusals.append(
             Refusal(
@@ -75,7 +88,7 @@ def _retarget(
     where = "main" if new_target == MAIN else new_target
     refused = f"{n.id}: its branch exists and was not cut from {where}"
     # Only a node already set aside or failed reopens, and landed or replaced work never does.
-    if n.status == Status.COMPLETED:
+    if n.status in ON_TARGET:
         return [
             Refusal(n.id, 4, f"{refused}; its code has landed; file a new task to land on {where}")
         ]
@@ -104,7 +117,7 @@ def _placement(before: Snapshot, after: Snapshot, n: SnapNode) -> list[Refusal]:
     # Work that left a container's count, or that already landed, coming back into play.
     reopened = old is not None and (
         (old.status in _SET_ASIDE_OR_FAILED and n.status not in _SET_ASIDE_OR_FAILED)
-        or (old.status == Status.COMPLETED and n.status != Status.COMPLETED)
+        or (old.status in ON_TARGET and n.status not in ON_TARGET)
     )
     if not (arrived or reopened):
         return []
@@ -117,9 +130,10 @@ def _placement(before: Snapshot, after: Snapshot, n: SnapNode) -> list[Refusal]:
         if holder is None:
             ancestor = after.nodes[ancestor].parent
             continue
-        if holder.status == Status.COMPLETED:
+        if holder.status in ON_TARGET:
+            # Its own code is on its target already, so nothing would carry a new child's on.
             refusals.append(
-                Refusal(n.id, 6, f"{n.id}: {ancestor} is COMPLETED; file a new plan instead")
+                Refusal(n.id, 6, f"{n.id}: {ancestor} is {holder.status}; file a new plan instead")
             )
         elif holder.status in _SET_ASIDE_OR_FAILED:
             # The rollup keeps an exit someone chose, so the ancestor would never count this

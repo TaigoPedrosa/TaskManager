@@ -150,6 +150,23 @@ def test_a_writer_whose_code_is_on_main_no_longer_holds_the_chain() -> None:
     assert migration_order(s, "core") == ["B"]
 
 
+def test_a_writer_whose_plan_landed_with_its_review_owed_no_longer_holds_the_chain() -> None:
+    s = snap(
+        SnapNode("P", PLAN, repo="core", status=Status.LANDED),
+        SnapNode(
+            "A",
+            TASK,
+            parent="P",
+            merge=PARENT,
+            repo="core",
+            writes_migration=True,
+            status=Status.COMPLETED,
+        ),
+        SnapNode("B", TASK, repo="core", writes_migration=True),
+    )
+    assert migration_order(s, "core") == ["B"]
+
+
 def _random_snapshot(rng: random.Random) -> Snapshot:
     nodes: dict[str, SnapNode] = {}
     for i in range(rng.randint(1, 8)):

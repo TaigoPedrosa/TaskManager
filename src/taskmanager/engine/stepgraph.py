@@ -8,7 +8,7 @@ from graphlib import CycleError, TopologicalSorter
 from taskmanager.core.enums import CONTAINERS, NodeKind
 from taskmanager.core.status import EXITS, SET_ASIDE, DecisionStatus, Merge, Status
 from taskmanager.db.graph_reader import GraphData
-from taskmanager.engine.chains import landing_chain, meeting, satisfied
+from taskmanager.engine.chains import ON_TARGET, landing_chain, meeting, satisfied
 
 Graph = dict[str, set[str]]
 
@@ -24,6 +24,9 @@ class SnapNode:
     fix: bool = True
     repo: str | None = None
     writes_migration: bool = False
+    # What the node's `sensitive:` frontmatter key names, as written; validation refuses any
+    # name outside the known areas.
+    sensitive: tuple[str, ...] = ()
     busy: bool = False
     literal_origin_main: bool = False
 
@@ -151,7 +154,7 @@ def _migration_order(s: Snapshot, repo: str, rank: dict[str, int]) -> list[str]:
         and n.kind not in CONTAINERS
         # Code parked on a branch that was set aside never reaches main, so it holds nothing.
         and not any(s.status(x) in EXITS for x in landing_chain(s, n.id))
-        and s.status(reaches_main(n.id)) != Status.COMPLETED
+        and s.status(reaches_main(n.id)) not in ON_TARGET
     ]
 
     def key(n: SnapNode) -> tuple[int, int, int, str]:

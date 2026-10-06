@@ -20,7 +20,7 @@ from taskmanager.core.rollup import rollup
 from taskmanager.core.status import IN_STEP, Action, Event, Status
 from taskmanager.engine import selection
 from taskmanager.engine.routing import model_for
-from taskmanager.engine.snapshot import apply_cycle, cycle_of
+from taskmanager.engine.snapshot import apply_cycle, cycle_in
 from taskmanager.engine.stepgraph import SnapNode, Snapshot
 
 _EVENT_OF: dict[Action, Event] = {
@@ -113,7 +113,7 @@ def _advance(
         if action == Action.SYNC:
             # A sync carries a branch up to date; it never moves the node's own status.
             return before, before
-        cycle = cycle_of(node)
+        cycle = cycle_in(snap, node)
         if before not in IN_STEP:
             cycle = claim(cycle)
         advanced = advance(cycle, _EVENT_OF[action], caps)
@@ -150,7 +150,7 @@ def _advance(
     for node_id in in_flight_ids:
         node = data.nodes[node_id]
         action = _ACTION_OF_STATUS[Status(node.status)]
-        model = model_for(action, node, fix_round(cycle_of(node)))
+        model = model_for(action, node, fix_round(cycle_in(snap, node)))
         before, after = settle(node, action)
         entries.append(
             WaveEntry(
@@ -197,6 +197,6 @@ def _roll_up(
                 nodes[parent_id] = replace(parent, status=derived)
                 data_nodes[parent_id] = apply_cycle(
                     data_nodes[parent_id],
-                    replace(cycle_of(data_nodes[parent_id]), status=derived),
+                    replace(cycle_in(snap, data_nodes[parent_id]), status=derived),
                 )
         queue.append(parent_id)

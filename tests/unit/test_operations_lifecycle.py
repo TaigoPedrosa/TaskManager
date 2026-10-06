@@ -6,8 +6,11 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
+from taskmanager.cli.main import app as cli_app
 from taskmanager.core.enums import NodeKind, RenderView, VerificationType
+from taskmanager.core.lifecycle import next_action
 from taskmanager.core.models import Lease, Node
 from taskmanager.core.status import Action, ConditionStage, DecisionStatus, Merge, Outcome, Status
 from taskmanager.db.connection import DatabaseManager
@@ -171,12 +174,13 @@ def test_landing_on_a_parent_is_refused_for_a_test_command_naming_origin_main(en
     assert get(node_repo, task).merge == Merge.MAIN
 
 
-def test_a_new_child_under_a_completed_plan_is_refused(env: Env) -> None:
+@pytest.mark.parametrize("landed", [Status.COMPLETED, Status.LANDED])
+def test_a_new_child_under_a_plan_whose_code_landed_is_refused(env: Env, landed: Status) -> None:
     node_repo, _runtime, ledger, ops = env
     _spec, plan, _task = tree(ops)
-    set_status(node_repo, plan, Status.COMPLETED)
+    set_status(node_repo, plan, landed)
     count = events(ledger)
-    with pytest.raises(OperationError) as exc:
+    with pytest.raises(OperationError, match=f"{plan} is {landed}; file a new plan") as exc:
         ops.add_task("Late", plan, slug="LATE")
     assert exc.value.status_code == 409
     assert node_repo.get_node(f"{plan}-LATE") is None
@@ -262,6 +266,23 @@ def test_moving_a_branch_cut_from_its_parent_onto_main_is_refused(env: Env, tmp_
     git(work, "branch", "--no-track", f"tm/{task}", f"tm/{plan}")
     git(work, "checkout", "--detach")
     with pytest.raises(OperationError) as exc:
+        ops.update_node(task, merge=Merge.MAIN)
+    assert exc.value.status_code == 409
+    assert get(node_repo, task).merge == Merge.PARENT
+
+
+def test_moving_a_landed_branch_is_refused_as_landed_code(env: Env, tmp_path: Path) -> None:
+    node_repo, _runtime, _ledger, ops = env
+    work = repo_with_origin(tmp_path, "core")
+    _spec, plan, task = tree(ops, review=True, fix=True)
+    ops.update_node(task, repo="core", merge=Merge.PARENT)
+    git(work, "branch", "--no-track", f"tm/{plan}", "origin/main")
+    git(work, "checkout", f"tm/{plan}")
+    git(work, "commit", "--allow-empty", "-m", "container work")
+    git(work, "branch", "--no-track", f"tm/{task}", f"tm/{plan}")
+    git(work, "checkout", "--detach")
+    set_status(node_repo, task, Status.LANDED)
+    with pytest.raises(OperationError, match="its code has landed; file a new task") as exc:
         ops.update_node(task, merge=Merge.MAIN)
     assert exc.value.status_code == 409
     assert get(node_repo, task).merge == Merge.PARENT
@@ -538,3 +559,58 @@ def test_a_ledger_write_failing_after_its_transaction_commits_neither_fails_it_n
     assert get(node_repo, task).title == "second"
     assert len(calls) == 2
     assert events(ledger) == count + 1
+
+
+def test_an_update_naming_a_sensitive_area_outside_the_four_is_refused_with_its_name(
+    env: Env,
+) -> None:
+    node_repo, _runtime, ledger, ops = env
+    _spec, _plan, task = tree(ops)
+    count = events(ledger)
+    with pytest.raises(OperationError, match=f"{task}: sensitive names 'pii'") as exc:
+        ops.update_node(task, frontmatter_set={"sensitive": ["rls", "pii"]})
+    assert exc.value.status_code == 400
+    assert "sensitive" not in get(node_repo, task).frontmatter
+    assert events(ledger) == count
+
+
+@pytest.mark.parametrize(
+    ("value", "stored"),
+    [("migration", "migration"), ('["crypto","tenant"]', ["crypto", "tenant"])],
+)
+def test_task_update_set_takes_a_known_sensitive_area_and_refuses_another(
+    tmp_path: Path, value: str, stored: object
+) -> None:
+    node_repo, _runtime, _ledger, ops = make_ops(tmp_path)
+    _spec, _plan, task = tree(ops)
+
+    def update(raw: str) -> tuple[int, str]:
+        result = CliRunner().invoke(
+            cli_app, ["task", "update", task, "--set", f"sensitive={raw}", "-C", str(tmp_path)]
+        )
+        return result.exit_code, result.output
+
+    assert update(value)[0] == 0
+    assert get(node_repo, task).frontmatter["sensitive"] == stored
+    code, output = update("billing")
+    assert code == 1
+    assert "sensitive names 'billing'" in output
+    assert get(node_repo, task).frontmatter["sensitive"] == stored
+
+
+def test_an_update_declaring_a_migration_makes_the_node_s_fix_take_a_review(env: Env) -> None:
+    node_repo, _runtime, _ledger, ops = env
+    _spec, _plan, task = tree(ops)
+    node = get(node_repo, task)
+    node_repo.save_node(
+        node.model_copy(
+            update={"status": Status.FIXED, "outcome": Outcome.REJECT, "fix_for": Outcome.REJECT}
+        )
+    )
+    assert next_action(ops.snapshots.cycle(get(node_repo, task))) == Action.MERGE
+
+    ops.update_node(
+        task, frontmatter_set={"declared_files": ["db/migrations/versions/0007_rls.py"]}
+    )
+
+    assert next_action(ops.snapshots.cycle(get(node_repo, task))) == Action.REVIEW

@@ -8,7 +8,7 @@ from taskmanager.core.lifecycle import LifecycleError, abandon, defer, reopen
 from taskmanager.core.models import Node
 from taskmanager.core.status import EXITS, DecisionEffect, DecisionStatus, Status
 from taskmanager.engine.gates import clear_red_targets
-from taskmanager.engine.snapshot import apply_cycle, cycle_of, roll_up_ancestors, stored_status
+from taskmanager.engine.snapshot import apply_cycle, roll_up_ancestors, stored_status
 
 if TYPE_CHECKING:
     from taskmanager.engine.operations import Operations
@@ -220,11 +220,11 @@ def apply_effect(ops: Operations, decision_id: str, effect: DecisionEffect) -> l
                 )
             try:
                 if effect == DecisionEffect.ABANDON:
-                    cycle = abandon(cycle_of(node))
+                    cycle = abandon(ops.snapshots.cycle(node))
                 elif effect == DecisionEffect.DEFER:
-                    cycle = defer(cycle_of(node))
+                    cycle = defer(ops.snapshots.cycle(node))
                 else:
-                    cycle = reopen(cycle_of(node), _children_all_completed(ops, node_id))
+                    cycle = reopen(ops.snapshots.cycle(node), _children_all_completed(ops, node_id))
             except LifecycleError as exc:
                 raise OperationError(
                     f"'{decision_id}' cannot {effect} '{node_id}': {exc}", 409
