@@ -66,6 +66,8 @@ A table of the task's checks against your branch, exit 1 if any failed. What eac
 
 The path checks read the ref, never your worktree, so without `--ref` they read `origin/main` and stay red until the task lands. A `test_command` reads the same ref from `TM_VERIFY_REF`; when tm lands the task it sets that to the landing target, so write `"${TM_VERIFY_REF:-origin/main}"` into the command rather than a branch name: a plain `tm verify run` sets no ref. `No verifications to run.` exits 2: a task with no checks has not passed anything, and that is worth a line in your report.
 
+- A generated file (a built stylesheet, a lockfile, a schema dump) is regenerated, never edited or hand-merged: a branch that changes any of its inputs rebuilds it before closing, and a conflict on it is resolved by rebuilding it on the merged tree.
+
 ## Waiting on something that takes time
 
 A gate, a build, an external state change — pick by duration, because duration is what you actually know:
