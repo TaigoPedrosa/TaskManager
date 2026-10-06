@@ -29,11 +29,11 @@ Arguments, of which `session` and `worktreeDir` are required:
 | `maxStrong` | of those, how many may run on `opus` or `fable` (default 5) |
 | `maxBatch` | the most nodes one tick takes on; the rest wait for the next tick |
 | `exclude` | node ids this tick never chooses |
-| `holdMerge` | node ids whose landing this tick never starts: discovery passes over their merge step (`--hold-merge`), and a node reaching it mid-loop stops there; they are implemented, reviewed and fixed, and wait at their merge step for the owner |
+| `holdMerge` | node ids whose landing this tick never starts: discovery passes over their merge step (`--hold-merge`), and a node reaching it mid-loop stops there; a task is implemented, reviewed and fixed, and waits at its merge step for the owner; a reviewed plan or spec lands before its review, so holding its landing holds that review too |
 | `root` | the tm root every command runs from; defaults to the session's own directory |
 | `tm` | the `tm` executable every command runs; defaults to the one on `PATH` |
 | `agentTypes` | repository → agent type for implement and fix |
-| `reviewerTypes` | `task`, `rereview` and `container` → agent type for a first review, a review after a fix, and a plan's or spec's review |
+| `reviewerTypes` | `task`, `rereview` and `container` → agent type for a task's review, a sensitive fix's re-review, and a plan's or spec's review of its landed target |
 | `capabilities` | agent type → the `requires` values it can serve; a node needing one no preferred type serves goes to the default agent |
 | `preamble` | repository → a line prepended to every brief for it, plus a `default` key |
 | `rulesDir` | a directory every agent reads before its first edit |
@@ -58,6 +58,8 @@ tm wave discover --session <id> --slots <n> --max-strong <n> --hold-merge <node-
 
 Every node of every kind whose next step can be claimed now, with that step and its model, plus landings and syncs stopped for an agent; a JSON line, then `__CHECK n=<chosen> h=<djb2>`. A node is claimable when none of these holds, checked in this order: it is mid-step or its job is running; an edge (its own, or one on a container above it) points at an open decision; an edge is unsatisfied; a `claim` condition is unmet; a sync its claim needs is running or waiting; its next step would lock a file another lease holds; its status has no next step.
 
+A reviewed plan or spec lands before its review: once its code is on its target it reads `LANDED`, and its one review is claimable. Nodes that depend on it may start meanwhile, since an edge is satisfied once the code has landed. A `FIXED` node's next step is its landing, unless the node is sensitive (`tm guide plan`, §2): then it is one re-review, scoped to the open findings. A dispatcher never re-dispatches a review of a fix that is not sensitive: not by hand, not through a `tm task reset`, not as a `rereview` agent sent anyway.
+
 Within a batch no two nodes declare the same file. Across a repository, a node writing a migration holds every other migration writer back until it has landed on `main`, except siblings building on its own container branch. Two nodes touching one schema, one generated file or one shared table are not disjoint whatever their file lists say: give them an edge.
 
 ## 3. Models are tm's
@@ -75,7 +77,7 @@ Within a batch no two nodes declare the same file. Across a repository, a node w
 
 A list you disagree with is a plan defect: fix it with `tm task update <id> --models a,b` and say so, never dispatch around it.
 
-A task's fix rounds are capped at `max_fix_rounds.task` (default 2): past that cap it is `FAILED` with a decision, not a third round, which is why the row above marks round 3 containers only — a task never reaches it. The lever on a task that keeps failing is widening `acceptable_models`, tried before anyone answers `investigate`.
+A rejection buys one fix, which lands without a re-review unless the node is sensitive; a sensitive fix whose re-review rejects is `FAILED` with a decision, never a second fix. So `max_fix_rounds.task` and `max_fix_rounds.container` bound only the sensitive path, and a fix past round 1 follows only a `tm task reset` that kept an earlier count. The lever on a node that keeps failing is widening `acceptable_models`, tried before anyone answers `investigate`.
 
 ## 4. Holds are edges, decisions and conditions
 
@@ -94,7 +96,7 @@ tm job status <job> --wait 540
 
 ## 6. When something fails
 
-A node that spends its fix rounds, its landing attempts or its failed steps is `FAILED`, and tm opens a decision on it; a `main` that stays red under parked landings for an hour opens one too; and a node deferred, abandoned or failed while others depend on it opens one on those dependents. `tm decision list --status open` is the owner's queue, not yours: do not answer a decision on the owner's behalf, and do not chase an agent to withdraw one.
+A node that spends its fix rounds, its landing attempts or its failed steps, or whose sensitive fix is rejected on its re-review, is `FAILED`, and tm opens a decision on it; a `main` that stays red under parked landings for an hour opens one too; and a node deferred, abandoned or failed while others depend on it opens one on those dependents. `tm decision list --status open` is the owner's queue, not yours: do not answer a decision on the owner's behalf, and do not chase an agent to withdraw one.
 
 Re-running a failed step unchanged is not a fix. Before anyone answers `investigate`, change what made it fail: correct the brief with `tm section set`, widen `acceptable_models`, or split the node. A rejection whose findings are rulings — "the brief doesn't say", "which of these is correct" — is answered by a decision, not another fix round: the reviewer raises it instead of rejecting on it.
 
@@ -129,3 +131,4 @@ A plan's `context` reaches every task's brief. Anything a `tm` command can answe
 - Never answer a decision that is the owner's.
 - Never ask the owner a question in chat: every question is a `tm decision add`.
 - Never re-run a failed node without changing what made it fail.
+- Never re-dispatch a review of a fix that is not sensitive.

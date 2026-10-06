@@ -1,6 +1,6 @@
 # Reviewing a node
 
-For the agent that reads a node's branch after `tm task start` claimed its `review`, writes the findings on the node, and approves or rejects it.
+For the agent that reads a node's work after `tm task start` claimed its `review`, writes the findings on the node, and approves or rejects it.
 
 ## 1. The claim
 
@@ -12,7 +12,11 @@ tm task start <node-id> --agent <name> --session <id> --yaml
 
 `action: review` sets the node to `REVIEWING`, names the `model` family, the `repos` it touched (several for a plan or spec), its `branch` and `base`, and locks nothing: a review writes no code, so it never holds a sibling out. It cuts no worktree. The lease is held under `<name>` and the claim prints its `token`; the verbs closing the step pass both back with `--agent <name> --token <token>`, and a workflow's prompt carries them. `action: blocked` (exit 3) claimed nothing; report its `reason`.
 
-The node may be a task, or a plan or spec whose children have all landed on its branch. If `tm section get <node-id>:review` already holds findings, this review checks a fix (step 3).
+What this review covers follows from the status it was claimed from, which `tm task get <node-id> --yaml` prints as `claimed_from`:
+
+- `IMPLEMENTED`: a task's review, of its own branch before it lands.
+- `LANDED`: a plan's or spec's one review. Its branch has already landed, so the claim's `branch` names the target it landed on, not its own.
+- `FIXED`: the re-review of a sensitive node's fix (`tm guide plan`, §2). It is the only review a fix gets; every other fix lands without one.
 
 ## 2. Read what was asked for
 
@@ -32,6 +36,13 @@ git -C <repo> diff <base>...<branch>
 git -C <repo> show <branch>:<path>
 ```
 
+For a review claimed from `LANDED`, `<base>...<branch>` is empty: the node's code is what its landing merge brought onto the target. Find that merge by its subject, then read it against its first parent, the target as it stood before:
+
+```
+git -C <repo> log --oneline -1 --grep "^merge(<node-id>): land " <branch>
+git -C <repo> diff <landing>^1 <landing>
+```
+
 Read only. Do not check the branch out in the project's own checkout, do not edit a file, do not run a formatter. If you must execute the code, cut a detached worktree where the workflow's prompt says (on your own, under your session's scratch directory), never inside the project, and remove it before you close the step:
 
 ```
@@ -41,9 +52,9 @@ git -C <repo> worktree remove <scratch>/<repo>-<node-id>-review
 
 Say in the review that you executed it, and where.
 
-- **A first review** reads the whole diff against the brief.
-- **A plan's or spec's review** reads the whole branch too, for what is true only between its children: a producer nobody calls, a column only ever written as null, two halves that do not join.
-- **A review after a fix** checks every finding in `:review` not yet recorded as closed against the fix commits and the fixer's latest `:report` entry, and, when the last landing failed, the failure the latest `:merge` entry names. Establish each closure by making it fail.
+- **A task's review** reads the whole diff against the brief.
+- **A plan's or spec's review** runs once, on its landed target. It reads the whole landing against the brief, and for what is true only between its children: a producer nobody calls, a column only ever written as null, two halves that do not join. Its findings are fixed on a branch cut from that target, and the fix lands without coming back to review unless the node is sensitive.
+- **A re-review** is scoped to the open findings of a sensitive fix: each finding in `:review` not yet recorded as closed, checked against the fix commits and the fixer's latest `:report` entry, and, when the last landing failed, the failure the latest `:merge` entry names. Establish each closure by making it fail. It never widens: no fresh read of the rest of the diff and no new finding outside those; anything else you notice goes in the report.
 
 ## 4. Run the checks
 
@@ -77,9 +88,9 @@ tm task review <node-id> --agent <name> --token <token> --reject --verdict "<one
 
 tm refuses either one while the `:review` section is unchanged since your claim: the findings are the record, and a verdict without them leaves a fixer nothing to fix. It refuses it too when the live lease is not `<name>`'s or not `<token>`'s: the step is no longer yours, so stop and report. `--verdict` is a free-text line shown beside the status; it never decides anything.
 
-- **Approved**: the node goes on to its landing.
-- **Rejected, and the node fixes its own rejections**: it goes to a fix round while it has rounds left; with none left it is `FAILED`, and the owner decides.
-- **Rejected, and the node does not fix** (`fix` off): it lands its branch on its parent unfixed, and the parent's review is where the findings are fixed.
+- **Approved**: a task, or a re-reviewed fix, goes on to its landing; a plan or spec reviewed at `LANDED` is `COMPLETED`.
+- **Rejected, and the node fixes its own rejections**: it gets one fix, which lands without another review unless the node is sensitive. A rejected re-review makes the node `FAILED` with a decision for the owner, never a second fix.
+- **Rejected, and the node does not fix** (`fix` off): a task lands its branch on its parent unfixed, and the parent's review is where the findings are fixed. A plan or spec at `LANDED` is already on its target, so a rejection it does not fix makes it `FAILED`, and the owner decides.
 
 A judgement call the brief itself cannot settle — not a defect, a genuine open question — is raised rather than left in prose: `tm task release <node-id> --agent <name> --token <token> --blocked --decision "<question>" --option "a|Do X|why" --recommend a`. A finding that turns on "the brief doesn't say" or "which of these is correct" is that same call: a reviewer raises it instead of rejecting on it. Run `tm task heartbeat <node-id>` if the read runs long.
 
@@ -91,6 +102,7 @@ The verdict, the numbered findings, the `tm verify run` exit code with the rows 
 
 - Never edit code, tests, fixtures or configuration — not even a one-line fix you can see.
 - Never approve with a finding still open, and never merge or push anything.
+- Never widen a re-review past the findings still open.
 - Never close the step without writing `:review` first.
 - Never leave a worktree you cut behind you.
 - Never file a finding you have not read in the branch's own content.
