@@ -113,11 +113,16 @@ def test_paging_from_root_through_every_container_visits_each_node_once_in_order
 
 @pytest.mark.parametrize(
     "case_name",
-    ["open_spec", "model_filter_matches_a_task_with_several_models", "spec_filter"],
+    [
+        "open_spec",
+        "model_filter_matches_a_task_with_several_models",
+        "spec_filter",
+        "a_plan_in_its_own_review_shows_under_its_status_without_its_tasks",
+    ],
 )
 def test_visibility_case_reconstructs_through_nodes_pagination(case_name: str) -> None:
     case = next(c for c in FIXTURE["cases"] if c["name"] == case_name)
-    rows = FIXTURE["rows"]
+    rows = case.get("estate", FIXTURE)["rows"]
     open_ids = set(case["open"])
     collected: list[str] = []
 

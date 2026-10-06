@@ -297,6 +297,45 @@ async def test_a_plans_own_review_fix_merge_cycle_pushes_live_and_matches_the_st
         assert pushed == plan_entry["counts"] == {"COMPLETED": 2, status.value: 1}
 
 
+@run_async
+async def test_claiming_a_plans_review_moves_the_reviewing_facet_from_0_to_1(
+    estate: Estate,
+) -> None:
+    estate.add("S1", NodeKind.SPEC)
+    estate.add("P1", NodeKind.PLAN, parent="S1", status=Status.IMPLEMENTED)
+    estate.add("T1", NodeKind.TASK, parent="P1", status=Status.COMPLETED)
+    estate.add("T2", NodeKind.TASK, parent="P1", status=Status.COMPLETED)
+
+    hub = estate.hub()
+    await hub.refresh()
+    session = hub.open_session(FakeSocket())
+    snapshot = await subscribe(hub, session, 1, reset=True)
+    tasks_before = {node_id: hub.rows[node_id] for node_id in ("T1", "T2")}
+
+    assert "REVIEWING" not in snapshot["facets"]["status"]
+
+    plan = estate.node_repo.get_node("P1")
+    assert plan is not None
+    estate.node_repo.save_node(
+        plan.model_copy(update={"status": Status.REVIEWING, "claimed_from": Status.IMPLEMENTED})
+    )
+    estate.runtime_repo.acquire_lease(
+        Lease(
+            task_id="P1",
+            agent_id="agent-1",
+            session_id="s1",
+            branch_name="tm/P1",
+            action=Action.REVIEW,
+        ),
+        [],
+    )
+    await hub.refresh()
+
+    [facets_item] = [i for i in _socket(session).sent[-1]["items"] if i["op"] == "facets"]
+    assert facets_item["facets"]["status"]["REVIEWING"] == 1
+    assert {node_id: hub.rows[node_id] for node_id in ("T1", "T2")} == tasks_before
+
+
 # -- a section write ---------------------------------------------------------------------------
 
 
