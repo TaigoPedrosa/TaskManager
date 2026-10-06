@@ -226,7 +226,14 @@ def _refusals() -> Iterator[None]:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
-_RESET_TARGETS = (Status.READY, Status.IMPLEMENTED, Status.REVIEWED, Status.FIXED, Status.COMPLETED)
+_RESET_TARGETS = (
+    Status.READY,
+    Status.IMPLEMENTED,
+    Status.REVIEWED,
+    Status.FIXED,
+    Status.LANDED,
+    Status.COMPLETED,
+)
 
 
 _MAX_NODES_IDS = 200

@@ -1054,7 +1054,8 @@ def task_reopen(
 def task_reset(
     node_id: str,
     to: Annotated[
-        Status, typer.Option("--to", help="READY, IMPLEMENTED, REVIEWED, FIXED or COMPLETED")
+        Status,
+        typer.Option("--to", help="READY, IMPLEMENTED, REVIEWED, FIXED, LANDED or COMPLETED"),
     ],
     note: Annotated[str, typer.Option("--note", help="Why the stored state was wrong")],
     outcome: Annotated[

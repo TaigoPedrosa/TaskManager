@@ -113,7 +113,14 @@ def test_meta_lists_the_lifecycle_vocabularies(web: Web) -> None:
     assert meta["display_statuses"] == [d.value for d in DisplayStatus]
     assert meta["phases"] == [p.value for p in Phase]
     assert meta["decision_statuses"] == ["OPEN", "ANSWERED", "WITHDRAWN"]
-    assert meta["reset_targets"] == ["READY", "IMPLEMENTED", "REVIEWED", "FIXED", "COMPLETED"]
+    assert meta["reset_targets"] == [
+        "READY",
+        "IMPLEMENTED",
+        "REVIEWED",
+        "FIXED",
+        "LANDED",
+        "COMPLETED",
+    ]
     assert meta["merge_targets"] == ["parent", "main"]
     assert "none" in meta["decision_effects"]
 

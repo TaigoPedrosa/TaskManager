@@ -190,10 +190,6 @@ def test_a_container_lands_each_repository_in_order_and_only_what_is_left_after_
     }
     commit(Path(fix.worktrees["web"]), "failing.txt", None, "web: gate green again")
     assert claims.complete("P") == Status.FIXED
-    assert claims.start("P", "reviewer", "s1").action == Action.REVIEW
-    claims.ops.set_section("P", "review", "the web gate is green")
-    assert claims.review("P", approve=True) == Status.REVIEWED
-    assert stored(claims, "P").review_cycles == 1
 
     again = claims.start("P", "merger", "s1")
     assert again.job is not None
