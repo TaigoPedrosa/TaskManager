@@ -133,12 +133,12 @@ def chosen(w: Wave) -> list[tuple[object, object]]:
 
 def test_next_step_of_a_ready_task_is_implement(estate: Estate) -> None:
     node = estate.add("T")
-    assert selection.next_step(node) == (Action.IMPLEMENT, "sonnet")
+    assert selection.next_step(node, estate.snap()) == (Action.IMPLEMENT, "sonnet")
 
 
 def test_next_step_of_a_completed_node_is_nothing(estate: Estate) -> None:
     node = estate.add("T", status=Status.COMPLETED)
-    assert selection.next_step(node) == (None, None)
+    assert selection.next_step(node, estate.snap()) == (None, None)
 
 
 def test_a_node_the_lifecycle_cannot_read_is_held_and_its_siblings_are_still_chosen(
@@ -150,10 +150,10 @@ def test_a_node_the_lifecycle_cannot_read_is_held_and_its_siblings_are_still_cho
     estate.add("BAD")
     estate.add("OK")
 
-    def unreadable(node: Node) -> tuple[Action | None, str | None]:
+    def unreadable(node: Node, snap: Snapshot) -> tuple[Action | None, str | None]:
         if node.id == "BAD":
             raise LifecycleError("REVIEWED with no outcome")
-        return selection.next_step(node)
+        return selection.next_step(node, snap)
 
     found, held = selection.candidates(estate.snap(), None, next_step=unreadable)
     result = selection.select(found, estate.snap(), 10, 10)

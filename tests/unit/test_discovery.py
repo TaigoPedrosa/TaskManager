@@ -258,10 +258,10 @@ def test_a_node_the_lifecycle_cannot_read_is_held_and_its_siblings_are_still_cho
     add(claims, "OK")
     real = Claims.next_step
 
-    def unreadable(self: Claims, node: Any) -> Any:
+    def unreadable(self: Claims, node: Any, snap: Any) -> Any:
         if node.id == "BAD":
             raise LifecycleError("REVIEWED with no outcome")
-        return real(self, node)
+        return real(self, node, snap)
 
     monkeypatch.setattr(Claims, "next_step", unreadable)
     data = batch(claims)

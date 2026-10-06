@@ -27,7 +27,7 @@ from taskmanager.db.node_repo import declared_files_of, locked_key
 from taskmanager.db.runtime_repo import lease_alive
 from taskmanager.engine.chains import satisfied
 from taskmanager.engine.routing import STRONG, model_for
-from taskmanager.engine.snapshot import SnapshotBuilder, apply_cycle, cycle_of
+from taskmanager.engine.snapshot import SnapshotBuilder, apply_cycle, cycle_in
 from taskmanager.engine.stepgraph import Snapshot, migration_holders
 
 # Later steps first, so a wave drains work already under way before it starts more.
@@ -51,10 +51,10 @@ class Selection:
     waiting_for_slot: int = 0
 
 
-def next_step(node: Node) -> tuple[Action | None, str | None]:
+def next_step(node: Node, snap: Snapshot) -> tuple[Action | None, str | None]:
     """The action a claim would take now, and the model it would name, from the node's own
-    stored cycle alone."""
-    cycle = cycle_of(node)
+    stored cycle and its declared files in `snap`."""
+    cycle = cycle_in(snap, node)
     action = next_action(cycle)
     if action is None:
         return None, None
@@ -218,7 +218,7 @@ def candidates(
     specs: list[str] | None,
     *,
     repo_order: Sequence[str] = (),
-    next_step: Callable[[Node], tuple[Action | None, str | None]] = next_step,
+    next_step: Callable[[Node, Snapshot], tuple[Action | None, str | None]] = next_step,
     blocked_reason: Callable[[Node, Snapshot, Action | None], str | None] = blocked_reason,
 ) -> tuple[list[Candidate], list[str]]:
     """Every claimable node with the step it would take next, later steps first within a
@@ -249,7 +249,7 @@ def candidates(
         if Status(node.status) in IN_STEP:
             continue
         try:
-            action, model = next_step(node)
+            action, model = next_step(node, snap)
         except LifecycleError as exc:
             # One node the lifecycle cannot read must not stop the wave for every other node.
             held.append(f"{node.id}: {exc}")
