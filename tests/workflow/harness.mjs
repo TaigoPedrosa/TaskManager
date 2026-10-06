@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 
 const SOURCE = readFileSync(new URL('../../workflows/tm-wave.js', import.meta.url), 'utf8')
@@ -37,6 +37,25 @@ export function scriptCksum(text) {
   const start = SOURCE.indexOf('function cksum(')
   const end = SOURCE.indexOf('\n}\n', start) + 2
   return Function(`"use strict"; return (${SOURCE.slice(start, end)})`)()(text)
+}
+
+// A repository as a landed container leaves it: main holds a commit before the landing merge of
+// `id` and a later merge sharing its `merge(<id>): ` prefix, and origin/main and tm/S1 both point
+// there. Every git call throws on a non-zero exit, so a fixture that failed to build fails the test.
+export function landedRepo(dir, id) {
+  const git = (...a) => execFileSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { stdio: 'pipe' })
+  const commit = (file, subject) => (writeFileSync(`${dir}/${file}`, subject), git('add', file), git('commit', '-q', '-m', subject))
+  mkdirSync(dir, { recursive: true })
+  git('init', '-q', '-b', 'main')
+  commit('base.txt', 'base')
+  git('checkout', '-q', '-b', `tm/${id}`)
+  commit('landed.txt', `feat(${id}): its change`)
+  git('checkout', '-q', 'main')
+  commit('before.txt', 'before')
+  git('merge', '-q', '--no-ff', '-m', `merge(${id}): land tm/${id} on main`, `tm/${id}`)
+  commit('after.txt', `merge(${id}): main moved`)
+  git('update-ref', 'refs/remotes/origin/main', 'main')
+  git('branch', 'tm/S1', 'main')
 }
 
 export const json = (value, exit = 0) => ({ text: JSON.stringify(value), exit })
