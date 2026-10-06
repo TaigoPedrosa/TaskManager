@@ -37,8 +37,9 @@ _STEP_OF = {
 }
 REOPENABLE = frozenset({Status.FAILED, Status.DEFERRED, Status.ABANDONED})
 # Stable statuses a job's agent can still hold a lease over without a claim: a sync job runs
-# for a node its claim left where it was.
-_UNCLAIMED_WITH_A_JOB = STABLE - {Status.COMPLETED, Status.FAILED}
+# for a node its claim left where it was. A LANDED node's code is already on its target, so
+# nothing syncs or lands it.
+_UNCLAIMED_WITH_A_JOB = STABLE - {Status.COMPLETED, Status.FAILED, Status.LANDED}
 _RESET_TARGETS = frozenset(
     {Status.READY, Status.IMPLEMENTED, Status.REVIEWED, Status.FIXED, Status.COMPLETED}
 )

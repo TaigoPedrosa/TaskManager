@@ -108,13 +108,14 @@ class DatabaseManager:
         # its own.
         conn = sqlite3.connect(str(db_path), timeout=5.0, check_same_thread=False)
         conn.execute("PRAGMA busy_timeout = 5000;")
-        conn.execute("PRAGMA foreign_keys = ON;")
         if db_path == self.state_db:
             try:
                 self._migrate_state(conn)
             except BaseException:
                 conn.close()
                 raise
+        # Only after the migration, which runs with foreign keys off.
+        conn.execute("PRAGMA foreign_keys = ON;")
         # After any refusal above: turning WAL on rewrites the file's header even for a
         # database this call is about to refuse outright, and a refusal must leave it untouched.
         conn.execute("PRAGMA journal_mode = WAL;")
@@ -142,6 +143,10 @@ class DatabaseManager:
         ).fetchone()
         if not has_nodes:
             return  # uninitialised directory: `tm init` creates it at the current version
+        # Off explicitly, not left to the build's SQLITE_DEFAULT_FOREIGN_KEYS: a rebuild drops
+        # `nodes`, and under enforced foreign keys that drop cascades into every table
+        # referencing it. Before BEGIN, because SQLite ignores this pragma inside a transaction.
+        conn.execute("PRAGMA foreign_keys = OFF")
         conn.execute("BEGIN IMMEDIATE")
         try:
             version = conn.execute("PRAGMA user_version").fetchone()[0]

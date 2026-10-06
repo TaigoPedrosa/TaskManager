@@ -27,6 +27,7 @@ EVERY_BLOCKER = Facts(
         (S.FIXING, Phase.DISPATCHED),
         (S.FIXED, Phase.DISPATCHED),
         (S.MERGING, Phase.DISPATCHED),
+        (S.LANDED, Phase.DISPATCHED),
         (S.COMPLETED, Phase.COMPLETED),
         (S.FAILED, Phase.FAILED),
         (S.DEFERRED, Phase.DEFERRED),
@@ -142,6 +143,8 @@ ROWS = [
         D.WAITING_MERGE,
     ),
     ("fixed", Cycle(S.FIXED, fix_for=Outcome.REJECT), Facts(), D.WAITING_REVIEW),
+    ("landed with its review owed", Cycle(S.LANDED), Facts(), D.LANDED),
+    ("a blocker outranks landed", Cycle(S.LANDED), Facts(open_decision=True), D.AWAITING_DECISION),
 ]
 
 
