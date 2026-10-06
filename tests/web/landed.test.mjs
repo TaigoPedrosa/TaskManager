@@ -30,8 +30,12 @@ function makeElement(id) {
   return el;
 }
 
-function loadPage() {
+const SCRIPTS = pageScripts();
+
+function loadPage({ readyState = 'complete' } = {}) {
   const elementsById = new Map();
+  const docListeners = {};
+  const frames = [];
   const sandbox = {
     console,
     window: null,
@@ -41,12 +45,13 @@ function loadPage() {
         return elementsById.get(id);
       },
       createElement: () => makeElement(),
-      addEventListener() {},
+      readyState,
+      addEventListener(type, fn) { (docListeners[type] ||= []).push(fn); },
       querySelector: () => null,
       querySelectorAll: () => [],
       body: makeElement('body'),
     },
-    requestAnimationFrame: () => {},
+    requestAnimationFrame: (fn) => { frames.push(fn); },
     setTimeout, clearTimeout, setInterval, clearInterval,
     localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
     location: { hash: '', protocol: 'http:', host: 'test' },
@@ -61,11 +66,11 @@ function loadPage() {
   };
   sandbox.window = sandbox;
   const context = vm.createContext(sandbox);
-  pageScripts().forEach((src, i) => vm.runInContext(src, context, { filename: `inline-script-${i}.js` }));
-  return context;
+  SCRIPTS.forEach((src, i) => vm.runInContext(src, context, { filename: `inline-script-${i}.js` }));
+  return { page: context, docListeners, frames };
 }
 
-const page = loadPage();
+const { page } = loadPage();
 
 test('a plan whose one unit is LANDED is not done', () => {
   const p = page.progressParts({ LANDED: 1 });
@@ -82,6 +87,12 @@ test('landed counts follow completed and stay out of the done count', () => {
     .map(([, code, width]) => [code, Number(width)]);
   assert.deepEqual(segments.map(([code]) => code), ['IMPLEMENTING', 'COMPLETED', 'LANDED', 'WAITING_REVIEW']);
   assert.equal(segments[2][1], 25);
+});
+
+test('a plan header keeps its id whole and lets its bar yield the width', () => {
+  const html = page.renderPlanCard({ id: 'LAND-CORE', kind: 'plan', title: 'A plan', display: 'LANDED' }, new Map());
+  assert.match(html, /<div class="flex items-center gap-2\.5 flex-shrink-0 pr-3">[^]*?>LAND-CORE<\/span>/);
+  assert.match(html, /<div class="w-40 min-w-0"><div class="flex w-full /);
 });
 
 test('every view names a LANDED node through its theme', () => {
@@ -104,4 +115,14 @@ test('a LANDED node can be reset to, deferred and abandoned from its action bar'
   page.openDialog = (opts) => { dialog = opts; };
   page.openResetDialog({ id: 'T1' });
   assert.match(dialog.bodyHtml, /<option value="LANDED">/);
+});
+
+test('a page still parsing renders nothing until every script has run', () => {
+  const { page: parsing, docListeners, frames } = loadPage({ readyState: 'loading' });
+  assert.equal(frames.length, 0);
+  let rendered = 0;
+  parsing.renderAll = () => { rendered += 1; };
+  docListeners.DOMContentLoaded.forEach((fn) => fn({}));
+  frames.splice(0).forEach((fn) => fn(0));
+  assert.equal(rendered, 1);
 });
