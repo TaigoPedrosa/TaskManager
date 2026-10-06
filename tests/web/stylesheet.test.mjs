@@ -32,12 +32,14 @@ function findTailwindCli() {
   return null;
 }
 
-test('the committed stylesheet matches a fresh build from tailwind.config.js', (t) => {
+// A missing CLI fails rather than skips, so no gate passes without comparing the sheet to its build.
+test('the committed stylesheet matches a fresh build from tailwind.config.js', () => {
   const cli = findTailwindCli();
-  if (!cli) {
-    t.skip('tailwindcss standalone CLI not found; see README "Rebuilding the web stylesheet"');
-    return;
-  }
+  assert.ok(
+    cli,
+    'tailwindcss standalone CLI not found: fetch it as README "Rebuilding the web stylesheet" ' +
+      'shows, then set TAILWINDCSS_BIN to its path or put it on PATH',
+  );
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-tailwind-'));
   try {
     const outFile = path.join(outDir, 'tailwind.css');
