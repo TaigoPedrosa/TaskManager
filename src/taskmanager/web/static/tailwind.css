@@ -1111,6 +1111,10 @@ video {
           user-select: none;
 }
 
+.resize {
+  resize: both;
+}
+
 .list-decimal {
   list-style-type: decimal;
 }

@@ -96,16 +96,40 @@ function bodyOf(id) {
   return window.tmStore.bodies.get(id) || null;
 }
 
-// Groups the store's current (already-visible) rows by parent, sorted the way the plan's
-// parent context spells out for a visible set: ordinal, then id.
+// Groups the store's current (already-visible) rows by parent, in the toolbar's sort order: the
+// one place Document, the tree and the drawer get sibling order.
 function visibleChildrenByParent() {
   const byParent = new Map();
   window.tmStore.rows.forEach(row => {
     if (!byParent.has(row.parent)) byParent.set(row.parent, []);
     byParent.get(row.parent).push(row);
   });
-  byParent.forEach(list => list.sort((a, b) => a.ordinal - b.ordinal || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)));
+  const order = sortOrder === 'priority' ? priorityOrder : progressOrder;
+  byParent.forEach(list => list.sort(order));
   return byParent;
+}
+
+// A re-render replaces a pane's markup. Its scroll offset carries over, and so does its focused
+// element: found again by the nearest attribute that names it, then by its place under that.
+const FOCUS_KEYS = ['id', 'data-group-id', 'data-section-id', 'data-node-id', 'data-step-of'];
+
+function redrawKeeping(root, scroller, draw) {
+  let anchor = null;
+  const path = [];
+  for (let at = document.activeElement; at && at !== root && root.contains(at); at = at.parentNode) {
+    const key = FOCUS_KEYS.find(k => at.hasAttribute(k));
+    if (key) {
+      anchor = `${at.localName}[${key}="${CSS.escape(at.getAttribute(key))}"]`;
+      break;
+    }
+    path.unshift([...at.parentNode.children].indexOf(at));
+  }
+  const top = scroller.scrollTop;
+  draw();
+  scroller.scrollTop = top;
+  let again = anchor && root.querySelector(anchor);
+  path.forEach(i => { again = again && again.children[i]; });
+  if (again) again.focus({ preventScroll: true });
 }
 
 // A row's lease names the action and agent only, since a heartbeat pushes nothing; a watched
@@ -207,6 +231,11 @@ document.addEventListener('click', (e) => {
 
 // Sidebar Tree Rendering
 function renderTree() {
+  redrawKeeping(treeList, treeList, drawTree);
+  finishReveal(false);
+}
+
+function drawTree() {
   treeList.innerHTML = '';
   const byParent = visibleChildrenByParent();
   const roots = byParent.get(null) || [];
@@ -300,7 +329,6 @@ function renderTree() {
   }
 
   roots.forEach(n => createNodeRow(n));
-  finishReveal(false);
 }
 
 searchBox.addEventListener('input', (e) => {
@@ -450,7 +478,7 @@ function finishReveal(inDocument) {
 
 // Render Unified Document View: one card per root the store currently holds (a spec; a
 // plan or task with no container -- the "Rows" section's own definition of a root), walked
-// by parent/ordinal/id exactly like the sidebar tree above.
+// in the same sibling order as the sidebar tree above.
 function renderUnifiedDocument() {
   const byParent = visibleChildrenByParent();
   const roots = byParent.get(null) || [];
@@ -462,12 +490,9 @@ function renderUnifiedDocument() {
     if (root.kind === 'plan') return renderPlanCard(root, byParent);
     return renderTaskCard(root);
   }).join('');
-  // A revealed card keeps its focus when a later store change draws the document again.
-  const focusedCard = unifiedDocument.contains(document.activeElement) && document.activeElement.hasAttribute('data-detail-root')
-    ? document.activeElement.id : '';
-  unifiedDocument.innerHTML = lookup + (roots.length ? cards : emptyPaneState());
-  const refocus = focusedCard && document.getElementById(focusedCard);
-  if (refocus) refocus.focus({ preventScroll: true });
+  redrawKeeping(unifiedDocument, documentPane, () => {
+    unifiedDocument.innerHTML = lookup + (roots.length ? cards : emptyPaneState());
+  });
   allSectionIds = [...unifiedDocument.querySelectorAll('details[data-section-id]')].map(d => d.getAttribute('data-section-id'));
 
   attachCollapsibleHandlers();

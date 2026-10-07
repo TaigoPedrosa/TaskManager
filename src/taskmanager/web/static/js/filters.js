@@ -95,15 +95,24 @@ function decodeSegment(segment) {
   }
 }
 
+// Sibling order in Document and the tree: 'progress' (the default, absent from the query) or
+// 'priority' (?sort=priority). Not a filter, so the store never sees it.
+const SORTED_VIEWS = [window.VIEW_MODES.DOCUMENT, window.VIEW_MODES.GRAPH];
+let sortOrder = 'progress';
+
 function readLocation() {
   const { path, query } = locationParts();
   const [view, id] = path.split('/').filter(Boolean).map(decodeSegment);
   const known = Object.values(window.VIEW_MODES).includes(view) &&
     !(isStaticMode && view === window.VIEW_MODES.WAVES);
+  const params = new URLSearchParams(query);
+  const sort = params.get('sort') === 'priority' ? 'priority' : 'progress';
+  params.delete('sort');
   return {
     view: known ? view : window.VIEW_MODES.DOCUMENT,
     id: known && id ? id : null,
-    filters: Object.fromEntries(new URLSearchParams(query)),
+    filters: Object.fromEntries(params),
+    sort,
   };
 }
 
@@ -115,7 +124,7 @@ function pathFor(view, id = null) {
 // Brings the screen to a location, touching only what differs from what it shows now: a
 // filter change re-renders without re-entering its view, and a location written by navigate()
 // and read back by popstate changes nothing.
-function applyLocation({ view, id, filters: F }) {
+function applyLocation({ view, id, filters: F, sort }) {
   if (new URLSearchParams(F).toString() !== new URLSearchParams(filtersToF()).toString()) {
     readFilters(new URLSearchParams(F));
     window.tmStore.setFilters(filtersToF());
@@ -127,14 +136,21 @@ function applyLocation({ view, id, filters: F }) {
     if (currentMode === view) renderDecisionsView();
   }
   if (view !== currentMode) setViewMode(view);
+  if (sort !== sortOrder) {
+    sortOrder = sort;
+    scheduleRender();
+  }
+  renderSortControl();
   applyNodeLocation(view, id);
 }
 
 // A view switch is a new history entry; pass `replace` for a change within the view (a
-// filter, a reset) so Back still leaves the view.
-function navigate({ view = currentMode, id = null, filters: F = filtersToF() } = {}, { replace = false } = {}) {
+// filter, a sort, a reset) so Back still leaves the view.
+function navigate({ view = currentMode, id = null, filters: F = filtersToF(), sort = sortOrder } = {}, { replace = false } = {}) {
   const here = readLocation();
-  const query = new URLSearchParams(F).toString();
+  const params = new URLSearchParams(F);
+  if (sort === 'priority') params.set('sort', sort);
+  const query = params.toString();
   // "/" and "/document" both open Document, so a write that keeps the view and its selection
   // keeps the path it found.
   const path = !isStaticMode && view === here.view && id === here.id ? location.pathname : pathFor(view, id);
@@ -145,7 +161,7 @@ function navigate({ view = currentMode, id = null, filters: F = filtersToF() } =
     // follows, only the address bar does not.
     console.error('Could not update the URL:', e);
   }
-  applyLocation({ view, id, filters: F });
+  applyLocation({ view, id, filters: F, sort });
 }
 
 // Rewritten in place as well as applied: an old hash link typed over the current page arrives
@@ -593,6 +609,44 @@ clearFiltersBtn.addEventListener('click', () => {
   searchBox.value = '';
   applyFilterChange();
 });
+
+
+// The sort control, drawn like the view switcher; only Document and Graph, the two lists it
+// orders, show it. A segment shows itself picked from the click, ahead of the re-sort.
+const sortControl = document.getElementById('sort-control');
+const SORT_BTN_BASE = `h-full px-2.5 flex items-center rounded-md font-medium transition ${FOCUS_RING}`;
+
+function renderSortControl() {
+  sortControl.classList.toggle('hidden', !SORTED_VIEWS.includes(currentMode));
+  sortControl.querySelectorAll('[data-sort]').forEach(btn => {
+    const picked = btn.dataset.sort === sortOrder;
+    btn.setAttribute('aria-pressed', String(picked));
+    btn.className = `${SORT_BTN_BASE} ${picked ? 'bg-zinc-800 text-white shadow-sm' : 'text-zinc-400 hover:text-white'}`;
+  });
+}
+
+// Below sm (Tailwind's 640px) the control ends the Filters panel's controls, so it adds no row
+// to the toolbar there; from sm up it leads the actions group.
+const SM_MIN_PX = 640;
+const sortActionsGroup = sortControl.parentNode;
+
+function placeSortControl() {
+  const home = window.innerWidth >= SM_MIN_PX ? sortActionsGroup : filterControlsGroup;
+  if (sortControl.parentNode !== home) home.insertBefore(sortControl, home === sortActionsGroup ? home.firstChild : null);
+}
+
+window.addEventListener('resize', placeSortControl);
+placeSortControl();
+
+// The picked segment again resets the lists: Progress, from the top.
+sortControl.querySelectorAll('[data-sort]').forEach(btn => btn.addEventListener('click', () => {
+  const again = btn.dataset.sort === sortOrder;
+  if (again) {
+    documentPane.scrollTop = 0;
+    treeList.scrollTop = 0;
+  }
+  navigate({ ...readLocation(), sort: again ? 'progress' : btn.dataset.sort }, { replace: true });
+}));
 
 
 // Legend: each status and phase icon beside its name.
