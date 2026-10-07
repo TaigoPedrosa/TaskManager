@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from enum import StrEnum
 from typing import Any, cast
 
@@ -24,7 +25,13 @@ from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine.conditions import is_executable
-from taskmanager.engine.operations import Operations, is_owed_key, owed_refusal, validated_write
+from taskmanager.engine.operations import (
+    Operations,
+    child_defaults,
+    is_owed_key,
+    owed_refusal,
+    validated_write,
+)
 from taskmanager.engine.snapshot import roll_up_ancestors
 from taskmanager.engine.verification import VerificationEngine
 
@@ -144,14 +151,23 @@ class BulkImporter:
         verifications: dict[str, list[NodeVerification]] = {}
         conditions: dict[str, list[Condition]] = {}
 
-        def take(raw: dict[str, Any], kind: NodeKind, parent: str | None) -> None:
-            node = self._parse_node(raw, kind, self.node_repo.get_node(raw["id"]))
+        def take(raw: dict[str, Any], kind: NodeKind, parent: Node | None) -> Node:
+            stated = (
+                [self._parse_verification(raw["id"], v) for v in raw["verifications"]]
+                if "verifications" in raw
+                else None
+            )
+            node = self._parse_node(
+                raw, kind, self.node_repo.get_node(raw["id"]), parent, stated or ()
+            )
             nodes.append(node)
             sections.extend(self._parse_sections(node.id, raw.get("sections")))
             if parent is not None:
                 relations.append(
                     NodeRelation(
-                        source_id=parent, target_id=node.id, relation_type=RelationType.CONTAINS
+                        source_id=parent.id,
+                        target_id=node.id,
+                        relation_type=RelationType.CONTAINS,
                     )
                 )
             relations.extend(
@@ -162,25 +178,22 @@ class BulkImporter:
                 )
                 for dep in raw.get("depends_on", [])
             )
-            if "verifications" in raw:
-                verifications[node.id] = [
-                    self._parse_verification(node.id, v) for v in raw["verifications"]
-                ]
+            if stated is not None:
+                verifications[node.id] = stated
             if "conditions" in raw:
                 conditions[node.id] = [self._parse_condition(node.id, c) for c in raw["conditions"]]
+            return node
 
         spec_data = data.get("spec")
-        spec_id = spec_data["id"] if spec_data else None
-        if spec_data:
-            take(spec_data, NodeKind.SPEC, None)
+        spec = take(spec_data, NodeKind.SPEC, None) if spec_data else None
         for p_idx, plan_data in enumerate(data.get("plans", []), start=1):
             plan_data.setdefault("ordinal", p_idx)
-            take(plan_data, NodeKind.PLAN, spec_id)
+            plan = take(plan_data, NodeKind.PLAN, spec)
             for t_idx, task_data in enumerate(plan_data.get("tasks", []), start=1):
                 task_data.setdefault("ordinal", t_idx)
-                take(task_data, NodeKind.TASK, plan_data["id"])
+                take(task_data, NodeKind.TASK, plan)
         for task_data in data.get("tasks", []):
-            take(task_data, NodeKind.TASK, spec_id)
+            take(task_data, NodeKind.TASK, spec)
         for dec_data in data.get("decisions", []):
             take(dec_data, NodeKind.DECISION, None)
 
@@ -281,15 +294,25 @@ class BulkImporter:
 
     @staticmethod
     def _parse_node(
-        data: dict[str, Any], default_kind: NodeKind, existing: Node | None = None
+        data: dict[str, Any],
+        default_kind: NodeKind,
+        existing: Node | None = None,
+        parent: Node | None = None,
+        verifications: Sequence[NodeVerification] = (),
     ) -> Node:
         """A key the document omits keeps the value the node already has, so importing a document
-        again never resets the progress recorded since; a key it states wins."""
+        again never resets the progress recorded since; a key it states wins. A new node's flags
+        the document leaves out come from `child_defaults`, read against `parent` and the
+        `verifications` the document declares."""
 
         def pick(key: str, default: Any) -> Any:
             if key in data:
                 return data[key]
             return getattr(existing, key) if existing is not None else default
+
+        def flag(key: str) -> bool | None:
+            value = pick(key, None)
+            return None if value is None else bool(value)
 
         node_id = data["id"]
         kind = NodeKind(data.get("kind", default_kind))
@@ -305,15 +328,8 @@ class BulkImporter:
             status = existing.status
         else:
             status = DecisionStatus.OPEN if kind == NodeKind.DECISION else Status.READY
-        review = bool(pick("review", kind == NodeKind.TASK))
-        fix = bool(pick("fix", kind == NodeKind.TASK))
-        if fix and not review:
-            raise ValueError(
-                f"{REFUSED}node {node_id!r} sets fix without review: a rejection is fixed by "
-                "the node that was reviewed; set review or drop fix"
-            )
         try:
-            return Node(
+            node = Node(
                 id=node_id,
                 kind=kind,
                 title=title,
@@ -323,9 +339,6 @@ class BulkImporter:
                 target_repo=pick("target_repo", None),
                 acceptable_models=pick("acceptable_models", []),
                 frontmatter=pick("frontmatter", {}),
-                review=review,
-                fix=fix,
-                merge=Merge(pick("merge", Merge.MAIN)),
                 requires=list(pick("requires", [])),
                 land_order=list(pick("land_order", [])),
                 branch=pick("branch", None),
@@ -344,6 +357,20 @@ class BulkImporter:
         except ValidationError as exc:
             reasons = "; ".join(str(e["msg"]).removeprefix("Value error, ") for e in exc.errors())
             raise ValueError(f"{REFUSED}{reasons}") from None
+        node = child_defaults(
+            node,
+            parent,
+            verifications,
+            review=flag("review"),
+            fix=flag("fix"),
+            merge=_optional(Merge, pick("merge", None)),
+        )
+        if node.fix and not node.review:
+            raise ValueError(
+                f"{REFUSED}node {node_id!r} sets fix without review: a rejection is fixed by "
+                "the node that was reviewed; set review or drop fix"
+            )
+        return node
 
     @staticmethod
     def _parse_sections(node_id: str, sections_data: Any) -> list[NodeSection]:

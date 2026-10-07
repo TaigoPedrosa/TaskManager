@@ -27,6 +27,7 @@ EVERY_BLOCKER = Facts(
         (S.FIXING, Phase.DISPATCHED),
         (S.FIXED, Phase.DISPATCHED),
         (S.MERGING, Phase.DISPATCHED),
+        (S.LANDED, Phase.DISPATCHED),
         (S.COMPLETED, Phase.COMPLETED),
         (S.FAILED, Phase.FAILED),
         (S.DEFERRED, Phase.DEFERRED),
@@ -112,6 +113,12 @@ ROWS = [
     ("ready", Cycle(S.READY), Facts(), D.READY),
     ("implemented with review", Cycle(S.IMPLEMENTED), Facts(), D.WAITING_REVIEW),
     (
+        "a reviewed container lands first",
+        Cycle(S.IMPLEMENTED, container=True),
+        Facts(),
+        D.WAITING_MERGE,
+    ),
+    (
         "implemented without review",
         Cycle(S.IMPLEMENTED, review=False, fix=False),
         Facts(),
@@ -141,7 +148,15 @@ ROWS = [
         Facts(),
         D.WAITING_MERGE,
     ),
-    ("fixed", Cycle(S.FIXED, fix_for=Outcome.REJECT), Facts(), D.WAITING_REVIEW),
+    ("fixed", Cycle(S.FIXED, fix_for=Outcome.REJECT), Facts(), D.WAITING_MERGE),
+    (
+        "a sensitive fix waits for its one review",
+        Cycle(S.FIXED, fix_for=Outcome.REJECT, sensitive=True),
+        Facts(),
+        D.WAITING_REVIEW,
+    ),
+    ("landed with its review owed", Cycle(S.LANDED), Facts(), D.LANDED),
+    ("a blocker outranks landed", Cycle(S.LANDED), Facts(open_decision=True), D.AWAITING_DECISION),
 ]
 
 

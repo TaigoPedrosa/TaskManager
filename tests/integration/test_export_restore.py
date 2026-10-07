@@ -24,7 +24,7 @@ def seeded(root: Path) -> None:
     # b depends on a, which only reaches MAIN once the plan lands; b must land through the
     # plan too, or that dependency and b's own containment close a cycle.
     ops.add_task("b", plan, slug="b", merge=Merge.PARENT, depends_on=[a])
-    ops.update_node(a, fix=False)
+    ops.update_node(a, review=True)
     ops.update_node(plan, land_order=["api", "web"])
     ops.add_condition(a, "staging up", CHECK, ConditionStage.LANDING)
 

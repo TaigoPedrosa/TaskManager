@@ -11,6 +11,26 @@ A local task tracker for agents: a SQLite graph of specs, plans and tasks that c
 - `state.db`, `cache.db` and `ledger.db` under `.taskmanager/`, SQLite in WAL mode, with `sqlite-vec` search
 - The `tm-wave` workflow (`workflows/tm-wave.js`): one step per node per tick, on the model family tm names, with a dispatching session looping itself to carry a node the rest of the way
 
+## Lifecycle
+
+A node goes `READY`, `IMPLEMENTING`, `IMPLEMENTED`, then through review, fix and landing as its
+`review`, `fix` and `merge` flags say. `tm guide overview` draws the whole cycle.
+
+- Landing comes first. A plan or spec lands on its target once every child has landed on its
+  branch; with `review` off that completes it, and with `review` on it reads `LANDED`: its code
+  is on the target and its one review is owed.
+- One review, on the landed target. It reads the container's whole landing, so its children
+  take `review: false`, `fix: false` and `merge: parent` by default, and a sensitive child keeps
+  `review` and `fix` on; an explicit flag on a child still wins, and a child with `review` off
+  that would land on `main` is refused. An approval completes the container.
+- Fixes land without a re-review. A rejection is fixed on a branch cut from the landed target,
+  and that fix lands as soon as it is done. A task with `review` on is still reviewed before it
+  lands, and its fix lands the same way.
+- A sensitive node is the exception: its fix gets one re-review, scoped to the open findings,
+  before it lands. `sensitive:` names the area as one of `tenant`, `rls`, `crypto` or
+  `migration`, or a list of them (`sensitive: [tenant, rls]`); a node whose `declared_files`
+  hold a path under `migrations/versions/` is sensitive without the key.
+
 ## Web
 
 `tm web` serves the visualizer over one FastAPI app: `GET /` and static assets, the `/ws`
@@ -63,6 +83,16 @@ subscribe protocol, and a handful of paginated HTTP reads.
 - The `tm-wave` workflow script and the `tm` binary upgrade together: the 0.3.1 script reads
   with `tm task get --fields`, which a 0.3.0 `tm` refuses as an unknown option, so a checkout
   pulled without reinstalling `tm` fails every read.
+
+## Upgrading to 0.3.4
+
+- `state.db` moves to schema 3, whose `nodes` table accepts `LANDED`, and 0.3.4 never migrates
+  it on open. After installing 0.3.4, run `tm db migrate` once in each existing project.
+- `tm db migrate` first copies `.taskmanager/state.db` to
+  `.taskmanager/state.db.schema<n>.bak`, `<n>` being the schema it was at (2 for an estate
+  0.3.3 wrote), then migrates it to schema 3.
+- Until then every other command that opens the estate refuses with exit 1, naming
+  `tm db migrate` and the backup path.
 
 ## Development
 

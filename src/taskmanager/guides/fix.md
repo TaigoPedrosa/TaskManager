@@ -10,7 +10,7 @@ A dispatcher's workflow usually claims the step for you and says so in the promp
 tm task start <node-id> --agent <name> --session <id> --worktree-dir <dir> --yaml
 ```
 
-`action: fix` sets the node to `FIXING`, locks its declared files again, names the `model` family, and hands back a worktree of the node's existing branch with every earlier commit on it: `worktree` for a task, and `worktrees`, one per repository, for a plan or spec whose branch spans several. Nothing is cut from `origin/main` a second time. The lease is held under `<name>` and the claim prints its `token`; the verbs closing the step pass both back with `--agent <name> --token <token>`, and a workflow's prompt carries them.
+`action: fix` sets the node to `FIXING`, locks its declared files again, names the `model` family, and hands back a worktree of the node's existing branch with every earlier commit on it: `worktree` for a task, and `worktrees`, one per repository, for a plan or spec whose branch spans several. Nothing is cut a second time, with one exception: a plan or spec whose review ran on its landed target has a branch carrying nothing that target lacks, so tm sets it aside as `tm/<node-id>@<n>` and cuts the fix from the target, on top of what landed. The lease is held under `<name>` and the claim prints its `token`; the verbs closing the step pass both back with `--agent <name> --token <token>`, and a workflow's prompt carries them.
 
 What you answer is the node's `outcome`, printed by `tm task get <node-id> --yaml`:
 
@@ -18,6 +18,8 @@ What you answer is the node's `outcome`, printed by `tm task get <node-id> --yam
 - `merge_failed` — the landing's own defect, in the latest entry of `tm section get <node-id>:merge`: a red on the node's own verifications, failures the merged tip added to the gate, a red verification after landing, or what an agent recorded.
 
 Read the brief again only where a finding disputes it: `tm render <node-id> --view subagent`.
+
+A fix lands without a re-review unless the node is sensitive: its `sensitive:` frontmatter key names an area, or it writes a migration (`tm guide plan`, §2). A sensitive node's fix gets one re-review, scoped to the findings it answers, and a rejection there makes the node `FAILED` with a decision for the owner, never a second fix. Either way this is the one pass: close every finding now.
 
 ## 2. Fix exactly the findings
 
@@ -30,6 +32,7 @@ One commit per finding, or one commit naming them all — either way on the node
 - A landing failure whose red lies in files this node does not declare belongs to the node that caused it: find or file that node, then `tm task release <node-id> --agent <name> --token <token> --blocked --depends <that-node>`, and say so in the report.
 - A finding whose fix needs a call only the owner can make: `tm task release <node-id> --agent <name> --token <token> --blocked --decision "<question>" --option "a|Do X|why" --recommend a`, and answer it in the report as raised, not closed. A finding that turns on "the brief doesn't say" or "which of these is correct" is exactly that call, raised at once rather than guessed at.
 - A test of behaviour runs the code it tests: it calls the function, drives the page's scripts, or runs the command, and asserts what comes out. Searching the source for a call or a string is not a test of behaviour, even when it fails once the line is deleted.
+- A test that checks a generated artifact against its generator fails, never skips, when the generator is missing: a skipped check reads as a pass in every gate that runs it.
 
 ## 3. Verify and keep the lease alive
 
@@ -57,7 +60,7 @@ Then the `tm verify run` exit code, and anything you found and did not touch.
 tm task complete <node-id> --agent <name> --token <token>
 ```
 
-On every path that finished the round, including one where a finding was contested rather than closed. The node moves to `FIXED` and is reviewed again. A fix answering a failed landing is checked by that review but does not spend a fix round. Leave the worktree in place.
+On every path that finished the round, including one where a finding was contested rather than closed. The node moves to `FIXED`, and tm lands it next, or, for a sensitive node, runs its one re-review first. Leave the worktree in place.
 
 ## Never
 

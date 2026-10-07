@@ -39,11 +39,17 @@ from taskmanager.core.status import (
     Status,
 )
 from taskmanager.db.cache_repo import CacheRepository
-from taskmanager.db.connection import DatabaseManager, StateSchemaTooNew
+from taskmanager.db.connection import (
+    DatabaseManager,
+    StateNotInitialized,
+    StateSchemaTooNew,
+    StateSchemaTooOld,
+)
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
+from taskmanager.db.schema import STATE_SCHEMA_VERSION
 from taskmanager.di.container import TaskManagerProvider
 from taskmanager.engine.chains import landing_chain
 from taskmanager.engine.claims import Blocker, Claims, DecisionSpec
@@ -83,6 +89,7 @@ decision_app = typer.Typer(name="decision", help="Raise and answer decisions")
 job_app = typer.Typer(name="job", help="Landing and sync jobs")
 land_app = typer.Typer(name="land", help="Start a node's landing")
 condition_app = typer.Typer(name="condition", help="States outside the corpus a node waits on")
+db_app = typer.Typer(name="db", help="The estate's state.db schema")
 
 app.add_typer(spec_app)
 app.add_typer(plan_app)
@@ -98,6 +105,7 @@ app.add_typer(config_app)
 app.add_typer(decision_app)
 app.add_typer(job_app)
 app.add_typer(land_app)
+app.add_typer(db_app)
 task_app.add_typer(condition_app)
 
 
@@ -285,8 +293,8 @@ def _user_errors() -> Iterator[None]:
 def _get_container(path: Path | None) -> Container:
     root = _get_root(path, must_exist=False)
     _refuse_pre_lifecycle(root)
-    # Opened once here so a state.db newer than this tm refuses every command, even one that
-    # only reads audit.db or cache.db.
+    # Opened once here so a state.db at any schema but this tm's refuses every command, even one
+    # that only reads audit.db or cache.db.
     with DatabaseManager(root / ".taskmanager").get_state_connection():
         pass
     return make_container(TaskManagerProvider(root))
@@ -451,14 +459,15 @@ def plan_add(
     priority: Annotated[int, typer.Option("--priority", "-p", help="Priority")] = 50,
     order: Annotated[int, typer.Option("--order", "-o", help="Display order")] = 0,
     review: Annotated[
-        bool, typer.Option("--review/--no-review", help="A review step follows the children")
-    ] = False,
+        bool | None,
+        typer.Option("--review/--no-review", help="A review step follows the children"),
+    ] = None,
     fix: Annotated[
-        bool, typer.Option("--fix/--no-fix", help="A rejection is fixed on this plan")
-    ] = False,
+        bool | None, typer.Option("--fix/--no-fix", help="A rejection is fixed on this plan")
+    ] = None,
     merge: Annotated[
-        Merge, typer.Option("--merge", help="Land on the parent's branch or on main")
-    ] = Merge.MAIN,
+        Merge | None, typer.Option("--merge", help="Land on the parent's branch or on main")
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
@@ -505,6 +514,26 @@ def _csv(raw: str | None) -> list[str]:
     return [x.strip() for x in (raw or "").split(",") if x.strip()]
 
 
+_SET_OPTION = typer.Option(
+    "--set",
+    help="Frontmatter key=value, repeatable; the value is JSON when it parses "
+    '(declared_files=\'["a","b"]\'), else text',
+)
+
+
+def _frontmatter_pairs(pairs: list[str] | None) -> dict[str, Any]:
+    frontmatter: dict[str, Any] = {}
+    for pair in pairs or []:
+        key, sep, raw = pair.partition("=")
+        if not sep or not key:
+            raise typer.BadParameter(f"--set takes key=value, got '{pair}'")
+        try:
+            frontmatter[key] = json.loads(raw)
+        except ValueError:
+            frontmatter[key] = raw
+    return frontmatter
+
+
 @task_app.command("add")
 def task_add(
     title: str,
@@ -519,21 +548,24 @@ def task_add(
         str | None, typer.Option("--models", help="Comma-separated acceptable models")
     ] = None,
     review: Annotated[
-        bool, typer.Option("--review/--no-review", help="A review step follows implement")
-    ] = True,
+        bool | None,
+        typer.Option("--review/--no-review", help="A review step follows implement"),
+    ] = None,
     fix: Annotated[
-        bool, typer.Option("--fix/--no-fix", help="A rejection is fixed by this task")
-    ] = True,
+        bool | None, typer.Option("--fix/--no-fix", help="A rejection is fixed by this task")
+    ] = None,
     merge: Annotated[
-        Merge, typer.Option("--merge", help="Land on the parent's branch or on main")
-    ] = Merge.MAIN,
+        Merge | None, typer.Option("--merge", help="Land on the parent's branch or on main")
+    ] = None,
     requires: Annotated[
         str | None, typer.Option("--requires", help="Comma-separated agent capabilities")
     ] = None,
+    set_frontmatter: Annotated[list[str] | None, _SET_OPTION] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
     ops = _get_container(root).get(Operations)
+    frontmatter = _frontmatter_pairs(set_frontmatter)
     with _refusing():
         task_id = ops.add_task(
             title,
@@ -547,6 +579,7 @@ def task_add(
             fix=fix,
             merge=merge,
             requires=_csv(requires),
+            frontmatter=frontmatter,
         )
     print(f"[green]Added task {task_id}[/green]")
 
@@ -682,14 +715,7 @@ def task_update(
         str | None, typer.Option("--models", help="Comma-separated acceptable models")
     ] = None,
     repo: Annotated[str | None, typer.Option("--repo", help="Target repository directory")] = None,
-    set_frontmatter: Annotated[
-        list[str] | None,
-        typer.Option(
-            "--set",
-            help="Frontmatter key=value, repeatable; the value is JSON when it parses "
-            '(declared_files=\'["a","b"]\'), else text',
-        ),
-    ] = None,
+    set_frontmatter: Annotated[list[str] | None, _SET_OPTION] = None,
     unset_frontmatter: Annotated[
         list[str] | None,
         typer.Option("--unset", help="Frontmatter key to remove, repeatable"),
@@ -715,15 +741,7 @@ def task_update(
 ) -> None:
     root = _get_root(path)
     ops = _get_container(root).get(Operations)
-    frontmatter_set: dict[str, Any] = {}
-    for pair in set_frontmatter or []:
-        key, sep, raw = pair.partition("=")
-        if not sep or not key:
-            raise typer.BadParameter(f"--set takes key=value, got '{pair}'")
-        try:
-            frontmatter_set[key] = json.loads(raw)
-        except ValueError:
-            frontmatter_set[key] = raw
+    frontmatter_set = _frontmatter_pairs(set_frontmatter)
     with _refusing():
         changed = ops.update_node(
             task_id,
@@ -1054,7 +1072,8 @@ def task_reopen(
 def task_reset(
     node_id: str,
     to: Annotated[
-        Status, typer.Option("--to", help="READY, IMPLEMENTED, REVIEWED, FIXED or COMPLETED")
+        Status,
+        typer.Option("--to", help="READY, IMPLEMENTED, REVIEWED, FIXED, LANDED or COMPLETED"),
     ],
     note: Annotated[str, typer.Option("--note", help="Why the stored state was wrong")],
     outcome: Annotated[
@@ -2547,12 +2566,37 @@ def cli_install(
         print("[green]TaskManager installed successfully[/green]")
 
 
+@db_app.command("migrate")
+def db_migrate(
+    path: Annotated[
+        Path | None, typer.Option("--path", "-C", help="Project root directory")
+    ] = None,
+) -> None:
+    """Copy .taskmanager/state.db to .taskmanager/state.db.schema<n>.bak with SQLite's backup
+    API, then migrate it from schema <n> to the schema this tm reads."""
+    root = _get_root(path)
+    _refuse_pre_lifecycle(root)
+    db = DatabaseManager(root / ".taskmanager")
+    try:
+        found = db.migrate_state()
+    except StateNotInitialized:
+        print(f"[red]Error:[/red] TaskManager is not initialized in {root}. Run 'tm init' first.")
+        raise typer.Exit(code=1) from None
+    if found is None:
+        print(f"state.db is current at schema {STATE_SCHEMA_VERSION}: nothing to migrate")
+        return
+    print(
+        f"[green]Migrated state.db from schema {found} to {STATE_SCHEMA_VERSION}[/green]; "
+        f"the schema-{found} copy is {escape(str(db.state_backup(found)))}"
+    )
+
+
 def main() -> None:
-    """The console entry: a state.db newer than this tm can surface from whichever command
-    opens it first, so it is refused here, once, as its message and exit 1."""
+    """The console entry: a state.db at another schema than this tm's can surface from whichever
+    command opens it first, so it is refused here, once, as its message and exit 1."""
     try:
         app()
-    except StateSchemaTooNew as exc:
+    except (StateSchemaTooNew, StateSchemaTooOld) as exc:
         print(f"[red]{escape(str(exc))}[/red]")
         raise SystemExit(1) from exc
 

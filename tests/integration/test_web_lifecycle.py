@@ -27,8 +27,8 @@ def web(tmp_path: Path) -> Web:
     ops = create_container(tmp_path).get(Operations)
     spec = ops.add_spec("S", slug="S1")
     plan = ops.add_plan("P", spec, slug="P1", review=True, fix=True)
-    a = ops.add_task("a", plan, slug="a")
-    ops.add_task("b", plan, slug="b", depends_on=[a])
+    a = ops.add_task("a", plan, slug="a", review=True, fix=True, merge=Merge.MAIN)
+    ops.add_task("b", plan, slug="b", depends_on=[a], review=True, fix=True, merge=Merge.MAIN)
     return TestClient(create_app(tmp_path)), tmp_path
 
 
@@ -113,7 +113,14 @@ def test_meta_lists_the_lifecycle_vocabularies(web: Web) -> None:
     assert meta["display_statuses"] == [d.value for d in DisplayStatus]
     assert meta["phases"] == [p.value for p in Phase]
     assert meta["decision_statuses"] == ["OPEN", "ANSWERED", "WITHDRAWN"]
-    assert meta["reset_targets"] == ["READY", "IMPLEMENTED", "REVIEWED", "FIXED", "COMPLETED"]
+    assert meta["reset_targets"] == [
+        "READY",
+        "IMPLEMENTED",
+        "REVIEWED",
+        "FIXED",
+        "LANDED",
+        "COMPLETED",
+    ]
     assert meta["merge_targets"] == ["parent", "main"]
     assert "none" in meta["decision_effects"]
 

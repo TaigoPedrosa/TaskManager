@@ -401,16 +401,17 @@ function renderPlanCard(plan, byParent) {
 
   return `
     <div id="doc-node-${plan.id}" class="border border-zinc-800 rounded-xl bg-zinc-900/30 transition">
-      <!-- Plan Header: status + id left, progress + counter right, collapse control last -->
+      <!-- Plan Header: status + id left, progress + counter right, collapse control last.
+           At narrow widths the bar yields its width; the id never does. -->
       <div class="h-12 px-4 rounded-t-xl bg-zinc-900/95 backdrop-blur-sm border-b border-zinc-800 flex items-center justify-between cursor-pointer plan-header" data-node-id="${plan.id}">
-        <div class="flex items-center gap-2.5 min-w-0 truncate">
+        <div class="flex items-center gap-2.5 flex-shrink-0 pr-3">
           ${statusIcon(planStatus)}
-          <span class="font-mono text-xs font-semibold text-emerald-400 flex-shrink-0">${plan.id}</span>
+          <span class="font-mono text-xs font-semibold text-emerald-400">${plan.id}</span>
         </div>
-        <div class="flex items-center gap-3 flex-shrink-0">
-          <div class="flex items-center gap-2">
-            <div class="w-40">${progressBar(counts, 'h-2')}</div>
-            <span class="font-mono text-xs text-zinc-400" title="Completed of total tasks">${p.completed}/${p.total}</span>
+        <div class="flex items-center gap-3 min-w-0">
+          <div class="flex items-center gap-2 min-w-0">
+            <div class="w-40 min-w-0">${progressBar(counts, 'h-2')}</div>
+            <span class="font-mono text-xs text-zinc-400 flex-shrink-0" title="Completed of total tasks">${p.completed}/${p.total}</span>
           </div>
           ${copyIdButton(plan.id)}
           <button class="text-zinc-400 hover:text-white flex-shrink-0">${renderIcon(isOpen ? 'chevron-down' : 'chevron-right', 'w-4 h-4')}</button>

@@ -6,14 +6,18 @@ than in the agent's terminal.
 
 import re
 import shlex
+from collections.abc import Callable
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
 import pytest
 import typer.main
+from typer.testing import CliRunner
 
 from taskmanager.cli.main import _guide_topics, app
+from taskmanager.engine.snapshot import writes_migration
+from taskmanager.engine.validation import SENSITIVE_AREAS
 
 REQUIRED_TOPICS = {"implement", "review", "fix", "merge", "overview"}
 COMMAND_FLOOR = 40
@@ -191,10 +195,12 @@ def test_fix_guide_requires_a_test_per_branch_that_fails_when_reverted() -> None
     assert "Never close a finding with nothing that fails when the fix is reverted" not in text
 
 
-def test_dispatch_guide_states_the_task_fix_round_cap() -> None:
-    """The model table's round-3 row is containers only because a task fails before it gets there."""
+def test_dispatch_guide_says_the_fix_round_caps_bound_only_the_sensitive_path() -> None:
+    """A rejection buys one fix, so only a sensitive node's re-review can reach a cap."""
     text = _guide_text("dispatch")
-    assert "max_fix_rounds.task" in text
+    assert (
+        "`max_fix_rounds.task` and `max_fix_rounds.container` bound only the sensitive path" in text
+    )
     assert "widening `acceptable_models`" in text
 
 
@@ -417,3 +423,163 @@ def test_dispatch_guide_closes_a_wording_only_rejection_without_another_fix_roun
         "ruling is already made, does not buy another fix round: the findings go in the node's "
         "`report` section and the node closes as the ruling stands."
     ) in _guide_text("dispatch")
+
+
+GENERATOR_MISSING_FAILS = (
+    "- A test that checks a generated artifact against its generator fails, never skips, when the "
+    "generator is missing: a skipped check reads as a pass in every gate that runs it."
+)
+GENERATED_FILE_IS_REBUILT = (
+    "- A generated file (a built stylesheet, a lockfile, a schema dump) is regenerated, never "
+    "edited or hand-merged: a branch that changes any of its inputs rebuilds it before closing, "
+    "and a conflict on it is resolved by rebuilding it on the merged tree."
+)
+GENERATED_ARTIFACT_RULES = [
+    ("plan", GENERATOR_MISSING_FAILS),
+    ("fix", GENERATOR_MISSING_FAILS),
+    ("implement", GENERATED_FILE_IS_REBUILT),
+    ("merge", GENERATED_FILE_IS_REBUILT),
+]
+
+
+@pytest.mark.parametrize(
+    "topic,rule", GENERATED_ARTIFACT_RULES, ids=[t for t, _ in GENERATED_ARTIFACT_RULES]
+)
+def test_tm_guide_prints_the_generated_artifact_rule(topic: str, rule: str, tmp_path: Path) -> None:
+    """A freshness check that skips without its generator reads as a pass in every gate that runs it."""
+    result = CliRunner().invoke(app, ["guide", topic, "--builtin", "-C", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert rule in result.stdout
+
+
+@pytest.fixture
+def rendered(tmp_path: Path) -> Callable[[str], str]:
+    """`tm guide <topic>` as an agent reads it, on an estate with no addendum."""
+    runner = CliRunner()
+    assert runner.invoke(app, ["init", "-C", str(tmp_path)]).exit_code == 0
+
+    def render(topic: str) -> str:
+        result = runner.invoke(app, ["guide", topic, "-C", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        return result.stdout
+
+    return render
+
+
+def test_review_guide_reviews_a_container_once_on_its_landed_target(
+    rendered: Callable[[str], str],
+) -> None:
+    text = rendered("review")
+    assert "- `LANDED`: a plan's or spec's one review." in text
+    assert "**A plan's or spec's review** runs once, on its landed target." in text
+
+
+def test_review_guide_reads_what_every_node_under_a_landed_container_landed_on_its_target(
+    rendered: Callable[[str], str],
+) -> None:
+    """A plan whose children landed on main by themselves has no landing merge of its own to read."""
+    text = rendered("review")
+    assert (
+        "the landing merge of every node under it that landed on that target itself rather than "
+        "on the node's branch; a node whose children all landed that way has no landing merge of "
+        "its own."
+    ) in text
+    assert (
+        "git -C <repo> log -p --diff-merges=first-parent -E --grep "
+        "'^merge[(](<node-id>|<id under it>|...)[)]: land [^ ]+ on <base>$' <branch> --"
+    ) in text
+    assert "A repository where that prints nothing had nothing land." in text
+    assert '--grep "^merge(<node-id>): land " <branch>' not in text
+
+
+def test_merge_guide_ends_a_reviewed_container_s_landing_at_landed(
+    rendered: Callable[[str], str],
+) -> None:
+    assert (
+        "7. **Complete.** The merge worktree is removed and the node is `COMPLETED`, or `LANDED` "
+        "when it is a plan or spec with review on: its one review reads what landed."
+    ) in rendered("merge")
+
+
+def test_review_guide_scopes_a_re_review_to_the_open_findings_of_a_sensitive_fix(
+    rendered: Callable[[str], str],
+) -> None:
+    text = rendered("review")
+    steps, never = text.split("## Never", 1)
+    assert "**A re-review** is scoped to the open findings of a sensitive fix" in steps
+    assert "It never widens" in steps
+    assert "Never widen a re-review past the findings still open." in never
+
+
+def test_fix_guide_lands_a_fix_without_a_re_review_unless_the_node_is_sensitive(
+    rendered: Callable[[str], str],
+) -> None:
+    text = rendered("fix")
+    assert "A fix lands without a re-review unless the node is sensitive" in text
+    assert "is reviewed again" not in text
+
+
+def test_plan_guide_gives_children_of_a_reviewed_plan_no_review_of_their_own(
+    rendered: Callable[[str], str],
+) -> None:
+    assert (
+        "Children under a reviewed plan or spec take `review: false` and `fix: false` by default"
+        in rendered("plan")
+    )
+
+
+def test_plan_guide_shows_the_sensitive_key_with_every_area_tm_accepts_and_the_migration_rule(
+    rendered: Callable[[str], str],
+) -> None:
+    """The areas and the migration path are read off the guide, so it cannot drift from what the
+    validator accepts or what `writes_migration` matches."""
+    line = next(ln for ln in rendered("plan").splitlines() if ln.startswith("- `sensitive`:"))
+    assert [area for area in SENSITIVE_AREAS if f"`{area}`" not in line] == []
+    assert "`sensitive: [tenant, rls]`" in line
+    marker = re.search(r"a path under `([^`]+)` in its `declared_files`, is sensitive", line)
+    assert marker is not None, line
+    assert writes_migration([f"api/{marker.group(1)}0001_tenants.py"])
+
+
+def test_dispatch_guide_offers_a_landed_node_s_review(rendered: Callable[[str], str]) -> None:
+    assert "it reads `LANDED`, and its one review is claimable" in rendered("dispatch")
+
+
+def test_dispatch_guide_never_re_dispatches_a_review_of_a_fix_that_is_not_sensitive(
+    rendered: Callable[[str], str],
+) -> None:
+    steps, never = rendered("dispatch").split("## Never", 1)
+    assert "A dispatcher never re-dispatches a review of a fix that is not sensitive" in steps
+    assert "Never re-dispatch a review of a fix that is not sensitive." in never
+
+
+@pytest.mark.parametrize(
+    "doc", ["skills/dispatcher/SKILL.md", "src/taskmanager/skills/dispatcher/SKILL.md"]
+)
+def test_dispatcher_skill_lands_a_reviewed_container_first_and_never_re_reviews_a_plain_fix(
+    doc: str,
+) -> None:
+    text = _doc_text(doc)
+    assert "reads `LANDED` until its one review, on its landed target, runs" in text
+    assert "never re-dispatch a review of a fix that is not sensitive" in text
+
+
+def test_overview_lands_a_reviewed_container_before_its_one_review(
+    rendered: Callable[[str], str],
+) -> None:
+    text = rendered("overview")
+    assert (
+        "IMPLEMENTED ──claim, a plan or spec with review on──▶ MERGING ──landed and verified──▶ "
+        "LANDED ──claim──▶ REVIEWING"
+    ) in text
+    assert "| `review` | `IMPLEMENTED` for a task, `LANDED` for a plan or spec," in text
+
+
+def test_overview_lands_a_fix_without_a_re_review_unless_the_node_is_sensitive(
+    rendered: Callable[[str], str],
+) -> None:
+    text = rendered("overview")
+    assert "FIXED ──claim, not sensitive──▶ MERGING" in text
+    assert "FIXED ──claim, sensitive──▶ REVIEWING" in text
+    assert "FIXED ──claim──▶ REVIEWING" not in text
+    assert "`FIXED` for a sensitive node" in text

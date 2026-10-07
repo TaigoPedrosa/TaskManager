@@ -9,6 +9,7 @@ class Cycle:
     container: bool = False
     review: bool = True
     fix: bool = True
+    sensitive: bool = False
     outcome: Outcome | None = None
     fix_for: Outcome | None = None
     claimed_from: Status | None = None
@@ -37,10 +38,18 @@ _STEP_OF = {
 }
 REOPENABLE = frozenset({Status.FAILED, Status.DEFERRED, Status.ABANDONED})
 # Stable statuses a job's agent can still hold a lease over without a claim: a sync job runs
-# for a node its claim left where it was.
-_UNCLAIMED_WITH_A_JOB = STABLE - {Status.COMPLETED, Status.FAILED}
+# for a node its claim left where it was. A LANDED node's code is already on its target, so
+# nothing syncs or lands it.
+_UNCLAIMED_WITH_A_JOB = STABLE - {Status.COMPLETED, Status.FAILED, Status.LANDED}
 _RESET_TARGETS = frozenset(
-    {Status.READY, Status.IMPLEMENTED, Status.REVIEWED, Status.FIXED, Status.COMPLETED}
+    {
+        Status.READY,
+        Status.IMPLEMENTED,
+        Status.REVIEWED,
+        Status.FIXED,
+        Status.LANDED,
+        Status.COMPLETED,
+    }
 )
 
 
@@ -52,11 +61,16 @@ def next_action(c: Cycle) -> Action | None:
         case Status.READY:
             return None if c.container else Action.IMPLEMENT
         case Status.IMPLEMENTED:
-            return Action.REVIEW if c.review else Action.MERGE
+            # A container lands first; its one review reads the landed target.
+            return Action.REVIEW if c.review and not c.container else Action.MERGE
         case Status.REVIEWED:
             return _after_review(c)
         case Status.FIXED:
-            return Action.REVIEW
+            # Only a sensitive fix is re-reviewed; every other fix lands as it is.
+            return Action.REVIEW if c.sensitive else Action.MERGE
+        case Status.LANDED:
+            # A landing completes a node with review off; nothing reviews one stored at LANDED.
+            return Action.REVIEW if c.review else None
         case _:
             return None
 
@@ -72,8 +86,16 @@ def _after_review(c: Cycle) -> Action:
 
 def _counted(c: Cycle) -> bool:
     # A review after a landing fix checks that fix; it is not another review round.
-    return c.claimed_from == Status.IMPLEMENTED or (
+    return c.claimed_from in (Status.IMPLEMENTED, Status.LANDED) or (
         c.claimed_from == Status.FIXED and c.fix_for == Outcome.REJECT
+    )
+
+
+def _review_owed(c: Cycle) -> bool:
+    # A landing straight from IMPLEMENTED is always ahead of its review, whatever count a reset
+    # kept; a landing after a landing fix is ahead of it only while no review has run.
+    return (
+        c.container and c.review and (c.claimed_from == Status.IMPLEMENTED or c.review_cycles == 0)
     )
 
 
@@ -106,8 +128,13 @@ def _progress(
 
 
 def _rejected(c: Cycle, caps: Caps) -> Cycle:
+    # A review of a fix rejects to the owner, never into a second fix; and landed code nobody
+    # fixes has no parent review left to catch it.
+    if c.claimed_from == Status.FIXED or (c.claimed_from == Status.LANDED and not c.fix):
+        return _progress(c, Status.FAILED, Outcome.REJECT)
     cap = caps.fix_rounds_container if c.container else caps.fix_rounds_task
-    out_of_rounds = c.fix and c.review_cycles - 1 >= cap
+    # Every other node spends at most one fix, so the fix-round caps bound only a sensitive one.
+    out_of_rounds = c.sensitive and c.fix and c.review_cycles - 1 >= cap
     return _progress(c, Status.FAILED if out_of_rounds else Status.REVIEWED, Outcome.REJECT)
 
 
@@ -150,11 +177,12 @@ def advance(c: Cycle, event: Event, caps: Caps) -> Cycle:
         case (Status.FIXING, Event.COMPLETE):
             return _progress(c, Status.FIXED)
         case (Status.REVIEWING, Event.APPROVE):
-            return _progress(c, Status.REVIEWED, Outcome.APPROVE)
+            approved = Status.COMPLETED if c.claimed_from == Status.LANDED else Status.REVIEWED
+            return _progress(c, approved, Outcome.APPROVE)
         case (Status.REVIEWING, Event.REJECT):
             return _rejected(c, caps)
         case (Status.MERGING, Event.LANDED):
-            return _progress(c, Status.COMPLETED)
+            return _progress(c, Status.LANDED if _review_owed(c) else Status.COMPLETED)
         case (Status.MERGING, Event.OWN_DEFECT):
             return _landing_failed(c, caps)
         case (status, Event.RELEASE | Event.EXPIRED) if status in IN_STEP:
@@ -179,7 +207,9 @@ def reopen(c: Cycle, children_all_completed: bool) -> Cycle:
     if c.status not in REOPENABLE:
         raise LifecycleError(f"only FAILED, DEFERRED or ABANDONED reopen; this node is {c.status}")
     ready = Status.IMPLEMENTED if c.container and children_all_completed else Status.READY
-    return Cycle(status=ready, container=c.container, review=c.review, fix=c.fix)
+    return Cycle(
+        status=ready, container=c.container, review=c.review, fix=c.fix, sensitive=c.sensitive
+    )
 
 
 def _set_aside(c: Cycle, to: Status) -> Cycle:
@@ -211,7 +241,7 @@ def reset(c: Cycle, to: Status, outcome: Outcome | None) -> Cycle:
         )
     if to not in _RESET_TARGETS:
         raise LifecycleError(
-            f"reset goes to READY, IMPLEMENTED, REVIEWED, FIXED or COMPLETED, not {to}"
+            f"reset goes to READY, IMPLEMENTED, REVIEWED, FIXED, LANDED or COMPLETED, not {to}"
         )
     if to in (Status.REVIEWED, Status.FIXED) and outcome is None:
         raise LifecycleError(f"a reset to {to} needs --outcome")
@@ -221,6 +251,11 @@ def reset(c: Cycle, to: Status, outcome: Outcome | None) -> Cycle:
         raise LifecycleError("a fix answers reject or merge_failed, never approve")
     if not c.fix and (to == Status.FIXED or outcome == Outcome.MERGE_FAILED):
         raise LifecycleError("this node has fix off: nothing fixes it; turn fix on first")
+    if not c.review and to == Status.LANDED:
+        raise LifecycleError(
+            "this node has review off: nothing reviews it at LANDED; reset it to COMPLETED, or "
+            "turn review on first"
+        )
     return replace(
         c,
         status=to,

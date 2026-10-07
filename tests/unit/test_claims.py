@@ -4,10 +4,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from lifecycle_estate import add, branch_at, git, make_estate, on_branch, section, stored
+from lifecycle_estate import add, branch_at, git, make_estate, on_branch, push_main, section, stored
 
-from taskmanager.core.enums import NodeKind, RelationType
-from taskmanager.core.models import Condition, Job, NodeRelation
+from taskmanager.core.enums import NodeKind, RelationType, VerificationType
+from taskmanager.core.models import Condition, Job, NodeRelation, NodeVerification
 from taskmanager.core.status import (
     Action,
     ConditionStage,
@@ -20,6 +20,7 @@ from taskmanager.core.status import (
 from taskmanager.engine.claims import Blocker, ClaimResult, Claims
 from taskmanager.engine.config import ProjectConfig
 from taskmanager.engine.operations import OperationError
+from taskmanager.engine.snapshot import DisplayView
 
 
 class FakeLanding:
@@ -332,24 +333,130 @@ def test_a_review_verdict_is_refused_until_the_review_section_changes(tmp_path: 
     assert (node.outcome, node.verdict, node.review_cycles) == (Outcome.APPROVE, "ship it", 1)
 
 
-def test_a_task_rejected_with_no_fix_round_left_fails_and_opens_a_decision(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("merge", "branch", "base"),
+    [(Merge.MAIN, "origin/main", "main"), (Merge.PARENT, "tm/S", "tm/S")],
+)
+def test_a_review_of_a_landed_plan_reads_the_target_it_landed_on_in_every_repository(
+    tmp_path: Path, merge: Merge, branch: str, base: str
+) -> None:
+    claims = make_estate(tmp_path, repos=("api", "web"))
+    add(claims, "S", NodeKind.SPEC)
+    add(claims, "P", NodeKind.PLAN, parent="S", merge=merge, review=True, status=Status.LANDED)
+    add(claims, "A", parent="P", repo="api", review=False, fix=False, status=Status.COMPLETED)
+    add(claims, "W", parent="P", repo="web", review=False, fix=False, status=Status.COMPLETED)
+    branch_at(claims.root / "api", "tm/S")
+
+    result = claims.start("P", "reviewer", "s1")
+
+    assert (result.action, result.branch, result.base) == (Action.REVIEW, branch, base)
+    assert (result.repos, result.worktree) == (["api", "web"], None)
+    lease = claims.runtime.get_lease("P")
+    assert lease is not None and lease.branch_name == branch
+
+
+def test_a_landed_plan_s_fix_is_cut_from_its_target_in_every_repository_its_code_landed_in(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path, repos=("api", "web"))
+    api = claims.root / "api"
+    add(
+        claims,
+        "P",
+        NodeKind.PLAN,
+        review=True,
+        fix=True,
+        status=Status.REVIEWED,
+        outcome=Outcome.REJECT,
+        review_cycles=1,
+    )
+    add(claims, "A", parent="P", repo="api", merge=Merge.PARENT, status=Status.COMPLETED)
+    add(claims, "W", parent="P", repo="web", status=Status.COMPLETED)
+    landed = on_branch(api, "tm/P", "p.py", "p = 1\n")
+    git(api, "push", "-q", "origin", "tm/P:main")
+    later = push_main(api, "q.py", "q = 1\n")
+
+    result = claims.start("P", "fixer", "s1")
+
+    assert result.action == Action.FIX
+    assert sorted(result.worktrees) == ["api", "web"]
+    assert git(Path(result.worktrees["api"]), "rev-parse", "HEAD") == later
+    assert git(Path(result.worktrees["web"]), "rev-parse", "--abbrev-ref", "HEAD") == "tm/P"
+    assert git(api, "rev-parse", "tm/P@1") == landed
+
+
+def test_a_fix_whose_branch_carries_nothing_of_its_own_is_cut_from_its_target(
+    tmp_path: Path,
+) -> None:
     claims = make_estate(tmp_path)
-    add(claims, "T1")
-    claims.start("T1", "implementer", "s1")
-    claims.complete("T1")
+    api = claims.root / "api"
+    add(claims, "T1", status=Status.REVIEWED, outcome=Outcome.REJECT, review_cycles=1)
+    branch_at(api, "tm/T1")
+    later = push_main(api, "q.py", "q = 1\n")
+    scratch = tmp_path / "sync"
+    git(api, "worktree", "add", "-q", str(scratch), "tm/T1")
+    git(scratch, "merge", "-q", "--no-ff", "--no-edit", "origin/main")
+    git(api, "worktree", "remove", "--force", str(scratch))
+    assert git(api, "rev-parse", "tm/T1") != later
 
-    status = Status.READY
-    for round_ in range(3):
-        assert claims.start("T1", "reviewer", "s1").action == Action.REVIEW
-        claims.ops.set_section("T1", "review", f"finding {round_}")
-        status = claims.review("T1", approve=False)
-        if round_ < 2:
-            assert status == Status.REVIEWED
-            assert claims.start("T1", "fixer", "s1").action == Action.FIX
-            assert claims.complete("T1") == Status.FIXED
+    result = claims.start("T1", "fixer", "s1")
 
-    assert status == Status.FAILED
-    assert len(decisions_blocking(claims, "T1")) == 1
+    assert result.worktree is not None
+    assert git(Path(result.worktree), "rev-parse", "HEAD") == later
+
+
+MIGRATION = "api/migrations/versions/0042_add_tenant.py"
+
+
+@pytest.mark.parametrize(
+    ("frontmatter", "verified", "action", "shown"),
+    [
+        ({}, None, Action.MERGE, "WAITING_MERGE"),
+        ({"sensitive": "tenant"}, None, Action.REVIEW, "WAITING_REVIEW"),
+        ({"declared_files": [MIGRATION]}, None, Action.REVIEW, "WAITING_REVIEW"),
+        ({}, MIGRATION, Action.REVIEW, "WAITING_REVIEW"),
+    ],
+    ids=["plain", "sensitive-key", "declared-migration", "verified-migration"],
+)
+def test_a_fix_lands_as_it_is_unless_the_node_is_sensitive_and_owes_its_fix_one_review(
+    tmp_path: Path,
+    frontmatter: dict[str, object],
+    verified: str | None,
+    action: Action,
+    shown: str,
+) -> None:
+    claims = make_estate(tmp_path)
+    claims.landing = FakeLanding()
+    add(
+        claims,
+        "T1",
+        status=Status.FIXED,
+        outcome=Outcome.REJECT,
+        fix_for=Outcome.REJECT,
+        review_cycles=1,
+    )
+    claims.nodes.save_node(stored(claims, "T1").model_copy(update={"frontmatter": frontmatter}))
+    if verified is not None:
+        claims.nodes.add_verification(
+            NodeVerification(
+                node_id="T1", verification_type=VerificationType.FILE_EXISTS, target_path=verified
+            )
+        )
+    on_branch(claims.root / "api", "tm/T1", "a.py", "a = 1\n")
+
+    assert DisplayView(claims.snapshots).display(stored(claims, "T1")) == shown
+    assert claims.start("T1", "agent", "s1").action == action
+
+
+def test_a_landed_plan_rejected_with_fix_off_fails_and_opens_a_decision(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path)
+    add(claims, "P", NodeKind.PLAN, review=True, fix=False, status=Status.LANDED)
+
+    assert claims.start("P", "reviewer", "s1").action == Action.REVIEW
+    claims.ops.set_section("P", "review", "the landed target breaks the gate")
+
+    assert claims.review("P", approve=False) == Status.FAILED
+    assert len(decisions_blocking(claims, "P")) == 1
 
 
 def test_transient_releases_count_step_failures_until_the_cap_fails_the_node(
@@ -529,15 +636,16 @@ def test_a_container_with_code_on_its_branch_stops_at_implemented(tmp_path: Path
     assert stored(claims, "P").status == Status.IMPLEMENTED
 
 
-def test_a_reset_to_completed_is_refused_while_the_branch_is_not_on_its_target(
-    tmp_path: Path,
+@pytest.mark.parametrize("to", [Status.LANDED, Status.COMPLETED])
+def test_a_reset_to_landed_code_is_refused_while_the_branch_is_not_on_its_target(
+    tmp_path: Path, to: Status
 ) -> None:
     claims = make_estate(tmp_path)
     add(claims, "T1", status=Status.REVIEWED, outcome=Outcome.APPROVE)
     on_branch(claims.root / "api", "tm/T1", "a.py", "a = 1\n")
 
     with pytest.raises(OperationError, match="is not on main"):
-        claims.reset("T1", Status.COMPLETED, "landed by hand")
+        claims.reset("T1", to, "landed by hand")
     assert stored(claims, "T1").status == Status.REVIEWED
 
 

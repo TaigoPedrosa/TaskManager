@@ -10,6 +10,7 @@ class Status(StrEnum):
     FIXING = "FIXING"
     FIXED = "FIXED"
     MERGING = "MERGING"
+    LANDED = "LANDED"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     DEFERRED = "DEFERRED"
@@ -27,6 +28,7 @@ STABLE: frozenset[Status] = frozenset(
         Status.IMPLEMENTED,
         Status.REVIEWED,
         Status.FIXED,
+        Status.LANDED,
         Status.COMPLETED,
         Status.FAILED,
     }
@@ -69,6 +71,7 @@ class DisplayStatus(StrEnum):
     FIXING = "FIXING"
     MERGING = "MERGING"
     COMPLETED = "COMPLETED"
+    LANDED = "LANDED"
     FAILED = "FAILED"
     DEFERRED = "DEFERRED"
     ABANDONED = "ABANDONED"
