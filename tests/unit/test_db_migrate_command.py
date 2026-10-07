@@ -15,20 +15,18 @@ from test_state_migration import (
 from taskmanager.cli.main import main
 from taskmanager.db.schema import STATE_SCHEMA_VERSION
 
-# The header fields SQLite's backup API rewrites on the copy it commits: the file change counter,
-# the schema cookie and the version-valid-for number (https://www.sqlite.org/fileformat2.html).
-_BACKUP_REWRITTEN = (slice(24, 28), slice(40, 44), slice(92, 96))
-
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _outside_rewritten_header(data: bytes) -> bytes:
-    masked = bytearray(data)
-    for field in _BACKUP_REWRITTEN:
-        masked[field] = bytes(field.stop - field.start)
-    return bytes(masked)
+def _dump(db: Path) -> list[str]:
+    # The backup API rewrites header fields on its copy, so the file's bytes are not the measure.
+    conn = sqlite3.connect(db)
+    try:
+        return list(conn.iterdump())
+    finally:
+        conn.close()
 
 
 def _tm(
@@ -55,7 +53,7 @@ def test_migrate_schema_2_estate_backs_it_up_then_keeps_every_row(
     v2_estate = _v2_estate(tmp_path)
     state_db = v2_estate / ".taskmanager" / "state.db"
     backup = v2_estate / ".taskmanager" / "state.db.schema2.bak"
-    before_bytes = state_db.read_bytes()
+    before_dump = _dump(state_db)
     before_rows = _raw_rows(state_db)
 
     code, out = _tm(["db", "migrate", "-C", str(v2_estate)], monkeypatch, capsys)
@@ -65,10 +63,8 @@ def test_migrate_schema_2_estate_backs_it_up_then_keeps_every_row(
         f"Migrated state.db from schema 2 to {STATE_SCHEMA_VERSION}; the schema-2 copy is {backup}"
     )
     assert _user_version(backup) == 2
+    assert _dump(backup) == before_dump
     assert _raw_rows(backup) == before_rows
-    assert _sha256(_outside_rewritten_header(backup.read_bytes())) == _sha256(
-        _outside_rewritten_header(before_bytes)
-    )
     assert _user_version(state_db) == STATE_SCHEMA_VERSION
     assert _raw_rows(state_db) == before_rows
     assert all(before_rows.values())
