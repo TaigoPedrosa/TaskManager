@@ -109,5 +109,19 @@ def test_a_manifest_or_lockfile_never_holds_back_a_second_claim(tmp_path: Path) 
     add(claims, "W2", repo="workers", files=["pyproject.toml", "uv.lock", "src/b.py"], priority=80)
 
     assert chosen_ids(batch(claims)) == {"W1", "W2"}
+    assert next_task_ids(claims) == {"W1", "W2"}
     claims.start("W1", "agent-1", "s1")
     assert claims.start("W2", "agent-2", "s1").action != Action.BLOCKED
+
+
+def test_a_container_never_locks_a_manifest_or_lockfile_its_descendants_declare(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path, repos=("workers",))
+    add(claims, "PLAN", NodeKind.PLAN)
+    add(claims, "W1", parent="PLAN", repo="workers", files=["pyproject.toml", "src/a.py"])
+    add(claims, "W2", parent="PLAN", repo="workers", files=["svc/uv.lock", "src/b.py"])
+
+    snap = claims.snapshots.build()
+
+    assert claims.snapshots.lock_set("PLAN", snap) == ["workers:src/a.py", "workers:src/b.py"]

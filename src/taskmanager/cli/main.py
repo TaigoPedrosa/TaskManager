@@ -1301,8 +1301,12 @@ def section_set(
     elif content is not None:
         text_content = content
 
+    # Without --header the stored one stays, so `section get | section set --file -` round-trips.
+    stored = container.get(NodeRepository).get_section(qp.node_id, qp.section_key)
     try:
-        ops.set_section(qp.node_id, qp.section_key, text_content, header)
+        ops.set_section(
+            qp.node_id, qp.section_key, text_content, header or (stored.header if stored else None)
+        )
     except OperationError as exc:
         print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc
@@ -1439,7 +1443,9 @@ def wave_discover(
         f"{flat(n.get('repos'))} {flat(n.get('requires'))}"
         for n in data["chosen"]
     ]
-    out += [f"H {held}" for held in data.get("held", [])]
+    # A held reason can quote free text, such as a condition's --needs, and the caller reads one
+    # record per line.
+    out += [f"H {' '.join(held.split())}" for held in data.get("held", [])]
     out.append(f"W {data.get('waiting_for_slot', 0)}")
     sys.stdout.write("\n".join(out) + "\n")
 
