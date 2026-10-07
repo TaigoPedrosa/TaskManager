@@ -250,6 +250,7 @@ def test_task_update_sets_flags_merge_requires_and_land_order(tmp_path: Path) ->
         "task",
         "update",
         "S1-P1-d",
+        "--review",
         "--merge",
         "parent",
         "--no-fix",

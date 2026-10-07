@@ -459,14 +459,15 @@ def plan_add(
     priority: Annotated[int, typer.Option("--priority", "-p", help="Priority")] = 50,
     order: Annotated[int, typer.Option("--order", "-o", help="Display order")] = 0,
     review: Annotated[
-        bool, typer.Option("--review/--no-review", help="A review step follows the children")
-    ] = False,
+        bool | None,
+        typer.Option("--review/--no-review", help="A review step follows the children"),
+    ] = None,
     fix: Annotated[
-        bool, typer.Option("--fix/--no-fix", help="A rejection is fixed on this plan")
-    ] = False,
+        bool | None, typer.Option("--fix/--no-fix", help="A rejection is fixed on this plan")
+    ] = None,
     merge: Annotated[
-        Merge, typer.Option("--merge", help="Land on the parent's branch or on main")
-    ] = Merge.MAIN,
+        Merge | None, typer.Option("--merge", help="Land on the parent's branch or on main")
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
@@ -513,6 +514,26 @@ def _csv(raw: str | None) -> list[str]:
     return [x.strip() for x in (raw or "").split(",") if x.strip()]
 
 
+_SET_OPTION = typer.Option(
+    "--set",
+    help="Frontmatter key=value, repeatable; the value is JSON when it parses "
+    '(declared_files=\'["a","b"]\'), else text',
+)
+
+
+def _frontmatter_pairs(pairs: list[str] | None) -> dict[str, Any]:
+    frontmatter: dict[str, Any] = {}
+    for pair in pairs or []:
+        key, sep, raw = pair.partition("=")
+        if not sep or not key:
+            raise typer.BadParameter(f"--set takes key=value, got '{pair}'")
+        try:
+            frontmatter[key] = json.loads(raw)
+        except ValueError:
+            frontmatter[key] = raw
+    return frontmatter
+
+
 @task_app.command("add")
 def task_add(
     title: str,
@@ -527,21 +548,24 @@ def task_add(
         str | None, typer.Option("--models", help="Comma-separated acceptable models")
     ] = None,
     review: Annotated[
-        bool, typer.Option("--review/--no-review", help="A review step follows implement")
-    ] = True,
+        bool | None,
+        typer.Option("--review/--no-review", help="A review step follows implement"),
+    ] = None,
     fix: Annotated[
-        bool, typer.Option("--fix/--no-fix", help="A rejection is fixed by this task")
-    ] = True,
+        bool | None, typer.Option("--fix/--no-fix", help="A rejection is fixed by this task")
+    ] = None,
     merge: Annotated[
-        Merge, typer.Option("--merge", help="Land on the parent's branch or on main")
-    ] = Merge.MAIN,
+        Merge | None, typer.Option("--merge", help="Land on the parent's branch or on main")
+    ] = None,
     requires: Annotated[
         str | None, typer.Option("--requires", help="Comma-separated agent capabilities")
     ] = None,
+    set_frontmatter: Annotated[list[str] | None, _SET_OPTION] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
     ops = _get_container(root).get(Operations)
+    frontmatter = _frontmatter_pairs(set_frontmatter)
     with _refusing():
         task_id = ops.add_task(
             title,
@@ -555,6 +579,7 @@ def task_add(
             fix=fix,
             merge=merge,
             requires=_csv(requires),
+            frontmatter=frontmatter,
         )
     print(f"[green]Added task {task_id}[/green]")
 
@@ -690,14 +715,7 @@ def task_update(
         str | None, typer.Option("--models", help="Comma-separated acceptable models")
     ] = None,
     repo: Annotated[str | None, typer.Option("--repo", help="Target repository directory")] = None,
-    set_frontmatter: Annotated[
-        list[str] | None,
-        typer.Option(
-            "--set",
-            help="Frontmatter key=value, repeatable; the value is JSON when it parses "
-            '(declared_files=\'["a","b"]\'), else text',
-        ),
-    ] = None,
+    set_frontmatter: Annotated[list[str] | None, _SET_OPTION] = None,
     unset_frontmatter: Annotated[
         list[str] | None,
         typer.Option("--unset", help="Frontmatter key to remove, repeatable"),
@@ -723,15 +741,7 @@ def task_update(
 ) -> None:
     root = _get_root(path)
     ops = _get_container(root).get(Operations)
-    frontmatter_set: dict[str, Any] = {}
-    for pair in set_frontmatter or []:
-        key, sep, raw = pair.partition("=")
-        if not sep or not key:
-            raise typer.BadParameter(f"--set takes key=value, got '{pair}'")
-        try:
-            frontmatter_set[key] = json.loads(raw)
-        except ValueError:
-            frontmatter_set[key] = raw
+    frontmatter_set = _frontmatter_pairs(set_frontmatter)
     with _refusing():
         changed = ops.update_node(
             task_id,

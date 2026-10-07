@@ -63,9 +63,9 @@ class PlanCreate(BaseModel):
     slug: str | None = None
     priority: int = 50
     order: int = 0
-    review: bool = False
-    fix: bool = False
-    merge: Merge = Merge.MAIN
+    review: bool | None = None
+    fix: bool | None = None
+    merge: Merge | None = None
 
 
 class TaskCreate(BaseModel):
@@ -76,10 +76,11 @@ class TaskCreate(BaseModel):
     order: int = 0
     depends_on: list[str] = Field(default_factory=list)
     models: list[str] = Field(default_factory=list)
-    review: bool = True
-    fix: bool = True
-    merge: Merge = Merge.MAIN
+    review: bool | None = None
+    fix: bool | None = None
+    merge: Merge | None = None
     requires: list[str] = Field(default_factory=list)
+    frontmatter: dict[str, Any] = Field(default_factory=dict)
 
 
 class NodeUpdate(BaseModel):
@@ -682,6 +683,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
                 fix=body.fix,
                 merge=body.merge,
                 requires=body.requires,
+                frontmatter=body.frontmatter,
             )
         return {"id": task_id}
 

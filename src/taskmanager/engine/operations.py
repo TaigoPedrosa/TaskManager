@@ -32,7 +32,7 @@ from taskmanager.core.status import (
 )
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
-from taskmanager.db.node_repo import NodeRepository
+from taskmanager.db.node_repo import NodeRepository, declared_files_of
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine import git as gitops
 from taskmanager.engine.assets import (
@@ -57,7 +57,9 @@ from taskmanager.engine.snapshot import (
     SnapshotBuilder,
     node_busy,
     roll_up_ancestors,
+    sensitive_areas,
     stored_status,
+    writes_migration,
 )
 from taskmanager.engine.stepgraph import Snapshot
 from taskmanager.engine.validation import validate
@@ -86,6 +88,33 @@ class OperationError(ValueError):
     def __init__(self, message: str, status_code: int = 400) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+def child_defaults(
+    child: Node,
+    parent: Node | None,
+    verifications: Sequence[NodeVerification] = (),
+    *,
+    review: bool | None = None,
+    fix: bool | None = None,
+    merge: Merge | None = None,
+) -> Node:
+    """`child` carrying each review, fix and merge flag its write states, and a default for each
+    one it leaves out. A reviewed parent's one review reads what lands on the parent's branch,
+    so a child under it lands there with no review of its own unless it is sensitive; anywhere
+    else a task reviews and fixes itself and lands on main, and a container does neither."""
+    if parent is None or not parent.review:
+        own, lands_on = child.kind == NodeKind.TASK, Merge.MAIN
+    else:
+        files = declared_files_of(child, list(verifications))
+        own, lands_on = bool(sensitive_areas(child)) or writes_migration(files), Merge.PARENT
+    return child.model_copy(
+        update={
+            "review": own if review is None else review,
+            "fix": own if fix is None else fix,
+            "merge": lands_on if merge is None else merge,
+        }
+    )
 
 
 # Refusals that conflict with the tree's current state rather than with the request itself.
@@ -370,12 +399,13 @@ class Operations:
         slug: str | None = None,
         priority: int = 50,
         order: int = 0,
-        review: bool = False,
-        fix: bool = False,
-        merge: Merge = Merge.MAIN,
+        review: bool | None = None,
+        fix: bool | None = None,
+        merge: Merge | None = None,
     ) -> str:
         self._validate_priority(priority)
-        if self.node_repo.get_node(spec) is None:
+        parent = self.node_repo.get_node(spec)
+        if parent is None:
             raise OperationError(f"spec '{spec}' not found", 404)
         if slug:
             plan_id = f"{spec}-{slug}"
@@ -388,13 +418,16 @@ class Operations:
                 counter += 1
             plan_id = f"{spec}-P{counter}"
 
-        plan_node = Node(
-            id=plan_id,
-            kind=NodeKind.PLAN,
-            title=title,
-            priority=priority,
-            ordinal=order,
-            status=Status.READY,
+        plan_node = child_defaults(
+            Node(
+                id=plan_id,
+                kind=NodeKind.PLAN,
+                title=title,
+                priority=priority,
+                ordinal=order,
+                status=Status.READY,
+            ),
+            parent,
             review=review,
             fix=fix,
             merge=merge,
@@ -413,9 +446,9 @@ class Operations:
                 "title": title,
                 "spec": spec,
                 "ordinal": order,
-                "review": review,
-                "fix": fix,
-                "merge": merge.value,
+                "review": plan_node.review,
+                "fix": plan_node.fix,
+                "merge": plan_node.merge.value,
             },
         )
         return plan_id
@@ -429,13 +462,15 @@ class Operations:
         order: int = 0,
         depends_on: list[str] | None = None,
         models: list[str] | None = None,
-        review: bool = True,
-        fix: bool = True,
-        merge: Merge = Merge.MAIN,
+        review: bool | None = None,
+        fix: bool | None = None,
+        merge: Merge | None = None,
         requires: list[str] | None = None,
+        frontmatter: dict[str, Any] | None = None,
     ) -> str:
         self._validate_priority(priority)
-        if self.node_repo.get_node(plan) is None:
+        parent = self.node_repo.get_node(plan)
+        if parent is None:
             raise OperationError(f"plan '{plan}' not found", 404)
         missing_deps = [d for d in (depends_on or []) if self.node_repo.get_node(d) is None]
         if missing_deps:
@@ -451,18 +486,22 @@ class Operations:
                 counter += 1
             task_id = f"{plan}-T{counter}"
 
-        task_node = Node(
-            id=task_id,
-            kind=NodeKind.TASK,
-            title=title,
-            priority=priority,
-            ordinal=order,
-            acceptable_models=models or [],
-            status=Status.READY,
+        task_node = child_defaults(
+            Node(
+                id=task_id,
+                kind=NodeKind.TASK,
+                title=title,
+                priority=priority,
+                ordinal=order,
+                acceptable_models=models or [],
+                frontmatter=frontmatter or {},
+                status=Status.READY,
+                requires=requires or [],
+            ),
+            parent,
             review=review,
             fix=fix,
             merge=merge,
-            requires=requires or [],
         )
         self._refuse_fix_without_review(task_node)
         with self._checked({task_id}):
