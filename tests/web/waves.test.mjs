@@ -116,11 +116,12 @@ function makeFakeFetch(wavesPayload) {
 }
 
 // waves.js is a classic script (not a module): run it in its own vm context per test, with a
-// fake store and fetch already in place before it runs its own top-level initWaves(). A `let`
+// fake store and fetch already in place, then show the view (initWaves) unless `shown` is
+// false. A `let`
 // declared inside the script (waveDepth, waveData, ...) never becomes a context property --
 // only its top-level `function`s do -- so every assertion below reads observable behaviour
 // (a fetch call's URL, #waves-content's rendered HTML) rather than that internal state.
-function freshContext(wavesPayload, { isStaticMode = false } = {}) {
+function freshContext(wavesPayload, { isStaticMode = false, shown = true } = {}) {
   const contentEl = new FakeContent();
   let rafQueue = [];
   const loadPendingCalls = [];
@@ -144,6 +145,7 @@ function freshContext(wavesPayload, { isStaticMode = false } = {}) {
   sandbox.window.tmStore = new FakeStore();
   const context = vm.createContext(sandbox);
   vm.runInContext(WAVES_SRC, context, { filename: 'waves.js' });
+  if (shown) context.initWaves();
   // Set from outside, after the script ran: a plain context property, not a `let` the script
   // itself declared, so it is visible here exactly like `fetch`/`document` above.
   context.flushRaf = () => {
@@ -170,7 +172,25 @@ function depthOf(url) {
   return new URLSearchParams(url.split('?')[1]).get('depth');
 }
 
-test('the page opens on wave 1, sized from /api/meta rather than a constant', async () => {
+test('nothing is fetched, refetched or rendered until the view is first shown, and only once after', async () => {
+  const ctx = freshContext(undefined, { shown: false });
+  ctx.window.tmStore.emit({ statusesChanged: true });
+  ctx.flushRaf();
+  ctx.scheduleWavesRefetch();
+  ctx.flushRaf();
+  await flushAsync();
+  assert.deepEqual(ctx.fetch.calls, [], 'no /api/meta or /api/waves before the view is shown');
+  assert.deepEqual(ctx.loadPendingCalls, [], 'the load bar never pends for a view nobody opened');
+  assert.equal(ctx.contentHtml(), '');
+
+  ctx.initWaves();
+  ctx.initWaves();
+  await flushAsync();
+  assert.equal(ctx.fetch.calls.filter((u) => u.startsWith('/api/meta')).length, 1);
+  assert.equal(wavesCalls(ctx).length, 1, 'showing the view again does not reload it');
+});
+
+test('Waves opens on wave 1, sized from /api/meta rather than a constant', async () => {
   const ctx = freshContext();
   await flushAsync();
   const calls = wavesCalls(ctx);

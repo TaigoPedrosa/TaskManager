@@ -15,9 +15,8 @@ let decisionsTab = 'open';
 // the Answered/Withdrawn tab counts, since (unlike Open) nothing pushes those live.
 let decisionsCounts = null;
 // The view mode active right before the toolbar switched into Decisions, so a blocked-node
-// chip can send the owner back to a view that actually shows the drawer (Waves/Graph) instead
-// of always forcing Document.
-let viewModeBeforeDecisions = window.VIEW_MODES.WAVES;
+// chip sends the owner back to the view they came from.
+let viewModeBeforeDecisions = window.VIEW_MODES.DOCUMENT;
 // Last status this session saw a given decision hold, keyed by id -- a later render seeing a
 // different status than this is a change made elsewhere while the owner was looking, not the
 // owner's own write (afterDecisionWrite pre-seeds the new status, so its own render never diffs).
@@ -133,7 +132,7 @@ window.tmStore.onChange(() => {
 
 const viewDecisionsBtn = document.getElementById('view-decisions-btn');
 const decisionsBadgeEl = document.getElementById('decisions-badge');
-viewDecisionsBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.DECISIONS));
+viewDecisionsBtn.addEventListener('click', () => onViewSegment(window.VIEW_MODES.DECISIONS, selectedDecisionId));
 
 function updateDecisionsBadge() {
   // Live everywhere the store is (decisions_open travels with every snapshot/update); a
@@ -148,12 +147,6 @@ function updateDecisionsBadge() {
   // The badge span is a sighted-only count; aria-label is what a screen reader (or, below
   // `sm`, a caption-less icon button) actually reads, so the count belongs there too.
   viewDecisionsBtn.setAttribute('aria-label', `Decisions view, ${openCount} open`);
-}
-
-// The detail drawer overlays every view (index.html), so a view that has no use for it
-// closes it on the way in; the close button's own handlers also release the drawer's watch.
-function closeDetailDrawer() {
-  if (!graphInspector.classList.contains('hidden')) inspectorCloseBtn.click();
 }
 
 if (typeof setViewMode === 'function') {
@@ -191,8 +184,7 @@ if (typeof setViewMode === 'function') {
 function goToDecision(decisionId) {
   const row = decisionsData.find(d => d.id === decisionId);
   decisionsTab = row ? decisionTabFor(row.status) : 'open';
-  selectedDecisionId = decisionId;
-  setViewMode(window.VIEW_MODES.DECISIONS);
+  navigate({ view: window.VIEW_MODES.DECISIONS, id: decisionId });
 }
 
 // The reverse trip: a blocked/raising node inside a decision's own detail reopens the view
@@ -200,7 +192,7 @@ function goToDecision(decisionId) {
 // node is also expanded and scrolled to, under the drawer.
 function openBlockedNodeDetail(nodeId) {
   const target = viewModeBeforeDecisions;
-  setViewMode(target);
+  navigate({ view: target });
   if (target === window.VIEW_MODES.DOCUMENT) selectNode(nodeId);
   showGraphInspector(nodeId);
 }
@@ -236,14 +228,7 @@ function renderDecisionsTabs() {
   }).join('');
   const tabs = Array.from(decisionsTabsEl.querySelectorAll('.dec-tab-btn'));
   function activate(key, focusIt) {
-    decisionsTab = key;
-    decisionsData = [];
-    decisionsNextCursor = null;
-    // A decision from the old tab stayed selected under the new one otherwise -- its detail is
-    // not wrong, just no longer listed under any tab the owner can see it come from.
-    selectedDecisionId = null;
-    renderDecisionsView();
-    refreshDecisionsData();
+    selectDecisionsTab(key);
     if (focusIt) {
       const btn = decisionsTabsEl.querySelector(`[data-tab="${key}"]`);
       if (btn) btn.focus();
@@ -261,6 +246,24 @@ function renderDecisionsTabs() {
   });
   decisionsListEl.setAttribute('role', 'tabpanel');
   decisionsListEl.setAttribute('aria-labelledby', `dec-tab-${decisionsTab}`);
+}
+
+function selectDecisionsTab(key) {
+  decisionsTab = key;
+  decisionsData = [];
+  decisionsNextCursor = null;
+  // A decision from the old tab stayed selected under the new one otherwise -- its detail is
+  // not wrong, just no longer listed under any tab the owner can see it come from.
+  selectedDecisionId = null;
+  navigate({ view: window.VIEW_MODES.DECISIONS }, { replace: true });
+  renderDecisionsView();
+  refreshDecisionsData();
+}
+
+// The Decisions view's default: the Open tab at the top, nothing selected.
+function resetDecisions() {
+  selectDecisionsTab('open');
+  [decisionsPane, decisionsListEl, decisionsDetailEl].forEach(el => { el.scrollTop = 0; });
 }
 
 function decisionAgeText(iso) {
@@ -310,6 +313,7 @@ function renderDecisionsList() {
       renderedDecisionId = null;
       renderDecisionsList();
       renderDecisionDetail(selectedDecisionId);
+      navigate({ view: window.VIEW_MODES.DECISIONS, id: selectedDecisionId });
     });
   });
   const loadMoreBtn = decisionsListEl.querySelector('#dec-load-more-btn');

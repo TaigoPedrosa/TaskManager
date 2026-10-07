@@ -1,7 +1,7 @@
-// Filters (mirrored into the URL hash so a view is shareable). Visibility itself -- which
-// rows this produces, which facet counts they add up to -- is the store's job (live: the
-// server; static: store.js's own port of web/visibility.py); this file only owns the
-// controls, the URL-hash round trip, and forwarding the result to the store.
+// Filters, and the router that keeps them in the URL with the view and its selection.
+// Visibility itself -- which rows this produces, which facet counts they add up to -- is the
+// store's job (live: the server; static: store.js's own port of web/visibility.py); this file
+// only owns the controls, the URL round trip, and forwarding the result to the store.
 // NO_REPO/NO_SPEC/NO_PHASE are store.js's own sentinel constants (loaded before this file);
 // declaring them again here would be a duplicate top-level const in the same script scope.
 // Every dimension below is tri-state: absent from the Map = no opinion (neutral),
@@ -20,8 +20,7 @@ function anyFilterActive() {
     filters.scoreMin !== null || filters.scoreMax !== null;
 }
 
-function readHash() {
-  const p = new URLSearchParams(location.hash.slice(1));
+function readFilters(p) {
   filters.statusMode = new Map();
   (p.get('status') || '').split(',').filter(c => window.STATUS_THEMES[c]).forEach(c => filters.statusMode.set(c, 'include'));
   (p.get('xstatus') || '').split(',').filter(c => window.STATUS_THEMES[c]).forEach(c => filters.statusMode.set(c, 'exclude'));
@@ -51,7 +50,7 @@ function modeEntries(modeMap) {
   return { inc, exc };
 }
 
-// The same shape both writeHash() (a URL) and setFilters() (the store's F, protocol §"Filters,
+// The same shape both navigate() (a URL) and setFilters() (the store's F, protocol §"Filters,
 // visibility, facets and edges") need: only the keys with an opinion, values already strings.
 function filtersToF() {
   const F = {};
@@ -76,19 +75,90 @@ function filtersToF() {
   return F;
 }
 
-function writeHash() {
-  const p = new URLSearchParams(filtersToF());
+// The page's state is its URL: /<view>[/<id>] names the view and what it has selected, the
+// query string holds the filters. A static export, opened from a file, has no paths of its own,
+// so it carries the same path and query after the "#": #/decisions?status=OPEN.
+function locationParts() {
+  const hash = location.hash.slice(1);
+  // Links from before the router carried their filters in the hash: /#status=REVIEWING.
+  if (hash && !hash.startsWith('/')) return { path: isStaticMode ? '' : location.pathname, query: hash };
+  if (!isStaticMode) return { path: location.pathname, query: location.search.slice(1) };
+  const q = hash.indexOf('?');
+  return q < 0 ? { path: hash, query: '' } : { path: hash.slice(0, q), query: hash.slice(q + 1) };
+}
+
+function decodeSegment(segment) {
   try {
-    history.replaceState(null, '', p.toString() ? '#' + p : location.pathname + location.search);
+    return decodeURIComponent(segment);
   } catch (e) {
-    console.error('Could not update the URL hash:', e);
+    return segment;
   }
 }
+
+function readLocation() {
+  const { path, query } = locationParts();
+  const [view, id] = path.split('/').filter(Boolean).map(decodeSegment);
+  const known = Object.values(window.VIEW_MODES).includes(view) &&
+    !(isStaticMode && view === window.VIEW_MODES.WAVES);
+  return {
+    view: known ? view : window.VIEW_MODES.DOCUMENT,
+    id: known && id ? id : null,
+    filters: Object.fromEntries(new URLSearchParams(query)),
+  };
+}
+
+function pathFor(view, id = null) {
+  const path = `/${view}${id ? `/${encodeURIComponent(id)}` : ''}`;
+  return isStaticMode ? `#${path}` : path;
+}
+
+// Brings the screen to a location, touching only what differs from what it shows now: a
+// filter change re-renders without re-entering its view, and a location written by navigate()
+// and read back by popstate changes nothing.
+function applyLocation({ view, id, filters: F }) {
+  if (new URLSearchParams(F).toString() !== new URLSearchParams(filtersToF()).toString()) {
+    readFilters(new URLSearchParams(F));
+    window.tmStore.setFilters(filtersToF());
+    scheduleRender();
+    scheduleWavesRefetch();
+  }
+  if (view === window.VIEW_MODES.DECISIONS && id !== selectedDecisionId) {
+    selectedDecisionId = id;
+    if (currentMode === view) renderDecisionsView();
+  }
+  if (view !== currentMode) setViewMode(view);
+}
+
+// A view switch is a new history entry; pass `replace` for a change within the view (a
+// filter, a reset) so Back still leaves the view.
+function navigate({ view = currentMode, id = null, filters: F = filtersToF() } = {}, { replace = false } = {}) {
+  const here = readLocation();
+  const query = new URLSearchParams(F).toString();
+  // "/" and "/document" both open Document, so a write that keeps the view and its selection
+  // keeps the path it found.
+  const path = !isStaticMode && view === here.view && id === here.id ? location.pathname : pathFor(view, id);
+  try {
+    history[replace ? 'replaceState' : 'pushState'](null, '', query ? `${path}?${query}` : path);
+  } catch (e) {
+    // A browser can refuse a history write on a page opened from a file; the screen still
+    // follows, only the address bar does not.
+    console.error('Could not update the URL:', e);
+  }
+  applyLocation({ view, id, filters: F });
+}
+
+// Rewritten in place as well as applied: an old hash link typed over the current page arrives
+// here rather than as a load.
+function reapplyLocation() {
+  navigate(readLocation(), { replace: true });
+}
+window.addEventListener('popstate', reapplyLocation);
+if (isStaticMode) window.addEventListener('hashchange', reapplyLocation);
 
 // Every control below calls this, never renderAll() directly, on an actual filter change:
 // the URL, the store's own filters and the DOM must all move together, exactly once.
 function applyFilterChange() {
-  writeHash();
+  navigate({ ...readLocation(), filters: filtersToF() }, { replace: true });
   window.tmStore.setFilters(filtersToF());
   scheduleRender();
   // Waves reads filters.specMode itself (waveSpecFilter) rather than taking it as an argument,

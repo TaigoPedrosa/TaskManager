@@ -18,6 +18,9 @@ let waveError = null;
 let waveHeldOverrides = new Set();
 let waveRequestSeq = 0;
 let waveRefetchScheduled = false;
+// Nothing is fetched until the view is first shown, so a page opened on another view never
+// asks for waves or flashes the load bar for them.
+let wavesShown = false;
 
 async function getJson(path) {
   let res;
@@ -71,7 +74,7 @@ function waveSpecFilter() {
 async function fetchWaves() {
   // The one chokepoint every wave request routes through (init, size change, compute, reset,
   // and a filters.js refetch) -- a static export has no /api/waves behind any of them.
-  if (isStaticMode) return;
+  if (isStaticMode || !wavesShown) return;
   const seq = ++waveRequestSeq;
   waveLoading = true;
   waveError = null;
@@ -135,10 +138,12 @@ function waveComputeDisabled() {
   return !!last && last.entries.length === 0;
 }
 
+// Runs on every switch to Waves (core.js's setViewMode); only the first one loads.
 async function initWaves() {
   // A static export has no server behind /api/meta or /api/waves, and main.js removes its
   // Waves toggle, so there is nothing here to render or ask.
-  if (isStaticMode) return;
+  if (isStaticMode || wavesShown) return;
+  wavesShown = true;
   waveLoading = true;
   renderWaves();
   await loadWaveMeta();
@@ -358,5 +363,3 @@ function renderWaves() {
   content.innerHTML = wavesHtml();
   wireWavesHandlers(content);
 }
-
-initWaves();

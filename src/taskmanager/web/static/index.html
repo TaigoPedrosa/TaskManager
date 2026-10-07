@@ -32,14 +32,14 @@
       </div>
 
       <div class="h-8 bg-zinc-900 p-0.5 rounded-lg border border-zinc-800 flex text-xs flex-shrink-0">
-        <button id="view-waves-btn" title="Waves view" aria-label="Waves view" class="h-full aspect-square flex items-center justify-center rounded-md font-medium bg-zinc-800 text-white shadow-sm transition">
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-layers"/></svg>
+        <button id="view-doc-btn" title="Document view" aria-label="Document view" class="h-full aspect-square flex items-center justify-center rounded-md font-medium bg-zinc-800 text-white shadow-sm transition">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-file-text"/></svg>
         </button>
         <button id="view-graph-btn" title="Graph view" aria-label="Graph view" class="h-full aspect-square flex items-center justify-center rounded-md font-medium text-zinc-400 hover:text-white transition">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-network"/></svg>
         </button>
-        <button id="view-doc-btn" title="Document view" aria-label="Document view" class="h-full aspect-square flex items-center justify-center rounded-md font-medium text-zinc-400 hover:text-white transition">
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-file-text"/></svg>
+        <button id="view-waves-btn" title="Waves view" aria-label="Waves view" class="h-full aspect-square flex items-center justify-center rounded-md font-medium text-zinc-400 hover:text-white transition">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-layers"/></svg>
         </button>
         <button id="view-decisions-btn" title="Decisions view" aria-label="Decisions view" class="relative h-full aspect-square flex items-center justify-center rounded-md font-medium text-zinc-400 hover:text-white transition">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-help-circle"/></svg>
@@ -128,14 +128,14 @@
     </aside>
 
     <!-- Document View Pane -->
-    <main id="document-pane" class="hidden flex-1 overflow-y-auto p-6 space-y-8 bg-zinc-950">
+    <main id="document-pane" class="flex-1 overflow-y-auto p-6 space-y-8 bg-zinc-950">
       <div id="unified-document" class="max-w-4xl mx-auto space-y-8 pb-16">
         <!-- Dynamically rendered unified spec document -->
       </div>
     </main>
 
     <!-- Graph View Pane -->
-    <section id="graph-pane" class="flex-1 flex flex-col bg-zinc-950/80 overflow-hidden relative">
+    <section id="graph-pane" class="hidden flex-1 flex flex-col bg-zinc-950/80 overflow-hidden relative">
       <div id="graph-fit-wrap" class="hidden absolute top-3 right-3 z-10 flex gap-2">
         <button id="graph-fit-btn" class="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded bg-zinc-900/90 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 backdrop-blur">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-maximize-2"/></svg>
@@ -147,7 +147,7 @@
       <!-- Waves view: rendered inside graph-pane -- core.js's setViewMode(WAVES) keeps
            graph-pane itself visible and swaps #network-canvas/#graph-fit-wrap for this
            instead. waves.js owns everything under #waves-content. -->
-      <div id="waves-pane" class="absolute inset-0 overflow-y-auto p-4 sm:p-6 bg-zinc-950">
+      <div id="waves-pane" class="hidden absolute inset-0 overflow-y-auto p-4 sm:p-6 bg-zinc-950">
         <div id="waves-content" class="max-w-4xl mx-auto space-y-4 pb-16"></div>
       </div>
     </section>

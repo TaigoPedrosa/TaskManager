@@ -1,20 +1,13 @@
 // Initialize
-// A static export has no /api/waves to simulate against, so it opens on the Document view
-// (rendered straight from the embedded rows, same as before Waves existed) and drops the
-// Waves toggle outright (removed rather than hidden: setViewMode rewrites the button's
-// className on every switch). Runs here, after core.js has declared
-// VIEW_BTN_ACTIVE/VIEW_BTN_INACTIVE, not at core.js's own top level where they are still in
-// their temporal dead zone.
+// A static export has no /api/waves to simulate against, so it drops the Waves segment
+// outright (removed rather than hidden: setViewMode rewrites the button's className on every
+// switch).
 if (isStaticMode) {
-  setViewMode(window.VIEW_MODES.DOCUMENT);
   viewWavesBtn.remove();
 }
-readHash();
 renderLegend();
+// Replacing rather than pushing the first entry also rewrites an old link's hash filters
+// into the query string.
+navigate(readLocation(), { replace: true });
 window.tmStore.setFilters(filtersToF());
-window.addEventListener('hashchange', () => {
-  readHash();
-  window.tmStore.setFilters(filtersToF());
-  scheduleRender();
-});
 scheduleRender();

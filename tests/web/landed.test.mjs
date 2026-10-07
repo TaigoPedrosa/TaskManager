@@ -54,7 +54,7 @@ function loadPage({ readyState = 'complete' } = {}) {
     requestAnimationFrame: (fn) => { frames.push(fn); },
     setTimeout, clearTimeout, setInterval, clearInterval,
     localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
-    location: { hash: '', protocol: 'http:', host: 'test' },
+    location: { hash: '', search: '', pathname: '/', protocol: 'http:', host: 'test' },
     URLSearchParams,
     // Never settles: these tests read renderers, not anything the page fetches.
     fetch: () => new Promise(() => {}),
