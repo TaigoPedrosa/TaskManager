@@ -1,8 +1,12 @@
 """A reviewed plan on a scratch estate, driven end to end through `tm import`, `tm task add` and
 `POST /api/tasks`: a child added under it lands on its branch with no review of its own unless it
-is sensitive, and a child that would land on main unreviewed is refused with its message."""
+is sensitive, and a child that would land on main unreviewed is refused with its message. A plan
+with a migration under it, landed for real, has the fix of its one review re-reviewed once before
+that fix lands."""
 
+import copy
 import json
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -13,10 +17,19 @@ from typer.testing import CliRunner
 
 from taskmanager.cli.main import app as cli_app
 from taskmanager.core.models import Node
-from taskmanager.core.status import Merge
+from taskmanager.core.status import Action, JobState, Merge, Status
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
+from taskmanager.engine.claims import ClaimResult, Claims
+from taskmanager.engine.config import Gate, ProjectConfig, RepoConfig
+from taskmanager.engine.landing import Landing
+from taskmanager.renderers.importers import BulkImporter
 from taskmanager.web.app import create_app
+
+# The estate helpers sit beside the unit tests, with no __init__.py: importable only once their
+# directory is on sys.path, which a run of this file alone does not otherwise do.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "unit"))
+from lifecycle_estate import attach_landing, commit, make_estate, stored
 
 SPEC = {"id": "S", "title": "Spec"}
 REVIEWED_PLAN = {
@@ -110,3 +123,73 @@ def test_a_child_landing_on_main_unreviewed_under_a_reviewed_plan_is_refused_and
     assert code == refused, output
     assert UNREVIEWED_ON_MAIN in output
     assert child(root) is None
+
+
+MAIN_GATE = ProjectConfig(
+    repos={"api": RepoConfig(gates={"main": Gate(command="true", junit=None, timeout=60)})}
+)
+MIGRATION_PLAN: dict[str, Any] = {
+    "spec": SPEC,
+    "plans": [
+        {
+            "id": "S-P",
+            "title": "Plan",
+            "review": True,
+            "fix": True,
+            "tasks": [
+                {
+                    "id": "S-P-M",
+                    "title": "M",
+                    "target_repo": "api",
+                    "frontmatter": {"declared_files": [MIGRATION]},
+                }
+            ],
+        }
+    ],
+}
+
+
+def start(claims: Claims, node_id: str, action: Action) -> ClaimResult:
+    result = claims.start(node_id, "agent", "s1")
+    assert result.action == action, result
+    return result
+
+
+def review(claims: Claims, node_id: str, findings: str, *, approve: bool) -> Status:
+    start(claims, node_id, Action.REVIEW)
+    claims.ops.set_section(node_id, "review", findings)
+    return claims.review(node_id, approve=approve)
+
+
+def land(claims: Claims, landing: Landing, node_id: str) -> Status:
+    result = start(claims, node_id, Action.MERGE)
+    assert result.job is not None
+    assert landing.run(result.job) == JobState.SUCCEEDED
+    return Status(stored(claims, node_id).status)
+
+
+def test_a_landed_plan_with_a_migration_under_it_has_its_fix_re_reviewed_once_before_it_lands(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path, config=MAIN_GATE)
+    BulkImporter(claims.nodes, claims.ops).import_dict(copy.deepcopy(MIGRATION_PLAN))
+    landing = attach_landing(claims)
+    built = start(claims, "S-P-M", Action.IMPLEMENT)
+    assert built.worktree is not None
+    commit(Path(built.worktree), MIGRATION, "create table keys();\n", "S-P-M: keys")
+    assert claims.complete("S-P-M") == Status.IMPLEMENTED
+    assert review(claims, "S-P-M", "Nothing to fix.", approve=True) == Status.REVIEWED
+    assert land(claims, landing, "S-P-M") == Status.COMPLETED
+    assert land(claims, landing, "S-P") == Status.LANDED
+    findings = "1. keys has no primary key."
+    assert review(claims, "S-P", findings, approve=False) == Status.REVIEWED
+    fix = start(claims, "S-P", Action.FIX)
+    commit(Path(fix.worktrees["api"]), MIGRATION, "create table keys(id int primary key);\n", "fix")
+    assert claims.complete("S-P") == Status.FIXED
+
+    assert claims.next_step(stored(claims, "S-P"), claims.snapshots.build())[0] == Action.REVIEW
+    rereview = start(claims, "S-P", Action.REVIEW)
+    assert (rereview.branch, stored(claims, "S-P").status) == ("tm/S-P", Status.REVIEWING)
+    claims.ops.set_section("S-P", "review", f"{findings}\n\nClosed: keys.id is its primary key.")
+    assert claims.review("S-P", approve=True) == Status.REVIEWED
+    assert land(claims, landing, "S-P") == Status.COMPLETED

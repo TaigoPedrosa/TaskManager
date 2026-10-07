@@ -57,9 +57,16 @@ def stored_status(node: Node) -> Status | DecisionStatus:
     return node.status
 
 
-def cycle_of(node: Node, files: list[str]) -> Cycle:
-    """`node`'s cycle; `files` are its declared files, since a node writing a migration is
-    sensitive without the key."""
+def is_sensitive(node: Node, files: list[str]) -> bool:
+    """`node` alone, `files` being its declared files: a node writing a migration is sensitive
+    without the key."""
+    return bool(sensitive_areas(node)) or writes_migration(files)
+
+
+def cycle_of(node: Node, sensitive: bool) -> Cycle:
+    """`node`'s cycle. `sensitive` holds when `node` or any node under it is: a container's
+    landing brings every descendant's code, a superseded one's included, so its fix may touch
+    any of it."""
     if not isinstance(node.status, Status):
         raise ValueError(f"decision {node.id!r} has no cycle")  # noqa: TRY004
     return Cycle(
@@ -67,7 +74,7 @@ def cycle_of(node: Node, files: list[str]) -> Cycle:
         container=node.kind in CONTAINERS,
         review=node.review,
         fix=node.fix,
-        sensitive=bool(sensitive_areas(node)) or writes_migration(files),
+        sensitive=sensitive,
         outcome=node.outcome,
         fix_for=node.fix_for,
         claimed_from=node.claimed_from,
@@ -78,9 +85,12 @@ def cycle_of(node: Node, files: list[str]) -> Cycle:
 
 
 def cycle_in(snapshot: Snapshot, node: Node) -> Cycle:
-    """`node`'s cycle, its declared files read from `snapshot`'s one bulk read."""
+    """`node`'s cycle, its declared files and its subtree read from `snapshot`'s one bulk read."""
     files = declared_files_of(node, snapshot.graph_data().verifications.get(node.id, []))
-    return cycle_of(node, files)
+    under = (snapshot.nodes[d] for d in snapshot.descendants(node.id))
+    return cycle_of(
+        node, is_sensitive(node, files) or any(n.sensitive or n.writes_migration for n in under)
+    )
 
 
 def apply_cycle(node: Node, c: Cycle) -> Node:
@@ -165,7 +175,7 @@ class SnapshotBuilder:
 
     `build()` reads `state.db` once, through `graph_reader.read_graph`; every other method here
     but `cycle` reads only that one read's result, carried on the `Snapshot` it returned. `cycle`
-    serves a single live node with no snapshot built, so it reads that node's files itself.
+    serves a single live node with no snapshot built, so it reads that node's subtree itself.
     """
 
     def __init__(
@@ -187,7 +197,22 @@ class SnapshotBuilder:
         return Snapshot(nodes=nodes, edges=data.relations[RelationType.DEPENDS_ON], data=data)
 
     def cycle(self, node: Node) -> Cycle:
-        return cycle_of(node, self.node_repo.declared_files(node.id))
+        return cycle_of(node, self._sensitive(node))
+
+    def _sensitive(self, node: Node) -> bool:
+        """`cycle_in`'s rule, read node by node down `node`'s own subtree, never the whole graph.
+        `seen` stops a corrupt CONTAINS cycle, which would otherwise hang the claim reading it."""
+        pending, seen = [node], {node.id}
+        while pending:
+            current = pending.pop()
+            files = declared_files_of(current, self.node_repo.get_verifications(current.id))
+            if is_sensitive(current, files):
+                return True
+            for child_id in self.node_repo.get_children(current.id):
+                if child_id not in seen and (child := self.node_repo.get_node(child_id)):
+                    seen.add(child_id)
+                    pending.append(child)
+        return False
 
     @staticmethod
     def lock_set(node_id: str, snapshot: Snapshot) -> list[str]:
