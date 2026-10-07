@@ -596,7 +596,7 @@ function renderGraphInspector(nodeId) {
   graphInspector.setAttribute('data-detail-root', nodeId);
   graphInspector.setAttribute('aria-labelledby', node ? 'inspector-title' : 'inspector-id');
   redrawKeeping(graphInspector, inspectorBody, () => {
-    inspectorLine.innerHTML = `${node ? statusIcon(detailStatus(node, body, row)) + kindBadge(node.kind) : ''}<span id="inspector-id" class="min-w-0">${idLink(nodeId, node && node.kind, true)}</span>${leasePulse(lease)}`;
+    inspectorLine.innerHTML = `${node ? statusIcon(detailStatus(node, body, row)) + kindBadge(node.kind) : ''}<span id="inspector-id" class="min-w-0">${idLink(nodeId, node && node.kind, 'wrap')}</span>${leasePulse(lease)}`;
     inspectorActions.innerHTML = node ? actionsMenuHtml(node, lease) : '';
     inspectorTitle.textContent = node ? node.title : '';
     inspectorPills.innerHTML = node ? drawerPillsHtml(node, row, lease) : '';

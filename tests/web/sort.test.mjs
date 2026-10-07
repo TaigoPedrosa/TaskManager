@@ -185,21 +185,17 @@ test('the sort control shows only on Document and Graph', async () => {
   assert.equal(page.$('#sort-control').classList.contains('hidden'), false);
 });
 
-test('below sm the control ends the Filters panel\'s controls, and from sm up it leads the actions group', async () => {
+test('the control leads the actions group at every width, which below sm is the Filters panel\'s last row after + New', async () => {
   const page = await live();
   const control = page.$('#sort-control');
-  assert.equal(control.parentNode.children[0], control);
-  assert.equal(control.parentNode.children[1].id, 'toggle-sections-btn');
-
-  page.window.innerWidth = 375;
-  page.window.dispatchEvent(new page.window.Event('resize'));
-  assert.equal(control.parentNode.id, 'filter-controls-group');
-  assert.equal(control.parentNode.children.at(-1), control);
-
-  page.window.innerWidth = 768;
-  page.window.dispatchEvent(new page.window.Event('resize'));
-  assert.equal(control.parentNode.children[0], control);
-  assert.equal(control.parentNode.children[1].id, 'toggle-sections-btn');
+  for (const width of [1440, 375, 768]) {
+    page.window.innerWidth = width;
+    page.window.dispatchEvent(new page.window.Event('resize'));
+    assert.equal(control.parentNode.children[0], control, `at ${width}`);
+    assert.equal(control.parentNode.children[1].id, 'toggle-sections-btn');
+    assert.equal(control.parentNode.parentNode.id, 'filters-panel');
+    assert.equal(control.parentNode.parentNode.children.at(-1), control.parentNode, 'the actions close the panel');
+  }
 });
 
 test('a picked segment shows aria-pressed and the selected fill from the click, ahead of the re-sort', async () => {

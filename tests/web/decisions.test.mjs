@@ -223,7 +223,7 @@ test('with nothing picked, Answer is disabled with no hint; a pick or a custom a
   assert.ok(!pickLine.classList.contains('max-sm:flex'));
 });
 
-test('each blocked node is one line: status icon, kind badge on a container, id, title truncating, and a chevron; the row opens it', async () => {
+test('each blocked node is one line: status icon, kind badge on a container, id, title truncating, and a chevron; the id link spans the row', async () => {
   const page = await openPane(fakeServer([d5(), d6()]));
   await openDecision(page, 'decision-D5');
   const rows = page.$$('.dec-waiting-row');
@@ -231,12 +231,13 @@ test('each blocked node is one line: status icon, kind badge on a container, id,
   const icon = rows[0].querySelector('[role="img"]');
   assert.equal(icon.getAttribute('aria-label'), 'Awaiting Decision');
   assert.equal(rows[0].querySelector('.kind-badge').textContent, 'SPEC');
-  const link = rows[0].querySelector('.dec-task-link');
-  assert.equal(link.querySelector('.font-mono').textContent, 'DECIDE');
-  const title = link.querySelector('.dec-waiting-title');
+  const link = rows[0].querySelector('a.id-link');
+  assert.equal(link.textContent, 'DECIDE');
+  assert.ok(link.className.split(/\s+/).includes('after:inset-0'), 'the link covers the row');
+  const title = rows[0].querySelector('.dec-waiting-title');
   assert.equal(title.textContent, 'Decisions UX');
   assert.ok(title.classList.contains('truncate'), 'the title truncates on its one line');
-  assert.ok(link.querySelector('use[href="#icon-chevron-right"]'), 'a chevron closes the row');
+  assert.ok(rows[0].querySelector('use[href="#icon-chevron-right"]'), 'a chevron closes the row');
 });
 
 test('options are a labelled radiogroup: radio dot, label and Recommended, description, then the effect pill', async () => {
@@ -268,27 +269,35 @@ test('every tab carries its count as a pill, Open live from the store and the re
   assert.equal(page.$('#dec-tab-open').textContent.replace(/\s+/g, ' ').trim(), 'Open 2');
 });
 
-for (const [view, button] of [['Waves', 'view-waves-btn'], ['Graph', 'view-graph-btn'], ['Document', 'view-doc-btn']]) {
-  test(`a blocked node opened from the Decisions view reopens ${view} with the detail drawer on that node`, async () => {
+for (const [view, button, inDrawer] of [['Waves', 'view-waves-btn', true], ['Graph', 'view-graph-btn', true], ['Document', 'view-doc-btn', false]]) {
+  test(`a blocked node opened from the Decisions view reopens ${view} on that node${inDrawer ? ', in the detail drawer' : ', with no drawer'}`, async () => {
     const page = await openPane(fakeServer([d5(), d6()]));
     page.$(`#${button}`).click();
     page.$('#view-decisions-btn').click();
     await page.settle();
     await openDecision(page, 'decision-D5');
-    page.$('.dec-task-link').click();
+    page.$('.dec-waiting-row a.id-link').click();
     await page.settle();
 
     assert.ok(page.$(`#${button}`).className.includes('bg-zinc-800'), `${view} is the selected view again`);
+    assert.equal(page.window.location.pathname, `/${view.toLowerCase()}/DECIDE`);
     const drawer = page.$('#graph-inspector');
-    assert.ok(!hasHiddenAncestor(drawer), 'the drawer is open and nothing around it is hidden');
-    assert.equal(page.$('#inspector-id').textContent, 'DECIDE');
+    if (inDrawer) {
+      assert.ok(!hasHiddenAncestor(drawer), 'the drawer is open and nothing around it is hidden');
+      assert.equal(page.$('#inspector-id').textContent, 'DECIDE');
+    } else {
+      assert.ok(drawer.classList.contains('hidden'), 'Document reveals the node in place');
+    }
   });
 }
 
 test('entering the Decisions view closes an open drawer', async () => {
   const page = await openPane(fakeServer([d5(), d6()]));
+  page.$('#view-graph-btn').click();
+  page.$('#view-decisions-btn').click();
+  await page.settle();
   await openDecision(page, 'decision-D5');
-  page.$('.dec-task-link').click();
+  page.$('.dec-waiting-row a.id-link').click();
   await page.settle();
   assert.ok(!page.$('#graph-inspector').classList.contains('hidden'));
   page.$('#view-decisions-btn').click();

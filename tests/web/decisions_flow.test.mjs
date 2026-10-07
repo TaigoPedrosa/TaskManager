@@ -477,7 +477,7 @@ test('keys: Enter and Space activate a row, an option or a link, each a native b
     assert.equal(c.localName, 'button');
     assert.equal(c.getAttribute('type'), 'button', 'an option never submits the form');
   }
-  for (const link of page.$$('#decisions-detail .dec-task-link, #decisions-detail .id-link')) {
+  for (const link of page.$$('#decisions-detail .id-link')) {
     assert.ok(link.localName === 'button' || (link.localName === 'a' && link.getAttribute('href')));
   }
 });
@@ -750,7 +750,9 @@ test('every pointer action is a focusable button or link: rows, options, ids, ×
   };
   page.$$('.dec-row').forEach((r) => reachable(r, 'a row'));
   reachable(page.$('.dec-answer-form .dec-option-card[tabindex="0"]'), 'the options group');
-  page.$$('.dec-task-link').forEach((r) => reachable(r, 'a waiting row'));
+  const waiting = page.$$('.dec-waiting-row a.id-link');
+  assert.ok(waiting.length > 0);
+  waiting.forEach((r) => reachable(r, 'a waiting row'));
   page.$$('.dec-block-remove').forEach((r) => reachable(r, 'a remove ×'));
   reachable(page.$('.copy-id-btn'), 'Copy ID');
   reachable(page.$('.dec-block-add'), '+ Add task');

@@ -233,7 +233,7 @@ test('the header line shows the status as an icon and never a decision chip, on 
 
 test('a node opened without its row reads display and phase from the body: a decision link shows Awaiting Decision', async () => {
   const page = await openAt('/graph', { rows: [SPEC] });
-  page.run("viewModeBeforeDecisions = 'graph'; openBlockedNodeDetail('T')");
+  page.run("openNode('T')");
   await page.settle();
   assert.equal(page.window.tmStore.rows.has('T'), false);
   assert.equal(page.$('#inspector-line [role="img"]').getAttribute('aria-label'), 'Awaiting Decision');
