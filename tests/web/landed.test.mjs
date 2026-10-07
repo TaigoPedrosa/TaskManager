@@ -108,10 +108,11 @@ test('every view names a LANDED node through its theme', () => {
   assert.equal(graphNode.color.border, page.STATUS_THEMES.LANDED.graph_border);
 });
 
-test('a LANDED node can be reset to, deferred and abandoned from its action bar', () => {
-  const bar = page.renderActionBar({ id: 'T1', kind: 'task', status: 'LANDED' }, false);
-  assert.match(bar, /ab-defer/);
-  assert.match(bar, /ab-abandon/);
+test('a LANDED node can be reset to, deferred and abandoned from its Actions menu', () => {
+  const acts = page.nodeActions({ id: 'T1', kind: 'task', status: 'LANDED' }, false).filter(Boolean).map((item) => item.act);
+  assert.ok(acts.includes('reset'));
+  assert.ok(acts.includes('defer'));
+  assert.ok(acts.includes('abandon'));
   let dialog = null;
   page.formDialog = (opts) => { dialog = opts; };
   page.openResetDialog({ id: 'T1' });

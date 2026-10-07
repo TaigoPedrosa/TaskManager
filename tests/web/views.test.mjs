@@ -177,11 +177,12 @@ test('clicking the current view segment scrolls its pane to the top, collapses i
   await page.settle();
   page.run("selectNode('S')");
   await page.settle();
+  assert.equal(url(page), '/document/S');
   page.$('#document-pane').scrollTop = 240;
   page.$('[data-group-id="S::sections"]').click();
   await page.settle();
   assert.equal(page.run('expandedIds.has("S")'), true);
-  assert.equal(page.run('collapsedGroups.size'), 1, 'the sections group is open, away from its default');
+  assert.equal(page.run('collapsedGroups.size'), 1, 'the sections group is closed, away from its default');
 
   page.$('#view-doc-btn').click();
   await page.settle();
@@ -191,8 +192,8 @@ test('clicking the current view segment scrolls its pane to the top, collapses i
   assert.equal(page.$('[data-group-id="S::sections"]'), null, 'the spec is collapsed again');
   assert.equal(page.run('selectedNodeId'), null);
   assert.equal(shownView(page), 'document');
-  assert.equal(url(page), '/');
-  assert.equal(page.window.history.length, 1, 'a reset replaces the entry');
+  assert.equal(url(page), '/document');
+  assert.equal(page.window.history.length, 2, 'a reset replaces the entry the selection pushed');
 });
 
 test('clicking the Decisions segment while on it drops the selected decision from the path', async () => {

@@ -1,94 +1,182 @@
-// Depends-on list for the graph inspector. Only a task is offered "+ Add dependency" (the
-// CLI's own `task depends` is task-scoped); an existing edge on any other kind still gets a
-// remove button, since nothing in the schema actually forbids one. A row a container or a
-// migration chain imposes has none: removing it belongs to that container or that chain.
-function renderDependencies(details, status, node, editable) {
-  const addControl = editable && node.kind === 'task'
-    ? `
-      <div class="flex items-center gap-2 mt-1">
-        <button type="button" class="add-dep-btn h-7 px-2 rounded-md text-[11px] font-medium text-emerald-400 hover:text-emerald-300 hover:bg-zinc-800 border border-dashed border-zinc-700 transition">+ Add dependency</button>
-        <button type="button" class="add-decision-dep-btn h-7 px-2 rounded-md text-[11px] font-medium text-amber-400 hover:text-amber-300 hover:bg-zinc-800 border border-dashed border-zinc-700 transition">+ Wait on decision</button>
-      </div>`
-    : '';
-  if (!details || details.length === 0) {
-    return addControl ? `<div class="pt-2">${addControl}</div>` : '';
-  }
-  const unfinished = details.filter(d => !d.finished);
-  const why = status === 'BLOCKED_BY_TASK' && unfinished.length > 0
-    ? `<div class="st-chip st-BLOCKED_BY_TASK rounded-lg px-2.5 py-1.5 text-xs">Waits for ${unfinished.map(d => esc(d.id)).join(', ')} to land where this node builds.</div>`
-    : '';
-  const rows = details.map(d => `
-    <div class="flex items-center gap-2 px-2 py-1.5 bg-zinc-950/60">
-      ${d.status ? statusIcon(d.status) : '<span class="text-[10px] font-mono text-red-400">missing</span>'}
-      <span class="font-mono text-[11px] text-zinc-300">${esc(d.id)}</span>
-      <span class="truncate text-[11px] text-zinc-400 flex-1">${esc(d.title || '')}</span>
-      ${d.inherited_from ? `<span class="text-[10px] text-zinc-400 flex-shrink-0">via ${esc(d.inherited_from)}</span>` : ''}
-      ${d.migration_chain ? `<span class="text-[10px] text-zinc-400 flex-shrink-0">${esc(d.migration_chain)} migration chain</span>` : ''}
-      ${editable && !d.inherited_from && !d.migration_chain ? `<button type="button" class="dep-remove-btn p-1 rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-800 flex-shrink-0" data-dep-id="${esc(d.id)}" aria-label="Remove dependency ${esc(d.id)}">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
-    </div>
-  `).join('');
-  return `
-    <div class="space-y-1.5 pt-2">
-      <div class="font-semibold text-zinc-400 uppercase tracking-wider text-[10px]">Depends on (${details.length})</div>
-      ${why}
-      <div class="divide-y divide-zinc-800 rounded border border-zinc-800">${rows}</div>
-      ${addControl}
-    </div>
-  `;
+// A node's details render through nodeDetailHtml on both surfaces, the expanded Document card
+// and the drawer (opened from Graph, Waves and decision links): a facts strip, then the groups
+// in one order, each drawn only when it has rows, with the same defaults on both.
+
+// Verification kind -> icon, so the row reads at a glance instead of naming the enum value.
+// Each one is its own icon rather than borrowing a status or toolbar icon's meaning
+// (file-text/network/play already mean Document view, Graph view and Implementing).
+const VERIFICATION_ICON = {
+  file_exists: 'file-check', file_absent: 'file-x', symbol_signature: 'code',
+  ast_export: 'package', test_command: 'terminal', codegraph_query: 'database'
+};
+const VERIFICATION_LABEL = {
+  file_exists: 'File exists', file_absent: 'File absent', symbol_signature: 'Symbol signature',
+  ast_export: 'AST export', test_command: 'Test command', codegraph_query: 'Codegraph query'
+};
+
+function isBlockedDisplay(code) {
+  return code === 'AWAITING_DECISION' || String(code || '').startsWith('BLOCKED_');
 }
 
-function wireDependencyControls(root, node) {
-  root.querySelectorAll('.dep-remove-btn').forEach(btn => {
-    btn.addEventListener('click', () => removeDependency(node, btn.getAttribute('data-dep-id')));
+// The row's display when the row is loaded; a node opened without its row (a decision link's
+// target, a deep link) reads the body's own, never its stored status.
+function detailStatus(node, body, row) {
+  if (row) return displayOf(row);
+  return (body && body.display) || node.status;
+}
+
+// The branches a node builds on, nearest first: "tm/P → main".
+function landsText(node) {
+  return (node.base_chain || []).map(id => (id === 'MAIN' ? 'main' : `tm/${id}`)).join(' → ');
+}
+
+function factHtml(label, valueHtml) {
+  return `<span class="fact inline-flex items-center gap-1 whitespace-nowrap"><span class="text-zinc-400">${esc(label)}</span>${valueHtml}</span>`;
+}
+
+function factText(value) {
+  return `<span class="font-mono text-zinc-200">${esc(value)}</span>`;
+}
+
+const FACT_COUNTERS = [['Reviews', 'review_cycles'], ['Merge attempts', 'merge_attempts'], ['Step failures', 'step_failures']];
+
+// The card opens its strip with the Lease fact; the drawer carries the lease badge on its pills
+// line instead.
+function factsStripHtml(node, lease, surface) {
+  const facts = [];
+  if (surface === 'card' && lease) facts.push(factHtml('Lease', leaseBadge(lease)));
+  const lands = landsText(node);
+  if (lands) facts.push(factHtml('Lands', factText(lands)));
+  facts.push(factHtml('Review', factText(node.review ? 'on' : 'off')));
+  facts.push(factHtml('Fix', factText(node.fix ? 'on' : 'off')));
+  if (node.outcome) facts.push(factHtml('Outcome', factText(node.outcome)));
+  if (node.verdict) facts.push(factHtml('Verdict', factText(node.verdict)));
+  FACT_COUNTERS.forEach(([label, key]) => {
+    if (node[key]) facts.push(factHtml(label, factText(node[key])));
   });
-  const addBtn = root.querySelector('.add-dep-btn');
-  if (addBtn) addBtn.addEventListener('click', () => openAddDependencyDialog(node));
-  const addDecisionBtn = root.querySelector('.add-decision-dep-btn');
-  if (addDecisionBtn) addDecisionBtn.addEventListener('click', () => openAddDependencyDialog(node, true));
+  if ((node.requires || []).length) facts.push(factHtml('Requires', factText(node.requires.join(', '))));
+  if ((node.land_order || []).length) facts.push(factHtml('Land order', factText(node.land_order.join(' → '))));
+  return `<div class="facts flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] leading-4">${facts.join('')}</div>`;
 }
 
+function detailGroupHtml(ownerId, key, label, count, defaultCollapsed, innerHtml, meta = '') {
+  if (!count) return '';
+  const groupId = `${ownerId}::${key}`;
+  return `<div class="detail-group space-y-2" data-group="${key}">${renderGroupHeader(groupId, label, count, defaultCollapsed, meta)}<div class="${groupCollapsed(groupId, defaultCollapsed) ? 'hidden' : ''}">${innerHtml}</div></div>`;
+}
 
-// Verifications: pass/fail run results and edit controls live on the same rows the read-only
-// list already renders; a task with none still gets "+ Add verification" when editable.
-function renderVerifications(node, verifications, editable) {
-  const rows = (verifications || []).map(v => `
-    <div class="p-2 bg-zinc-950/60 flex items-center gap-2 justify-between">
-      <span class="text-emerald-400 flex-shrink-0" title="${esc(VERIFICATION_LABEL[v.verification_type] || v.verification_type)}">${renderIcon(VERIFICATION_ICON[v.verification_type] || 'check', 'w-3.5 h-3.5')}</span>
-      <span class="text-zinc-300 truncate text-left flex-1 min-w-0">${esc(v.target_path)}</span>
-      <span class="ver-result text-[10px] font-semibold flex-shrink-0" data-ver-id="${v.id}"></span>
-      ${editable ? `<button type="button" class="ver-remove-btn p-1 rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-800 flex-shrink-0" data-ver-id="${v.id}" data-ver-target="${esc(v.target_path)}" aria-label="Remove verification ${esc(v.target_path)}">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
-    </div>
-  `).join('');
+const RELATION_ROW = 'group flex items-center gap-2 min-w-0 px-2 py-1.5 bg-zinc-950/60';
+// A row's edit control shows on hover or focus from sm up, and always below it, where no
+// pointer hovers.
+const ROW_CONTROL = 'sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100';
 
-  const controls = editable && node.kind === 'task' ? `
-    <div class="flex items-center gap-2 pt-1.5">
-      <button type="button" class="ver-add-btn h-7 px-2 rounded-md text-[11px] font-medium text-emerald-400 hover:text-emerald-300 hover:bg-zinc-800 border border-dashed border-zinc-700 transition">+ Add verification</button>
-      ${verifications && verifications.length > 0 ? `<button type="button" class="ver-run-btn h-7 px-2 rounded-md text-[11px] font-medium text-zinc-300 hover:text-white hover:bg-zinc-800 border border-zinc-700 transition">Run all</button>` : ''}
-    </div>
-  ` : '';
+function relationTableHtml(rows) {
+  return `<div class="rounded-lg border border-zinc-800 divide-y divide-zinc-800 overflow-hidden">${rows.join('')}</div>`;
+}
 
-  if (!verifications || verifications.length === 0) {
-    return controls ? `<div class="pt-2 border-t border-zinc-800/60">${controls}</div>` : '';
+function relationTitleHtml(title) {
+  return `<span class="flex-1 min-w-0 truncate text-[11px] leading-4 text-zinc-400" title="${esc(title || '')}">${esc(title || '')}</span>`;
+}
+
+function relationMetaHtml(text) {
+  return `<span class="flex-shrink-0 text-[10px] leading-4 text-zinc-400">${esc(text)}</span>`;
+}
+
+// A decision row carries its own status's icon and label, not a node status.
+function relationIconHtml(d) {
+  if (!d.status) return '<span class="flex-shrink-0 font-mono text-[10px] text-red-400">missing</span>';
+  if (d.kind === 'decision' && typeof decisionStatusIcon === 'function') return decisionStatusIcon(d.status);
+  return statusIcon(d.status);
+}
+
+function removeButtonHtml(act, label, data) {
+  return `<button type="button" class="p-1 flex-shrink-0 rounded text-zinc-400 hover:text-red-400 hover:bg-zinc-800 ${ROW_CONTROL} ${FOCUS_RING}" data-act="${act}" ${data} aria-label="${esc(label)}">${renderIcon('x', 'w-3 h-3')}</button>`;
+}
+
+// A dependency that has not landed where this node builds is marked blocking. A row its
+// container or a migration chain imposes names where it comes from and has no remove: removing
+// it belongs to that container or chain.
+function renderDependencies(node, details, status, editable) {
+  const rows = (details || []).map((d) => {
+    const own = !d.inherited_from && !d.migration_chain;
+    const meta = [
+      d.inherited_from ? `via ${d.inherited_from}` : '',
+      d.migration_chain ? `${d.migration_chain} migration chain` : '',
+      d.finished ? '' : 'blocking',
+    ].filter(Boolean).map(relationMetaHtml).join('');
+    const remove = editable && own ? removeButtonHtml('remove-dependency', `Remove dependency ${d.id}`, `data-dep-id="${esc(d.id)}"`) : '';
+    return `<div class="${RELATION_ROW}"${d.finished ? '' : ' data-blocking'}>${relationIconHtml(d)}${idLink(d.id, d.kind)}${relationTitleHtml(d.title)}${meta}${remove}</div>`;
+  });
+  return detailGroupHtml(node.id, 'dependencies', 'Dependencies', rows.length, !isBlockedDisplay(status), relationTableHtml(rows));
+}
+
+function renderDependents(node, details) {
+  const rows = (details || []).map(d => `<div class="${RELATION_ROW}">${relationIconHtml(d)}${idLink(d.id, d.kind)}${relationTitleHtml(d.title)}</div>`);
+  return detailGroupHtml(node.id, 'dependents', 'Dependents', rows.length, true, relationTableHtml(rows));
+}
+
+function childRowHtml(child, shared) {
+  let progress = '';
+  if (child.kind !== 'task') {
+    const p = progressParts(countsForRow(child));
+    if (p.total > 0) progress = progressCount(p);
   }
+  let pills = '';
+  if (shared.models === null && child.kind === 'task') pills += (child.acceptable_models || []).map(modelPill).join('');
+  if (shared.priority === null) pills += priorityPill(child.priority);
+  return `<div class="${RELATION_ROW}">${statusIcon(displayOf(child))}${kindBadge(child.kind)}${idLink(child.id, child.kind)}${relationTitleHtml(child.title)}${progress}${leasePulse(leaseOf(child))}${pills}</div>`;
+}
 
-  return `
-    <div class="space-y-1.5 pt-2">
-      <div class="font-semibold text-zinc-400 uppercase tracking-wider text-[10px]">Verifications</div>
-      <div class="divide-y divide-zinc-800 rounded border border-zinc-800 font-mono text-[11px]">${rows}</div>
-      ${controls}
-    </div>
-  `;
+// A container's own list. On the card each child is its own card; in the drawer each is a row
+// with its progress. A value every child shares moves to the group header, once.
+function renderChildren(node, byParent, surface) {
+  if (node.kind === 'task') return '';
+  const kids = byParent.get(node.id) || [];
+  const kinds = new Set(kids.map(c => c.kind));
+  const label = kinds.size > 1 ? 'Plans and tasks' : kinds.has('plan') ? 'Plans' : 'Tasks';
+  const shared = sharedMeta(kids);
+  const inner = surface === 'card'
+    ? `<div class="space-y-2.5">${kids.map(c => (c.kind === 'plan' ? renderPlanCard(c, byParent, shared) : renderTaskCard(c, shared))).join('')}</div>`
+    : relationTableHtml(kids.map(c => childRowHtml(c, shared)));
+  return detailGroupHtml(node.id, 'children', label, kids.length, true, inner, sharedMetaHtml(shared));
+}
+
+// The full check, on one line that scrolls sideways inside its own block, with a copy control.
+function commandBlockHtml(command) {
+  return `<div class="command flex items-center gap-2 px-3 py-2.5 rounded-lg border border-zinc-800 bg-zinc-950"><pre class="flex-1 min-w-0 overflow-x-auto font-mono text-xs leading-5 text-zinc-200"><code>${esc(command)}</code></pre><button type="button" class="w-7 h-7 flex-shrink-0 flex items-center justify-center rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 ${FOCUS_RING}" data-act="copy-command" data-copy="${esc(command)}" aria-label="Copy command">${renderIcon('copy', 'w-3.5 h-3.5')}</button></div>`;
+}
+
+// A verification or condition row: a disclosure whose label is the check's target, opening onto
+// its command.
+function checkRowHtml(groupId, iconHtml, label, command, trailing) {
+  const open = !groupCollapsed(groupId, true);
+  return `<div class="check-row group px-2 bg-zinc-950/60${open ? ' pb-2' : ''}"><div class="flex items-center gap-2 min-w-0"><button type="button" class="disclosure flex flex-1 items-center gap-2 min-w-0 py-1.5 rounded-md text-left ${FOCUS_RING}" aria-expanded="${open}" data-group-id="${esc(groupId)}">${renderIcon(open ? 'chevron-down' : 'chevron-right', 'w-3 h-3 flex-shrink-0 text-zinc-400')}${iconHtml}<span class="flex-1 min-w-0 truncate font-mono text-[11px] leading-4 text-zinc-300">${esc(label)}</span></button>${trailing}</div>${open ? commandBlockHtml(command) : ''}</div>`;
+}
+
+function renderVerifications(node, verifications, editable) {
+  const list = verifications || [];
+  const rows = list.map((v) => {
+    const kind = VERIFICATION_LABEL[v.verification_type] || v.verification_type;
+    const icon = `<span class="flex-shrink-0 text-emerald-400" role="img" aria-label="${esc(kind)}" title="${esc(kind)}">${renderIcon(VERIFICATION_ICON[v.verification_type] || 'check', 'w-3.5 h-3.5')}</span>`;
+    const remove = editable ? `<button type="button" class="p-1 flex-shrink-0 rounded text-zinc-400 hover:text-red-400 hover:bg-zinc-800 ${ROW_CONTROL} ${FOCUS_RING}" data-act="remove-verification" data-ver-id="${esc(v.id)}" data-ver-target="${esc(v.target_path)}" aria-label="Remove verification ${esc(v.target_path)}">${renderIcon('x', 'w-3 h-3')}</button>` : '';
+    const trailing = `<span class="ver-result flex-shrink-0 text-[10px] font-semibold" data-ver-id="${esc(v.id)}"></span>${remove}`;
+    return checkRowHtml(`${node.id}::verification::${v.id}`, icon, v.target_path, v.expected_pattern || v.target_path, trailing);
+  });
+  const run = editable && list.length
+    ? `<div class="pt-2"><button type="button" class="h-7 px-2.5 rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-[11px] leading-4 font-medium text-zinc-200 ${FOCUS_RING}" data-act="run-verifications">Run all</button></div>`
+    : '';
+  return detailGroupHtml(node.id, 'verifications', 'Verifications', list.length, true, relationTableHtml(rows) + run);
 }
 
 async function runVerifications(node) {
   try {
     const results = await api('POST', `/api/nodes/${node.id}/verify`);
     results.forEach(r => {
-      const el = document.querySelector(`.ver-result[data-ver-id="${r.id}"]`);
-      if (!el) return;
-      el.textContent = r.passed ? 'PASS' : 'FAIL';
-      el.className = `ver-result text-[10px] font-semibold flex-shrink-0 ${r.passed ? 'text-emerald-400' : 'text-red-400'}`;
-      el.title = r.detail || '';
+      document.querySelectorAll(`.ver-result[data-ver-id="${r.id}"]`).forEach((el) => {
+        el.textContent = r.passed ? 'PASS' : 'FAIL';
+        el.className = `ver-result flex-shrink-0 text-[10px] font-semibold ${r.passed ? 'text-emerald-400' : 'text-red-400'}`;
+        el.title = r.detail || '';
+      });
     });
     const passed = results.filter(r => r.passed).length;
     toast(`${passed}/${results.length} verifications passed.`, passed === results.length ? 'success' : 'error');
@@ -97,174 +185,260 @@ async function runVerifications(node) {
   }
 }
 
-function wireVerificationControls(root, node) {
-  root.querySelectorAll('.ver-remove-btn').forEach(btn => {
-    btn.addEventListener('click', () => removeVerification(
-      node, Number(btn.getAttribute('data-ver-id')), btn.getAttribute('data-ver-target')
-    ));
+function conditionResult(c) {
+  if (c.last_result === null || c.last_result === undefined) return 'not run';
+  return c.last_result === 0 ? 'holds' : `exit ${c.last_result}`;
+}
+
+function renderConditions(node, conditions, editable) {
+  const rows = (conditions || []).map((c) => {
+    const remove = editable ? removeButtonHtml('remove-condition', `Remove condition ${c.needs}`, `data-idx="${esc(c.idx)}" data-needs="${esc(c.needs)}"`) : '';
+    const trailing = `${relationMetaHtml(String(c.stage || '').toUpperCase())}<span class="flex-shrink-0 text-[10px] leading-4 ${c.last_result === 0 ? 'text-emerald-400' : 'text-amber-400'}">${esc(conditionResult(c))}</span>${remove}`;
+    return checkRowHtml(`${node.id}::condition::${c.idx}`, '', c.needs, c.command, trailing);
   });
-  const addBtn = root.querySelector('.ver-add-btn');
-  if (addBtn) addBtn.addEventListener('click', () => openAddVerificationDialog(node));
-  const runBtn = root.querySelector('.ver-run-btn');
-  if (runBtn) runBtn.addEventListener('click', () => runVerifications(node));
+  return detailGroupHtml(node.id, 'conditions', 'Conditions', rows.length, true, relationTableHtml(rows));
+}
+
+// A job names what it lands where, its state and step, and how long ago it last beat.
+function renderJobs(node, jobs) {
+  const rows = (jobs || []).map((j) => {
+    const age = heartbeatAge(j.heartbeat);
+    return `<div class="${RELATION_ROW} text-[11px] leading-4"><span class="flex-shrink-0 font-mono text-zinc-200">${esc(j.kind)}</span><span class="flex-1 min-w-0 truncate font-mono text-zinc-400">${esc(j.repo || '')} → ${esc(j.target || '')}</span><span class="flex-shrink-0 text-zinc-200">${esc(j.state)}</span>${j.step ? `<span class="flex-shrink-0 font-mono text-zinc-400">${esc(j.step)}</span>` : ''}${age ? `<time class="flex-shrink-0 font-mono text-zinc-400" datetime="${esc(j.heartbeat)}" title="${esc(j.heartbeat)}">${esc(age)}</time>` : ''}</div>`;
+  });
+  return detailGroupHtml(node.id, 'jobs', 'Jobs', rows.length, true, relationTableHtml(rows));
+}
+
+function renderAttachmentsGroup(node, editable) {
+  const list = (node.frontmatter && node.frontmatter.attachments) || [];
+  const recheck = editable && list.length
+    ? `<div class="pt-2"><button type="button" class="h-7 px-2.5 inline-flex items-center gap-1 rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-[11px] leading-4 font-medium text-zinc-200 ${FOCUS_RING}" data-act="recheck-attachments">${renderIcon('rotate-cw', 'w-3 h-3')}Re-check</button></div>`
+    : '';
+  const cards = `<div class="grid grid-cols-2 gap-2">${list.map(entry => attachmentCardHtml(entry, editable)).join('')}</div>`;
+  return detailGroupHtml(node.id, 'attachments', 'Attachments', list.length, true, cards + recheck);
+}
+
+// `node` is the body's node (or the row), `row` the store's row when loaded. Sections open,
+// Dependencies open while the node shows a blocked or awaiting-decision status, the rest closed.
+function nodeDetailHtml(node, body, row, { surface, byParent } = {}) {
+  const editable = canEdit();
+  const status = detailStatus(node, body, row);
+  const lease = (body && body.lease) || (row && row.lease) || null;
+  const sections = sectionsListFrom(body);
+  const groups = [
+    detailGroupHtml(node.id, 'sections', 'Sections', sections.length, false, sectionItemsHtml(sections, node.id, editable)),
+    renderChildren(node, byParent || visibleChildrenByParent(), surface),
+    renderVerifications(node, body.verifications, editable),
+    renderDependencies(node, body.dependency_details, status, editable),
+    renderDependents(node, body.dependent_details),
+    renderConditions(node, body.conditions, editable),
+    renderJobs(node, body.jobs),
+    renderAttachmentsGroup(node, editable),
+  ];
+  return `<div class="node-detail space-y-3" data-detail-for="${esc(node.id)}">${factsStripHtml(node, lease, surface)}${groups.join('')}</div>`;
 }
 
 
-// Sections render through tree.js's renderSections (shared with the document view); editing
-// controls are layered on afterwards by walking the rendered <details> rather than
-// duplicating that markup here.
-function attachSectionEditControls(root, node, sections) {
-  const byKey = new Map((sections || []).map(s => [s.key, s]));
-  root.querySelectorAll('details[data-section-id]').forEach(details => {
-    const key = details.getAttribute('data-section-id').split('::').slice(1).join('::');
-    const section = byKey.get(key);
-    const summary = details.querySelector('summary');
-    if (!section || !summary) return;
-    const controls = document.createElement('div');
-    controls.className = 'flex items-center gap-1 flex-shrink-0';
-    controls.innerHTML = `
-      <button type="button" class="sec-edit-btn p-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-800" aria-label="Edit section ${esc(key)}">${renderIcon('code', 'w-3 h-3')}</button>
-      <button type="button" class="sec-delete-btn p-1 rounded text-zinc-400 hover:text-red-400 hover:bg-zinc-800" aria-label="Delete section ${esc(key)}">${renderIcon('x', 'w-3 h-3')}</button>
-    `;
-    controls.querySelector('.sec-edit-btn').addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      openSectionDialog(node, section);
-    });
-    controls.querySelector('.sec-delete-btn').addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      removeSection(node, key);
-    });
-    summary.insertBefore(controls, summary.lastElementChild);
-  });
-
-  const addBtn = document.createElement('button');
-  addBtn.type = 'button';
-  addBtn.className = 'sec-add-btn mt-2 h-7 px-2 rounded-md text-[11px] font-medium text-emerald-400 hover:text-emerald-300 hover:bg-zinc-800 border border-dashed border-zinc-700 transition';
-  addBtn.textContent = '+ Add section';
-  addBtn.addEventListener('click', () => openSectionDialog(node, null));
-
-  const groupHeader = root.querySelector(`[data-group-id="${node.id}::sections"]`);
-  if (groupHeader && groupHeader.closest('.space-y-2')) {
-    groupHeader.closest('.space-y-2').appendChild(addBtn);
-  } else {
-    root.appendChild(addBtn);
-  }
-}
-
-
-// Verbs, never a status picker: each button is a transition the stored status allows, and
-// every one of them asks for the note it records.
+// Actions: one menu in the header of every expanded card and of the drawer. Verbs, never a
+// status picker: each is a transition the stored status allows, and each asks for its note.
 const REOPENABLE = ['FAILED', 'DEFERRED', 'ABANDONED'];
 const SETTABLE_ASIDE = ['READY', 'IMPLEMENTED', 'REVIEWED', 'FIXED', 'LANDED', 'FAILED'];
 
-function renderActionBar(node, hasLease) {
-  const btnCls = 'h-7 px-2.5 rounded-md text-[11px] font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 transition';
-  const dangerCls = 'h-7 px-2.5 rounded-md text-[11px] font-medium bg-zinc-900 hover:bg-red-950 text-red-300 border border-red-900/60 transition';
-  const buttons = [
-    `<button type="button" class="ab-edit ${btnCls}">Edit</button>`,
-  ];
-  if (node.kind !== 'decision') {
-    buttons.push(`<button type="button" class="ab-flags ${btnCls}">Flags&hellip;</button>`);
+// The menu's items in order; null is a divider. A static export offers Copy ID alone.
+function nodeActions(node, hasLease) {
+  const items = [{ act: 'copy-id', label: 'Copy ID' }];
+  if (!canEdit()) return items;
+  const isTask = node.kind === 'task';
+  items.push({ act: 'edit', label: 'Edit' });
+  if (node.kind !== 'decision') items.push({ act: 'flags', label: 'Flags…' });
+  if (REOPENABLE.includes(node.status)) items.push({ act: 'reopen', label: 'Reopen…' });
+  if (!hasLease) items.push({ act: 'reset', label: 'Reset…' });
+  if (isTask) items.push({ act: 'move', label: 'Move to plan…' });
+  items.push(null, { act: 'add-section', label: 'Add section…' });
+  if (isTask) {
+    items.push(
+      { act: 'add-verification', label: 'Add verification…' },
+      { act: 'add-dependency', label: 'Add dependency…' },
+      { act: 'wait-on-decision', label: 'Wait on decision…' },
+    );
   }
-  if (REOPENABLE.includes(node.status)) {
-    buttons.push(`<button type="button" class="ab-reopen ${btnCls}">Reopen&hellip;</button>`);
-  }
-  if (!hasLease) {
-    buttons.push(`<button type="button" class="ab-reset ${btnCls}">Reset&hellip;</button>`);
-  }
+  items.push({ act: 'add-condition', label: 'Add condition…' }, { act: 'attach-file', label: 'Attach file…' });
+  const tail = [];
   if (!hasLease && SETTABLE_ASIDE.includes(node.status)) {
-    buttons.push(`<button type="button" class="ab-defer ${btnCls}">Defer&hellip;</button>`);
-    buttons.push(`<button type="button" class="ab-abandon ${dangerCls}">Abandon&hellip;</button>`);
+    tail.push({ act: 'defer', label: 'Defer…' }, { act: 'abandon', label: 'Abandon…', danger: true });
   }
-  if (node.kind === 'task') {
-    buttons.push(`<button type="button" class="ab-supersede ${dangerCls}">Supersede&hellip;</button>`);
-    buttons.push(`<button type="button" class="ab-move ${btnCls}">Move to plan&hellip;</button>`);
-  }
-  if (hasLease) {
-    buttons.push(`<button type="button" class="ab-release ${dangerCls}">Release lease</button>`);
-  }
-  return `<div class="ab-bar flex flex-wrap gap-1.5 pb-2 border-b border-zinc-800/80">${buttons.join('')}</div>`;
+  if (isTask) tail.push({ act: 'supersede', label: 'Supersede…', danger: true });
+  if (hasLease) tail.push({ act: 'release-lease', label: 'Release lease', danger: true });
+  if (tail.length) items.push(null, ...tail);
+  return items;
 }
 
-function wireActionBar(root, node) {
-  const bar = root.querySelector('.ab-bar');
-  if (!bar) return;
-  const on = (selector, fn) => {
-    const el = bar.querySelector(selector);
-    if (el) el.addEventListener('click', fn);
-  };
-  on('.ab-edit', () => openEditNodeDialog(node));
-  on('.ab-flags', () => openFlagsDialog(node));
-  on('.ab-reopen', () => openVerbDialog(node, 'reopen'));
-  on('.ab-reset', () => openResetDialog(node));
-  on('.ab-defer', () => openVerbDialog(node, 'defer'));
-  on('.ab-abandon', () => openVerbDialog(node, 'abandon'));
-  on('.ab-supersede', () => openSupersedeDialog(node));
-  on('.ab-move', () => openMoveDialog(node));
-  on('.ab-release', () => releaseLease(node));
+function actionsMenuHtml(node, lease) {
+  const items = nodeActions(node, !!lease).map(item => (item === null
+    ? '<div class="h-px my-1 bg-zinc-800" role="separator"></div>'
+    : `<button type="button" role="menuitem" tabindex="-1" class="w-full h-7 px-2 flex items-center rounded text-left text-xs ${item.danger ? 'text-red-300' : 'text-zinc-200'} hover:bg-zinc-800 focus:bg-zinc-800 focus:outline-none" data-act="${item.act}">${esc(item.label)}</button>`)).join('');
+  return `<div class="actions relative z-[1] flex-shrink-0"><button type="button" class="actions-btn h-7 px-2.5 inline-flex items-center gap-1 rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-[11px] leading-4 font-medium text-zinc-200 ${FOCUS_RING}" aria-haspopup="menu" aria-expanded="false">Actions${renderIcon('chevron-down', 'w-3 h-3')}</button><div class="actions-menu hidden absolute right-0 top-full mt-1 z-30 w-[200px] p-1 rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl" role="menu" aria-label="Actions">${items}</div></div>`;
 }
 
-
-// Where a node lands, read from its base chain: "on tm/P; waits for P → main".
-function landingChainText(node) {
-  const base = (node.base_chain || []).map(id => (id === 'MAIN' ? 'main' : id));
-  if (base.length === 0) return '';
-  if (base[0] === 'main') return 'lands on main';
-  return `on tm/${esc(base[0])}; waits for ${base.map(esc).join(' → ')}`;
+function setActionsMenuOpen(menu, open) {
+  menu.classList.toggle('hidden', !open);
+  menu.parentNode.querySelector('.actions-btn').setAttribute('aria-expanded', String(open));
+  if (!open) return;
+  clampToViewport(menu);
+  const first = menu.querySelector('[role="menuitem"]');
+  if (first) first.focus();
 }
 
-function renderLifecycle(detail, editable) {
-  const n = detail.node;
-  if (n.kind === 'decision') return '';
-  const row = (label, value) => `
-    <div class="flex gap-2"><dt class="w-28 flex-shrink-0 text-zinc-400">${esc(label)}</dt><dd class="text-zinc-300 min-w-0 break-words">${value}</dd></div>`;
-  const rows = [
-    row('Stored status', `${esc(n.status)} ${phaseChip(detail.phase)}`),
-    row('Outcome', esc(n.outcome || '-')),
-    row('Verdict', esc(n.verdict || '-')),
-    row('Flags', `review ${n.review ? 'on' : 'off'} · fix ${n.fix ? 'on' : 'off'}`),
-    row('Lands', `${esc(n.merge)} · ${landingChainText(n)}`),
-    row('Counters', `reviews ${n.review_cycles} · merge attempts ${n.merge_attempts} · step failures ${n.step_failures}`),
-    row('Requires', esc((n.requires || []).join(', ') || '-')),
-  ];
-  if (n.land_order && n.land_order.length) rows.push(row('Land order', esc(n.land_order.join(' → '))));
-  const conditions = (detail.conditions || []).map(c => `
-    <div class="flex items-center gap-2 px-2 py-1.5 bg-zinc-950/60">
-      <span class="text-[11px] text-zinc-300 flex-1 min-w-0 truncate">${esc(c.needs)}</span>
-      <span class="text-[10px] uppercase text-zinc-400">${esc(c.stage)}</span>
-      <code class="text-[10px] text-zinc-400 truncate max-w-[40%]">${esc(c.command)}</code>
-      <span class="text-[10px] ${c.last_result === 0 ? 'text-emerald-400' : 'text-amber-400'}">${c.last_result === null || c.last_result === undefined ? 'not run' : (c.last_result === 0 ? 'holds' : `exit ${c.last_result}`)}</span>
-      ${editable ? `<button type="button" class="cond-remove-btn p-1 rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-800" data-idx="${c.idx}" data-needs="${esc(c.needs)}" aria-label="Remove condition ${esc(c.needs)}">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
-    </div>`).join('');
-  const jobs = (detail.jobs || []).map(j => `
-    <div class="px-2 py-1.5 bg-zinc-950/60 text-[11px] text-zinc-300">${esc(j.kind)} ${esc(j.repo || '')} → ${esc(j.target || '')}: <strong>${esc(j.state)}</strong>${j.step ? ` at ${esc(j.step)}` : ''}</div>`).join('');
-  return `
-    <div class="lc-panel space-y-2 pt-2 text-xs">
-      <dl class="space-y-1">${rows.join('')}</dl>
-      <div class="font-semibold text-zinc-400 uppercase tracking-wider text-[10px]">Conditions (${(detail.conditions || []).length})</div>
-      ${conditions ? `<div class="divide-y divide-zinc-800 rounded border border-zinc-800">${conditions}</div>` : ''}
-      ${editable ? '<button type="button" class="cond-add-btn h-7 px-2 rounded-md text-[11px] font-medium text-emerald-400 hover:text-emerald-300 hover:bg-zinc-800 border border-dashed border-zinc-700 transition">+ Add condition</button>' : ''}
-      ${jobs ? `<div class="font-semibold text-zinc-400 uppercase tracking-wider text-[10px]">Jobs</div><div class="divide-y divide-zinc-800 rounded border border-zinc-800">${jobs}</div>` : ''}
-    </div>
-  `;
-}
-
-function wireLifecycleControls(root, node) {
-  root.querySelectorAll('.cond-remove-btn').forEach(btn => {
-    btn.addEventListener('click', () => removeCondition(node, Number(btn.dataset.idx), btn.dataset.needs));
+function closeActionsMenus(except = null) {
+  document.querySelectorAll('.actions-menu:not(.hidden)').forEach((menu) => {
+    if (menu !== except) setActionsMenuOpen(menu, false);
   });
-  const add = root.querySelector('.cond-add-btn');
-  if (add) add.addEventListener('click', () => openAddConditionDialog(node));
 }
 
+function copyText(text) {
+  return navigator.clipboard.writeText(text);
+}
 
-// Slide-over Node Inspector for Graph: opening it watches the node through the store (the
-// same watch tree.js's own expand uses) and every later render reads straight off
-// window.tmStore.rows/bodies, re-run by the onChange listener below -- no fetch, no reload,
-// ever, on either open or a write made from inside it.
+// A file picked from the Actions menu's Attach file… goes straight to the node.
+function pickAttachment(node) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.addEventListener('change', () => {
+    const file = input.files && input.files[0];
+    if (file) attachFile(node, file);
+  });
+  input.click();
+}
+
+function sectionOf(id, key) {
+  const body = detailBody(id);
+  const section = body && body.sections[key];
+  return section ? { key, header: section.header, content: section.content } : null;
+}
+
+function attachmentOf(node, asset) {
+  return ((node.frontmatter && node.frontmatter.attachments) || []).find(a => a.asset === asset) || null;
+}
+
+const DETAIL_ACTIONS = {
+  'copy-id': node => copyText(node.id).then(() => toast(`Copied ${node.id}.`, 'success'), e => toast(e.message, 'error')),
+  edit: node => openEditNodeDialog(node),
+  flags: node => openFlagsDialog(node),
+  reopen: node => openVerbDialog(node, 'reopen'),
+  reset: node => openResetDialog(node),
+  move: node => openMoveDialog(node),
+  'add-section': node => openSectionDialog(node, null),
+  'add-verification': node => openAddVerificationDialog(node),
+  'add-dependency': node => openAddDependencyDialog(node),
+  'wait-on-decision': node => openAddDependencyDialog(node, true),
+  'add-condition': node => openAddConditionDialog(node),
+  'attach-file': node => pickAttachment(node),
+  defer: node => openVerbDialog(node, 'defer'),
+  abandon: node => openVerbDialog(node, 'abandon'),
+  supersede: node => openSupersedeDialog(node),
+  'release-lease': node => releaseLease(node),
+  'edit-section': (node, el) => openSectionDialog(node, sectionOf(node.id, el.getAttribute('data-key'))),
+  'delete-section': (node, el) => removeSection(node, el.getAttribute('data-key')),
+  'remove-dependency': (node, el) => removeDependency(node, el.getAttribute('data-dep-id')),
+  'remove-verification': (node, el) => removeVerification(node, Number(el.getAttribute('data-ver-id')), el.getAttribute('data-ver-target')),
+  'run-verifications': node => runVerifications(node),
+  'remove-condition': (node, el) => removeCondition(node, Number(el.getAttribute('data-idx')), el.getAttribute('data-needs')),
+  'copy-command': (node, el) => copyText(el.getAttribute('data-copy')).then(() => {
+    el.innerHTML = renderIcon('check', 'w-3.5 h-3.5');
+    setTimeout(() => { if (el.isConnected) el.innerHTML = renderIcon('copy', 'w-3.5 h-3.5'); }, 1200);
+  }, e => toast(e.message, 'error')),
+  'open-attachment': (node, el) => {
+    const entry = attachmentOf(node, el.getAttribute('data-asset'));
+    const url = entry && attachmentAssetUrl(entry);
+    if (url) openLightbox(url, entry.caption || entry.name);
+  },
+  'detach-attachment': (node, el) => {
+    const entry = attachmentOf(node, el.getAttribute('data-asset'));
+    detachAttachment(node, el.getAttribute('data-asset'), null, entry && entry.name);
+  },
+  'recheck-attachments': node => recheckAttachments(node),
+};
+
+// One listener serves every detail root, card or drawer, whenever it was drawn: a control's
+// data-act names its action and its nearest [data-detail-root] names the node.
+document.addEventListener('click', (e) => {
+  const target = e.target && e.target.closest ? e.target : null;
+  if (!target) return;
+  const trigger = target.closest('.actions-btn');
+  const menu = trigger && trigger.parentNode.querySelector('.actions-menu');
+  closeActionsMenus(menu);
+  if (menu) {
+    setActionsMenuOpen(menu, menu.classList.contains('hidden'));
+    return;
+  }
+  const control = target.closest('[data-act]');
+  const root = control && control.closest('[data-detail-root]');
+  if (!root) return;
+  // A control inside a section's <summary> would otherwise also toggle the section.
+  e.preventDefault();
+  const owner = control.closest('.actions');
+  if (owner) owner.querySelector('.actions-btn').focus();
+  const act = DETAIL_ACTIONS[control.getAttribute('data-act')];
+  if (act) act(detailNode(root.getAttribute('data-detail-root')), control);
+});
+
+// role=menu's keyboard grammar: ArrowDown opens it from its button, arrows move between items,
+// Escape closes it back onto the button, Tab closes it.
+document.addEventListener('keydown', (e) => {
+  const target = e.target && e.target.closest ? e.target : null;
+  if (!target) return;
+  const trigger = target.closest('.actions-btn');
+  if (trigger && e.key === 'ArrowDown') {
+    e.preventDefault();
+    setActionsMenuOpen(trigger.parentNode.querySelector('.actions-menu'), true);
+    return;
+  }
+  const menu = target.closest('.actions-menu');
+  if (!menu) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    setActionsMenuOpen(menu, false);
+    menu.parentNode.querySelector('.actions-btn').focus();
+  } else if (e.key === 'Tab') {
+    setActionsMenuOpen(menu, false);
+  } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const items = [...menu.querySelectorAll('[role="menuitem"]')];
+    const at = items.indexOf(document.activeElement);
+    items[(at + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus();
+  }
+});
+
+
+// The drawer: a dialog over whichever pane is showing. Opening it watches the node through the
+// store, so every live change re-renders it from window.tmStore; a node the store holds no body
+// for yet is read once from /api/nodes/<id>.
+const inspectorLine = document.getElementById('inspector-line');
+const inspectorActions = document.getElementById('inspector-actions');
+const inspectorTitle = document.getElementById('inspector-title');
+const inspectorPills = document.getElementById('inspector-pills');
+const inspectorBody = document.getElementById('inspector-body');
+const DRAWER_LOADING_DELAY_MS = 300;
+
 let inspectorNodeId = null;
+let drawerOpener = null;
+// The one /api/nodes/<id> read in flight or answered for the drawer's node:
+// { id, body, error, slow }; `slow` once it has been in flight for DRAWER_LOADING_DELAY_MS.
+let drawerLoad = null;
+
+function detailBody(id) {
+  const body = window.tmStore.bodies.get(id);
+  if (body && body.node) return body;
+  return drawerLoad && drawerLoad.id === id ? drawerLoad.body : null;
+}
+
+function detailNode(id) {
+  const body = detailBody(id);
+  return (body && body.node) || window.tmStore.rows.get(id) || { id };
+}
+
+function drawerOpen() {
+  return !graphInspector.classList.contains('hidden');
+}
 
 // A node still expanded in the tree/document keeps its own reason to stay watched; only
 // drop the watch here when closing or switching leaves nothing else asking for it.
@@ -272,116 +446,178 @@ function releaseInspectorWatch(id) {
   if (id && !expandedIds.has(id)) window.tmStore.unwatch([id]);
 }
 
-async function showGraphInspector(nodeId) {
-  if (inspectorNodeId && inspectorNodeId !== nodeId) releaseInspectorWatch(inspectorNodeId);
-  inspectorNodeId = nodeId;
-  selectedNodeId = nodeId;
-  graphInspector.classList.remove('hidden');
-  window.tmStore.watch([nodeId]);
-  renderGraphInspector(nodeId);
+function loadDrawerBody(id) {
+  const load = { id, body: null, error: null, slow: false };
+  drawerLoad = load;
+  const timer = setTimeout(() => {
+    if (drawerLoad !== load || load.body || load.error) return;
+    load.slow = true;
+    renderGraphInspector(id);
+  }, DRAWER_LOADING_DELAY_MS);
+  api('GET', `/api/nodes/${encodeURIComponent(id)}`)
+    .then((body) => { load.body = normalizeBody(body); }, (err) => { load.error = err; })
+    .then(() => {
+      clearTimeout(timer);
+      if (drawerLoad !== load) return;
+      const node = load.body && load.body.node;
+      if (node && node.kind !== 'task') expandId(node);
+      renderGraphInspector(id);
+    });
 }
 
-inspectorCloseBtn.addEventListener('click', () => {
+function retryDrawerLoad() {
+  if (!inspectorNodeId) return;
+  loadDrawerBody(inspectorNodeId);
+  renderGraphInspector(inspectorNodeId);
+}
+
+// UI only: the location that names the node is the caller's to set.
+function openDrawer(id) {
+  if (drawerOpen() && inspectorNodeId === id) return;
+  const opening = !drawerOpen();
+  if (opening) drawerOpener = document.activeElement;
+  if (inspectorNodeId !== id) releaseInspectorWatch(inspectorNodeId);
+  inspectorNodeId = id;
+  drawerLoad = null;
+  graphInspector.classList.remove('hidden');
+  window.tmStore.watch([id]);
+  // A container lists its children, which the store only holds once it is open.
+  const row = window.tmStore.rows.get(id);
+  if (row && row.kind !== 'task') expandId(row);
+  if (!isStaticMode && !detailBody(id)) loadDrawerBody(id);
+  renderGraphInspector(id);
+  if (opening) inspectorTitle.focus();
+}
+
+// A control drawn again since it opened the drawer is found again by the node it names.
+function reconnected(el) {
+  if (!el || el === document.body || el.isConnected) return el;
+  const id = el.getAttribute('data-node-id') || el.getAttribute('data-id');
+  return id ? document.querySelector(`${el.localName}[data-node-id="${CSS.escape(id)}"], ${el.localName}[data-id="${CSS.escape(id)}"]`) : null;
+}
+
+// UI only, like openDrawer. Focus goes back to the control that opened it, unless it has
+// already moved somewhere else on purpose.
+function closeDetailDrawer() {
+  if (!drawerOpen()) return;
+  const focusInside = graphInspector.contains(document.activeElement) || document.activeElement === document.body;
+  graphInspector.classList.add('hidden');
   releaseInspectorWatch(inspectorNodeId);
   inspectorNodeId = null;
-});
-
-function renderGraphInspector(nodeId) {
-  const row = window.tmStore.rows.get(nodeId);
-  const body = window.tmStore.bodies.get(nodeId);
-  const kindEl = document.getElementById('inspector-kind');
-  const idEl = document.getElementById('inspector-id');
-  const titleEl = document.getElementById('inspector-title');
-  const bodyEl = document.getElementById('inspector-body');
-
-  if (!row && !body) {
-    kindEl.textContent = '';
-    idEl.textContent = nodeId;
-    titleEl.textContent = '';
-    bodyEl.innerHTML = '<div class="text-xs text-red-400 italic py-6 text-center">Node not found.</div>';
-    return;
-  }
-
-  const n = (body && body.node) || row;
-  kindEl.textContent = n.kind;
-  idEl.textContent = n.id;
-  titleEl.textContent = n.title;
-
-  if (!body) {
-    bodyEl.innerHTML = '<div class="text-xs text-zinc-400 italic py-6 text-center">Loading&hellip;</div>';
-    return;
-  }
-
-  const detail = {
-    node: body.node,
-    dependency_details: body.dependency_details,
-    dependent_details: body.dependent_details,
-    sections: sectionsListFrom(body),
-    verifications: body.verifications,
-    conditions: body.conditions,
-    jobs: body.jobs,
-    lease: body.lease,
-    phase: row ? row.phase : null,
-    display: row ? row.display : null,
+  drawerLoad = null;
+  const opener = drawerOpener;
+  drawerOpener = null;
+  if (!focusInside) return;
+  const refocus = () => {
+    const back = reconnected(opener);
+    if (back && back !== document.body) back.focus();
   };
-  const status = detail.display || n.status;
-  const editable = canEdit();
-
-  let leaseBanner = '';
-  if (detail.lease) {
-    leaseBanner = `
-      <div class="p-2.5 bg-blue-950/40 border border-blue-800/80 rounded-lg text-xs space-y-1">
-        <div class="text-blue-300 font-semibold flex items-center gap-1.5">
-          ${renderIcon('bot', 'w-3.5 h-3.5')}
-          <span>Live lease: ${esc(detail.lease.action || 'step')}</span>
-        </div>
-        <div class="text-zinc-400 font-mono">Agent: ${esc(detail.lease.agent_id)}</div>
-        <div class="text-zinc-400 font-mono text-[11px]">${esc(detail.lease.branch_name)}</div>
-      </div>
-    `;
-  }
-
-  const attachments = (n.frontmatter && n.frontmatter.attachments) || [];
-
-  bodyEl.innerHTML = `
-    ${editable ? renderActionBar(n, !!detail.lease) : ''}
-    <div class="flex items-center gap-2">
-      ${statusIcon(status, 'w-4 h-4')}
-      <span class="px-2 py-0.5 rounded bg-zinc-950 border border-zinc-800 font-mono text-zinc-400 text-xs">Prio: ${n.priority || 50}</span>
-    </div>
-    ${leaseBanner}
-    ${renderLifecycle(detail, editable)}
-    ${renderVerifications(n, detail.verifications, editable)}
-    ${renderDependencies(detail.dependency_details, status, n, editable)}
-    ${renderAttachments(n, attachments, editable)}
-    ${renderSections(detail.sections, n.id)}
-  `;
-  attachSectionToggleHandlers(bodyEl);
-  attachInspectorGroupToggleHandlers(bodyEl, nodeId);
-  wireAttachmentControls(bodyEl, n, attachments, editable);
-  if (editable) {
-    wireActionBar(bodyEl, n);
-    wireLifecycleControls(bodyEl, n);
-    wireVerificationControls(bodyEl, n);
-    wireDependencyControls(bodyEl, n);
-    attachSectionEditControls(bodyEl, n, detail.sections);
-  }
+  refocus();
+  // The render this close scheduled redraws the opener (a tree row); focus its new self after.
+  requestAnimationFrame(() => {
+    if (document.activeElement === document.body || !document.activeElement.isConnected) refocus();
+  });
 }
 
-// A write from inside the inspector (a section edit, a verb, a dependency change...) never
-// reloads anything -- its effect lands as a `row`/`body`/`section` item on this same
-// subscription, and this is what turns that into a re-render.
-window.tmStore.onChange((patch) => {
-  if (!inspectorNodeId || graphInspector.classList.contains('hidden')) return;
-  if (patch.rowIds.includes(inspectorNodeId) || patch.bodyIds.includes(inspectorNodeId)) {
-    renderGraphInspector(inspectorNodeId);
+// Closing is a location change: the view without a node.
+function closeDrawerByUser() {
+  if (readLocation().id) navigate({ view: currentMode, id: null });
+  else closeDetailDrawer();
+}
+
+// Opens the drawer on a node from any view, Document included, and names it in the location.
+function showGraphInspector(nodeId) {
+  openNode(nodeId);
+  openDrawer(nodeId);
+}
+
+inspectorCloseBtn.addEventListener('click', closeDrawerByUser);
+
+function drawerFocusables() {
+  return [...graphInspector.querySelectorAll(FOCUSABLE)].filter((el) => {
+    if (el.disabled || el.closest('.hidden, [hidden]')) return false;
+    const details = el.closest('details');
+    return !details || details.open || !!el.closest('summary');
+  });
+}
+
+// A dialog: Escape closes it and Tab stays inside it, unless a dialog opened over it (a form, the
+// lightbox) or a menu or toast inside it already took the key.
+document.addEventListener('keydown', (e) => {
+  if (e.defaultPrevented || !drawerOpen() || dialogRoot.children.length > 0) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    closeDrawerByUser();
+    return;
   }
+  if (e.key !== 'Tab') return;
+  const els = drawerFocusables();
+  if (els.length === 0) return;
+  const at = els.indexOf(document.activeElement);
+  if (e.shiftKey && at <= 0) {
+    e.preventDefault();
+    els[els.length - 1].focus();
+  } else if (!e.shiftKey && (at === -1 || at === els.length - 1)) {
+    e.preventDefault();
+    els[0].focus();
+  }
+});
+
+function drawerPillsHtml(node, row, lease) {
+  let pills = leaseBadge(lease);
+  if (node.kind === 'task') pills += (node.acceptable_models || []).map(modelPill).join('');
+  // The project's own repo ('.') is every node's default, so only another repo is named.
+  if (node.target_repo && node.target_repo !== '.') pills += repoPill(node.target_repo);
+  pills += priorityPill(node.priority);
+  if (node.kind !== 'task' && row) {
+    const counts = countsForRow(row);
+    const p = progressParts(counts);
+    if (p.total > 0) pills += `<div class="w-24">${progressBar(counts)}</div>${progressCount(p)}`;
+  }
+  return pills;
+}
+
+function drawerBodyHtml(nodeId, node, body, row) {
+  if (node && body) return nodeDetailHtml(node, body, row, { surface: 'drawer' });
+  const load = drawerLoad && drawerLoad.id === nodeId ? drawerLoad : null;
+  if (load && load.error && load.error.status === 404) return paneState('empty', `${nodeId} not found`);
+  if (load && load.error) return paneState('error', load.error.message, retryDrawerLoad);
+  if (!node && (isStaticMode || !load)) return paneState('empty', `${nodeId} not found`);
+  return load && load.slow ? paneState('loading') : '';
+}
+
+// The header is known from the row before the body arrives.
+function renderGraphInspector(nodeId) {
+  const row = window.tmStore.rows.get(nodeId) || null;
+  const body = detailBody(nodeId);
+  const node = (body && body.node) || row;
+  const lease = (body && body.lease) || (row && row.lease) || null;
+  graphInspector.setAttribute('data-detail-root', nodeId);
+  inspectorLine.innerHTML = `${node ? statusIcon(detailStatus(node, body, row)) + kindBadge(node.kind) : ''}<span id="inspector-id" class="min-w-0">${idLink(nodeId, node && node.kind, true)}</span>${leasePulse(lease)}`;
+  inspectorActions.innerHTML = node ? actionsMenuHtml(node, lease) : '';
+  inspectorTitle.textContent = node ? node.title : nodeId;
+  inspectorPills.innerHTML = node ? drawerPillsHtml(node, row, lease) : '';
+  inspectorPills.classList.toggle('hidden', !node);
+  inspectorBody.innerHTML = drawerBodyHtml(nodeId, node, body, row);
+  attachSectionToggleHandlers(inspectorBody);
+  attachGroupHeaderHandlers(inspectorBody, () => renderGraphInspector(nodeId));
+}
+
+// Every write lands as a row/body/section item on this same subscription, never a reload; a
+// container's drawer also follows its children and its counts.
+window.tmStore.onChange((patch) => {
+  if (!inspectorNodeId || !drawerOpen() || !patch.rowIds) return;
+  const id = inspectorNodeId;
+  const touched = patch.rowIds.includes(id) || patch.bodyIds.includes(id) || patch.statusesChanged
+    || patch.rowIds.some(rid => { const r = window.tmStore.rows.get(rid); return r && r.parent === id; });
+  if (touched) renderGraphInspector(id);
 });
 
 
 // Attachments (§4): a gallery with lightbox, source/age/staleness badges and Re-check, plus
-// the Attach-file action and detach -- shared by the graph inspector above and the decisions
-// view (decisions.js calls renderAttachments/wireAttachmentControls the same way).
+// the Attach-file action and detach. A node's Attachments group draws attachmentCardHtml and
+// acts through data-act; the decisions view draws renderAttachments and wires it with
+// wireAttachmentControls.
 
 function attachmentAssetUrl(entry) {
   // Live mode always has a server to ask; a static export only has what static_export.py
@@ -434,34 +670,38 @@ function sourceBadgeHtml(source) {
   return `<span class="att-source-badge px-1.5 py-0.5 rounded border text-[10px] font-medium ${badge.cls}" title="${esc(s.uri || 'no recorded source')}">${esc(label)}</span>`;
 }
 
+// One attachment: the thumbnail (an image opens the lightbox), the name, size, source and its
+// staleness. Its open and detach controls carry both their class and their data-act.
+function attachmentCardHtml(entry, editable) {
+  const url = attachmentAssetUrl(entry);
+  const isImage = (entry.mime || '').startsWith('image/');
+  const thumb = isImage && url
+    ? `<button type="button" data-act="open-attachment" class="att-open-btn block w-full aspect-video rounded-md overflow-hidden bg-zinc-900 border border-zinc-800 hover:border-zinc-600 transition" data-asset="${esc(entry.asset)}" aria-label="Open ${esc(entry.name)} full size"><img src="${esc(url)}" alt="${esc(entry.caption || entry.name)}" class="w-full h-full object-cover"></button>`
+    : `<div class="flex items-center justify-center aspect-video rounded-md bg-zinc-900 border border-zinc-800 text-zinc-500">${renderIcon(isImage ? 'file-x' : 'file-text', 'w-6 h-6')}</div>`;
+  const nameEl = !isImage && url
+    ? `<a href="${esc(url)}" download="${esc(entry.name)}" class="text-emerald-400 hover:text-emerald-300 underline decoration-dotted">${esc(entry.name)}</a>`
+    : `<span>${esc(entry.caption || entry.name)}</span>`;
+  const sizeLabel = humanBytes(entry.size_bytes);
+  const uri = entry.source && entry.source.uri;
+  return `
+    <div class="att-card space-y-1.5" data-asset="${esc(entry.asset)}">
+      ${thumb}
+      <div class="flex items-center justify-between gap-1.5 text-[11px] text-zinc-300">
+        <span class="truncate min-w-0" title="${esc(entry.name)}">${nameEl}</span>
+        <span class="flex items-center gap-1 flex-shrink-0">
+          ${sizeLabel ? `<span class="text-zinc-400">${esc(sizeLabel)}</span>` : ''}
+          ${editable ? `<button type="button" data-act="detach-attachment" class="att-detach-btn p-1 rounded text-zinc-400 hover:text-red-400 hover:bg-zinc-800" data-asset="${esc(entry.asset)}" aria-label="Detach ${esc(entry.name)}">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
+        </span>
+      </div>
+      ${uri ? `<div class="truncate text-[10px] font-mono text-zinc-400" title="${esc(uri)}">${esc(uri)}</div>` : ''}
+      <div class="flex items-center flex-wrap gap-1">${sourceBadgeHtml(entry.source)}</div>
+    </div>
+  `;
+}
+
 function renderAttachments(node, attachments, editable) {
   const list = attachments || [];
-  const cards = list.map(entry => {
-    const url = attachmentAssetUrl(entry);
-    const isImage = (entry.mime || '').startsWith('image/');
-    const thumb = isImage && url
-      ? `<button type="button" class="att-open-btn block w-full aspect-video rounded-md overflow-hidden bg-zinc-900 border border-zinc-800 hover:border-zinc-600 transition" data-asset="${esc(entry.asset)}" aria-label="Open ${esc(entry.name)} full size"><img src="${esc(url)}" alt="${esc(entry.caption || entry.name)}" class="w-full h-full object-cover"></button>`
-      : `<div class="flex items-center justify-center aspect-video rounded-md bg-zinc-900 border border-zinc-800 text-zinc-500">${renderIcon(isImage ? 'file-x' : 'file-text', 'w-6 h-6')}</div>`;
-    const nameEl = !isImage && url
-      ? `<a href="${esc(url)}" download="${esc(entry.name)}" class="text-emerald-400 hover:text-emerald-300 underline decoration-dotted">${esc(entry.name)}</a>`
-      : `<span>${esc(entry.caption || entry.name)}</span>`;
-    const sizeLabel = humanBytes(entry.size_bytes);
-    const uri = entry.source && entry.source.uri;
-    return `
-      <div class="att-card space-y-1.5" data-asset="${esc(entry.asset)}">
-        ${thumb}
-        <div class="flex items-center justify-between gap-1.5 text-[11px] text-zinc-300">
-          <span class="truncate min-w-0" title="${esc(entry.name)}">${nameEl}</span>
-          <span class="flex items-center gap-1 flex-shrink-0">
-            ${sizeLabel ? `<span class="text-zinc-400">${sizeLabel}</span>` : ''}
-            ${editable ? `<button type="button" class="att-detach-btn p-1 rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-800" data-asset="${esc(entry.asset)}" aria-label="Detach ${esc(entry.name)}">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
-          </span>
-        </div>
-        ${uri ? `<div class="truncate text-[10px] font-mono text-zinc-400" title="${esc(uri)}">${esc(uri)}</div>` : ''}
-        <div class="flex items-center flex-wrap gap-1">${sourceBadgeHtml(entry.source)}</div>
-      </div>
-    `;
-  }).join('');
+  const cards = list.map(entry => attachmentCardHtml(entry, editable)).join('');
 
   const controls = editable ? `
     <div class="flex items-center gap-2 pt-1.5">
@@ -630,58 +870,3 @@ if (typeof renderSectionBody === 'function') {
   };
 }
 
-
-// AWAITING_DECISION banner (§6.4) in the document view: renderUnifiedDocument is tree.js's
-// own function, wrapped rather than edited there -- same reassignment pattern as above, so
-// the document view's own markup never has to know decisions exist.
-
-function decorateAwaitingDecisionBanners() {
-  // Rows are flat (no `.children`), and dependency_details lives on a watched body, not the
-  // row itself -- a task not yet expanded has no body to read the banner's links from, and
-  // it reappears here on its own once opening the card starts watching it.
-  window.tmStore.rows.forEach(task => {
-    if (task.kind !== 'task' || displayOf(task) !== 'AWAITING_DECISION') return;
-    const el = document.getElementById(`doc-node-${task.id}`);
-    const cardBody = el && el.querySelector('.task-body');
-    if (!cardBody || cardBody.querySelector('.awaiting-decision-banner')) return;
-    const body = window.tmStore.bodies.get(task.id);
-    const waitingOn = ((body && body.dependency_details) || []).filter(d => !d.finished);
-    const links = waitingOn.map(d =>
-      `<button type="button" class="awaiting-decision-link underline decoration-dotted text-amber-200 hover:text-amber-100" data-decision-id="${esc(d.id)}">${esc(d.id)}${d.title ? `: ${esc(d.title)}` : ''}</button>`
-    ).join(', ');
-    const banner = document.createElement('div');
-    banner.className = 'awaiting-decision-banner p-2.5 bg-amber-950/40 border border-amber-800/80 rounded-lg flex items-center gap-2 text-xs mb-3';
-    banner.innerHTML = `${renderIcon('help-circle', 'w-3.5 h-3.5 text-amber-400 flex-shrink-0')}<span class="text-amber-200">Awaiting decision: ${links || 'unknown'}</span>`;
-    cardBody.insertBefore(banner, cardBody.firstChild);
-  });
-}
-
-document.addEventListener('click', (e) => {
-  const link = e.target.closest('.awaiting-decision-link');
-  if (!link) return;
-  e.preventDefault();
-  if (typeof goToDecision === 'function') goToDecision(link.getAttribute('data-decision-id'));
-});
-
-if (typeof renderUnifiedDocument === 'function') {
-  const previousRenderUnifiedDocument = renderUnifiedDocument;
-  renderUnifiedDocument = function () {
-    previousRenderUnifiedDocument();
-    decorateAwaitingDecisionBanners();
-  };
-}
-
-// tree.js's attachCollapsibleHandlers() wires .group-header clicks only for the document
-// view (it queries the whole document, but only after renderUnifiedDocument() runs, and
-// showGraphInspector() rebuilds this body afterwards) -- so the inspector's own "Sections"
-// and "Verifications" group headers need the same collapsedGroups toggle wired here.
-function attachInspectorGroupToggleHandlers(root, nodeId) {
-  root.querySelectorAll('.group-header').forEach(header => {
-    header.onclick = () => {
-      const id = header.getAttribute('data-group-id');
-      if (collapsedGroups.has(id)) collapsedGroups.delete(id);
-      else collapsedGroups.add(id);
-      renderGraphInspector(nodeId);
-    };
-  });
-}

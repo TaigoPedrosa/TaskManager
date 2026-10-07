@@ -127,6 +127,7 @@ function applyLocation({ view, id, filters: F }) {
     if (currentMode === view) renderDecisionsView();
   }
   if (view !== currentMode) setViewMode(view);
+  applyNodeLocation(view, id);
 }
 
 // A view switch is a new history entry; pass `replace` for a change within the view (a

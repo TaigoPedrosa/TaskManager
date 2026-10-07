@@ -12,6 +12,8 @@ const GRAPH_SHAPE_BY_KIND = {
 };
 
 let visEdgesDS = null;
+// zinc-100: the selected node's stroke, in place of its status stroke.
+const SELECTED_STROKE = '#f4f4f5';
 
 function graphEdgeId(source, target, type) {
   return `${source}\u0000${target}\u0000${type}`;
@@ -28,8 +30,8 @@ function graphVisNode(row) {
     widthConstraint: { minimum: 170, maximum: 260 },
     color: {
       background: theme.graph_bg,
-      border: theme.graph_border,
-      highlight: { background: theme.graph_bg, border: '#ffffff' }
+      border: row.id === selectedNodeId ? SELECTED_STROKE : theme.graph_border,
+      highlight: { background: theme.graph_bg, border: SELECTED_STROKE }
     },
     font: { color: '#ffffff', face: 'Inter', size: 12, mod: '600' },
     borderWidth: 2,

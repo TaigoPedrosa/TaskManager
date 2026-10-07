@@ -99,10 +99,10 @@ def test_tree_row_is_keyboard_reachable_and_operable() -> None:
 
 def test_document_sections_default_collapsed_and_remember_expand_state() -> None:
     html = get_web_html()
-    render_sections = _function_body(html, "renderSections")
+    section_items = _function_body(html, "sectionItemsHtml")
     assert "<details open class" not in html
-    assert "isOpen ? 'open' : ''" in render_sections
-    assert "expandedSections.has(id)" in render_sections
+    assert "isOpen ? 'open' : ''" in section_items
+    assert "expandedSections.has(id)" in section_items
     assert "expandedSections" in _function_body(html, "attachSectionToggleHandlers")
 
 
@@ -129,9 +129,9 @@ def test_group_headers_default_all_collapsed() -> None:
     assert "groupCollapsed(groupId, true)" in render_sections
     assert "renderGroupHeader(groupId, 'Sections'" in render_sections
 
-    render_plan_card = _function_body(html, "renderPlanCard")
-    assert "groupCollapsed(tasksGroupId, true)" in render_plan_card
-    assert "renderGroupHeader(tasksGroupId, 'Tasks'" in render_plan_card
+    # A container's children start collapsed on the card and in the drawer alike.
+    render_children = _function_body(html, "renderChildren")
+    assert "detailGroupHtml(node.id, 'children', label, kids.length, true," in render_children
 
 
 def test_group_header_toggle_is_wired_independently_of_node_and_section_collapse() -> None:
@@ -211,7 +211,7 @@ def test_graph_inspector_is_full_width_below_lg_not_a_fixed_384px() -> None:
     # A fixed w-96 (384px) drawer beside a 320px sidebar left no usable canvas at 375/768 and
     # overlapped the sidebar's own action bar outright.
     html = get_web_html()
-    inspector = re.search(r'<div id="graph-inspector" class="([^"]*)"', html)
+    inspector = re.search(r'<div id="graph-inspector"[^>]*? class="([^"]*)"', html)
     assert inspector, "graph-inspector not found"
     classes = inspector.group(1)
     assert "w-full" in classes
@@ -234,7 +234,7 @@ def test_page_inlines_every_static_js_file() -> None:
         "tree.js": "function renderTree()",
         "graph.js": "const GRAPH_SHAPE_BY_KIND",
         "edit.js": "function openDialog(",
-        "detail.js": "async function showGraphInspector(nodeId)",
+        "detail.js": "function nodeDetailHtml(node, body, row,",
         "waves.js": "function fetchWaves()",
         "main.js": "navigate(readLocation(), { replace: true });",
     }
@@ -429,10 +429,9 @@ def test_add_dependency_is_a_picker_not_free_text() -> None:
     assert "decisionsOnly" in body
     assert 'list="${listId}"' in body
     assert "<datalist" in body
-    detail = _function_body(get_web_html(), "renderDependencies")
-    assert "+ Wait on decision" in detail
-    wire = _function_body(get_web_html(), "wireDependencyControls")
-    assert "openAddDependencyDialog(node, true)" in wire
+    actions = _function_body(get_web_html(), "nodeActions")
+    assert "{ act: 'wait-on-decision', label: 'Wait on decision…' }" in actions
+    assert "'wait-on-decision': node => openAddDependencyDialog(node, true)," in get_web_html()
 
 
 def test_decision_answer_form_custom_text_clears_the_chosen_cards_highlight() -> None:
@@ -748,7 +747,7 @@ def test_status_exclude_toggle_uses_a_token_not_raw_hex() -> None:
 def test_attachment_card_shows_size_and_source_uri_always_visible() -> None:
     # §4: name, size, source URI and capture age/staleness must all be visible on the card
     # itself, not only in a hover title.
-    render = _function_body(get_web_html(), "renderAttachments")
+    render = _function_body(get_web_html(), "attachmentCardHtml")
     assert "humanBytes(entry.size_bytes)" in render
     assert "entry.source && entry.source.uri" in render
     assert 'title="${esc(uri)}">${esc(uri)}' in render
@@ -812,15 +811,15 @@ def test_the_page_carries_phase_themes_and_a_phase_filter() -> None:
         assert f"p.get('{key}')" in read_filters and f"F.{key} =" in to_f
 
 
-def test_action_bar_offers_verbs_by_stored_status() -> None:
-    body = _function_body(get_web_html(), "renderActionBar")
+def test_actions_menu_offers_verbs_by_stored_status() -> None:
+    html = get_web_html()
+    body = _function_body(html, "nodeActions")
     assert "REOPENABLE.includes(node.status)" in body
     assert "SETTABLE_ASIDE.includes(node.status)" in body
-    assert "ab-reset" in body and "ab-flags" in body
-    wire = _function_body(get_web_html(), "wireActionBar")
+    assert "act: 'reset'" in body and "act: 'flags'" in body
     for verb in ("'reopen'", "'defer'", "'abandon'"):
-        assert f"openVerbDialog(node, {verb})" in wire
-    assert "openResetDialog(node)" in wire and "openFlagsDialog(node)" in wire
+        assert f"openVerbDialog(node, {verb})" in html
+    assert "openResetDialog(node)" in html and "openFlagsDialog(node)" in html
 
 
 def test_every_verb_collects_a_note_and_abandon_is_destructive() -> None:
@@ -830,41 +829,27 @@ def test_every_verb_collects_a_note_and_abandon_is_destructive() -> None:
     assert "vb-new-branch" in body
 
 
-def test_the_inspector_shows_the_lifecycle_panel() -> None:
+def test_the_drawer_draws_the_shared_detail_layout() -> None:
+    # tests/web/detail_layout.test.mjs runs both surfaces; this pins that the drawer reaches
+    # nodeDetailHtml rather than a layout of its own.
     html = get_web_html()
-    panel = _function_body(html, "renderLifecycle")
-    for field in (
-        "n.status",
-        "n.outcome",
-        "n.verdict",
-        "n.review_cycles",
-        "n.merge_attempts",
-        "n.step_failures",
-        "n.requires",
-        "detail.conditions",
-        "detail.jobs",
-        "c.last_result",
-        "c.stage",
-        "landingChainText(n)",
-    ):
-        assert field in panel, field
-    # showGraphInspector only opens and watches the node; renderGraphInspector is the part
-    # that draws the panel, re-run by the store's own onChange on every later update too.
-    assert "renderLifecycle(detail, editable)" in _function_body(html, "renderGraphInspector")
+    assert "nodeDetailHtml(node, body, row, { surface: 'drawer' })" in _function_body(
+        html, "drawerBodyHtml"
+    )
+    assert "drawerBodyHtml(nodeId, node, body, row)" in _function_body(html, "renderGraphInspector")
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is needed to exercise the JS")
-def test_landing_chain_text_reads_the_base_chain(tmp_path: Path) -> None:
-    fn = _function_body(get_web_html(), "landingChainText")
+def test_lands_text_reads_the_base_chain(tmp_path: Path) -> None:
+    fn = _function_body(get_web_html(), "landsText")
     script = tmp_path / "check.js"
     script.write_text(
-        "function esc(s) { return String(s); }\n"
-        f"function landingChainText(node) {{{fn}\n}}\n"
+        f"function landsText(node) {{{fn}\n}}\n"
         "const assert = require('node:assert');\n"
-        "assert.strictEqual(landingChainText({base_chain: ['MAIN']}), 'lands on main');\n"
-        "assert.strictEqual(landingChainText({base_chain: ['P', 'MAIN']}),"
-        " 'on tm/P; waits for P → main');\n"
-        "assert.strictEqual(landingChainText({base_chain: []}), '');\n"
+        "assert.strictEqual(landsText({base_chain: ['MAIN']}), 'main');\n"
+        "assert.strictEqual(landsText({base_chain: ['P', 'MAIN']}), 'tm/P → main');\n"
+        "assert.strictEqual(landsText({base_chain: ['T', 'P', 'MAIN']}), 'tm/T → tm/P → main');\n"
+        "assert.strictEqual(landsText({base_chain: []}), '');\n"
         "console.log('OK');\n",
         encoding="utf-8",
     )
@@ -923,22 +908,18 @@ def test_core_creates_the_store_and_follows_its_connection_state() -> None:
 
 def test_expand_collapse_drive_the_stores_open_and_watch_sets_not_a_local_flag() -> None:
     toggle = _function_body(get_web_html(), "toggleExpand")
-    assert "window.tmStore.open([row.id])" in toggle
-    assert "window.tmStore.watch([row.id])" in toggle
+    expand = _function_body(get_web_html(), "expandId")
+    assert "window.tmStore.open([node.id])" in expand
+    assert "window.tmStore.watch([node.id])" in expand
+    assert "expandId(row)" in toggle
     assert "window.tmStore.close(closed)" in toggle
     assert "window.tmStore.unwatch(closed)" in toggle
 
 
-def test_graph_inspector_shows_loading_until_watched_body_arrives() -> None:
-    inspector = _function_body(get_web_html(), "renderGraphInspector")
-    assert "window.tmStore.bodies.get(nodeId)" in inspector
-    assert "Loading" in inspector
-
-
 def test_sections_and_relations_render_only_once_a_watched_body_arrives() -> None:
-    task_card = _function_body(get_web_html(), "renderTaskCard")
-    assert "bodyOf(task.id)" in task_card
-    assert "paneState('loading')" in task_card
+    card_body = _function_body(get_web_html(), "cardBodyHtml")
+    assert "detailBody(row.id)" in card_body
+    assert "paneState('loading')" in card_body
 
 
 def _class_tokens(tag: str) -> list[str]:
@@ -1033,13 +1014,9 @@ def test_a_filter_change_also_refetches_waves() -> None:
     assert "scheduleWavesRefetch()" in apply_change
 
 
-def test_selecting_a_node_pulses_it_in_the_document_view_and_focuses_it_in_graph() -> None:
-    html = get_web_html()
-    assert "pulse-highlight" in html
-    assert "border-color: var(--tone-accent) !important;" in html
-    select_node = _function_body(html, "selectNode")
-    assert "targetEl.classList.add('node-highlighted')" in select_node
-    assert "networkInstance.selectNodes([nodeId])" in select_node
+def test_selecting_a_node_focuses_it_in_graph() -> None:
+    apply = _function_body(get_web_html(), "applyNodeLocation")
+    assert "networkInstance.selectNodes([id])" in apply
 
 
 def test_page_carries_an_inline_favicon_so_the_browser_never_requests_favicon_ico() -> None:

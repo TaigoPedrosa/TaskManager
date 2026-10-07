@@ -32,38 +32,41 @@ function renderGroupHeader(groupId, label, count, defaultCollapsed, meta = '') {
   return `<div class="flex items-center gap-2">${header}<div class="flex items-center gap-1.5 flex-shrink-0">${meta}</div></div>`;
 }
 
-// Sections default collapsed; expandedSections remembers, for this session only, which
-// ones the user opened, so re-rendering after a filter change never re-collapses them.
-// The "Sections (N)" group header is a level above that: it hides the whole row of
-// <details> summaries at once, independent of expandedSections and of a node's own expand.
+// Section rows start collapsed; expandedSections remembers, for this session only, which ones
+// the user opened, so re-rendering after a filter change never re-collapses them. A row reads
+// its key, and a leading heading in its content that repeats its header is dropped.
+function sectionItemsHtml(list, ownerId, editable = false) {
+  const items = list.map(s => {
+    const id = `${ownerId}::${s.key}`;
+    const isOpen = expandedSections.has(id);
+    const label = (s.header || s.key).replace(/^#+\s*/, '');
+    const body = stripRedundantLeadingHeading(s.content, label);
+    const controls = editable ? `
+      <button type="button" class="p-1 flex-shrink-0 rounded text-zinc-400 hover:text-white hover:bg-zinc-800 ${ROW_CONTROL} ${FOCUS_RING}" data-act="edit-section" data-key="${esc(s.key)}" aria-label="Edit section ${esc(s.key)}">${renderIcon('code', 'w-3 h-3')}</button>
+      <button type="button" class="p-1 flex-shrink-0 rounded text-zinc-400 hover:text-red-400 hover:bg-zinc-800 ${ROW_CONTROL} ${FOCUS_RING}" data-act="delete-section" data-key="${esc(s.key)}" aria-label="Delete section ${esc(s.key)}">${renderIcon('x', 'w-3 h-3')}</button>` : '';
+    return `
+      <details ${isOpen ? 'open' : ''} data-section-id="${esc(id)}" class="rounded-lg border border-zinc-800 bg-zinc-950/60">
+        <summary class="group cursor-pointer select-none px-3 py-1.5 flex items-center gap-1.5 min-w-0 rounded-lg ${FOCUS_RING}">
+          ${renderIcon('chevron-right', 'w-3 h-3 flex-shrink-0 text-zinc-400 details-caret')}
+          <span class="flex-1 min-w-0 truncate font-mono text-[11px] leading-4 text-zinc-300">${esc(s.key)}</span>
+          ${controls}
+        </summary>
+        <div class="pl-[30px] pr-3 pb-3 text-xs leading-5 text-zinc-300">${renderSectionBody(body)}</div>
+      </details>
+    `;
+  }).join('');
+  return `<div class="space-y-1.5">${items}</div>`;
+}
+
+// The decisions view's own section list: the group starts collapsed there.
 function renderSections(sections, ownerId) {
   const list = sections || [];
   if (list.length === 0) return '';
   const groupId = `${ownerId}::sections`;
-  const isGroupCollapsed = groupCollapsed(groupId, true);
-  const items = list.map(s => {
-    const id = `${ownerId}::${s.key}`;
-    allSectionIds.push(id);
-    const isOpen = expandedSections.has(id);
-    const label = (s.header || s.key).replace(/^#+\s*/, '');
-    const body = stripRedundantLeadingHeading(s.content, label);
-    return `
-      <details ${isOpen ? 'open' : ''} data-section-id="${esc(id)}" class="rounded-lg border border-zinc-800 bg-zinc-950/60">
-        <summary class="cursor-pointer select-none px-3 py-1.5 text-xs font-semibold text-zinc-300 flex items-center justify-between gap-2">
-          <div class="flex items-center gap-2 min-w-0">
-            <span>${esc(label)}</span>
-            <span class="font-mono text-[10px] text-zinc-400 font-normal">${esc(s.key)}</span>
-          </div>
-          ${renderIcon('chevron-right', 'w-3 h-3 text-zinc-400 details-caret flex-shrink-0')}
-        </summary>
-        <div class="prose prose-invert max-w-none px-3 pb-3 text-xs leading-relaxed text-zinc-400">${renderSectionBody(body)}</div>
-      </details>
-    `;
-  }).join('');
   return `
     <div class="space-y-2 pt-2">
       ${renderGroupHeader(groupId, 'Sections', list.length, true)}
-      <div class="space-y-2 ${isGroupCollapsed ? 'hidden' : ''}">${items}</div>
+      <div class="${groupCollapsed(groupId, true) ? 'hidden' : ''}">${sectionItemsHtml(list, ownerId)}</div>
     </div>
   `;
 }
@@ -115,8 +118,8 @@ function leaseOf(row) {
 // A node is expanded exactly when the store's open set carries it (its children, if any,
 // are then in window.tmStore.rows) and its watch set carries it (its body, once it arrives,
 // is then in window.tmStore.bodies). The store exposes no getter for either set, so this
-// view keeps its own record of which ids it asked to expand -- the only thing that mutates
-// them is toggleExpand() below.
+// view keeps its own record of which ids it asked to expand -- only expandId() and
+// toggleExpand() below mutate it.
 function collapseWithDescendants(id) {
   const toClose = new Set([id]);
   let changed = true;
@@ -135,15 +138,30 @@ function collapseWithDescendants(id) {
   return [...toClose];
 }
 
+// A node whose body has not arrived LOADING_DELAY_MS after it was expanded shows its loading
+// pane state; one that arrives sooner never does.
+const slowReads = new Set();
+
+function expandId(node) {
+  if (expandedIds.has(node.id)) return;
+  expandedIds.add(node.id);
+  if (node.kind !== 'task') window.tmStore.open([node.id]);
+  window.tmStore.watch([node.id]);
+  slowReads.delete(node.id);
+  setTimeout(() => {
+    if (!expandedIds.has(node.id) || detailBody(node.id)) return;
+    slowReads.add(node.id);
+    scheduleRender();
+  }, LOADING_DELAY_MS);
+}
+
 function toggleExpand(row) {
   if (expandedIds.has(row.id)) {
     const closed = collapseWithDescendants(row.id);
     window.tmStore.close(closed);
     window.tmStore.unwatch(closed);
   } else {
-    expandedIds.add(row.id);
-    if (row.kind !== 'task') window.tmStore.open([row.id]);
-    window.tmStore.watch([row.id]);
+    expandId(row);
   }
 }
 
@@ -191,6 +209,7 @@ function renderTree() {
     row.setAttribute('tabindex', '0');
     row.setAttribute('aria-selected', String(isSelected));
     row.setAttribute('aria-label', `${node.id}: ${node.title}`);
+    row.setAttribute('data-node-id', node.id);
     if (hasChildren) row.setAttribute('aria-expanded', String(isOpen));
 
     const chevron = hasChildren
@@ -240,6 +259,7 @@ function renderTree() {
   }
 
   roots.forEach(n => createNodeRow(n));
+  finishReveal(false);
 }
 
 searchBox.addEventListener('input', (e) => {
@@ -247,31 +267,143 @@ searchBox.addEventListener('input', (e) => {
   applyFilterChange();
 });
 
-// Select Node Action (Coordinates Tree, Document, and Graph)
-
+// Selection lives in the location: a tree row, an id link or a graph node opens /<view>/<id>,
+// and applyNodeLocation brings the screen to it.
 function selectNode(nodeId) {
-  selectedNodeId = nodeId;
-  renderTree();
+  openNode(nodeId);
+}
 
-  if (currentMode === window.VIEW_MODES.DOCUMENT) {
-    const row = window.tmStore.rows.get(nodeId);
-    if (row && !expandedIds.has(nodeId)) {
-      toggleExpand(row);
-      scheduleRender();
-    }
-    const targetEl = document.getElementById(`doc-node-${nodeId}`);
-    if (targetEl) {
-      targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      targetEl.classList.add('node-highlighted');
-      setTimeout(() => targetEl.classList.remove('node-highlighted'), 1600);
-    }
-  } else if (currentMode === window.VIEW_MODES.GRAPH) {
-    if (networkInstance) {
-      networkInstance.selectNodes([nodeId]);
-      networkInstance.focus(nodeId, { scale: 1.1, animation: true });
-    }
-    showGraphInspector(nodeId);
+// The node the location names is drawn selected by the tree row, the Document card and the
+// Graph node. setSelectedNode is selectedNodeId's one writer.
+let pendingReveal = null;
+// What Document shows above its cards for a location's node it cannot show: { kind, message }
+// for paneState, an id nothing has or a lookup that failed.
+let revealState = null;
+let appliedNodeLocation = null;
+
+function setSelectedNode(id) {
+  if (selectedNodeId === id) return;
+  const prev = selectedNodeId;
+  selectedNodeId = id;
+  pendingReveal = null;
+  revealState = null;
+  if (visNodesDS) syncGraphNodes([prev, id].filter(Boolean));
+  if (!id && networkInstance) networkInstance.unselectAll();
+  scheduleRender();
+}
+
+// Document reveals the node; Graph opens the drawer on it and reveals it in the tree; Waves
+// opens the drawer. A location already applied changes nothing, so a filter change keeps it.
+function applyNodeLocation(view, id) {
+  if (view === window.VIEW_MODES.DECISIONS) {
+    appliedNodeLocation = null;
+    return;
   }
+  const key = `${view}/${id || ''}`;
+  if (key === appliedNodeLocation) return;
+  appliedNodeLocation = key;
+  setSelectedNode(id);
+  if (!id) {
+    closeDetailDrawer();
+    return;
+  }
+  if (view === window.VIEW_MODES.DOCUMENT) {
+    if (inspectorNodeId !== id) closeDetailDrawer();
+  } else {
+    openDrawer(id);
+  }
+  if (view === window.VIEW_MODES.WAVES) return;
+  if (view === window.VIEW_MODES.GRAPH && networkInstance && window.tmStore.rows.has(id)) {
+    networkInstance.selectNodes([id]);
+    networkInstance.focus(id, { scale: 1.1, animation: true });
+  }
+  revealNode(id);
+}
+
+// A row the store holds, or, in a static export, any row the export carries.
+function heldRow(id) {
+  return window.tmStore.rows.get(id) || (isStaticMode ? (window.STATIC_DATA.rows || {})[id] : undefined);
+}
+
+// The node and its containers, outermost first, from held rows alone: undefined once a link is
+// not held (live: ask the server), null when a static export has no such node.
+function heldChain(id) {
+  const chain = [];
+  for (let at = id; at;) {
+    const row = heldRow(at);
+    if (!row) return isStaticMode ? null : undefined;
+    chain.unshift(row);
+    at = row.parent;
+  }
+  return chain;
+}
+
+// The same chain, reading each link the store does not hold (a deep link, a node under a
+// collapsed container) from /api/nodes?ids=; null for an id nothing has.
+async function fetchChain(id) {
+  const chain = [];
+  for (let at = id; at;) {
+    let row = heldRow(at);
+    if (!row) {
+      const page = await api('GET', `/api/nodes?ids=${encodeURIComponent(at)}`);
+      row = (page.items || [])[0];
+    }
+    if (!row) return null;
+    chain.unshift(row);
+    at = row.parent;
+  }
+  return chain;
+}
+
+// Opens every container above the node (its card, and its children group) and, in Document, the
+// node itself; finishReveal scrolls to it once its card or tree row is drawn.
+function showReveal(id, chain) {
+  if (!chain) {
+    revealState = { kind: 'empty', message: `${id} not found` };
+    scheduleRender();
+    return;
+  }
+  chain.slice(0, -1).forEach((ancestor) => {
+    expandId(ancestor);
+    // A children group starts collapsed, so its id in collapsedGroups means open.
+    collapsedGroups.add(`${ancestor.id}::children`);
+  });
+  if (currentMode === window.VIEW_MODES.DOCUMENT) expandId(chain[chain.length - 1]);
+  pendingReveal = id;
+  scheduleRender();
+}
+
+function revealNode(id) {
+  revealState = null;
+  const held = heldChain(id);
+  if (held !== undefined) {
+    showReveal(id, held);
+    return;
+  }
+  fetchChain(id).then((chain) => {
+    if (selectedNodeId === id) showReveal(id, chain);
+  }, (err) => {
+    if (selectedNodeId !== id) return;
+    revealState = { kind: 'error', message: err.message };
+    scheduleRender();
+  });
+}
+
+function retryReveal() {
+  if (selectedNodeId) revealNode(selectedNodeId);
+}
+
+// `inDocument`: the pane just drawn, Document or the tree; only the current view's own pane
+// finishes a reveal.
+function finishReveal(inDocument) {
+  if (!pendingReveal || inDocument !== (currentMode === window.VIEW_MODES.DOCUMENT)) return;
+  const el = inDocument
+    ? document.getElementById(`doc-node-${pendingReveal}`)
+    : treeList.querySelector(`[data-node-id="${CSS.escape(pendingReveal)}"]`);
+  if (!el) return;
+  pendingReveal = null;
+  el.scrollIntoView({ block: 'center' });
+  if (inDocument) el.focus({ preventScroll: true });
 }
 
 
@@ -279,27 +411,28 @@ function selectNode(nodeId) {
 // plan or task with no container -- the "Rows" section's own definition of a root), walked
 // by parent/ordinal/id exactly like the sidebar tree above.
 function renderUnifiedDocument() {
-  unifiedDocument.innerHTML = '';
-  allSectionIds = [];
   const byParent = visibleChildrenByParent();
   const roots = byParent.get(null) || [];
-
-  if (roots.length === 0) {
-    unifiedDocument.innerHTML = emptyPaneState();
-    return;
-  }
-
-  const cardHtml = roots.map(root => {
+  const lookup = revealState
+    ? paneState(revealState.kind, revealState.message, revealState.kind === 'error' ? retryReveal : null)
+    : '';
+  const cards = roots.map(root => {
     if (root.kind === 'spec') return renderSpecCard(root, byParent);
     if (root.kind === 'plan') return renderPlanCard(root, byParent);
     return renderTaskCard(root);
   }).join('');
-  unifiedDocument.innerHTML = cardHtml;
+  // A revealed card keeps its focus when a later store change draws the document again.
+  const focusedCard = unifiedDocument.contains(document.activeElement) && document.activeElement.hasAttribute('data-detail-root')
+    ? document.activeElement.id : '';
+  unifiedDocument.innerHTML = lookup + (roots.length ? cards : emptyPaneState());
+  const refocus = focusedCard && document.getElementById(focusedCard);
+  if (refocus) refocus.focus({ preventScroll: true });
+  allSectionIds = [...unifiedDocument.querySelectorAll('details[data-section-id]')].map(d => d.getAttribute('data-section-id'));
 
   attachCollapsibleHandlers();
   attachSectionToggleHandlers(unifiedDocument);
-  attachCopyHandlers(unifiedDocument);
   updateToggleSectionsButton();
+  finishReveal(true);
 }
 
 // The header line's toggle: the chevron is the button, and its overlay makes the whole line
@@ -325,51 +458,49 @@ function sharedMetaHtml(shared) {
 
 const SHOW_EVERY_META = { models: null, priority: null };
 
-// Below sm a row keeps its id and title and drops its pills and copy button.
+// Below sm a row keeps its id and title and drops its pills.
 function rowPills(html) {
-  return `<span class="hidden sm:inline-flex items-center gap-1.5 flex-shrink-0">${html}</span>`;
+  return html ? `<span class="hidden sm:inline-flex items-center gap-1.5 flex-shrink-0">${html}</span>` : '';
+}
+
+function selectedAttr(id) {
+  return selectedNodeId === id ? ' aria-selected="true"' : '';
+}
+
+function cardBorder(id, normal) {
+  return selectedNodeId === id ? 'border-emerald-400 ring-1 ring-emerald-400' : normal;
+}
+
+function cardActionsHtml(row) {
+  return actionsMenuHtml(detailNode(row.id), leaseOf(row));
+}
+
+// An expanded card's details once its body has arrived. Below sm the Actions menu leads them,
+// so the header line keeps its room for the id and title.
+function cardBodyHtml(row, byParent, actionsBelowSm = true) {
+  const body = detailBody(row.id);
+  if (!body) return slowReads.has(row.id) ? paneState('loading') : '';
+  const actions = actionsBelowSm ? `<div class="sm:hidden">${cardActionsHtml(row)}</div>` : '';
+  return actions + nodeDetailHtml(body.node || row, body, row, { surface: 'card', byParent });
 }
 
 function renderSpecCard(spec, byParent) {
-  const specStatus = displayOf(spec);
   const isOpen = expandedIds.has(spec.id);
-  const body = bodyOf(spec.id);
   const counts = countsForRow(spec);
-  const children = byParent.get(spec.id) || [];
-
   const pills = priorityPill(spec.priority) + (spec.target_repo ? repoPill(spec.target_repo) : '');
 
-  let bodyHtml = '';
-  let childrenHtml = '';
-  if (isOpen) {
-    bodyHtml = body ? renderSections(sectionsListFrom(body), spec.id) : paneState('loading');
-    if (children.length > 0) {
-      const groupId = `${spec.id}::children`;
-      const kinds = new Set(children.map(c => c.kind));
-      const label = kinds.size > 1 ? 'Plans and tasks' : kinds.has('plan') ? 'Plans' : 'Tasks';
-      const shared = sharedMeta(children);
-      childrenHtml = `
-        <div class="space-y-3">
-          ${renderGroupHeader(groupId, label, children.length, false, sharedMetaHtml(shared))}
-          <div class="space-y-4 ${groupCollapsed(groupId, false) ? 'hidden' : ''}">
-            ${children.map(c => (c.kind === 'plan' ? renderPlanCard(c, byParent, shared) : renderTaskCard(c, shared))).join('')}
-          </div>
-        </div>
-      `;
-    }
-  }
-
   return `
-    <article id="doc-node-${esc(spec.id)}" class="space-y-6 transition duration-200">
+    <article id="doc-node-${esc(spec.id)}" data-detail-root="${esc(spec.id)}" tabindex="-1"${selectedAttr(spec.id)} class="space-y-6 rounded-xl border transition focus:outline-none ${cardBorder(spec.id, 'border-transparent')}">
       <div class="border-b border-zinc-800 pb-6 space-y-3">
-        <div class="relative flex items-center gap-2 min-w-0">
+        <div class="relative flex flex-wrap items-center gap-2 min-w-0">
           ${nodeToggle(spec, isOpen)}
-          ${statusIcon(specStatus)}
+          ${statusIcon(displayOf(spec))}
           ${kindBadge(spec.kind)}
           ${idLink(spec.id, spec.kind)}
           <span class="flex-1"></span>
           ${leasePulse(leaseOf(spec))}
-          ${rowPills(pills + copyIdButton(spec.id))}
+          <span class="inline-flex items-center gap-1.5 flex-shrink-0">${pills}</span>
+          ${isOpen ? cardActionsHtml(spec) : ''}
         </div>
         <h1 class="text-2xl font-bold tracking-tight text-white">${esc(spec.title)}</h1>
         <div class="space-y-1.5">
@@ -377,164 +508,53 @@ function renderSpecCard(spec, byParent) {
           <div class="text-xs text-zinc-400">${esc(progressText(counts))}</div>
         </div>
       </div>
-      ${bodyHtml}
-      ${childrenHtml}
+      ${isOpen ? cardBodyHtml(spec, byParent, false) : ''}
     </article>
   `;
 }
 
 
 function renderPlanCard(plan, byParent, shared = SHOW_EVERY_META) {
-  const planStatus = displayOf(plan);
   const isOpen = expandedIds.has(plan.id);
-  const body = bodyOf(plan.id);
   const counts = countsForRow(plan);
   const p = progressParts(counts);
-  const tasks = byParent.get(plan.id) || [];
-  const tasksGroupId = `${plan.id}::tasks`;
-  const tasksGroupCollapsed = groupCollapsed(tasksGroupId, true);
-  const taskMeta = sharedMeta(tasks);
-
-  let innerBody = '';
-  if (isOpen) {
-    const planSectionsHtml = body ? renderSections(sectionsListFrom(body), plan.id) : paneState('loading');
-    innerBody = `
-      ${planSectionsHtml}
-      <div class="space-y-3">
-        ${renderGroupHeader(tasksGroupId, 'Tasks', tasks.length, true, sharedMetaHtml(taskMeta))}
-        <div class="space-y-2.5 ${tasksGroupCollapsed ? 'hidden' : ''}">
-          ${tasks.map(task => renderTaskCard(task, taskMeta)).join('')}
-        </div>
-      </div>
-    `;
-  }
 
   return `
-    <div id="doc-node-${esc(plan.id)}" class="border border-zinc-800 rounded-xl bg-zinc-900/30 transition">
-      <div class="plan-line relative h-12 px-4 rounded-t-xl bg-zinc-900/95 backdrop-blur-sm border-b border-zinc-800 flex items-center gap-2.5 min-w-0">
+    <div id="doc-node-${esc(plan.id)}" data-detail-root="${esc(plan.id)}" tabindex="-1"${selectedAttr(plan.id)} class="border rounded-xl bg-zinc-900/30 transition focus:outline-none ${cardBorder(plan.id, 'border-zinc-800')}">
+      <div class="plan-line relative h-12 px-4 rounded-t-xl bg-zinc-900/95 ${isOpen ? 'border-b border-zinc-800' : 'rounded-b-xl'} flex items-center gap-2.5 min-w-0">
         ${nodeToggle(plan, isOpen)}
-        ${statusIcon(planStatus)}
+        ${statusIcon(displayOf(plan))}
         ${kindBadge(plan.kind)}
         ${idLink(plan.id, plan.kind)}
         <span class="flex-1 min-w-0 truncate text-sm font-semibold text-zinc-200" title="${esc(plan.title)}">${esc(plan.title)}</span>
         ${p.total > 0 ? `<div class="hidden sm:block w-40 flex-shrink min-w-0">${progressBar(counts, 'h-2')}</div>${progressCount(p)}` : ''}
         ${leasePulse(leaseOf(plan))}
-        ${rowPills((shared.priority === null ? priorityPill(plan.priority) : '') + copyIdButton(plan.id))}
+        ${rowPills(shared.priority === null ? priorityPill(plan.priority) : '')}
+        ${isOpen ? `<span class="hidden sm:inline-flex">${cardActionsHtml(plan)}</span>` : ''}
       </div>
-
-      <div class="plan-body ${isOpen ? '' : 'hidden'} p-4 space-y-4">
-        ${innerBody}
-      </div>
-    </div>
-  `;
-}
-
-// Verification kind -> icon, so the row reads at a glance instead of naming the enum value.
-// Each one is its own icon rather than borrowing a status or toolbar icon's meaning
-// (file-text/network/play already mean Document view, Graph view and Implementing).
-
-const VERIFICATION_ICON = {
-  file_exists: 'file-check', file_absent: 'file-x', symbol_signature: 'code',
-  ast_export: 'package', test_command: 'terminal', codegraph_query: 'database'
-};
-const VERIFICATION_LABEL = {
-  file_exists: 'File exists', file_absent: 'File absent', symbol_signature: 'Symbol signature',
-  ast_export: 'AST export', test_command: 'Test command', codegraph_query: 'Codegraph query'
-};
-
-// A table of nodes (status, id, title) behind a collapsible group header -- the shared
-// shape for the task card's Blockers, Dependencies and Dependents sections.
-function renderRelationTable(ownerId, key, label, rows, defaultCollapsed) {
-  if (!rows || rows.length === 0) return '';
-  const groupId = `${ownerId}::${key}`;
-  const isCollapsed = groupCollapsed(groupId, defaultCollapsed);
-  const body = rows.map(d => `
-    <div class="flex items-center gap-2 px-2 py-1.5 bg-zinc-950/60">
-      ${d.status
-        ? (d.kind === 'decision' && typeof decisionStatusIcon === 'function' ? decisionStatusIcon(d.status) : statusIcon(d.status))
-        : '<span class="text-[10px] font-mono text-red-400">missing</span>'}
-      ${idLink(d.id, d.kind)}
-      <span class="truncate text-[11px] text-zinc-400">${esc(d.title || '')}</span>
-    </div>
-  `).join('');
-  return `
-    <div class="space-y-1.5 pt-2">
-      ${renderGroupHeader(groupId, label, rows.length, defaultCollapsed)}
-      <div class="divide-y divide-zinc-800 rounded-lg border border-zinc-800 ${isCollapsed ? 'hidden' : ''}">${body}</div>
+      ${isOpen ? `<div class="plan-body p-4 space-y-3">${cardBodyHtml(plan, byParent)}</div>` : ''}
     </div>
   `;
 }
 
 function renderTaskCard(task, shared = SHOW_EVERY_META) {
-  const taskStatus = displayOf(task);
   const isOpen = expandedIds.has(task.id);
-  const body = bodyOf(task.id);
-  const lease = leaseOf(task);
-
   let pills = '';
   if (shared.models === null) pills += (task.acceptable_models || []).map(modelPill).join('');
   if (shared.priority === null) pills += priorityPill(task.priority);
 
-  let innerBody = '';
-  if (isOpen) {
-    if (!body) {
-      innerBody = paneState('loading');
-    } else {
-      // Verifications: icon names the kind (hover for the word), row stays justified
-      // (icon pinned left, target pinned right) but the target text itself reads left-aligned;
-      // a real gap keeps the two from ever touching regardless of either one's length.
-      let verificationsHtml = '';
-      if (body.verifications && body.verifications.length > 0) {
-        const groupId = `${task.id}::verifications`;
-        const isGroupCollapsed = groupCollapsed(groupId, true);
-        const rows = body.verifications.map(v => `
-          <div class="p-2 bg-zinc-950/60 flex items-center gap-3 justify-between">
-            <span class="text-emerald-400 flex-shrink-0" title="${esc(VERIFICATION_LABEL[v.verification_type] || v.verification_type)}">${renderIcon(VERIFICATION_ICON[v.verification_type] || 'check', 'w-3.5 h-3.5')}</span>
-            <span class="text-zinc-300 truncate text-left flex-1 min-w-0">${esc(v.target_path)}</span>
-          </div>
-        `).join('');
-        verificationsHtml = `
-          <div class="space-y-1.5 pt-2 border-t border-zinc-800/60 mb-3">
-            ${renderGroupHeader(groupId, 'Verifications', body.verifications.length, true)}
-            <div class="rounded-lg border border-zinc-800 overflow-hidden divide-y divide-zinc-800 text-[11px] font-mono ${isGroupCollapsed ? 'hidden' : ''}">${rows}</div>
-          </div>
-        `;
-      }
-
-      const sectionsHtml = renderSections(sectionsListFrom(body), task.id);
-      const unfinishedDeps = (body.dependency_details || []).filter(d => !d.finished);
-      const blockersHtml = renderRelationTable(task.id, 'blockers', 'Blockers', unfinishedDeps, true);
-      const dependenciesHtml = renderRelationTable(task.id, 'deps', 'Dependencies', body.dependency_details, true);
-      const dependentsHtml = renderRelationTable(task.id, 'dependents', 'Dependents', body.dependent_details, true);
-      const leaseFact = lease
-        ? `<div class="flex items-center gap-1.5 text-[11px] leading-4"><span class="text-zinc-400">Lease</span>${leaseBadge(lease)}</div>`
-        : '';
-
-      innerBody = `
-        ${leaseFact}
-        ${verificationsHtml}
-        ${blockersHtml}
-        ${dependenciesHtml}
-        ${dependentsHtml}
-        ${sectionsHtml}
-      `;
-    }
-  }
-
   return `
-    <div id="doc-node-${esc(task.id)}" class="border border-zinc-800/80 rounded-lg bg-zinc-950/40 hover:border-zinc-700 transition">
-      <div class="task-line relative h-10 px-3 rounded-lg flex items-center gap-2 min-w-0 bg-zinc-900/90 backdrop-blur-sm hover:bg-zinc-900">
+    <div id="doc-node-${esc(task.id)}" data-detail-root="${esc(task.id)}" tabindex="-1"${selectedAttr(task.id)} class="border rounded-lg bg-zinc-950/40 transition focus:outline-none ${cardBorder(task.id, 'border-zinc-800/80 hover:border-zinc-700')}">
+      <div class="task-line relative h-10 px-3 rounded-lg flex items-center gap-2 min-w-0 bg-zinc-900/90 hover:bg-zinc-900">
         ${nodeToggle(task, isOpen)}
-        ${statusIcon(taskStatus)}
+        ${statusIcon(displayOf(task))}
         ${idLink(task.id, task.kind)}
         <span class="flex-1 min-w-0 truncate text-[13px] text-zinc-200" title="${esc(task.title)}">${esc(task.title)}</span>
-        ${leasePulse(lease)}
-        ${rowPills(pills + copyIdButton(task.id))}
+        ${leasePulse(leaseOf(task))}
+        ${rowPills(pills)}
+        ${isOpen ? `<span class="hidden sm:inline-flex">${cardActionsHtml(task)}</span>` : ''}
       </div>
-
-      <div class="task-body ${isOpen ? '' : 'hidden'} p-3.5 bg-zinc-950/80 border-t border-zinc-800/60 space-y-2">
-        ${innerBody}
-      </div>
+      ${isOpen ? `<div class="task-body p-3.5 rounded-b-lg bg-zinc-950/80 border-t border-zinc-800/60 space-y-3">${cardBodyHtml(task)}</div>` : ''}
     </div>
   `;
 }
