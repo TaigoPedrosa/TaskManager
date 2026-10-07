@@ -187,16 +187,16 @@ def update_ref_cas(repo: Path, ref: str, new: str, old: str) -> bool:
     return _git(repo, "update-ref", ref, new, old).returncode == 0
 
 
-def ls_remote(repo: Path, ref: str) -> str:
-    """The sha `origin` holds for `ref`, or "" when it cannot be read."""
+def ls_remote(repo: Path, ref: str) -> tuple[str, subprocess.CompletedProcess[str]]:
+    """The sha `origin` holds for `ref` ("" when it cannot be read), and the run that read it."""
     res = _git(repo, "ls-remote", "origin", ref)
     fields = res.stdout.split()
-    return fields[0] if res.returncode == 0 and fields else ""
+    return (fields[0] if res.returncode == 0 and fields else ""), res
 
 
-def push(worktree: Path, target: str) -> bool:
-    """Never forced: a refused push means the target moved, and the caller merges it in."""
-    return _git(worktree, "push", "-q", "origin", f"HEAD:refs/heads/{target}").returncode == 0
+def push(worktree: Path, target: str) -> subprocess.CompletedProcess[str]:
+    """Never forced: a push refused because the target moved is merged in by the caller."""
+    return _git(worktree, "push", "-q", "origin", f"HEAD:refs/heads/{target}")
 
 
 def add_detached_worktree(repo: Path, path: Path, commit: str) -> None:
