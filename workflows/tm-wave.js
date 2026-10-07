@@ -102,14 +102,6 @@ Return its complete stdout, character for character, in the stdout field: every 
   return null
 }
 
-// Over UTF-8 bytes, as tm and the shell compute it, so text carrying non-ASCII still checks.
-function djb2(s) {
-  const bytes = unescape(encodeURIComponent(s))
-  let h = 5381
-  for (let i = 0; i < bytes.length; i++) h = (Math.imul(h, 33) + bytes.charCodeAt(i)) >>> 0
-  return h
-}
-
 // POSIX cksum (CRC-32 over the bytes, then the length), exactly as `cksum` prints it. The runner
 // pipes through the stock tool rather than a hash written into the command, because a model runner
 // has rewritten such code before executing it, and every claim it touched was released.
@@ -142,10 +134,12 @@ async function opJson(kind, id, cmd, opts = {}) {
   return { exit: r.exit, data, text: r.m[1] }
 }
 
-// Returns the batch, or null when the runner's transcription fails its exit code or checksum.
+// `--lines` keeps the runner echoing short quote-free lines: a haiku runner retyping nested JSON
+// into a structured field drops keys. Returns the batch, or null when the transcription fails
+// its exit code or the shell's cksum.
 async function discover(attempt) {
   const cmd = [
-    `${TM} wave discover`,
+    `${TM} wave discover --lines`,
     ...SPECS.map(s => `--spec ${q(s)}`),
     `--session ${q(SESSION)}`,
     `--slots ${SLOTS | 0}`,
@@ -153,17 +147,22 @@ async function discover(attempt) {
     ...(A.exclude || []).map(x => `--exclude ${q(x)}`),
     ...[...HOLD_MERGE].map(x => `--hold-merge ${q(x)}`),
   ].join(' ')
-  const r = await op('discover', `attempt-${attempt}`, cmd, /^([\s\S]*?)__EXIT:(\d+)\s*$/)
+  const r = await op('discover', `attempt-${attempt}`,
+    `out=$(${cmd} 2>&1); rc=$?; printf '%s\\n' "$out"; printf '__CHECK '; printf '%s' "$out" | cksum; exit $rc`,
+    /^([\s\S]*)\n__CHECK (\d+ \d+)\n__EXIT:(\d+)\s*$/,
+    { attempts: 1, valid: m => cksum(m[1]) === m[2] })
   if (!r || r.exit !== 0) return null
-  const lines = r.m[1].split('\n').map(l => l.trim()).filter(Boolean)
-  const check = (lines.pop() || '').match(/^__CHECK n=(\d+) h=(\d+)$/)
-  const payload = lines.pop() || ''
-  try {
-    const d = JSON.parse(payload)
-    return check && djb2(payload) === Number(check[2]) && d.chosen.length === Number(check[1]) ? d : null
-  } catch (e) {
-    return null
+  const plan = { chosen: [], held: [], waiting_for_slot: 0 }
+  const list = v => (v === '-' ? [] : v.split(','))
+  for (const line of r.m[1].split('\n')) {
+    const [tag, ...f] = line.trim().split(' ')
+    if (tag === 'N' && f.length === 6) {
+      plan.chosen.push({ id: f[0], action: f[1], model: f[2], kind: f[3], repos: list(f[4]), requires: list(f[5]) })
+    } else if (tag === 'H') plan.held.push(f.join(' '))
+    else if (tag === 'W') plan.waiting_for_slot = Number(f[0])
+    else if (tag) return null
   }
+  return plan
 }
 
 const agentName = n => `wf-${q(SESSION)}-${q(n.id)}`

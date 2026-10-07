@@ -108,9 +108,9 @@ function fakeVis(w) {
     getBoundingBox() { return { left: 10, top: 20, right: 180, bottom: 54 }; }
     canvasToDOM(p) { return p; }
     fit() {}
-    selectNodes() {}
+    selectNodes(ids) { this.selected = ids; }
     unselectAll() {}
-    focus() {}
+    focus(id) { this.focused = id; }
   }
   w.vis = { DataSet, Network };
 }
@@ -578,4 +578,190 @@ test('an expanded card shows its loading pane state only once its body has been 
   clock.tick(1);
   await page.settle();
   assert.ok(loading());
+});
+
+// A request that answers only when the test says so, with whatever status it is handed.
+function held() {
+  const calls = [];
+  let answer = null;
+  return {
+    calls,
+    route: (u, opts) => {
+      calls.push(opts && opts.body);
+      return new Promise((resolve) => { answer = (status, payload) => resolve(jsonResponse(status, payload)); });
+    },
+    answer: (status, payload) => answer(status, payload),
+  };
+}
+
+function withFiles(w) {
+  fakeVis(w);
+  w.FileReader = class {
+    readAsDataURL(file) {
+      this.result = `data:text/plain;base64,${file.b64}`;
+      this.onload();
+    }
+  };
+}
+
+// Run all, Re-check and Attach file… each spin the control that fired them for the whole flight,
+// and a failure leaves an error toast whose Retry sends the same request again.
+const WRITES = [
+  ['Run all', '/api/nodes/T/verify', async (page) => {
+    page.$('#inspector-body [data-group-id="T::verifications"]').click();
+    await page.settle();
+    const btn = page.$('#inspector-body [data-act="run-verifications"]');
+    btn.click();
+    return btn;
+  }],
+  ['Re-check', '/api/nodes/T/attachments/check', async (page) => {
+    page.$('#inspector-body [data-group-id="T::attachments"]').click();
+    await page.settle();
+    const btn = page.$('#inspector-body [data-act="recheck-attachments"]');
+    btn.click();
+    return btn;
+  }],
+  ['Attach file…', '/api/nodes/T/attachments', async (page) => {
+    const picked = [];
+    const create = page.document.createElement.bind(page.document);
+    page.document.createElement = (tag) => {
+      const el = create(tag);
+      if (tag === 'input') picked.push(el);
+      return el;
+    };
+    const btn = page.$('#inspector-actions .actions-btn');
+    btn.click();
+    page.$('#inspector-actions [data-act="attach-file"]').click();
+    picked[0].files = [{ name: 'shot.png', b64: 'AAAA' }];
+    picked[0].dispatchEvent(new page.window.Event('change'));
+    return btn;
+  }],
+];
+
+for (const [label, path, fire] of WRITES) {
+  test(`${label} disables its control with a spinner until the response, and a failure offers Retry with the same request`, async () => {
+    const write = held();
+    const page = await openAt('/graph/T', { fetch: server({ [path]: write.route }), beforeScripts: withFiles });
+    const control = await fire(page);
+    await page.settle();
+    assert.equal(control.disabled, true);
+    assert.equal(control.getAttribute('aria-busy'), 'true');
+    assert.ok(control.querySelector('.animate-spin'));
+
+    write.answer(500, { detail: 'verify exploded' });
+    await page.settle();
+    assert.equal(control.disabled, false);
+    const toastEl = page.$('#toast-root .toast');
+    assert.equal(toastEl.getAttribute('data-tone'), 'error');
+    assert.ok(toastEl.textContent.includes('verify exploded'));
+    toastEl.querySelector('.toast-retry').click();
+    await page.settle();
+    assert.equal(write.calls.length, 2);
+    assert.equal(write.calls[1], write.calls[0]);
+    assert.equal(control.disabled, true, 'the retry spins the same control');
+  });
+}
+
+test("the Decisions pane's + Attach file and Re-check are buttons that spin through the same write", async () => {
+  for (const [selector, path] of [['.att-add-btn', '/api/nodes/decision-D1/attachments'], ['.att-recheck-btn', '/api/nodes/decision-D1/attachments/check']]) {
+    const write = held();
+    const page = loadPage({ fetch: server({ [path]: write.route }), beforeScripts: withFiles });
+    const picked = [];
+    const create = page.document.createElement.bind(page.document);
+    page.document.createElement = (tag) => {
+      const el = create(tag);
+      if (tag === 'input') picked.push(el);
+      return el;
+    };
+    page.window.attachments = BODIES.T.node.frontmatter.attachments;
+    const box = page.document.createElement('div');
+    page.document.body.appendChild(box);
+    page.window.box = box;
+    page.run("box.innerHTML = renderAttachments({ id: 'decision-D1' }, attachments, true); wireAttachmentControls(box, { id: 'decision-D1' }, attachments, true, null)");
+    const control = box.querySelector(selector);
+    assert.equal(control.localName, 'button');
+    control.click();
+    if (picked.length) {
+      picked[0].files = [{ name: 'shot.png', b64: 'AAAA' }];
+      picked[0].dispatchEvent(new page.window.Event('change'));
+    }
+    await page.settle();
+    assert.equal(control.disabled, true, selector);
+    write.answer(200, {});
+    await page.settle();
+    assert.equal(control.disabled, false, selector);
+  }
+});
+
+test('a live re-render of the drawer keeps focus where it was, and an open Actions menu stays open on the same item', async () => {
+  const page = await openAt('/graph/T');
+  page.$('#inspector-body [data-group-id="T::dependencies"]').focus();
+  page.socket.message({ type: 'update', items: [{ op: 'row', row: { ...TASK, title: 'Renamed once' } }] });
+  await page.settle();
+  const focused = page.document.activeElement;
+  assert.ok(page.$('#inspector-body').contains(focused), 'focus stays inside the drawer');
+  assert.equal(focused.getAttribute('data-group-id'), 'T::dependencies');
+
+  page.$('#inspector-actions .actions-btn').click();
+  key(page.document.activeElement, 'ArrowDown');
+  const item = page.document.activeElement.getAttribute('data-act');
+  const drawn = page.$('#inspector-actions .actions-menu');
+  page.socket.message({ type: 'update', items: [{ op: 'row', row: { ...TASK, title: 'Renamed twice' } }] });
+  await page.settle();
+  assert.notEqual(page.$('#inspector-actions .actions-menu'), drawn, 'the menu was drawn again');
+  assert.equal(page.$('#inspector-actions .actions-menu').classList.contains('hidden'), false, 'the menu is still open');
+  assert.equal(page.$('#inspector-actions .actions-btn').getAttribute('aria-expanded'), 'true');
+  assert.ok(page.$('#inspector-actions').contains(page.document.activeElement));
+  assert.equal(page.document.activeElement.getAttribute('data-act'), item);
+});
+
+test("a decision's status icon in a relation table has an accessible name and opens its tooltip on focus", async () => {
+  const page = await openAt('/graph/T');
+  const icon = page.$('#inspector-body [data-group="dependencies"] [data-blocking] [role="img"]');
+  assert.equal(icon.getAttribute('aria-label'), 'Open');
+  assert.equal(icon.getAttribute('tabindex'), '0');
+  icon.focus();
+  icon.dispatchEvent(new page.window.Event('focusin'));
+  const tip = page.$('#tm-tooltip');
+  assert.equal(tip.classList.contains('hidden'), false);
+  assert.equal(tip.textContent, 'Open');
+});
+
+test('a section row is a disclosure button with its Edit and Delete beside it, never inside it, and opens in place', async () => {
+  for (const [at, scope] of [['/document/T', '#doc-node-T'], ['/graph/T', '#inspector-body']]) {
+    const page = await openAt(at);
+    assert.equal(page.$$(`${scope} details, ${scope} summary`).length, 0);
+    const toggle = page.$(`${scope} .section-toggle[data-section-id="T::objective"]`);
+    assert.equal(toggle.localName, 'button');
+    assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+    assert.equal(toggle.querySelectorAll('button, a, [tabindex]').length, 0, 'nothing interactive inside the toggle');
+    const row = toggle.closest('.section-row');
+    assert.ok(row.querySelector('[data-act="edit-section"]') && row.querySelector('[data-act="delete-section"]'));
+    const sectionBody = row.querySelector('.section-body');
+    assert.ok(sectionBody.classList.contains('hidden'));
+
+    toggle.click();
+    assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+    assert.equal(sectionBody.classList.contains('hidden'), false);
+    assert.ok(page.run("expandedSections.has('T::objective')"));
+    toggle.click();
+    assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+    assert.ok(sectionBody.classList.contains('hidden'));
+  }
+});
+
+test('loading /graph/<id> before the rows arrive selects and centres the Graph node once they do', async () => {
+  const page = await openAt('/graph/T');
+  const network = page.window.vis.Network.last;
+  assert.deepEqual([...network.selected], ['T']);
+  assert.equal(network.focused, 'T');
+});
+
+test('a drawer whose node is not known yet draws its id once, and the id names the dialog', async () => {
+  const failing = server({ '/api/nodes/T': () => jsonResponse(502, {}) });
+  const page = await openAt('/graph/T', { fetch: failing, rows: [SPEC], bodies: {} });
+  assert.equal(page.$('#inspector-body .pane-state').getAttribute('data-pane-state'), 'error');
+  assert.equal(page.$('#inspector-title').textContent, '');
+  assert.equal(page.$('#graph-inspector').getAttribute('aria-labelledby'), 'inspector-id');
+  assert.equal(page.$('#inspector-id').textContent, 'T');
 });

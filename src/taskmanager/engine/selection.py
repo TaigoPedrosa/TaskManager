@@ -23,7 +23,7 @@ from taskmanager.core.status import (
     Status,
 )
 from taskmanager.db.cache_repo import _command_hash
-from taskmanager.db.node_repo import declared_files_of, locked_key
+from taskmanager.db.node_repo import declared_files_of, is_locked_path, locked_key
 from taskmanager.db.runtime_repo import lease_alive
 from taskmanager.engine.chains import satisfied
 from taskmanager.engine.routing import STRONG, model_for
@@ -297,6 +297,7 @@ def select(
             [
                 locked_key(node.target_repo, f)
                 for f in declared_files_of(node, data.verifications.get(node.id, []))
+                if is_locked_path(f)
             ]
             if cand.action in (Action.IMPLEMENT, Action.FIX)
             else []

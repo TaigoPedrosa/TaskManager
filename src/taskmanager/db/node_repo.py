@@ -104,6 +104,17 @@ def locked_key(repo: str | None, path: str) -> str:
     return f"{repo or ''}:{path}"
 
 
+# Every Python task pins or re-locks its dependencies, so locking these would serialize every
+# task in a repository; a conflict on them is resolved when the work lands, by keeping the newest
+# pin and regenerating the lockfile.
+UNLOCKED_FILES = frozenset({"pyproject.toml", "uv.lock"})
+
+
+def is_locked_path(path: str) -> bool:
+    """False for a manifest or lockfile no claim locks and no batch keeps disjoint."""
+    return path.rsplit("/", 1)[-1] not in UNLOCKED_FILES
+
+
 class NodeRepository:
     def __init__(self, db_mgr: DatabaseManager) -> None:
         self.db = db_mgr

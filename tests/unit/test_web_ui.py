@@ -101,7 +101,7 @@ def test_document_sections_default_collapsed_and_remember_expand_state() -> None
     html = get_web_html()
     section_items = _function_body(html, "sectionItemsHtml")
     assert "<details open class" not in html
-    assert "isOpen ? 'open' : ''" in section_items
+    assert 'aria-expanded="${isOpen}"' in section_items
     assert "expandedSections.has(id)" in section_items
     assert "expandedSections" in _function_body(html, "attachSectionToggleHandlers")
 
@@ -589,11 +589,10 @@ def test_popover_count_meets_aa_contrast() -> None:
 
 
 def test_toolbar_dividers_hide_below_the_wrap_breakpoint() -> None:
-    # A 1px-wide divider with no content of its own wrapped onto its own empty line once the
-    # toolbar wrapped at 375/768; it hides where flex-wrap's own line break already separates
-    # the groups it used to mark.
+    # A 1px-wide divider with no content of its own is left at a line's end once the toolbar
+    # wraps, below lg; there flex-wrap's own line break already separates the groups.
     html = get_web_html()
-    assert html.count('<div class="hidden sm:block w-px h-6 bg-zinc-800 flex-shrink-0"></div>') == 2
+    assert html.count('<div class="hidden lg:block w-px h-6 bg-zinc-800 flex-shrink-0"></div>') == 2
 
 
 def test_decision_option_description_renders_as_markdown() -> None:
@@ -678,19 +677,6 @@ def test_api_helper_surfaces_the_servers_own_refusal_message() -> None:
     body = _function_body(get_web_html(), "api")
     assert "data && data.detail" in body
     assert "!res.ok" in body
-
-
-def test_attach_file_button_is_in_the_tab_order() -> None:
-    # The file input is display:none (out of the tab order by construction); the wrapping
-    # <label> is the reachable control, but a <label> has no native keyboard activation the
-    # way a <button> does, so it needs both a tab stop and its own Enter/Space handler.
-    html = get_web_html()
-    render = _function_body(html, "renderAttachments")
-    assert 'tabindex="0" class="att-add-btn' in render
-    assert 'tabindex="-1">' in render
-    wire = _function_body(html, "wireAttachmentControls")
-    assert "addBtn.addEventListener('keydown'" in wire
-    assert "fileInput.click()" in wire
 
 
 def test_lightbox_is_a_modal_dialog_with_a_focus_trap() -> None:
@@ -1015,11 +1001,6 @@ def test_a_filter_change_also_refetches_waves() -> None:
     # it -- window.tmStore's own patch never reports statusesChanged for a filter change.
     apply_change = _function_body(get_web_html(), "applyFilterChange")
     assert "scheduleWavesRefetch()" in apply_change
-
-
-def test_selecting_a_node_focuses_it_in_graph() -> None:
-    apply = _function_body(get_web_html(), "applyNodeLocation")
-    assert "networkInstance.selectNodes([id])" in apply
 
 
 def test_page_carries_an_inline_favicon_so_the_browser_never_requests_favicon_ico() -> None:
