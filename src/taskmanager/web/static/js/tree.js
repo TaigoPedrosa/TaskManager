@@ -179,8 +179,30 @@ function emptyPaneState() {
 }
 
 function progressCount(p) {
-  return `<span class="font-mono text-[11px] leading-4 text-zinc-400 flex-shrink-0">${p.completed}/${p.total}</span>`;
+  return `<span class="font-mono text-[11px] leading-4 text-zinc-400 flex-shrink-0" role="img" aria-label="${p.completed} of ${p.total} done">${p.completed}/${p.total}</span>`;
 }
+
+// A plan's or spec's own review, fix and landing, once started, is the last row of its own list
+// and one of the counts tree's units; null while it has not started.
+function ownStepTitle(row) {
+  if (!row || row.kind === 'task' || !countsAsWork(row)) return null;
+  return row.kind === 'spec' ? 'Spec review and landing' : 'Plan review and landing';
+}
+
+function ownStepCells(row, titleHtml) {
+  return `${statusIcon(displayOf(row))}${idLink(row.id, row.kind)}${titleHtml}${leasePulse(leaseOf(row))}`;
+}
+
+function ownStepCardHtml(row) {
+  const title = ownStepTitle(row);
+  return `<div class="own-step h-10 px-3 rounded-lg border border-zinc-800/80 bg-zinc-900/60 hover:bg-zinc-900 flex items-center gap-2 min-w-0 cursor-pointer" data-step-of="${esc(row.id)}"><span class="w-3.5 flex-shrink-0"></span>${ownStepCells(row, `<span class="flex-1 min-w-0 truncate text-[13px] text-zinc-200" title="${esc(title)}">${esc(title)}</span>`)}</div>`;
+}
+
+// The id link and the tooltips keep their own clicks; anywhere else on the row opens its container.
+document.addEventListener('click', (e) => {
+  const step = e.target.closest && e.target.closest('[data-step-of]');
+  if (step && !e.target.closest('a, [data-tip]')) openNode(step.getAttribute('data-step-of'));
+});
 
 
 // Sidebar Tree Rendering
@@ -255,7 +277,26 @@ function renderTree() {
 
     if (hasChildren && isOpen) {
       (byParent.get(node.id) || []).forEach(c => createNodeRow(c, depth + 1));
+      if (ownStepTitle(node)) createStepRow(node, depth + 1);
     }
+  }
+
+  function createStepRow(node, depth) {
+    const title = ownStepTitle(node);
+    const row = document.createElement('div');
+    row.className = `flex items-center gap-1.5 h-7 px-2 rounded-lg border border-transparent cursor-pointer text-xs text-zinc-200 hover:bg-zinc-800/60 transition ${FOCUS_RING}`;
+    row.style.paddingLeft = `${depth * 14 + 8}px`;
+    row.setAttribute('role', 'treeitem');
+    row.setAttribute('tabindex', '0');
+    row.setAttribute('aria-label', `${node.id}: ${title}`);
+    row.setAttribute('data-step-of', node.id);
+    row.innerHTML = `<span class="w-3.5 h-3.5 flex-shrink-0"></span>${ownStepCells(node, `<span class="flex-1 min-w-0 truncate" title="${esc(title)}">${esc(title)}</span>`)}`;
+    row.addEventListener('keydown', (e) => {
+      if (e.target !== row || (e.key !== 'Enter' && e.key !== ' ')) return;
+      e.preventDefault();
+      selectNode(node.id);
+    });
+    treeList.appendChild(row);
   }
 
   roots.forEach(n => createNodeRow(n));
@@ -487,7 +528,7 @@ function cardBodyHtml(row, byParent, actionsBelowSm = true) {
 function renderSpecCard(spec, byParent) {
   const isOpen = expandedIds.has(spec.id);
   const counts = countsForRow(spec);
-  const pills = priorityPill(spec.priority) + (spec.target_repo ? repoPill(spec.target_repo) : '');
+  const pills = priorityPill(spec.priority) + (spec.target_repo && spec.target_repo !== '.' ? repoPill(spec.target_repo) : '');
 
   return `
     <article id="doc-node-${esc(spec.id)}" data-detail-root="${esc(spec.id)}" tabindex="-1"${selectedAttr(spec.id)} class="space-y-6 rounded-xl border transition focus:outline-none ${cardBorder(spec.id, 'border-transparent')}">

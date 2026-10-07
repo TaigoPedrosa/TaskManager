@@ -231,7 +231,7 @@ function updateStatsDigest() {
   // A rebuild replaces every chip with a new DOM node, so the one that had focus (Enter on a
   // status chip is a normal way to apply a filter) would otherwise drop to BODY and a
   // following Shift+Enter would land on nothing. Re-find and refocus its replacement by the
-  // status code it carries, __all__ standing in for the "All tasks" chip.
+  // status code it carries, __all__ standing in for the "All work" chip.
   const focusedCode = statsDigest.contains(document.activeElement)
     ? document.activeElement.dataset.statusCode
     : null;
@@ -242,11 +242,10 @@ function updateStatsDigest() {
   const allActive = filters.statusMode.size === 0;
   const totalChip = document.createElement('button');
   totalChip.className = `flex items-center gap-1.5 px-1.5 py-1 rounded-full border text-xs leading-4 transition ${FOCUS_RING} ${allActive ? 'bg-zinc-800 text-white border-zinc-700' : 'bg-zinc-900/60 text-zinc-400 border-zinc-800 hover:bg-zinc-800'}`;
-  totalChip.title = 'All tasks';
   totalChip.dataset.statusCode = '__all__';
-  totalChip.setAttribute('aria-label', `All tasks: ${total}`);
+  totalChip.setAttribute('aria-label', `All work: ${total}`);
   totalChip.setAttribute('aria-pressed', String(allActive));
-  totalChip.innerHTML = `${renderIcon('layers', 'w-3 h-3')}<strong class="font-mono">${total}</strong>`;
+  totalChip.innerHTML = `${renderIcon('layers', 'w-3 h-3')}<span class="font-medium${allActive ? ' text-zinc-200' : ''}">All work</span><strong class="font-mono">${total}</strong>`;
   totalChip.onclick = () => {
     filters.statusMode.clear();
     applyFilterChange();

@@ -131,7 +131,10 @@ def test_group_headers_default_all_collapsed() -> None:
 
     # A container's children start collapsed on the card and in the drawer alike.
     render_children = _function_body(html, "renderChildren")
-    assert "detailGroupHtml(node.id, 'children', label, kids.length, true," in render_children
+    assert (
+        "detailGroupHtml(node.id, 'children', label, kids.length + (stepTitle ? 1 : 0), true,"
+        in render_children
+    )
 
 
 def test_group_header_toggle_is_wired_independently_of_node_and_section_collapse() -> None:
