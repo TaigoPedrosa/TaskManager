@@ -1,6 +1,9 @@
 """Integration tests for the write API (§5), decisions (§3), attachments and file serving (§4)."""
 
 import base64
+import json
+import os
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -25,7 +28,13 @@ JSON = {"content-type": "application/json"}
 
 
 @pytest.fixture
-def api(tmp_path: Path) -> tuple[TestClient, NodeRepository, LedgerRepository]:
+def no_git_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
+@pytest.fixture
+def api(tmp_path: Path, no_git_user: None) -> tuple[TestClient, NodeRepository, LedgerRepository]:
     db_mgr = DatabaseManager(tmp_path / ".taskmanager")
     db_mgr.init_all()
     node_repo = NodeRepository(db_mgr)
@@ -576,6 +585,74 @@ def test_decision_blocks_add_and_remove(
     assert node_repo.get_blocked_by("decision-D1") == ["SPEC-P1-T2"]
 
 
+def test_list_decisions_counts_waiting_nodes_when_open_and_was_blocking_when_closed(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, node_repo, _ledger_repo = api
+    for decision_id, blocked in (
+        ("decision-open", "SPEC-P1-T1"),
+        ("decision-answered", "SPEC-P1-T2"),
+        ("decision-withdrawn", "SPEC-P1-T2"),
+    ):
+        _seed_decision(node_repo, decision_id)
+        node_repo.add_relation(
+            NodeRelation(
+                source_id=blocked, target_id=decision_id, relation_type=RelationType.DEPENDS_ON
+            )
+        )
+    assert (
+        client.post("/api/decisions/decision-answered/answer", json={"option": "a"}).status_code
+        == 200
+    )
+    assert client.post("/api/decisions/decision-withdrawn/withdraw", json={}).status_code == 200
+
+    items = {d["id"]: d for d in client.get("/api/decisions").json()["items"]}
+
+    assert items["decision-open"]["waiting_count"] == 1
+    assert "was_blocking" not in items["decision-open"]
+    for closed in ("decision-answered", "decision-withdrawn"):
+        assert items[closed]["was_blocking"] == 1
+        assert "waiting_count" not in items[closed]
+    assert items["decision-open"]["blocks"][0]["display"] == "AWAITING_DECISION"
+    for item in items.values():
+        for row in item["blocks"]:
+            assert row["display"] == client.get(f"/api/nodes/{row['id']}").json()["display"]
+    assert items["decision-answered"]["blocks"][0]["display"] != "AWAITING_DECISION"
+
+
+def test_answer_and_withdraw_from_the_page_are_attributed_to_the_git_user_name(
+    tmp_path: Path, no_git_user: None
+) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Ada Lovelace"], check=True)
+    db_mgr = DatabaseManager(tmp_path / ".taskmanager")
+    db_mgr.init_all()
+    node_repo = NodeRepository(db_mgr)
+    _seed_decision(node_repo, "decision-D1")
+    _seed_decision(node_repo, "decision-D2")
+    client = TestClient(create_app(tmp_path))
+
+    assert client.post("/api/decisions/decision-D1/answer", json={"option": "a"}).status_code == 200
+    assert client.post("/api/decisions/decision-D2/withdraw", json={}).status_code == 200
+
+    answered = node_repo.get_node("decision-D1")
+    withdrawn = node_repo.get_node("decision-D2")
+    assert answered.frontmatter["decision"]["answer"]["answered_by"] == "Ada Lovelace"
+    assert withdrawn.frontmatter["decision"]["withdrawn_by"] == "Ada Lovelace"
+
+
+def test_answer_from_the_page_with_no_git_user_name_is_attributed_to_web(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, node_repo, _ledger_repo = api
+    _seed_decision(node_repo)
+
+    assert client.post("/api/decisions/decision-D1/answer", json={"option": "a"}).status_code == 200
+
+    node = node_repo.get_node("decision-D1")
+    assert node.frontmatter["decision"]["answer"]["answered_by"] == "web"
+
+
 def test_list_decisions_filters_by_status_tab(
     api: tuple[TestClient, NodeRepository, LedgerRepository],
 ) -> None:
@@ -949,6 +1026,34 @@ def test_write_guard_accepts_localhost_alias_for_a_loopback_bind(tmp_path: Path)
         headers={"host": "localhost:6701", "origin": "http://localhost:6701"},
     )
     assert res.status_code == 201
+
+
+def test_static_export_embeds_the_decision_items_the_api_lists(
+    api: tuple[TestClient, NodeRepository, LedgerRepository], tmp_path: Path
+) -> None:
+    from taskmanager.web.static_export import export_static_html
+
+    client, node_repo, _ledger_repo = api
+    for decision_id in ("decision-D1", "decision-D2"):
+        _seed_decision(node_repo, decision_id)
+        node_repo.add_relation(
+            NodeRelation(
+                source_id="SPEC-P1-T1", target_id=decision_id, relation_type=RelationType.DEPENDS_ON
+            )
+        )
+    assert client.post("/api/decisions/decision-D2/answer", json={"option": "a"}).status_code == 200
+
+    html = export_static_html(tmp_path, tmp_path / "out.html").read_text(encoding="utf-8")
+    embedded = json.loads(html.split("window.STATIC_DATA = ", 1)[1].split(";</script>", 1)[0])
+
+    listed = client.get("/api/decisions").json()["items"]
+    assert sorted(embedded["decisions"], key=lambda d: d["id"]) == sorted(
+        listed, key=lambda d: d["id"]
+    )
+    assert {d["id"]: d.get("was_blocking") for d in listed} == {
+        "decision-D1": None,
+        "decision-D2": 1,
+    }
 
 
 # -- static_export.py: an attacker-writable attachment name cannot escape assets_dir ---------

@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import mimetypes
+import subprocess
 import tempfile
 from collections.abc import AsyncGenerator, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
@@ -203,7 +204,20 @@ def _bound_hosts(host: str, port: int) -> frozenset[str]:
     return frozenset(hosts)
 
 
-def _write_guard(allowed_hosts: frozenset[str] | None) -> Any:
+def _git_user_name(project_root: Path) -> str:
+    try:
+        res = subprocess.run(
+            ["git", "-C", str(project_root), "config", "user.name"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return ""
+    return res.stdout.strip() if res.returncode == 0 else ""
+
+
+def _write_guard(allowed_hosts: frozenset[str] | None, default_actor: str) -> Any:
     def guard(request: Request) -> str:
         """Every mutating route depends on this: a JSON body forces a CORS preflight a foreign
         page cannot pass, and Host pinning plus the Origin check catch what preflight alone would
@@ -217,7 +231,7 @@ def _write_guard(allowed_hosts: frozenset[str] | None) -> Any:
         origin = request.headers.get("origin")
         if origin is not None and urlsplit(origin).netloc != host:
             raise HTTPException(403, "cross-origin write refused")
-        return request.headers.get("x-tm-actor") or "web"
+        return request.headers.get("x-tm-actor") or default_actor
 
     return guard
 
@@ -409,29 +423,30 @@ def paginate_decisions(
 def _decision_item(
     node: Node, view: DisplayView, node_repo: NodeRepository, assets_dir: Path
 ) -> dict[str, Any]:
-    def blocks() -> list[dict[str, Any]]:
-        rows = []
-        for blocked_id in node_repo.get_blocked_by(node.id):
-            blocked = node_repo.get_node(blocked_id)
-            if blocked is not None:
-                rows.append(
-                    {
-                        "id": blocked.id,
-                        "title": blocked.title,
-                        "kind": blocked.kind.value,
-                        "display": view.display(blocked),
-                    }
-                )
-        return rows
-
+    blocked_ids = node_repo.get_blocked_by(node.id)
+    blocks: list[dict[str, Any]] = []
+    for blocked_id in blocked_ids:
+        blocked = node_repo.get_node(blocked_id)
+        if blocked is not None:
+            blocks.append(
+                {
+                    "id": blocked.id,
+                    "title": blocked.title,
+                    "kind": blocked.kind.value,
+                    "display": view.display(blocked),
+                }
+            )
+    status = stored_status(node)
+    # An answered or withdrawn decision keeps its edges, but nothing waits on it any more.
+    count_key = "waiting_count" if status == DecisionStatus.OPEN else "was_blocking"
     return {
         "id": node.id,
         "title": node.title,
-        "status": stored_status(node).value,
+        "status": status.value,
         "priority": node.priority,
         "created_at": node.created_at.isoformat(),
-        "waiting_count": len(node_repo.get_blocked_by(node.id)),
-        "blocks": blocks(),
+        count_key: len(blocked_ids),
+        "blocks": blocks,
         "decision": node.frontmatter.get("decision") or {},
         "attachments": attachments_with_size(assets_dir, node.frontmatter.get("attachments") or []),
     }
@@ -442,7 +457,9 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     # keeps the old Origin-must-equal-Host check; the real server always passes its bound port,
     # so it is the only caller `_bound_hosts` needs to protect (see `_write_guard`'s docstring).
     allowed_hosts = _bound_hosts(host, port) if port is not None else None
-    Actor = Annotated[str, Depends(_write_guard(allowed_hosts))]
+    Actor = Annotated[
+        str, Depends(_write_guard(allowed_hosts, _git_user_name(project_root) or "web"))
+    ]
     db_dir = project_root / ".taskmanager"
     assets_dir = db_dir / "assets"
     container = make_container(TaskManagerProvider(project_root))
