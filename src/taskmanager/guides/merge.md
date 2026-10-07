@@ -12,7 +12,7 @@ tm lands every node itself, as a job, one repository at a time in the node's lan
 4. **Gate.** On a container branch: the node's own verifications, then the repository's `parent` gate when one is configured. On `main`: the repository's `main` gate, and when it is red, the same gate on the untouched target, cached per target commit, to attribute the red.
 5. **Push.** To `main`: re-read the remote, merge it in again and re-gate if it moved, push `HEAD:main`, never force. To a container branch: a compare-and-swap of the local ref.
 6. **Verify.** The node's verifications at the target; a red here is the node's own defect.
-7. **Complete.** The merge worktree is removed and the node is `COMPLETED`.
+7. **Complete.** The merge worktree is removed and the node is `COMPLETED`, or `LANDED` when it is a plan or spec with review on: its one review reads what landed.
 
 A sync merges a target into a container branch the same way, under that branch's lock. Either job stops at `needs_agent` only for something a rule cannot settle, and that is the one moment an agent is dispatched:
 

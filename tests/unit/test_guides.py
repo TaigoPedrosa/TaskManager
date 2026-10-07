@@ -472,7 +472,33 @@ def test_review_guide_reviews_a_container_once_on_its_landed_target(
     text = rendered("review")
     assert "- `LANDED`: a plan's or spec's one review." in text
     assert "**A plan's or spec's review** runs once, on its landed target." in text
-    assert 'git -C <repo> log --oneline -1 --grep "^merge(<node-id>): land " <branch>' in text
+
+
+def test_review_guide_reads_what_every_node_under_a_landed_container_landed_on_its_target(
+    rendered: Callable[[str], str],
+) -> None:
+    """A plan whose children landed on main by themselves has no landing merge of its own to read."""
+    text = rendered("review")
+    assert (
+        "the landing merge of every node under it that landed on that target itself rather than "
+        "on the node's branch; a node whose children all landed that way has no landing merge of "
+        "its own."
+    ) in text
+    assert (
+        "git -C <repo> log -p --diff-merges=first-parent -E --grep "
+        "'^merge[(](<node-id>|<id under it>|...)[)]: land [^ ]+ on <base>$' <branch> --"
+    ) in text
+    assert "A repository where that prints nothing had nothing land." in text
+    assert '--grep "^merge(<node-id>): land " <branch>' not in text
+
+
+def test_merge_guide_ends_a_reviewed_container_s_landing_at_landed(
+    rendered: Callable[[str], str],
+) -> None:
+    assert (
+        "7. **Complete.** The merge worktree is removed and the node is `COMPLETED`, or `LANDED` "
+        "when it is a plan or spec with review on: its one review reads what landed."
+    ) in rendered("merge")
 
 
 def test_review_guide_scopes_a_re_review_to_the_open_findings_of_a_sensitive_fix(
