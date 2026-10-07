@@ -46,6 +46,19 @@ class StateSchemaTooNew(Exception):
         )
 
 
+class StateNotInitialized(Exception):
+    def __init__(self, state_db: Path) -> None:
+        super().__init__(f"{state_db} holds no estate: run `tm init` first")
+
+
+class StateSchemaTooOld(Exception):
+    def __init__(self, found: int, backup: Path) -> None:
+        super().__init__(
+            f"state.db is schema {found}; run `tm db migrate`, which copies it to {backup} and "
+            f"then migrates it to schema {STATE_SCHEMA_VERSION}"
+        )
+
+
 def _statements(script: str) -> list[str]:
     """A migration's own statements, in order, split by `sqlite3.complete_statement`
     (`sqlite3_complete()`), which reads a trigger body's own semicolons correctly rather than
@@ -114,7 +127,6 @@ class DatabaseManager:
             except BaseException:
                 conn.close()
                 raise
-        # Only after the migration, which runs with foreign keys off.
         conn.execute("PRAGMA foreign_keys = ON;")
         # After any refusal above: turning WAL on rewrites the file's header even for a
         # database this call is about to refuse outright, and a refusal must leave it untouched.
@@ -127,22 +139,45 @@ class DatabaseManager:
             self._all_conns.append((threading.current_thread(), conn))
         return conn
 
-    def _migrate_state(self, conn: sqlite3.Connection) -> None:
-        """The first `state.db` connection this process opens brings it to
-        `STATE_SCHEMA_VERSION`, or refuses it. `BEGIN IMMEDIATE` takes SQLite's write lock before
-        the real check, so a second process racing this one blocks here instead of migrating
-        twice: it re-reads `user_version` once the lock is its own and finds nothing left to do.
+    def state_backup(self, schema: int) -> Path:
+        return self.taskmanager_dir / f"state.db.schema{schema}.bak"
+
+    def migrate_state(self) -> int | None:
+        """Brings `state.db` to `STATE_SCHEMA_VERSION` and returns the schema it was at, or None
+        when there was nothing to migrate."""
+        if self.is_pre_lifecycle():
+            raise PreLifecycleEstate()
+        if not self.state_db.exists():
+            # Before connecting: sqlite3.connect creates the file it is pointed at.
+            raise StateNotInitialized(self.state_db)
+        conn = sqlite3.connect(str(self.state_db), timeout=5.0)
+        try:
+            conn.execute("PRAGMA busy_timeout = 5000;")
+            return self._migrate_state(conn, migrate=True)
+        finally:
+            conn.close()
+
+    def _migrate_state(self, conn: sqlite3.Connection, *, migrate: bool = False) -> int | None:
+        """Every `state.db` connection passes here, and only `migrate_state` passes `migrate`:
+        opening the estate never changes its schema, so a build that carries a migration cannot
+        lock an older tm out of the estate just by reading it. `BEGIN IMMEDIATE` takes SQLite's
+        write lock before the real check, so a second migration racing this one blocks here and
+        then re-reads `user_version` and finds nothing left to do.
         """
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         if version == STATE_SCHEMA_VERSION:
-            return
+            return None
         if version > STATE_SCHEMA_VERSION:
             raise StateSchemaTooNew(version)
         has_nodes = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='nodes'"
         ).fetchone()
         if not has_nodes:
-            return  # uninitialised directory: `tm init` creates it at the current version
+            if migrate:
+                raise StateNotInitialized(self.state_db)
+            return None  # uninitialised directory: `tm init` creates it at the current version
+        if not migrate:
+            raise StateSchemaTooOld(version, self.state_backup(version))
         # Off explicitly, not left to the build's SQLITE_DEFAULT_FOREIGN_KEYS: a rebuild drops
         # `nodes`, and under enforced foreign keys that drop cascades into every table
         # referencing it. Before BEGIN, because SQLite ignores this pragma inside a transaction.
@@ -152,6 +187,8 @@ class DatabaseManager:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             if version > STATE_SCHEMA_VERSION:
                 raise StateSchemaTooNew(version)
+            if version < STATE_SCHEMA_VERSION:
+                self._back_up_state(version)
             for target in range(version + 1, STATE_SCHEMA_VERSION + 1):
                 # Not `executescript`: it commits whatever transaction is already open before
                 # it runs a single statement, which would drop the lock above and let a second
@@ -164,6 +201,21 @@ class DatabaseManager:
             raise
         else:
             conn.commit()
+        return version if version < STATE_SCHEMA_VERSION else None
+
+    def _back_up_state(self, schema: int) -> None:
+        # Read through a second connection: SQLite's backup API answers SQLITE_BUSY, which
+        # Python's backup() retries forever, from a source that holds a write transaction. The
+        # caller holds one, so nothing commits between this copy and the migration.
+        source = sqlite3.connect(str(self.state_db), timeout=5.0)
+        try:
+            target = sqlite3.connect(str(self.state_backup(schema)))
+            try:
+                source.backup(target)
+            finally:
+                target.close()
+        finally:
+            source.close()
 
     def _close_dead_threads_connections(self) -> None:
         dead: list[tuple[threading.Thread, sqlite3.Connection]] = []

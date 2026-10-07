@@ -1,3 +1,4 @@
+import hashlib
 import sqlite3
 import sys
 import threading
@@ -6,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import app, main
@@ -20,12 +22,13 @@ from taskmanager.core.models import (
     NodeVerification,
 )
 from taskmanager.core.status import DecisionStatus, JobKind, Status
-from taskmanager.db.connection import DatabaseManager, StateSchemaTooNew
+from taskmanager.db.connection import DatabaseManager, StateSchemaTooNew, StateSchemaTooOld
 from taskmanager.db.graph_reader import read_graph
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.db.schema import SCHEMA_VERSION, STATE_MIGRATIONS, STATE_SCHEMA_VERSION
+from taskmanager.web.app import create_app
 
 _FIXTURE = Path(__file__).parent.parent / "fixtures" / "state_v1.sql"
 runner = CliRunner()
@@ -69,6 +72,7 @@ def test_migrated_v1_estate_matches_a_fresh_init(tmp_path: Path) -> None:
     old = tmp_path / "old"
     _build_v1_estate(old)
     migrated = DatabaseManager(old)
+    assert migrated.migrate_state() == 1
     with migrated.get_state_connection() as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 3
 
@@ -169,7 +173,7 @@ def _write_landed(state_db: Path, status: str, claimed_from: str | None) -> None
         conn.close()
 
 
-def test_open_schema_2_estate_keeps_every_row_and_column_unchanged(tmp_path: Path) -> None:
+def test_migrate_schema_2_estate_keeps_every_row_and_column_unchanged(tmp_path: Path) -> None:
     old = tmp_path / "old"
     _build_v2_estate(old)
     _seed_every_v2_status(old)
@@ -178,6 +182,7 @@ def test_open_schema_2_estate_keeps_every_row_and_column_unchanged(tmp_path: Pat
     assert seeded == {s.value for s in Status if s is not Status.LANDED} | set(DecisionStatus)
 
     db = DatabaseManager(old)
+    assert db.migrate_state() == 2
     with db.get_state_connection() as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
@@ -188,7 +193,7 @@ def test_open_schema_2_estate_keeps_every_row_and_column_unchanged(tmp_path: Pat
     assert all(before.values())
 
 
-def test_open_schema_2_estate_on_a_foreign_keys_on_build_keeps_every_child_row(
+def test_migrate_schema_2_estate_on_a_foreign_keys_on_build_keeps_every_child_row(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     old = tmp_path / "old"
@@ -205,6 +210,7 @@ def test_open_schema_2_estate_on_a_foreign_keys_on_build_keeps_every_child_row(
 
     monkeypatch.setattr(sqlite3, "connect", connect_foreign_keys_on)
     db = DatabaseManager(old)
+    assert db.migrate_state() == 2
     with db.get_state_connection() as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
@@ -214,10 +220,11 @@ def test_open_schema_2_estate_on_a_foreign_keys_on_build_keeps_every_child_row(
     assert all(before.values())
 
 
-def test_open_schema_2_estate_stores_the_fresh_nodes_sql_byte_for_byte(tmp_path: Path) -> None:
+def test_migrate_schema_2_estate_stores_the_fresh_nodes_sql_byte_for_byte(tmp_path: Path) -> None:
     old = tmp_path / "old"
     _build_v2_estate(old)
     migrated = DatabaseManager(old)
+    assert migrated.migrate_state() == 2
     fresh = DatabaseManager(tmp_path / "fresh")
     fresh.init_all()
 
@@ -232,7 +239,7 @@ def test_open_schema_2_estate_stores_the_fresh_nodes_sql_byte_for_byte(tmp_path:
     [("LANDED", None), ("REVIEWING", "LANDED")],
     ids=["landed-node", "review-claimed-from-landed"],
 )
-def test_open_schema_2_estate_then_write_landed_succeeds(
+def test_migrate_schema_2_estate_then_write_landed_succeeds(
     tmp_path: Path, status: str, claimed_from: str | None
 ) -> None:
     old = tmp_path / "old"
@@ -241,10 +248,7 @@ def test_open_schema_2_estate_then_write_landed_succeeds(
     with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
         _write_landed(old / "state.db", status, claimed_from)
 
-    db = DatabaseManager(old)
-    with db.get_state_connection():
-        pass
-    db.close()
+    assert DatabaseManager(old).migrate_state() == 2
 
     _write_landed(old / "state.db", status, claimed_from)
     conn = sqlite3.connect(old / "state.db")
@@ -289,23 +293,24 @@ def test_two_database_managers_migrate_the_same_estate_exactly_once(tmp_path: Pa
     _build_v1_estate(estate)
 
     errors: list[BaseException] = []
+    migrated_from: list[int | None] = []
     barrier = threading.Barrier(2)
 
-    def open_it() -> None:
+    def migrate_it() -> None:
         try:
             barrier.wait(timeout=5)
-            with DatabaseManager(estate).get_state_connection():
-                pass
+            migrated_from.append(DatabaseManager(estate).migrate_state())
         except BaseException as exc:  # noqa: BLE001 -- captured across the thread boundary
             errors.append(exc)
 
-    threads = [threading.Thread(target=open_it) for _ in range(2)]
+    threads = [threading.Thread(target=migrate_it) for _ in range(2)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
 
     assert errors == []
+    assert sorted(migrated_from, key=str) == [1, None]
     conn = sqlite3.connect(estate / "state.db")
     try:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION
@@ -335,13 +340,71 @@ def test_newer_schema_is_refused_and_nothing_is_written(tmp_path: Path) -> None:
     assert not (future / "state.db-shm").exists()
 
 
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _user_version(state_db: Path) -> int:
+    conn = sqlite3.connect(state_db)
+    try:
+        version: int = conn.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        conn.close()
+    return version
+
+
+@pytest.mark.parametrize(("schema", "build"), [(1, _build_v1_estate), (2, _build_v2_estate)])
+def test_open_older_schema_without_migrate_refuses_and_leaves_the_file_untouched(
+    tmp_path: Path, schema: int, build: Any
+) -> None:
+    estate = tmp_path / "estate"
+    build(estate)
+    before = _sha256(estate / "state.db")
+
+    with (
+        pytest.raises(StateSchemaTooOld) as refused,
+        DatabaseManager(estate).get_state_connection(),
+    ):
+        pass
+
+    assert str(refused.value) == (
+        f"state.db is schema {schema}; run `tm db migrate`, which copies it to "
+        f"{estate / f'state.db.schema{schema}.bak'} and then migrates it to schema "
+        f"{STATE_SCHEMA_VERSION}"
+    )
+    assert _user_version(estate / "state.db") == schema
+    assert _sha256(estate / "state.db") == before
+    assert sorted(p.name for p in estate.iterdir()) == ["state.db"]
+
+
+def test_the_web_app_factory_refuses_an_older_schema_at_startup(tmp_path: Path) -> None:
+    estate = tmp_path / ".taskmanager"
+    _build_v2_estate(estate)
+    before = _sha256(estate / "state.db")
+
+    web = create_app(tmp_path)
+    with (
+        pytest.raises(StateSchemaTooOld, match="state.db is schema 2; run `tm db migrate`"),
+        TestClient(web),
+    ):
+        pass
+
+    assert _user_version(estate / "state.db") == 2
+    assert _sha256(estate / "state.db") == before
+
+
+@pytest.mark.parametrize(
+    ("version", "refusal"),
+    [(STATE_SCHEMA_VERSION + 1, StateSchemaTooNew), (1, StateSchemaTooOld)],
+    ids=["newer", "older"],
+)
 def test_a_refused_connection_is_closed_not_leaked(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version: int, refusal: type[Exception]
 ) -> None:
     future = tmp_path / "future"
     _build_v1_estate(future)
     conn = sqlite3.connect(future / "state.db")
-    conn.execute("PRAGMA user_version = 4")
+    conn.execute(f"PRAGMA user_version = {version}")
     conn.commit()
     conn.close()
 
@@ -352,7 +415,7 @@ def test_a_refused_connection_is_closed_not_leaked(
     )
 
     with (
-        pytest.raises(StateSchemaTooNew),
+        pytest.raises(refusal),
         DatabaseManager(future).get_state_connection(),
     ):
         pass
@@ -381,6 +444,7 @@ _ESTATE_COMMANDS: dict[str, list[str]] = {
     "next": ["next"],
     "render": ["render", "S1"],
     "export": ["export", "exported"],
+    "db": ["db", "migrate"],
 }
 
 
@@ -418,6 +482,42 @@ def test_a_too_new_schema_is_only_its_refusal_from_every_command(
         f"({STATE_SCHEMA_VERSION}): upgrade tm"
     ), out + err
     assert err == ""
+
+
+_OPENING_COMMANDS = {name: argv for name, argv in _ESTATE_COMMANDS.items() if name != "db"}
+
+
+@pytest.mark.parametrize("argv", _OPENING_COMMANDS.values(), ids=_OPENING_COMMANDS.keys())
+def test_an_older_schema_is_only_its_refusal_from_every_command_and_stays_unmigrated(
+    argv: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "estate"
+    state_db = root / ".taskmanager" / "state.db"
+    _build_v2_estate(root / ".taskmanager")
+    _seed_every_v2_status(root / ".taskmanager")
+    before = _sha256(state_db)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["tm", *argv, "-C", str(root)])
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit) as exited:
+        main()
+
+    out, err = capsys.readouterr()
+    assert exited.value.code == 1
+    # Rich wraps a line at the terminal width, and the backup path makes this one long.
+    assert " ".join(out.split()) == (
+        f"state.db is schema 2; run `tm db migrate`, which copies it to "
+        f"{root / '.taskmanager' / 'state.db.schema2.bak'} and then migrates it to schema "
+        f"{STATE_SCHEMA_VERSION}"
+    ), out + err
+    assert err == ""
+    assert _user_version(state_db) == 2
+    assert _sha256(state_db) == before
+    assert not state_db.with_name("state.db.schema2.bak").exists()
 
 
 def test_rev_increases_on_status_and_title_change_through_save_node(tmp_path: Path) -> None:
