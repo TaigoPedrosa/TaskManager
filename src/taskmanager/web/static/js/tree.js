@@ -45,14 +45,16 @@ function sectionItemsHtml(list, ownerId, editable = false) {
       <button type="button" class="p-1 flex-shrink-0 rounded text-zinc-400 hover:text-white hover:bg-zinc-800 ${ROW_CONTROL} ${FOCUS_RING}" data-act="edit-section" data-key="${esc(s.key)}" aria-label="Edit section ${esc(s.key)}">${renderIcon('code', 'w-3 h-3')}</button>
       <button type="button" class="p-1 flex-shrink-0 rounded text-zinc-400 hover:text-red-400 hover:bg-zinc-800 ${ROW_CONTROL} ${FOCUS_RING}" data-act="delete-section" data-key="${esc(s.key)}" aria-label="Delete section ${esc(s.key)}">${renderIcon('x', 'w-3 h-3')}</button>` : '';
     return `
-      <details ${isOpen ? 'open' : ''} data-section-id="${esc(id)}" class="rounded-lg border border-zinc-800 bg-zinc-950/60">
-        <summary class="group cursor-pointer select-none px-3 py-1.5 flex items-center gap-1.5 min-w-0 rounded-lg ${FOCUS_RING}">
-          ${renderIcon('chevron-right', 'w-3 h-3 flex-shrink-0 text-zinc-400 details-caret')}
-          <span class="flex-1 min-w-0 truncate font-mono text-[11px] leading-4 text-zinc-300">${esc(s.key)}</span>
+      <div class="section-row group rounded-lg border border-zinc-800 bg-zinc-950/60">
+        <div class="flex items-center gap-1.5 min-w-0 px-3">
+          <button type="button" class="disclosure section-toggle flex flex-1 items-center gap-1.5 min-w-0 py-1.5 rounded-md text-left ${FOCUS_RING}" aria-expanded="${isOpen}" data-section-id="${esc(id)}">
+            ${renderIcon('chevron-right', 'w-3 h-3 flex-shrink-0 text-zinc-400 caret')}
+            <span class="flex-1 min-w-0 truncate font-mono text-[11px] leading-4 text-zinc-300">${esc(s.key)}</span>
+          </button>
           ${controls}
-        </summary>
-        <div class="pl-[30px] pr-3 pb-3 text-xs leading-5 text-zinc-300">${renderSectionBody(body)}</div>
-      </details>
+        </div>
+        <div class="section-body pl-[30px] pr-3 pb-3 text-xs leading-5 text-zinc-300${isOpen ? '' : ' hidden'}">${renderSectionBody(body)}</div>
+      </div>
     `;
   }).join('');
   return `<div class="space-y-1.5">${items}</div>`;
@@ -71,14 +73,18 @@ function renderSections(sections, ownerId) {
   `;
 }
 
+// A section opens and closes in place, so every surface drawing one shares this wiring.
 function attachSectionToggleHandlers(root) {
-  root.querySelectorAll('details[data-section-id]').forEach(details => {
-    details.addEventListener('toggle', () => {
-      const id = details.getAttribute('data-section-id');
-      if (details.open) expandedSections.add(id);
+  root.querySelectorAll('.section-toggle').forEach(btn => {
+    btn.onclick = () => {
+      const id = btn.getAttribute('data-section-id');
+      const open = !expandedSections.has(id);
+      if (open) expandedSections.add(id);
       else expandedSections.delete(id);
+      btn.setAttribute('aria-expanded', String(open));
+      btn.closest('.section-row').querySelector('.section-body').classList.toggle('hidden', !open);
       updateToggleSectionsButton();
-    });
+    };
   });
 }
 
@@ -129,7 +135,11 @@ function redrawKeeping(root, scroller, draw) {
   scroller.scrollTop = top;
   let again = anchor && root.querySelector(anchor);
   path.forEach(i => { again = again && again.children[i]; });
-  if (again) again.focus({ preventScroll: true });
+  if (!again) return;
+  // Focus inside a menu means it was open; the redrawn one opens again under the same item.
+  const menu = again.closest('.actions-menu');
+  if (menu) setActionsMenuOpen(menu, true);
+  again.focus({ preventScroll: true });
 }
 
 // A row's lease names the action and agent only, since a heartbeat pushes nothing; a watched
@@ -382,10 +392,6 @@ function applyNodeLocation(view, id) {
     openDrawer(id);
   }
   if (view === window.VIEW_MODES.WAVES) return;
-  if (view === window.VIEW_MODES.GRAPH && networkInstance && window.tmStore.rows.has(id)) {
-    networkInstance.selectNodes([id]);
-    networkInstance.focus(id, { scale: 1.1, animation: true });
-  }
   revealNode(id);
 }
 
@@ -463,16 +469,23 @@ function retryReveal() {
 }
 
 // `inDocument`: the pane just drawn, Document or the tree; only the current view's own pane
-// finishes a reveal.
+// finishes a reveal. A tree row is drawn from the same rows as the Graph, so once it is there
+// the Graph node is too.
 function finishReveal(inDocument) {
   if (!pendingReveal || inDocument !== (currentMode === window.VIEW_MODES.DOCUMENT)) return;
+  const id = pendingReveal;
   const el = inDocument
-    ? document.getElementById(`doc-node-${pendingReveal}`)
-    : treeList.querySelector(`[data-node-id="${CSS.escape(pendingReveal)}"]`);
+    ? document.getElementById(`doc-node-${id}`)
+    : treeList.querySelector(`[data-node-id="${CSS.escape(id)}"]`);
   if (!el) return;
   pendingReveal = null;
   el.scrollIntoView({ block: 'center' });
-  if (inDocument) el.focus({ preventScroll: true });
+  if (inDocument) {
+    el.focus({ preventScroll: true });
+  } else if (currentMode === window.VIEW_MODES.GRAPH && networkInstance) {
+    networkInstance.selectNodes([id]);
+    networkInstance.focus(id, { scale: 1.1, animation: true });
+  }
 }
 
 
@@ -493,7 +506,7 @@ function renderUnifiedDocument() {
   redrawKeeping(unifiedDocument, documentPane, () => {
     unifiedDocument.innerHTML = lookup + (roots.length ? cards : emptyPaneState());
   });
-  allSectionIds = [...unifiedDocument.querySelectorAll('details[data-section-id]')].map(d => d.getAttribute('data-section-id'));
+  allSectionIds = [...unifiedDocument.querySelectorAll('.section-toggle')].map(b => b.getAttribute('data-section-id'));
 
   attachCollapsibleHandlers();
   attachSectionToggleHandlers(unifiedDocument);

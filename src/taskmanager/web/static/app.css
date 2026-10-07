@@ -59,7 +59,5 @@ code, pre, .font-mono {
   #sidebar-pane { max-width: 50vw; }
 }
 
-details > summary { list-style: none; }
-details > summary::-webkit-details-marker { display: none; }
-details > summary .details-caret { transition: transform 0.15s ease; }
-details[open] > summary .details-caret { transform: rotate(90deg); }
+.caret { transition: transform 0.15s ease; }
+[aria-expanded="true"] > .caret { transform: rotate(90deg); }

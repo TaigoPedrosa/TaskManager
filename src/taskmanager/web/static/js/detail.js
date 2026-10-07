@@ -177,21 +177,17 @@ function renderVerifications(node, verifications, editable) {
   return detailGroupHtml(node.id, 'verifications', 'Verifications', list.length, true, relationTableHtml(rows) + run);
 }
 
-async function runVerifications(node) {
-  try {
-    const results = await api('POST', `/api/nodes/${node.id}/verify`);
-    results.forEach(r => {
-      document.querySelectorAll(`.ver-result[data-ver-id="${r.id}"]`).forEach((el) => {
-        el.textContent = r.passed ? 'PASS' : 'FAIL';
-        el.className = `ver-result flex-shrink-0 text-[10px] font-semibold ${r.passed ? 'text-emerald-400' : 'text-red-400'}`;
-        el.title = r.detail || '';
-      });
+async function runVerifications(node, control) {
+  const results = await submitWrite(control, { method: 'POST', path: `/api/nodes/${node.id}/verify` });
+  results.forEach(r => {
+    document.querySelectorAll(`.ver-result[data-ver-id="${r.id}"]`).forEach((el) => {
+      el.textContent = r.passed ? 'PASS' : 'FAIL';
+      el.className = `ver-result flex-shrink-0 text-[10px] font-semibold ${r.passed ? 'text-emerald-400' : 'text-red-400'}`;
+      el.title = r.detail || '';
     });
-    const passed = results.filter(r => r.passed).length;
-    toast(`${passed}/${results.length} verifications passed.`, passed === results.length ? 'success' : 'error');
-  } catch (e) {
-    toast(e.message, 'error');
-  }
+  });
+  const passed = results.filter(r => r.passed).length;
+  toast(`${passed}/${results.length} verifications passed.`, passed === results.length ? 'success' : 'error');
 }
 
 function conditionResult(c) {
@@ -307,13 +303,13 @@ function copyText(text) {
   return navigator.clipboard.writeText(text);
 }
 
-// A file picked from the Actions menu's Attach file… goes straight to the node.
-function pickAttachment(node) {
+// A picked file goes straight to the node; `control` spins while it uploads.
+function pickAttachment(node, control, afterChange) {
   const input = document.createElement('input');
   input.type = 'file';
   input.addEventListener('change', () => {
     const file = input.files && input.files[0];
-    if (file) attachFile(node, file);
+    if (file) attachFile(node, file, control, afterChange);
   });
   input.click();
 }
@@ -340,7 +336,7 @@ const DETAIL_ACTIONS = {
   'add-dependency': node => openAddDependencyDialog(node),
   'wait-on-decision': node => openAddDependencyDialog(node, true),
   'add-condition': node => openAddConditionDialog(node),
-  'attach-file': node => pickAttachment(node),
+  'attach-file': (node, el) => pickAttachment(node, el.closest('.actions').querySelector('.actions-btn')),
   defer: node => openVerbDialog(node, 'defer'),
   abandon: node => openVerbDialog(node, 'abandon'),
   supersede: node => openSupersedeDialog(node),
@@ -349,7 +345,7 @@ const DETAIL_ACTIONS = {
   'delete-section': (node, el) => removeSection(node, el.getAttribute('data-key')),
   'remove-dependency': (node, el) => removeDependency(node, el.getAttribute('data-dep-id')),
   'remove-verification': (node, el) => removeVerification(node, Number(el.getAttribute('data-ver-id')), el.getAttribute('data-ver-target')),
-  'run-verifications': node => runVerifications(node),
+  'run-verifications': (node, el) => runVerifications(node, el),
   'remove-condition': (node, el) => removeCondition(node, Number(el.getAttribute('data-idx')), el.getAttribute('data-needs')),
   'copy-command': (node, el) => copyText(el.getAttribute('data-copy')).then(() => {
     el.innerHTML = renderIcon('check', 'w-3.5 h-3.5');
@@ -364,7 +360,7 @@ const DETAIL_ACTIONS = {
     const entry = attachmentOf(node, el.getAttribute('data-asset'));
     detachAttachment(node, el.getAttribute('data-asset'), null, entry && entry.name);
   },
-  'recheck-attachments': node => recheckAttachments(node),
+  'recheck-attachments': (node, el) => recheckAttachments(node, el),
 };
 
 // One listener serves every detail root, card or drawer, whenever it was drawn: a control's
@@ -382,8 +378,6 @@ document.addEventListener('click', (e) => {
   const control = target.closest('[data-act]');
   const root = control && control.closest('[data-detail-root]');
   if (!root) return;
-  // A control inside a section's <summary> would otherwise also toggle the section.
-  e.preventDefault();
   const owner = control.closest('.actions');
   if (owner) owner.querySelector('.actions-btn').focus();
   const act = DETAIL_ACTIONS[control.getAttribute('data-act')];
@@ -544,11 +538,7 @@ function showGraphInspector(nodeId) {
 inspectorCloseBtn.addEventListener('click', closeDrawerByUser);
 
 function drawerFocusables() {
-  return [...graphInspector.querySelectorAll(FOCUSABLE)].filter((el) => {
-    if (el.disabled || el.closest('.hidden, [hidden]')) return false;
-    const details = el.closest('details');
-    return !details || details.open || !!el.closest('summary');
-  });
+  return [...graphInspector.querySelectorAll(FOCUSABLE)].filter(el => !el.disabled && !el.closest('.hidden, [hidden]'));
 }
 
 // A dialog: Escape closes it and Tab stays inside it, unless a dialog opened over it (a form, the
@@ -596,19 +586,23 @@ function drawerBodyHtml(nodeId, node, body, row) {
   return load && load.slow ? paneState('loading') : '';
 }
 
-// The header is known from the row before the body arrives.
+// The header is known from the row before the body arrives. Until the node is known at all,
+// its id, drawn once on the line, names the dialog.
 function renderGraphInspector(nodeId) {
   const row = window.tmStore.rows.get(nodeId) || null;
   const body = detailBody(nodeId);
   const node = (body && body.node) || row;
   const lease = (body && body.lease) || (row && row.lease) || null;
   graphInspector.setAttribute('data-detail-root', nodeId);
-  inspectorLine.innerHTML = `${node ? statusIcon(detailStatus(node, body, row)) + kindBadge(node.kind) : ''}<span id="inspector-id" class="min-w-0">${idLink(nodeId, node && node.kind, true)}</span>${leasePulse(lease)}`;
-  inspectorActions.innerHTML = node ? actionsMenuHtml(node, lease) : '';
-  inspectorTitle.textContent = node ? node.title : nodeId;
-  inspectorPills.innerHTML = node ? drawerPillsHtml(node, row, lease) : '';
-  inspectorPills.classList.toggle('hidden', !node);
-  inspectorBody.innerHTML = drawerBodyHtml(nodeId, node, body, row);
+  graphInspector.setAttribute('aria-labelledby', node ? 'inspector-title' : 'inspector-id');
+  redrawKeeping(graphInspector, inspectorBody, () => {
+    inspectorLine.innerHTML = `${node ? statusIcon(detailStatus(node, body, row)) + kindBadge(node.kind) : ''}<span id="inspector-id" class="min-w-0">${idLink(nodeId, node && node.kind, true)}</span>${leasePulse(lease)}`;
+    inspectorActions.innerHTML = node ? actionsMenuHtml(node, lease) : '';
+    inspectorTitle.textContent = node ? node.title : '';
+    inspectorPills.innerHTML = node ? drawerPillsHtml(node, row, lease) : '';
+    inspectorPills.classList.toggle('hidden', !node);
+    inspectorBody.innerHTML = drawerBodyHtml(nodeId, node, body, row);
+  });
   attachSectionToggleHandlers(inspectorBody);
   attachGroupHeaderHandlers(inspectorBody, () => renderGraphInspector(nodeId));
 }
@@ -715,10 +709,7 @@ function renderAttachments(node, attachments, editable) {
 
   const controls = editable ? `
     <div class="flex items-center gap-2 pt-1.5">
-      <label tabindex="0" class="att-add-btn h-7 px-2 flex items-center rounded-md text-[11px] font-medium text-emerald-400 hover:text-emerald-300 hover:bg-zinc-800 border border-dashed border-zinc-700 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">
-        <span>+ Attach file</span>
-        <input type="file" class="att-file-input hidden" aria-label="Attach a file" tabindex="-1">
-      </label>
+      <button type="button" class="att-add-btn h-7 px-2 flex items-center rounded-md text-[11px] font-medium text-emerald-400 hover:text-emerald-300 hover:bg-zinc-800 border border-dashed border-zinc-700 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">+ Attach file</button>
       ${list.length > 0 ? `<button type="button" class="att-recheck-btn h-7 px-2 rounded-md text-[11px] font-medium text-zinc-300 hover:text-white hover:bg-zinc-800 border border-zinc-700 transition">${renderIcon('rotate-cw', 'w-3 h-3 inline -mt-0.5 mr-1')}Re-check</button>` : ''}
     </div>
   ` : '';
@@ -783,15 +774,17 @@ function readFileAsBase64(file) {
   });
 }
 
-async function attachFile(node, file, afterChange) {
+async function attachFile(node, file, control, afterChange) {
+  let content_base64;
   try {
-    const content_base64 = await readFileAsBase64(file);
-    await api('POST', `/api/nodes/${node.id}/attachments`, { filename: file.name, content_base64 });
-    toast(`Attached ${file.name}.`, 'success');
-    if (afterChange) await afterChange();
+    content_base64 = await readFileAsBase64(file);
   } catch (e) {
     toast(e.message, 'error');
+    return;
   }
+  await submitWrite(control, { method: 'POST', path: `/api/nodes/${node.id}/attachments`, body: { filename: file.name, content_base64 } });
+  toast(`Attached ${file.name}.`, 'success');
+  if (afterChange) await afterChange();
 }
 
 function detachAttachment(node, asset, afterChange, name) {
@@ -807,14 +800,10 @@ function detachAttachment(node, asset, afterChange, name) {
   });
 }
 
-async function recheckAttachments(node, afterChange) {
-  try {
-    await api('POST', `/api/nodes/${node.id}/attachments/check`);
-    toast('Attachment sources re-checked.', 'success');
-    if (afterChange) await afterChange();
-  } catch (e) {
-    toast(e.message, 'error');
-  }
+async function recheckAttachments(node, control, afterChange) {
+  await submitWrite(control, { method: 'POST', path: `/api/nodes/${node.id}/attachments/check` });
+  toast('Attachment sources re-checked.', 'success');
+  if (afterChange) await afterChange();
 }
 
 function wireAttachmentControls(root, node, attachments, editable, afterChange) {
@@ -827,33 +816,15 @@ function wireAttachmentControls(root, node, attachments, editable, afterChange) 
     });
   });
   if (!editable) return;
-  const fileInput = root.querySelector('.att-file-input');
-  if (fileInput) {
-    fileInput.addEventListener('change', async () => {
-      const file = fileInput.files && fileInput.files[0];
-      if (file) await attachFile(node, file, afterChange);
-      fileInput.value = '';
-    });
-    // The input itself is display:none (tabindex="-1", out of the tab order), so its
-    // wrapping <label> is the tab stop -- but a <label> has no native keyboard activation
-    // the way a <button> or the mouse's own click-through-label behaviour does.
-    const addBtn = root.querySelector('.att-add-btn');
-    if (addBtn) {
-      addBtn.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          fileInput.click();
-        }
-      });
-    }
-  }
+  const addBtn = root.querySelector('.att-add-btn');
+  if (addBtn) addBtn.addEventListener('click', () => pickAttachment(node, addBtn, afterChange));
   root.querySelectorAll('.att-detach-btn').forEach(btn => {
     const asset = btn.getAttribute('data-asset');
     const entry = (attachments || []).find(a => a.asset === asset);
     btn.addEventListener('click', () => detachAttachment(node, asset, afterChange, entry && entry.name));
   });
   const recheckBtn = root.querySelector('.att-recheck-btn');
-  if (recheckBtn) recheckBtn.addEventListener('click', () => recheckAttachments(node, afterChange));
+  if (recheckBtn) recheckBtn.addEventListener('click', () => recheckAttachments(node, recheckBtn, afterChange));
 }
 
 
