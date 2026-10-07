@@ -647,8 +647,8 @@ function renderDecisionDetail(id) {
           title: `Stop ${taskId} waiting on ${node.id}?`,
           message: `${taskId} will no longer depend on this decision.`,
           confirmLabel: 'Remove',
-          onConfirm: async () => {
-            await api('POST', `/api/decisions/${node.id}/blocks`, { remove: [taskId] });
+          onConfirm: async (write) => {
+            await write('POST', `/api/decisions/${node.id}/blocks`, { remove: [taskId] });
             toast(`${taskId} no longer waits on ${node.id}.`, 'success');
             await afterDecisionWrite(node.id);
           }
@@ -660,7 +660,7 @@ function renderDecisionDetail(id) {
       addBlockBtn.addEventListener('click', () => {
         const taskOptions = visibleTaskRows();
         const listId = 'dec-block-picker-list';
-        openDialog({
+        formDialog({
           title: `Block a task on ${node.id}`,
           submitLabel: 'Add',
           bodyHtml: `
@@ -795,7 +795,7 @@ function wireDecisionAnswerForm(root, decisionId, data) {
     withdrawBtn.addEventListener('click', () => {
       // §6.4: a decision is withdrawn with a reason, so this is a full dialog (a text field)
       // rather than confirmDialog's plain message-only shape.
-      openDialog({
+      formDialog({
         title: `Withdraw ${decisionId}?`,
         submitLabel: 'Withdraw',
         destructive: true,
@@ -880,7 +880,7 @@ function decisionOptionRowHtml(index, key = '', label = '', description = '', re
 
 function openNewDecisionDialog() {
   let optIndex = 0;
-  openDialog({
+  formDialog({
     title: 'New decision',
     submitLabel: 'Raise',
     bodyHtml: `

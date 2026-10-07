@@ -42,7 +42,7 @@ from taskmanager.engine.landing import Landing
 from taskmanager.engine.operations import OperationError, Operations
 from taskmanager.engine.simulate import simulate
 from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder, stored_status
-from taskmanager.web.bodies import BodyRepos, attachments_with_size, build_bodies
+from taskmanager.web.bodies import BodyRepos, attachments_with_size, build_bodies, lease_dict
 from taskmanager.web.live import LiveHub
 from taskmanager.web.rows import build_rows, canonical, decisions_open, statuses, statuses_hash
 from taskmanager.web.ui import get_web_html
@@ -629,7 +629,8 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         # this built, in memory (see `engine.simulate`). Conditions are read from the cache once
         # here too, the same read a display uses -- a simulated wave has no real claim to run a
         # condition's command under.
-        snap = snapshots.build()
+        view = new_view()
+        snap = view.snapshot
         cached_conditions = cache.all_conditions(_condition_ttl())
         waves = simulate(
             snap,
@@ -640,7 +641,23 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             repo_order=_repo_order(),
             cached_conditions=cached_conditions,
         )
-        return {"waves": [asdict(w) for w in waves], "max_depth": _MAX_WAVE_DEPTH}
+        # What a wave row draws beyond the simulator's own fields: a held node's status and
+        # title, and the live lease an in-flight step runs under.
+        data = snap.graph_data()
+        named = {entry.id for wave in waves for entry in wave.entries} | {
+            held.split(": ", 1)[0] for wave in waves for held in wave.held
+        }
+        nodes = {
+            node_id: {
+                "kind": node.kind.value,
+                "title": node.title,
+                "display": view.display(node),
+                "lease": lease_dict(data.leases.get(node_id)),
+            }
+            for node_id in sorted(named)
+            if (node := data.nodes.get(node_id)) is not None
+        }
+        return {"waves": [asdict(w) for w in waves], "max_depth": _MAX_WAVE_DEPTH, "nodes": nodes}
 
     @app.post("/api/specs", status_code=201)
     def create_spec(body: SpecCreate, actor: Actor) -> dict[str, str]:

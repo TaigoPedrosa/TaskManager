@@ -240,12 +240,12 @@ function updateStatsDigest() {
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   const allActive = filters.statusMode.size === 0;
   const totalChip = document.createElement('button');
-  totalChip.className = `flex items-center gap-1 px-2 py-1 rounded-md border text-xs transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${allActive ? 'bg-zinc-800 text-white border-zinc-700' : 'bg-zinc-900/60 text-zinc-400 border-zinc-800 hover:bg-zinc-800'}`;
+  totalChip.className = `flex items-center gap-1.5 px-1.5 py-1 rounded-full border text-xs leading-4 transition ${FOCUS_RING} ${allActive ? 'bg-zinc-800 text-white border-zinc-700' : 'bg-zinc-900/60 text-zinc-400 border-zinc-800 hover:bg-zinc-800'}`;
   totalChip.title = 'All tasks';
   totalChip.dataset.statusCode = '__all__';
   totalChip.setAttribute('aria-label', `All tasks: ${total}`);
   totalChip.setAttribute('aria-pressed', String(allActive));
-  totalChip.innerHTML = `${renderIcon('layers', 'w-3.5 h-3.5')}<strong>${total}</strong>`;
+  totalChip.innerHTML = `${renderIcon('layers', 'w-3 h-3')}<strong class="font-mono">${total}</strong>`;
   totalChip.onclick = () => {
     filters.statusMode.clear();
     applyFilterChange();
@@ -264,11 +264,13 @@ function updateStatsDigest() {
       const mode = filters.statusMode.get(code);
       const chip = document.createElement('button');
       const modeClass = mode === 'include' ? 'st-mode-include' : mode === 'exclude' ? 'st-mode-exclude' : '';
-      chip.className = `st-toggle st-${code} ${modeClass} flex items-center gap-1 px-1.5 py-1 rounded-md text-xs transition hover:brightness-125 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${count === 0 && !mode ? 'opacity-50' : ''}`;
+      // A zero count keeps its icon's colour and drops only the fill, so it never dims below AA.
+      const zero = count === 0 && !mode;
+      chip.className = `st-toggle st-${code} ${modeClass} ${zero ? 'st-zero' : ''} flex items-center gap-1 px-1.5 py-1 rounded-full text-xs leading-4 transition hover:brightness-125 ${FOCUS_RING}`;
       chip.title = `${theme.label} · ${triModeLabel(mode)}`;
       chip.dataset.statusCode = code;
       chip.setAttribute('aria-label', `Status ${theme.label}: ${triModeLabel(mode)}`);
-      chip.innerHTML = `${renderIcon(theme.icon, 'w-3.5 h-3.5')}<strong>${count}</strong>`;
+      chip.innerHTML = `${renderIcon(theme.icon, 'w-3 h-3')}<strong class="font-mono ${zero ? 'text-zinc-400' : ''}">${count}</strong>`;
       triStateHandlers(chip, () => filters.statusMode.get(code), (mode) => {
         if (mode === null) filters.statusMode.delete(code); else filters.statusMode.set(code, mode);
         applyFilterChange();
@@ -333,7 +335,7 @@ function createTriStatePopover(container, { label, dimension, getOptions, modeMa
     const options = getOptions();
     const pop = container.querySelector('.tri-pop');
     pop.innerHTML = options.length === 0
-      ? '<div class="px-2 py-1.5 text-zinc-500 text-xs">No options</div>'
+      ? '<div class="px-2 py-1.5 text-zinc-400 text-xs">No options</div>'
       : options.map(o => {
         const mode = modeMap.get(o.value);
         return `
@@ -593,23 +595,18 @@ clearFiltersBtn.addEventListener('click', () => {
 });
 
 
-// Legend
+// Legend: each status and phase icon beside its name.
+function legendRow(colourCls, theme) {
+  return `<div class="flex items-center gap-2 py-1"><span class="${colourCls} inline-flex flex-shrink-0">${renderIcon(theme.icon, 'w-3.5 h-3.5')}</span><span class="text-xs text-zinc-300">${esc(theme.label)}</span></div>`;
+}
+
 function renderLegend() {
   const statusRows = window.STATUS_GROUPS.map(group => {
-    const rows = Object.values(window.STATUS_THEMES).filter(t => t.group === group.code).map(t => `
-      <div class="flex items-start gap-2 py-1">
-        <div class="w-36 flex-shrink-0">${statusChip(t.code)}</div>
-        <p class="text-xs text-zinc-300">${esc(t.description)}</p>
-      </div>
-    `).join('');
+    const rows = Object.values(window.STATUS_THEMES).filter(t => t.group === group.code)
+      .map(t => legendRow(`st-text st-${t.code}`, t)).join('');
     return `<div><div class="text-[10px] uppercase tracking-wider text-zinc-400 mt-2">${esc(group.label)}</div>${rows}</div>`;
   }).join('');
-  const phaseRows = Object.values(window.PHASE_THEMES).map(t => `
-    <div class="flex items-start gap-2 py-1">
-      <div class="w-36 flex-shrink-0">${phaseChip(t.code)}</div>
-      <p class="text-xs text-zinc-300">${esc(t.description)}</p>
-    </div>
-  `).join('');
+  const phaseRows = Object.values(window.PHASE_THEMES).map(t => legendRow(`st-text ph-${t.code}`, t)).join('');
   legendBody.innerHTML = `${statusRows}<div><div class="text-[10px] uppercase tracking-wider text-zinc-400 mt-2">Phases</div>${phaseRows}</div>`;
 }
 
