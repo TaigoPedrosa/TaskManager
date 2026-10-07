@@ -196,16 +196,21 @@ test('clicking the current view segment scrolls its pane to the top, collapses i
   assert.equal(page.window.history.length, 2, 'a reset replaces the entry the selection pushed');
 });
 
-test('clicking the Decisions segment while on it drops the selected decision from the path', async () => {
-  const decision = { id: 'decision-D1', title: 'Pick one', status: 'OPEN', priority: 50, created_at: '2026-10-01T10:00:00+00:00', waiting_count: 0 };
-  const page = loadPage({
-    url: '/',
-    fetch: async (u) => (u.startsWith('/api/decisions?')
-      ? jsonResponse(200, { items: [decision], next: null, counts: { open: 1, answered: 0, withdrawn: 0 } })
-      : undefined),
-  });
+function twoDecisions() {
+  const items = [
+    { id: 'decision-D2', title: 'Pick another', status: 'OPEN', priority: 50, created_at: '2026-10-02T10:00:00+00:00', waiting_count: 0 },
+    { id: 'decision-D1', title: 'Pick one', status: 'OPEN', priority: 50, created_at: '2026-10-01T10:00:00+00:00', waiting_count: 0 },
+  ];
+  return async (u) => (u.startsWith('/api/decisions?')
+    ? jsonResponse(200, { items, next: null, counts: { open: 2, answered: 0, withdrawn: 0 } })
+    : undefined);
+}
+
+test('clicking the Decisions segment while on it returns to its default, the top decision of Open from the top, in the same entry', async () => {
+  const page = loadPage({ url: '/', fetch: twoDecisions() });
   page.$('#view-decisions-btn').click();
   await page.settle();
+  assert.equal(url(page), '/decisions/decision-D2', 'the top decision is selected in place');
   page.$('.dec-row[data-decision-id="decision-D1"]').click();
   await page.settle();
   assert.equal(url(page), '/decisions/decision-D1');
@@ -214,29 +219,25 @@ test('clicking the Decisions segment while on it drops the selected decision fro
 
   page.$('#view-decisions-btn').click();
   await page.settle();
-  assert.equal(url(page), '/decisions');
+  assert.equal(url(page), '/decisions/decision-D2');
   assert.equal(page.window.history.length, 3);
-  assert.equal(page.run('selectedDecisionId'), null);
-  assert.equal(page.$('.dec-row[aria-current]'), null);
+  assert.equal(page.run('selectedDecisionId'), 'decision-D2');
+  assert.equal(page.$('.dec-row[aria-current]').getAttribute('data-decision-id'), 'decision-D2');
   assert.equal(page.$('#decisions-list').scrollTop, 0);
 });
 
-test('Back from a selected decision clears it, and Forward selects it again', async () => {
-  const decision = { id: 'decision-D1', title: 'Pick one', status: 'OPEN', priority: 50, created_at: '2026-10-01T10:00:00+00:00', waiting_count: 0 };
-  const page = loadPage({
-    url: '/decisions',
-    fetch: async (u) => (u.startsWith('/api/decisions?')
-      ? jsonResponse(200, { items: [decision], next: null, counts: { open: 1, answered: 0, withdrawn: 0 } })
-      : undefined),
-  });
+test('Back from a selected decision returns to the one selected before, and Forward selects it again', async () => {
+  const page = loadPage({ url: '/decisions', fetch: twoDecisions() });
   await page.settle();
+  assert.equal(page.run('selectedDecisionId'), 'decision-D2');
   page.$('.dec-row[data-decision-id="decision-D1"]').click();
   await page.settle();
   page.window.history.back();
   await page.settle();
-  assert.equal(page.run('selectedDecisionId'), null);
+  assert.equal(page.run('selectedDecisionId'), 'decision-D2');
+  assert.equal(page.$('.dec-row[aria-current]').getAttribute('data-decision-id'), 'decision-D2');
   page.window.history.forward();
   await page.settle();
   assert.equal(page.run('selectedDecisionId'), 'decision-D1');
-  assert.ok(page.$('.dec-row[aria-current]'));
+  assert.equal(page.$('.dec-row[aria-current]').getAttribute('data-decision-id'), 'decision-D1');
 });

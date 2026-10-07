@@ -129,160 +129,105 @@ function hasHiddenAncestor(el) {
   return false;
 }
 
-test('Answer and Withdraw sit under the form from sm up, and below sm only they and the picked answer ride in the bottom bar', async () => {
+test('Answer and Withdraw… are one pair of controls: a bar fixed to the viewport bottom below sm, under the fields from sm up', async () => {
   const page = await openPane(fakeServer([d5(), d6()]));
   await openDecision(page, 'decision-D5');
 
-  const bar = page.$('.dec-answer-bar');
-  assert.ok(bar, 'an open decision offers the answer bar');
-  for (const cls of ['fixed', 'bottom-0', 'sm:hidden']) assert.ok(bar.classList.contains(cls), `bar carries ${cls}`);
+  const bars = page.$$('.dec-answer-actions');
+  assert.equal(bars.length, 1, 'one set of controls at every width');
+  const bar = bars[0];
+  for (const cls of ['fixed', 'bottom-0', 'sm:static']) assert.ok(bar.classList.contains(cls), `bar carries ${cls}`);
   assert.deepEqual(bar.querySelectorAll('button').map((b) => b.textContent.trim()), ['Answer', 'Withdraw…']);
+  assert.equal(page.$$('.dec-answer-submit').length, 1);
+  assert.equal(page.$$('.dec-withdraw-btn').length, 1);
   assert.ok(bar.querySelector('.dec-answer-pick'), 'the bar names the picked answer');
   for (const sel of ['[role="radiogroup"]', '.dec-custom-text', '.dec-rationale']) {
     assert.equal(bar.querySelector(sel), null, `${sel} scrolls with the detail, not in the bar`);
     assert.ok(page.$(`#decisions-detail ${sel}`), `${sel} is still in the detail`);
   }
-
-  const inline = page.$('.dec-answer-actions');
-  assert.ok(inline.classList.contains('hidden') && inline.classList.contains('sm:block'), 'inline actions show from sm up');
-  assert.deepEqual(inline.querySelectorAll('button').map((b) => b.textContent.trim()), ['Answer', 'Withdraw…']);
   assert.ok(page.$('#decisions-detail').classList.contains('pb-[140px]'), 'the detail keeps 140px clear of the bar below sm');
 });
 
-test('below sm the list and the detail share the pane\'s one scroll; from sm up each scrolls on its own', () => {
+test('below sm the page is the pane\'s one scroll with the list out of it; from sm up the list and the detail scroll on their own', () => {
   const page = loadPage();
   const pane = page.$('#decisions-pane');
   const aside = pane.querySelector('aside');
   const list = page.$('#decisions-list');
   const detail = page.$('#decisions-detail');
   assert.ok(pane.classList.contains('overflow-y-auto') && pane.classList.contains('sm:overflow-hidden'));
-  assert.ok(!aside.className.includes('max-h'), 'the list is not a capped box of its own below sm');
-  for (const el of [aside, list, detail]) {
-    assert.ok(!el.classList.contains('overflow-y-auto') && !el.classList.contains('overflow-hidden'), `${el.id || 'aside'} does not scroll below sm`);
-  }
-  assert.ok(list.classList.contains('sm:overflow-y-auto') && detail.classList.contains('sm:overflow-y-auto'));
+  assert.ok(aside.classList.contains('hidden') && aside.classList.contains('sm:flex'), 'the list column shows from sm up only');
+  assert.ok(list.classList.contains('overflow-y-auto'), 'the list scrolls on its own, beside the detail or in the drawer');
+  assert.ok(!detail.classList.contains('overflow-y-auto') && detail.classList.contains('sm:overflow-y-auto'));
 });
 
-test('a decision answered elsewhere re-renders in place: no loading placeholder, the scroll stays, the notice leads the detail', async () => {
-  const server = fakeServer([d5(), d6()]);
-  const page = await openPane(server);
-  await openDecision(page, 'decision-D5');
-  const detail = page.$('#decisions-detail');
-  detail.scrollTop = 250;
-  page.$('#decisions-pane').scrollTop = 40;
-  const mutationsBefore = page.document.mutations.length;
-  const seen = [];
-  const origOnMutate = page.document.onMutate.bind(page.document);
-  page.document.onMutate = (el) => { if (el === detail) seen.push(detail.innerHTML); origOnMutate(el); };
-
-  await answerElsewhere(page, server, 'decision-D5', 'authorize');
-
-  assert.ok(page.document.mutations.length > mutationsBefore, 'the detail re-rendered');
-  assert.ok(seen.length > 0 && seen.every((html) => !html.includes('Loading')), 'never passed through the loading placeholder');
-  assert.equal(detail.scrollTop, 250, 'the detail kept its scroll');
-  assert.equal(page.$('#decisions-pane').scrollTop, 40, 'the pane kept its scroll');
-
-  const column = detail.querySelector('.max-w-2xl');
-  const notice = column.children[0];
-  assert.ok(notice.classList.contains('dec-elsewhere-notice'), 'the notice is the first thing in the detail');
-  assert.equal(notice.getAttribute('role'), 'status');
-  const text = notice.textContent.replace(/\s+/g, ' ');
-  assert.match(text, /Answered elsewhere while you were reading/);
-  assert.match(text, /owner answered “Authorize as designed” at .+\. This decision is no longer open; the page stays where it was\./);
-
-  assert.equal(page.$('.dec-answer-form'), null, 'the form is gone');
-  const chosen = page.$$('.dec-option-card[data-chosen="true"]');
-  assert.deepEqual(chosen.map((c) => c.getAttribute('data-option-key')), ['authorize'], 'the chosen option reads checked');
-  assert.ok(page.$('.dec-reopen-btn'), 'Reopen is offered');
-  assert.equal(page.$('#dec-tab-open .dec-tab-count').textContent, '1', 'the Open count dropped');
-  assert.equal(page.$('.dec-row[data-decision-id="decision-D5"]'), null, 'the row left the Open list');
-
-  // The notice stays with the decision across later pushes until the owner moves on.
-  page.socket.message({ type: 'update', items: [{ op: 'decisions_open', count: 7 }] });
-  await page.settle();
-  assert.ok(page.$('.dec-elsewhere-notice'), 'a later push keeps the notice');
-});
-
-test('a decision withdrawn elsewhere names who withdrew it, when and why', async () => {
-  const server = fakeServer([d5(), d6()]);
-  const page = await openPane(server);
-  await openDecision(page, 'decision-D5');
-  Object.assign(server.byId.get('decision-D5'), {
-    status: 'WITHDRAWN', withdrawn_by: 'owner', withdrawn_at: '2026-09-26T11:00:00+00:00', withdrawn_reason: 'superseded by D6',
-  });
-  page.socket.message({ type: 'update', items: [{ op: 'decisions_open', count: 1 }] });
-  await page.settle();
-  const text = page.$('.dec-elsewhere-notice').textContent.replace(/\s+/g, ' ');
-  assert.match(text, /Withdrawn elsewhere while you were reading/);
-  assert.match(text, /owner withdrew it at .+: superseded by D6\. This decision is no longer open/);
-});
-
-test('the owner\'s own answer never reads as answered elsewhere', async () => {
+test('the owner\'s own answer never reads as closed elsewhere, even when its push lands first', async () => {
   const server = fakeServer([d5(), d6()]);
   const page = await openPane(server);
   await openDecision(page, 'decision-D5');
   page.$('.dec-option-card[data-option-key="changes"]').click();
   page.$('.dec-answer-form').dispatchEvent(new page.window.Event('submit'));
+  page.socket.message({ type: 'update', items: [{ op: 'decisions_open', count: 1 }] });
   await page.settle();
   assert.deepEqual(server.writes.map((w) => [w.verb, w.body.option]), [['answer', 'changes']]);
-  assert.match(detailText(page), /Answered/);
-  assert.equal(page.$('.dec-elsewhere-notice'), null);
+  const toastEl = page.$('#toast-root .toast');
+  assert.equal(toastEl.getAttribute('data-tone'), 'success');
+  assert.equal(toastEl.textContent.trim(), 'decision-D5 answered: Authorize with changes');
+  assert.equal(page.$('.toast-action'), null, 'no Show offered for the owner\'s own answer');
 });
 
-test('loading reads "Loading decision-D5…", once', async () => {
+test('loading reads "Loading decision-D6…", once', async () => {
   const server = fakeServer([d5(), d6()]);
   const page = await openPane(server);
-  page.$('.dec-row[data-decision-id="decision-D5"]').click();
-  assert.equal(detailText(page).trim(), 'Loading decision-D5…');
+  page.$('.dec-row[data-decision-id="decision-D6"]').click();
+  assert.equal(detailText(page).match(/Loading decision-D6…/g).length, 1);
 });
 
-test('a failed detail fetch names the request and its status, offers Retry, and a real 404 stays "Decision not found."', async () => {
+test('a failed detail fetch names the request and its status, offers Retry, and a real 404 reads "<id> not found."', async () => {
   const server = fakeServer([d5(), d6()]);
   const page = await openPane(server);
-  server.failures.set('decision-D5', 503);
-  await openDecision(page, 'decision-D5');
+  server.failures.set('decision-D6', 503);
+  await openDecision(page, 'decision-D6');
   const alert = page.$('#decisions-detail [role="alert"]');
-  assert.equal(alert.textContent, 'Could not load decision-D5: GET /api/nodes/decision-D5 failed (503).');
+  assert.equal(alert.textContent, 'Could not load decision-D6: GET /api/nodes/decision-D6 failed (503).');
   assert.match(detailText(page), /This is a failed request, not a missing decision\./);
 
-  server.failures.set('decision-D5', 'network');
+  server.failures.set('decision-D6', 'network');
   page.$('.dec-detail-retry-btn').click();
   await page.settle();
-  assert.equal(page.$('#decisions-detail [role="alert"]').textContent, 'Could not load decision-D5: GET /api/nodes/decision-D5 failed (network error).');
+  assert.equal(page.$('#decisions-detail [role="alert"]').textContent, 'Could not load decision-D6: GET /api/nodes/decision-D6 failed (network error).');
 
-  server.failures.delete('decision-D5');
+  server.failures.delete('decision-D6');
   page.$('.dec-detail-retry-btn').click();
   await page.settle();
-  assert.match(detailText(page), /Authorize spec DECIDE/, 'Retry recovers');
+  assert.match(detailText(page), /Approve the decisions pane frames/, 'Retry recovers');
 
-  server.byId.delete('decision-D6');
-  await openDecision(page, 'decision-D6');
-  assert.equal(detailText(page).trim(), 'Decision not found.');
+  server.byId.delete('decision-D5');
+  await openDecision(page, 'decision-D5');
+  assert.equal(detailText(page).trim(), 'decision-D5 not found.');
 });
 
-test('with nothing picked, Answer is disabled and says why, inline and in the bar; a pick or a custom answer enables it', async () => {
+test('with nothing picked, Answer is disabled with no hint; a pick or a custom answer enables it and names itself in the bar', async () => {
   const page = await openPane(fakeServer([d5(), d6()]));
   await openDecision(page, 'decision-D5');
-  const submits = page.$$('.dec-answer-submit');
-  const hint = page.$('.dec-answer-hint');
+  const submit = page.$('.dec-answer-submit');
+  const pickLine = page.$('.dec-answer-pick-line');
   const pick = page.$('.dec-answer-pick');
-  assert.equal(submits.length, 2);
-  assert.ok(submits.every((b) => b.disabled));
-  assert.equal(hint.textContent, 'Pick an option or write a custom answer');
-  assert.ok(!hint.classList.contains('hidden'));
-  assert.equal(pick.textContent, 'Nothing picked yet — pick an option or write a custom answer');
+  assert.ok(submit.disabled);
+  assert.equal(page.$('.dec-answer-hint'), null, 'no hint line');
+  assert.ok(!pickLine.classList.contains('max-sm:flex'), 'the bar shows no pick line with nothing picked');
 
   page.$('.dec-option-card[data-option-key="authorize"]').click();
-  assert.ok(submits.every((b) => !b.disabled));
-  assert.ok(hint.classList.contains('hidden'));
+  assert.ok(!submit.disabled);
+  assert.ok(pickLine.classList.contains('max-sm:flex'));
   assert.equal(pick.textContent, 'Authorize as designed');
 
   type(page.$('.dec-custom-text'), 'Ship it after the export fix');
-  assert.equal(pick.textContent, 'Ship it after the export fix');
-  assert.ok(submits.every((b) => !b.disabled));
+  assert.equal(pick.textContent, 'Ship it after the export fix', 'a custom answer is written instead of the option');
+  assert.equal(page.$('.dec-option-card[aria-checked="true"]'), null);
+  assert.ok(!submit.disabled);
   type(page.$('.dec-custom-text'), '');
-  assert.ok(submits.every((b) => b.disabled), 'clearing the custom answer disables Answer again');
-  assert.ok(!hint.classList.contains('hidden'));
+  assert.ok(submit.disabled, 'clearing the custom answer disables Answer again');
+  assert.ok(!pickLine.classList.contains('max-sm:flex'));
 });
 
 test('each blocked node is one row: display chip, mono id, title that wraps under them below lg, and a chevron; the row opens it', async () => {
@@ -366,15 +311,16 @@ test('no text in the pane uses zinc-500 in any state: empty, loading, placeholde
   const server = fakeServer([d5()]);
   const page = await openPane(server, { open: 1 });
   const pane = page.$('#decisions-pane');
-  assert.deepEqual(zinc500Texts(pane), [], 'placeholder state');
-  page.$('.dec-row').click();
-  assert.deepEqual(zinc500Texts(pane), [], 'loading state');
-  await page.settle();
   assert.deepEqual(zinc500Texts(pane), [], 'open detail');
   for (const ta of pane.querySelectorAll('textarea')) assert.ok(!ta.classList.contains('placeholder-zinc-500'), 'placeholders meet AA too');
   await answerElsewhere(page, server, 'decision-D5', 'authorize');
+  assert.deepEqual(zinc500Texts(pane), [], 'held form');
+  page.$('#toast-root .toast-action').click();
+  await page.settle();
   assert.deepEqual(zinc500Texts(pane), [], 'answered detail');
   page.$('#dec-tab-open').click();
+  page.$('#dec-tab-open').click();
+  assert.deepEqual(zinc500Texts(pane), [], 'loading state');
   await page.settle();
   assert.match(page.$('#decisions-list').textContent, /No open decisions\./);
   assert.deepEqual(zinc500Texts(pane), [], 'empty list');
@@ -382,11 +328,11 @@ test('no text in the pane uses zinc-500 in any state: empty, loading, placeholde
   server.failures.set('decision-D5', 503);
   page.$('#dec-tab-open').click();
   await page.settle();
-  await openDecision(page, 'decision-D5');
+  assert.match(detailText(page), /failed \(503\)/);
   assert.deepEqual(zinc500Texts(pane), [], 'error state');
 });
 
-test('options follow the WAI-ARIA radio pattern: one tab stop, Right/Down and Left/Up move and check, wrapping', async () => {
+test('options follow the WAI-ARIA radio pattern: one tab stop, Right and Left move and check, wrapping', async () => {
   const page = await openPane(fakeServer([d5(), d6()]));
   await openDecision(page, 'decision-D5');
   const cards = () => page.$$('.dec-option-card');
@@ -395,7 +341,7 @@ test('options follow the WAI-ARIA radio pattern: one tab stop, Right/Down and Le
   assert.equal(tabStops(), 1);
   assert.equal(cards()[0].getAttribute('tabindex'), '0');
 
-  for (const [k, expected] of [['ArrowRight', 1], ['ArrowDown', 2], ['ArrowRight', 0], ['ArrowLeft', 2], ['ArrowUp', 1]]) {
+  for (const [k, expected] of [['ArrowRight', 1], ['ArrowRight', 2], ['ArrowRight', 0], ['ArrowLeft', 2], ['ArrowLeft', 1]]) {
     const ev = key(page.document.activeElement.classList?.contains('dec-option-card') ? page.document.activeElement : cards()[0], k);
     assert.ok(ev.defaultPrevented, `${k} is handled`);
     assert.equal(page.document.activeElement, cards()[expected], `${k} moves focus`);
@@ -450,6 +396,8 @@ test('rows, tabs, Answer, Withdraw and Reopen each show a themed focus ring and 
     ['Withdraw', page.$('.dec-withdraw-btn')],
   ];
   await answerElsewhere(page, server, 'decision-D5', 'authorize');
+  page.$('#toast-root .toast-action').click();
+  await page.settle();
   controls.push(['Reopen', page.$('.dec-reopen-btn')]);
   for (const [name, el] of controls) {
     assert.ok(el.classList.contains('focus-visible:ring-2') && el.classList.contains('focus-visible:ring-emerald-500'), `${name} has a focus ring`);
@@ -457,16 +405,17 @@ test('rows, tabs, Answer, Withdraw and Reopen each show a themed focus ring and 
   }
 });
 
-test('switching tabs clears a detail selected under the old tab', async () => {
+test('switching tabs selects the new tab\'s top row in place of the old tab\'s', async () => {
   const server = fakeServer([d5(), d6(), { ...d6(), id: 'decision-D1', status: 'ANSWERED', title: 'An answered one' }]);
   const page = await openPane(server);
   page.$('#dec-tab-answered').click();
   await page.settle();
-  await openDecision(page, 'decision-D1');
+  assert.equal(page.window.location.pathname, '/decisions/decision-D1');
   assert.match(detailText(page), /An answered one/);
   page.$('#dec-tab-open').click();
   await page.settle();
-  assert.equal(detailText(page).trim(), 'Select a decision to view it.');
+  assert.equal(page.window.location.pathname, '/decisions/decision-D5');
+  assert.match(detailText(page), /Authorize spec DECIDE/);
 });
 
 test('the Decisions segment\'s accessible name carries the live open count', () => {
