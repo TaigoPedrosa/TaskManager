@@ -435,7 +435,8 @@ test('a live re-render keeps the selected decision, both scroll offsets, the foc
   assert.deepEqual(page.$$('#decisions-list .dec-row').map((r) => r.getAttribute('data-decision-id')), ['decision-D44', 'decision-D43', 'decision-D42', 'decision-D40']);
   assert.equal(page.$('#dec-tab-open .dec-tab-count').textContent, '4', 'the count rose with it');
   assert.equal(page.$$('.dec-waiting-row').length, 2, 'the detail was drawn again with the new waiting row');
-  assert.ok(page.document.activeElement.classList.contains('dec-rationale'), 'focus is back in Rationale');
+  assert.notEqual(page.$('.dec-rationale'), rationale, 'Rationale was drawn again');
+  assert.equal(page.document.activeElement, page.$('.dec-rationale'), 'focus is in the redrawn Rationale');
   assert.equal(page.$('.dec-rationale').value, 'kept as typed');
   assert.equal(page.$('#decisions-list').scrollTop, 120);
   assert.equal(detail(page).scrollTop, 300);
@@ -533,6 +534,7 @@ test('a pane state says the fact alone, and its one control is Retry on an error
   const server = fakeServer(frameDecisions());
   server.fail('node', 502, '502 Bad Gateway');
   const page = await openPage(server, { url: '/decisions/decision-D43' });
+  await wait(350);
   const detailError = paneStateOf(detail(page));
   assert.equal(detailError.getAttribute('data-pane-state'), 'error');
   assert.equal(detailError.querySelector('p').textContent, '502 Bad Gateway', 'the request\'s own message');
