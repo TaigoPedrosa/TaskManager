@@ -169,23 +169,21 @@
 
     <!-- Node detail drawer, shared by the Waves, Graph and Document views: it sits over
          whichever pane is showing. Full width below lg: at 375/768 a fixed 384px (w-96)
-         panel next to a 320px sidebar left no usable canvas. -->
-    <div id="graph-inspector" class="hidden absolute top-0 right-0 w-full lg:w-96 h-full bg-zinc-900/95 border-l border-zinc-800 backdrop-blur z-20 flex flex-col shadow-2xl transition-transform duration-200">
-      <div class="p-4 border-b border-zinc-800 flex items-start justify-between">
-        <div class="space-y-1">
-          <div class="flex items-center gap-2">
-            <span id="inspector-kind" class="px-1.5 py-0.5 rounded text-[10px] font-mono uppercase bg-zinc-800 text-zinc-400">TASK</span>
-            <span id="inspector-id" class="font-mono text-xs font-semibold text-emerald-400">---</span>
-          </div>
-          <h3 id="inspector-title" class="text-sm font-semibold text-zinc-100">---</h3>
+         panel next to a 320px sidebar left no usable canvas. detail.js fills its header
+         line, title, pills and body. -->
+    <div id="graph-inspector" role="dialog" aria-modal="true" aria-labelledby="inspector-title" class="hidden absolute top-0 right-0 w-full lg:w-96 h-full bg-zinc-900 border-l border-zinc-800 z-20 flex flex-col shadow-2xl">
+      <div class="px-4 py-3.5 border-b border-zinc-800 space-y-2 flex-shrink-0">
+        <div class="flex items-center gap-2 min-w-0">
+          <div id="inspector-line" class="flex flex-1 flex-wrap items-center gap-x-2 gap-y-1 min-w-0"></div>
+          <div id="inspector-actions" class="flex-shrink-0"></div>
+          <button id="inspector-close-btn" type="button" aria-label="Close details" class="w-7 h-7 flex items-center justify-center flex-shrink-0 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor"><use href="#icon-x"/></svg>
+          </button>
         </div>
-        <button id="inspector-close-btn" class="p-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-800">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor"><use href="#icon-x"/></svg>
-        </button>
+        <h2 id="inspector-title" tabindex="-1" class="text-sm leading-5 font-semibold text-zinc-100 break-words focus:outline-none"></h2>
+        <div id="inspector-pills" class="flex flex-wrap items-center gap-1.5"></div>
       </div>
-      <div id="inspector-body" class="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
-        <!-- Populated dynamically on node select -->
-      </div>
+      <div id="inspector-body" class="flex-1 min-h-0 overflow-y-auto p-4 text-xs"></div>
     </div>
 
   </div>

@@ -19,15 +19,6 @@ code, pre, .font-mono {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(156, 163, 175, 0.45);
 }
-@keyframes pulse-highlight {
-  0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
-  70% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
-}
-.node-highlighted {
-  animation: pulse-highlight 1.5s ease-out;
-  border-color: var(--tone-accent) !important;
-}
 <!--slot:status-css-->
 
 :root { --tone-dim-fg: #71717a; --tone-dim-border: #3f3f46; --tone-zero-border: #27272a; --tone-accent: #10b981; } /* Tailwind zinc-500 / zinc-700 / zinc-800 / emerald-500 */

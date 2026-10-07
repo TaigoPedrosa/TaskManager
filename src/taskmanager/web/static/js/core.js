@@ -182,12 +182,6 @@ function setViewMode(mode) {
   scheduleRender();
 }
 
-// The drawer's own close button is the one way to close it: its handlers here and in
-// detail.js hide it and release its watch together.
-function closeDetailDrawer() {
-  if (!graphInspector.classList.contains('hidden')) inspectorCloseBtn.click();
-}
-
 // Back to the view's default: the pane at the top, nothing selected, every group at its
 // default open state. Filters are not part of a view, so they stay.
 function resetView() {
@@ -196,7 +190,7 @@ function resetView() {
     resetDecisions();
   } else {
     closeDetailDrawer();
-    selectedNodeId = null;
+    setSelectedNode(null);
     if (view === window.VIEW_MODES.WAVES) {
       resetWaves();
       wavesPane.scrollTop = 0;
@@ -231,7 +225,6 @@ viewDocBtn.addEventListener('click', () => onViewSegment(window.VIEW_MODES.DOCUM
 viewGraphBtn.addEventListener('click', () => onViewSegment(window.VIEW_MODES.GRAPH));
 viewWavesBtn.addEventListener('click', () => onViewSegment(window.VIEW_MODES.WAVES));
 graphFitBtn.addEventListener('click', () => networkInstance && networkInstance.fit());
-inspectorCloseBtn.addEventListener('click', () => graphInspector.classList.add('hidden'));
 refreshBtn.addEventListener('click', () => window.tmStore.resync());
 
 
@@ -311,11 +304,13 @@ function statusIcon(code, size = 'w-3.5 h-3.5') {
   return `<span class="st-text st-${t.code} relative z-[1] inline-flex flex-shrink-0 rounded-sm ${FOCUS_RING}" role="img" tabindex="0" data-tip title="${esc(t.label)}" aria-label="${esc(t.label)}">${renderIcon(t.icon, size)}</span>`;
 }
 
-// A node opens in the view it is named in; a decision always opens the Decisions pane.
-function idLink(id, kind) {
+// A node opens in the view it is named in; a decision always opens the Decisions pane. An id
+// never truncates; where nothing else on its line can yield (`wrap`), it breaks instead.
+function idLink(id, kind, wrap = false) {
   const isDecision = kind === 'decision';
   const view = isDecision ? window.VIEW_MODES.DECISIONS : currentMode;
-  return `<a href="${esc(pathFor(view, id))}" class="id-link relative z-[1] flex-shrink-0 whitespace-nowrap rounded-sm font-mono font-bold text-xs leading-4 text-emerald-400 hover:underline ${FOCUS_RING}" data-id="${esc(id)}"${isDecision ? ' data-decision' : ''}>${esc(id)}</a>`;
+  const fit = wrap ? 'min-w-0 break-all' : 'flex-shrink-0 whitespace-nowrap';
+  return `<a href="${esc(pathFor(view, id))}" class="id-link relative z-[1] ${fit} rounded-sm font-mono font-bold text-xs leading-4 text-emerald-400 hover:underline ${FOCUS_RING}" data-id="${esc(id)}"${isDecision ? ' data-decision' : ''}>${esc(id)}</a>`;
 }
 
 function kindBadge(kind) {
@@ -379,6 +374,8 @@ function disclosureHeader(label, count, expanded, groupId = '') {
 // fresh closure per render, or this list grows with every error render.
 const paneRetries = [];
 const PANE_ICON = { empty: 'circle-dashed', error: 'octagon-x' };
+// A read shows its loading pane state only once it has been in flight this long.
+const LOADING_DELAY_MS = 300;
 
 function paneState(kind, message = 'Loading…', onRetry = null) {
   const isError = kind === 'error';
@@ -399,13 +396,14 @@ document.addEventListener('click', (e) => {
   if (btn) paneRetries[Number(btn.getAttribute('data-retry'))]();
 });
 
-// A plain click on an id link opens it in place; a modified one is left to the browser.
+// Opening a node is a new history entry naming it in the current view; the location then
+// reveals it (Document) or opens the drawer on it (Graph, Waves).
 function openNode(id) {
-  navigate({ view: currentMode, id });
-  if (currentMode === window.VIEW_MODES.WAVES) showGraphInspector(id);
-  else selectNode(id);
+  const here = readLocation();
+  navigate({ view: currentMode, id }, { replace: here.view === currentMode && here.id === id });
 }
 
+// A plain click on an id link opens it in place; a modified one is left to the browser.
 document.addEventListener('click', (e) => {
   const link = e.target.closest && e.target.closest('a.id-link');
   if (!link || e.button > 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -472,8 +470,11 @@ document.addEventListener('focusin', (e) => {
 document.addEventListener('focusout', (e) => {
   if (tipAnchor && tipTarget(e) === tipAnchor) hideTip();
 });
+// An open tooltip takes the first Escape, so the dialog or drawer under it stays open.
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') hideTip();
+  if (e.key !== 'Escape' || !tipAnchor) return;
+  e.preventDefault();
+  hideTip();
 });
 
 // Copy-id button: "(icon ID)", wired via attachCopyHandlers so it works after any
@@ -578,7 +579,9 @@ async function api(method, path, body) {
     try { data = JSON.parse(text); } catch (e) { /* non-JSON body */ }
   }
   if (!res.ok) {
-    throw new Error((data && data.detail) || `${method} ${path} failed (${res.status})`);
+    const err = new Error((data && data.detail) || `${method} ${path} failed (${res.status})`);
+    err.status = res.status;
+    throw err;
   }
   return data;
 }
