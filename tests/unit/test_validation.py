@@ -308,16 +308,21 @@ def test_a_decision_is_not_held_to_node_flag_rules() -> None:
 
 
 @pytest.mark.parametrize(
-    ("status", "review", "refused"),
+    ("status", "claimed_from", "review", "refused"),
     [
-        (Status.LANDED, False, True),
-        (Status.LANDED, True, False),
-        (Status.COMPLETED, False, False),
+        (Status.LANDED, None, False, True),
+        (Status.LANDED, None, True, False),
+        (Status.COMPLETED, None, False, False),
+        (Status.REVIEWING, Status.LANDED, False, True),
+        (Status.REVIEWING, Status.LANDED, True, False),
+        (Status.REVIEWING, Status.IMPLEMENTED, False, False),
     ],
 )
-def test_review_off_is_refused_only_on_a_node_at_landed(
-    status: Status, review: bool, refused: bool
+def test_review_off_is_refused_only_on_a_node_at_landed_or_in_a_step_claimed_from_it(
+    status: Status, claimed_from: Status | None, review: bool, refused: bool
 ) -> None:
-    before = snap(SnapNode("P", PLAN, status=status))
-    after = snap(SnapNode("P", PLAN, status=status, review=review, fix=review))
+    before = snap(SnapNode("P", PLAN, status=status, claimed_from=claimed_from))
+    after = snap(
+        SnapNode("P", PLAN, status=status, claimed_from=claimed_from, review=review, fix=review)
+    )
     assert rules(before, after, {"P"}) == ([("P", 11)] if refused else [])

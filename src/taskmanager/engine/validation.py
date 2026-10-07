@@ -59,6 +59,16 @@ def _flags(after: Snapshot, n: SnapNode) -> list[Refusal]:
                 "to COMPLETED first, or turn review on",
             )
         )
+    if n.claimed_from == Status.LANDED and not n.review:
+        refusals.append(
+            Refusal(
+                n.id,
+                11,
+                f"{n.id}: review is off while its review after landing is in step, and a release "
+                "or a sweep returns it to LANDED, where nothing reviews or completes it; let that "
+                "review end, or release it and reset it to COMPLETED first",
+            )
+        )
     if n.merge == Merge.PARENT and (n.kind == NodeKind.SPEC or n.parent is None):
         refusals.append(
             Refusal(n.id, 3, f"{n.id}: a spec or a parentless node lands on main; set merge=main")

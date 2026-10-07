@@ -315,6 +315,7 @@ class SnapshotBuilder:
             parent=parent,
             merge=node.merge,
             status=stored_status(node),
+            claimed_from=node.claimed_from,
             review=node.review,
             fix=node.fix,
             repo=node.target_repo,

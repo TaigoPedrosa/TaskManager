@@ -4,7 +4,8 @@ is sensitive, and a child that would land on main unreviewed is refused with its
 with a migration under it, landed for real, has the fix of its one review re-reviewed once before
 that fix lands. A landed plan with review off is never at LANDED: `tm task reset` and the web reset
 refuse to put it there, and `tm task update`, the web update and `tm import` refuse to turn review off
-on one that is, until it is reset to COMPLETED."""
+on one that is, until it is reset to COMPLETED, or while its review after landing is in step, so a
+release or a sweep of that review returns it to LANDED with its review still next."""
 
 import copy
 import json
@@ -276,3 +277,35 @@ def test_turning_review_off_on_a_landed_plan_is_refused_until_it_is_reset_to_com
     assert code == accepted, output
     completed = stored(claims, "S-P")
     assert (completed.status, completed.review, completed.fix) == (Status.COMPLETED, False, False)
+
+
+REVIEW_TURNED_OFF_IN_ITS_REVIEW = (
+    "S-P: review is off while its review after landing is in step, and a release or a sweep "
+    "returns it to LANDED, where nothing reviews or completes it; let that review end, or release "
+    "it and reset it to COMPLETED first"
+)
+
+
+@pytest.mark.parametrize(
+    ("turn_off", "refused"), [(by_update, 1), (by_patch, 400), (by_reimport, 1)]
+)
+@pytest.mark.parametrize("swept", [False, True], ids=["released", "swept"])
+def test_turning_review_off_during_a_landed_plans_review_is_refused_so_its_end_returns_it_to_review(
+    tmp_path: Path, turn_off: Callable[[Path], tuple[int, str]], refused: int, swept: bool
+) -> None:
+    claims, estate = landed_plan(tmp_path, reviewed=True)
+    start(claims, "S-P", Action.REVIEW)
+    if swept:
+        # A lapsed lease leaves the node in its step with nothing holding it, as a sweep finds it.
+        claims.runtime.release_lease("S-P")
+
+    code, output = turn_off(estate)
+
+    assert (code, REVIEW_TURNED_OFF_IN_ITS_REVIEW in output) == (refused, True), output
+    if swept:
+        assert claims.sweep() == ["S-P"]
+    else:
+        claims.release("S-P")
+    back = stored(claims, "S-P")
+    assert (back.status, back.review, back.fix) == (Status.LANDED, True, True)
+    assert claims.next_step(back, claims.snapshots.build())[0] == Action.REVIEW
