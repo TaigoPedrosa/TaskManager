@@ -46,6 +46,11 @@ class StateSchemaTooNew(Exception):
         )
 
 
+class StateNotInitialized(Exception):
+    def __init__(self, state_db: Path) -> None:
+        super().__init__(f"{state_db} holds no estate: run `tm init` first")
+
+
 class StateSchemaTooOld(Exception):
     def __init__(self, found: int, backup: Path) -> None:
         super().__init__(
@@ -142,6 +147,9 @@ class DatabaseManager:
         when there was nothing to migrate."""
         if self.is_pre_lifecycle():
             raise PreLifecycleEstate()
+        if not self.state_db.exists():
+            # Before connecting: sqlite3.connect creates the file it is pointed at.
+            raise StateNotInitialized(self.state_db)
         conn = sqlite3.connect(str(self.state_db), timeout=5.0)
         try:
             conn.execute("PRAGMA busy_timeout = 5000;")
@@ -165,6 +173,8 @@ class DatabaseManager:
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='nodes'"
         ).fetchone()
         if not has_nodes:
+            if migrate:
+                raise StateNotInitialized(self.state_db)
             return None  # uninitialised directory: `tm init` creates it at the current version
         if not migrate:
             raise StateSchemaTooOld(version, self.state_backup(version))

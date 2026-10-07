@@ -39,7 +39,12 @@ from taskmanager.core.status import (
     Status,
 )
 from taskmanager.db.cache_repo import CacheRepository
-from taskmanager.db.connection import DatabaseManager, StateSchemaTooNew, StateSchemaTooOld
+from taskmanager.db.connection import (
+    DatabaseManager,
+    StateNotInitialized,
+    StateSchemaTooNew,
+    StateSchemaTooOld,
+)
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
@@ -2562,7 +2567,11 @@ def db_migrate(
     root = _get_root(path)
     _refuse_pre_lifecycle(root)
     db = DatabaseManager(root / ".taskmanager")
-    found = db.migrate_state()
+    try:
+        found = db.migrate_state()
+    except StateNotInitialized:
+        print(f"[red]Error:[/red] TaskManager is not initialized in {root}. Run 'tm init' first.")
+        raise typer.Exit(code=1) from None
     if found is None:
         print(f"state.db is current at schema {STATE_SCHEMA_VERSION}: nothing to migrate")
         return

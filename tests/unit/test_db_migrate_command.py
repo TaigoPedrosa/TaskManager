@@ -111,6 +111,33 @@ def test_migrate_schema_1_estate_runs_every_step_through_the_same_command(
     assert "rev" in columns
 
 
+def test_migrate_without_state_db_refuses_and_creates_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / ".taskmanager").mkdir()
+
+    code, out = _tm(["db", "migrate", "-C", str(tmp_path)], monkeypatch, capsys)
+
+    assert code == 1
+    assert out == f"Error: TaskManager is not initialized in {tmp_path}. Run 'tm init' first."
+    assert not any((tmp_path / ".taskmanager").iterdir())
+
+
+def test_migrate_an_empty_state_db_refuses_and_leaves_it_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    state_db = tmp_path / ".taskmanager" / "state.db"
+    state_db.parent.mkdir()
+    state_db.touch()
+
+    code, out = _tm(["db", "migrate", "-C", str(tmp_path)], monkeypatch, capsys)
+
+    assert code == 1
+    assert out == f"Error: TaskManager is not initialized in {tmp_path}. Run 'tm init' first."
+    assert state_db.read_bytes() == b""
+    assert [p.name for p in state_db.parent.iterdir()] == ["state.db"]
+
+
 def test_migrate_help_names_the_backup_path(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
