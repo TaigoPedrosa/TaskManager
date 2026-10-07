@@ -285,11 +285,6 @@ function clampToViewport(el, margin = 8) {
   }
 }
 
-function statusChip(code, size = 'text-[10px]') {
-  const t = getTheme(code);
-  return `<span class="st-chip st-${t.code} inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full font-medium ${size}" title="${esc(t.description)}">${renderIcon(t.icon, 'w-3 h-3')}<span>${esc(t.label)}</span></span>`;
-}
-
 // The shared renderers every view draws a node's facts with. Each returns markup; a
 // focusable one carries `data-tip`, which the one tooltip below opens on hover and on focus.
 const FOCUS_RING = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400';
@@ -472,14 +467,14 @@ document.addEventListener('keydown', (e) => {
   hideTip();
 });
 
-// Copy-id button: "(icon ID)", wired via attachCopyHandlers so it works after any
-// re-render; stopPropagation keeps it from also toggling the card it sits on.
+// Copy-id button: a 28px icon button, wired via attachCopyHandlers so it works after any
+// re-render; stopPropagation keeps it from also toggling the card it sits on. A copy shows
+// check-circle-2 for COPY_FEEDBACK_MS and says "Copied" through the button's own live region,
+// which is on the page before the copy so the announcement is read.
+const COPY_FEEDBACK_MS = 1500;
+
 function copyIdButton(id) {
-  return `
-    <button class="copy-id-btn relative z-[1] h-7 flex items-center gap-1 px-1.5 rounded-md text-[10px] font-mono text-zinc-400 hover:text-white hover:bg-zinc-800 transition flex-shrink-0 ${FOCUS_RING}" data-copy-id="${esc(id)}" title="Copy ID: ${esc(id)}" aria-label="Copy ID ${esc(id)}">
-      ${renderIcon('copy', 'w-3 h-3')}<span>ID</span>
-    </button>
-  `;
+  return `<button type="button" class="copy-id-btn relative z-[1] w-7 h-7 flex items-center justify-center flex-shrink-0 rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 hover:text-zinc-100 transition ${FOCUS_RING}" data-copy-id="${esc(id)}" title="Copy ID" aria-label="Copy ID ${esc(id)}">${renderIcon('copy', 'copy-id-icon w-3.5 h-3.5')}<span class="copy-id-live sr-only" aria-live="polite"></span></button>`;
 }
 
 function attachCopyHandlers(root) {
@@ -488,9 +483,14 @@ function attachCopyHandlers(root) {
       e.stopPropagation();
       const id = btn.getAttribute('data-copy-id');
       navigator.clipboard.writeText(id).then(() => {
-        const original = btn.innerHTML;
-        btn.innerHTML = `${renderIcon('check', 'w-3 h-3')}<span>Copied</span>`;
-        setTimeout(() => { if (btn.isConnected) btn.innerHTML = original; }, 1200);
+        const icon = btn.querySelector('.copy-id-icon use');
+        const live = btn.querySelector('.copy-id-live');
+        icon.setAttribute('href', '#icon-check-circle-2');
+        live.textContent = 'Copied';
+        setTimeout(() => {
+          icon.setAttribute('href', '#icon-copy');
+          live.textContent = '';
+        }, COPY_FEEDBACK_MS);
       }).catch(err => console.error('Could not copy id:', err));
     };
   });

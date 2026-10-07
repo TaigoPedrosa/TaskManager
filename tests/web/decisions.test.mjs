@@ -175,29 +175,22 @@ test('the owner\'s own answer never reads as closed elsewhere, even when its pus
   assert.equal(page.$('.toast-action'), null, 'no Show offered for the owner\'s own answer');
 });
 
-test('loading reads "Loading decision-D6…", once', async () => {
-  const server = fakeServer([d5(), d6()]);
-  const page = await openPane(server);
-  page.$('.dec-row[data-decision-id="decision-D6"]').click();
-  assert.equal(detailText(page).match(/Loading decision-D6…/g).length, 1);
-});
-
-test('a failed detail fetch names the request and its status, offers Retry, and a real 404 reads "<id> not found."', async () => {
+test('a failed detail fetch shows the request\'s message with Retry, and a real 404 reads "<id> not found."', async () => {
   const server = fakeServer([d5(), d6()]);
   const page = await openPane(server);
   server.failures.set('decision-D6', 503);
   await openDecision(page, 'decision-D6');
   const alert = page.$('#decisions-detail [role="alert"]');
-  assert.equal(alert.textContent, 'Could not load decision-D6: GET /api/nodes/decision-D6 failed (503).');
-  assert.match(detailText(page), /This is a failed request, not a missing decision\./);
+  assert.equal(alert.getAttribute('data-pane-state'), 'error');
+  assert.equal(alert.querySelector('p').textContent, 'Service Unavailable');
 
   server.failures.set('decision-D6', 'network');
-  page.$('.dec-detail-retry-btn').click();
+  page.$('#decisions-detail .pane-retry').click();
   await page.settle();
-  assert.equal(page.$('#decisions-detail [role="alert"]').textContent, 'Could not load decision-D6: GET /api/nodes/decision-D6 failed (network error).');
+  assert.equal(page.$('#decisions-detail [role="alert"] p').textContent, 'Network error: could not reach the server.');
 
   server.failures.delete('decision-D6');
-  page.$('.dec-detail-retry-btn').click();
+  page.$('#decisions-detail .pane-retry').click();
   await page.settle();
   assert.match(detailText(page), /Approve the decisions pane frames/, 'Retry recovers');
 
@@ -230,23 +223,23 @@ test('with nothing picked, Answer is disabled with no hint; a pick or a custom a
   assert.ok(!pickLine.classList.contains('max-sm:flex'));
 });
 
-test('each blocked node is one row: display chip, mono id, title that wraps under them below lg, and a chevron; the row opens it', async () => {
+test('each blocked node is one line: status icon, kind badge on a container, id, title truncating, and a chevron; the row opens it', async () => {
   const page = await openPane(fakeServer([d5(), d6()]));
   await openDecision(page, 'decision-D5');
   const rows = page.$$('.dec-waiting-row');
   assert.equal(rows.length, 1);
+  const icon = rows[0].querySelector('[role="img"]');
+  assert.equal(icon.getAttribute('aria-label'), 'Awaiting Decision');
+  assert.equal(rows[0].querySelector('.kind-badge').textContent, 'SPEC');
   const link = rows[0].querySelector('.dec-task-link');
-  const chip = link.querySelector('.st-chip');
-  assert.ok(chip.classList.contains('st-AWAITING_DECISION'));
-  assert.equal(chip.textContent, 'Awaiting Decision');
   assert.equal(link.querySelector('.font-mono').textContent, 'DECIDE');
-  assert.equal(link.querySelector('.dec-waiting-title').textContent, 'Decisions UX');
-  const stack = link.querySelector('.dec-waiting-title').parentNode;
-  assert.ok(stack.classList.contains('flex-col') && stack.classList.contains('lg:flex-row'), 'title under the chip below lg, beside it from lg');
+  const title = link.querySelector('.dec-waiting-title');
+  assert.equal(title.textContent, 'Decisions UX');
+  assert.ok(title.classList.contains('truncate'), 'the title truncates on its one line');
   assert.ok(link.querySelector('use[href="#icon-chevron-right"]'), 'a chevron closes the row');
 });
 
-test('options are a labelled radiogroup: radio dot, label and Recommended, description, then the effect or "Effect: none"', async () => {
+test('options are a labelled radiogroup: radio dot, label and Recommended, description, then the effect pill', async () => {
   const page = await openPane(fakeServer([d5(), d6()]));
   await openDecision(page, 'decision-D5');
   const group = page.$('[role="radiogroup"]');
@@ -260,8 +253,8 @@ test('options are a labelled radiogroup: radio dot, label and Recommended, descr
   const order = (card) => card.querySelectorAll('.dec-option-desc, span').map((el) => el.textContent.trim()).filter(Boolean);
   const first = order(cards[0]);
   assert.ok(first.indexOf('Recommended') < first.findIndex((t) => t.startsWith('Every DECIDE')));
-  assert.equal(first.at(-1), 'Effect: none', 'the effect line comes last');
-  assert.equal(order(cards[2]).at(-1), 'Then: abandon the blocked nodes');
+  assert.equal(first.at(-1), 'No effect on waiting nodes', 'the effect pill comes last');
+  assert.equal(order(cards[2]).at(-1), 'Abandons 1 waiting node');
 });
 
 test('every tab carries its count as a pill, Open live from the store and the rest from the endpoint\'s counts', async () => {
@@ -328,7 +321,7 @@ test('no text in the pane uses zinc-500 in any state: empty, loading, placeholde
   server.failures.set('decision-D5', 503);
   page.$('#dec-tab-open').click();
   await page.settle();
-  assert.match(detailText(page), /failed \(503\)/);
+  assert.match(detailText(page), /Service Unavailable/);
   assert.deepEqual(zinc500Texts(pane), [], 'error state');
 });
 
@@ -386,6 +379,11 @@ test('the context renders its markdown with the app\'s type scale as classes, no
 });
 
 test('rows, tabs, Answer, Withdraw and Reopen each show a themed focus ring and a pressed state', async () => {
+  const ring = (el) => (el.classList.contains('dec-row')
+    ? el.classList.contains('focus-visible:after:ring-2') && el.classList.contains('focus-visible:after:ring-emerald-400')
+    : el.classList.contains('focus-visible:ring-2') && el.classList.contains('focus-visible:ring-emerald-500'));
+  // A row's pressed state is its line's, which its title's overlay covers.
+  const pressable = (el) => (el.classList.contains('dec-row') ? el.parentNode : el);
   const server = fakeServer([d5(), d6()]);
   const page = await openPane(server);
   await openDecision(page, 'decision-D5');
@@ -400,8 +398,8 @@ test('rows, tabs, Answer, Withdraw and Reopen each show a themed focus ring and 
   await page.settle();
   controls.push(['Reopen', page.$('.dec-reopen-btn')]);
   for (const [name, el] of controls) {
-    assert.ok(el.classList.contains('focus-visible:ring-2') && el.classList.contains('focus-visible:ring-emerald-500'), `${name} has a focus ring`);
-    assert.ok(el.className.split(/\s+/).some((c) => c.startsWith('active:')), `${name} has a pressed state`);
+    assert.ok(ring(el), `${name} has a focus ring`);
+    assert.ok(pressable(el).className.split(/\s+/).some((c) => c.startsWith('active:')), `${name} has a pressed state`);
   }
 });
 

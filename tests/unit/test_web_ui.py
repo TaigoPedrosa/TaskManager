@@ -112,12 +112,12 @@ def test_plan_and_task_headers_are_not_sticky() -> None:
     assert "sticky" not in _function_body(html, "renderTaskCard")
 
 
-def test_status_icon_carries_a_title_and_chip_is_legend_only() -> None:
+def test_status_icon_carries_a_title_and_no_status_chip_is_left() -> None:
     html = get_web_html()
     status_icon = _function_body(html, "statusIcon")
     assert 'title="${esc(t.label)}" aria-label="${esc(t.label)}"' in status_icon
-    # statusChip (visible label) survives only in its own definition until its last caller goes.
-    assert html.count("statusChip(") == 1
+    assert "statusChip" not in html
+    assert "st-chip" not in html
 
 
 def test_group_headers_default_all_collapsed() -> None:

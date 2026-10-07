@@ -620,8 +620,8 @@ window.tmStore.onChange((patch) => {
 
 // Attachments (§4): a gallery with lightbox, source/age/staleness badges and Re-check, plus
 // the Attach-file action and detach. A node's Attachments group draws attachmentCardHtml and
-// acts through data-act; the decisions view draws renderAttachments and wires it with
-// wireAttachmentControls.
+// acts through data-act; the decisions view draws attachButtonHtml and renderAttachments and
+// wires them with wireAttachmentControls.
 
 function attachmentAssetUrl(entry) {
   // Live mode always has a server to ask; a static export only has what static_export.py
@@ -674,17 +674,18 @@ function sourceBadgeHtml(source) {
   return `<span class="att-source-badge px-1.5 py-0.5 rounded border text-[10px] font-medium ${badge.cls}" title="${esc(s.uri || 'no recorded source')}">${esc(label)}</span>`;
 }
 
-// One attachment: the thumbnail (an image opens the lightbox), the name, size, source and its
-// staleness. Its open and detach controls carry both their class and their data-act.
-function attachmentCardHtml(entry, editable) {
+// One attachment: the thumbnail (an image opens the lightbox), the name, size, and with
+// `provenance` its source and staleness. Its open and detach controls carry both their class and
+// their data-act. The name takes focus once the attachment is added.
+function attachmentCardHtml(entry, editable, provenance = true) {
   const url = attachmentAssetUrl(entry);
   const isImage = (entry.mime || '').startsWith('image/');
   const thumb = isImage && url
     ? `<button type="button" data-act="open-attachment" class="att-open-btn block w-full aspect-video rounded-md overflow-hidden bg-zinc-900 border border-zinc-800 hover:border-zinc-600 transition" data-asset="${esc(entry.asset)}" aria-label="Open ${esc(entry.name)} full size"><img src="${esc(url)}" alt="${esc(entry.caption || entry.name)}" class="w-full h-full object-cover"></button>`
     : `<div class="flex items-center justify-center aspect-video rounded-md bg-zinc-900 border border-zinc-800 text-zinc-500">${renderIcon(isImage ? 'file-x' : 'file-text', 'w-6 h-6')}</div>`;
   const nameEl = !isImage && url
-    ? `<a href="${esc(url)}" download="${esc(entry.name)}" class="text-emerald-400 hover:text-emerald-300 underline decoration-dotted">${esc(entry.name)}</a>`
-    : `<span>${esc(entry.caption || entry.name)}</span>`;
+    ? `<a href="${esc(url)}" download="${esc(entry.name)}" class="att-name rounded-sm text-emerald-400 hover:text-emerald-300 underline decoration-dotted ${FOCUS_RING}">${esc(entry.name)}</a>`
+    : `<span class="att-name rounded-sm ${FOCUS_RING}" tabindex="-1">${esc(entry.caption || entry.name)}</span>`;
   const sizeLabel = humanBytes(entry.size_bytes);
   const uri = entry.source && entry.source.uri;
   return `
@@ -694,33 +695,30 @@ function attachmentCardHtml(entry, editable) {
         <span class="truncate min-w-0" title="${esc(entry.name)}">${nameEl}</span>
         <span class="flex items-center gap-1 flex-shrink-0">
           ${sizeLabel ? `<span class="text-zinc-400">${esc(sizeLabel)}</span>` : ''}
-          ${editable ? `<button type="button" data-act="detach-attachment" class="att-detach-btn p-1 rounded text-zinc-400 hover:text-red-400 hover:bg-zinc-800" data-asset="${esc(entry.asset)}" aria-label="Detach ${esc(entry.name)}">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
+          ${editable ? `<button type="button" data-act="detach-attachment" class="att-detach-btn p-0.5 rounded text-zinc-400 hover:text-red-400 hover:bg-zinc-800 ${FOCUS_RING}" data-asset="${esc(entry.asset)}" aria-label="Detach ${esc(entry.name)}">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
         </span>
       </div>
-      ${uri ? `<div class="truncate text-[10px] font-mono text-zinc-400" title="${esc(uri)}">${esc(uri)}</div>` : ''}
-      <div class="flex items-center flex-wrap gap-1">${sourceBadgeHtml(entry.source)}</div>
+      ${provenance && uri ? `<div class="truncate text-[10px] font-mono text-zinc-400" title="${esc(uri)}">${esc(uri)}</div>` : ''}
+      ${provenance ? `<div class="flex items-center flex-wrap gap-1">${sourceBadgeHtml(entry.source)}</div>` : ''}
     </div>
   `;
 }
 
+// The decision header's Attach: it opens the native file picker, and the write starts on choice.
+function attachButtonHtml() {
+  return `<button type="button" class="att-add-btn h-7 px-2.5 flex items-center flex-shrink-0 rounded-md bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 border border-zinc-700 text-[11px] leading-4 font-medium text-zinc-200 transition ${FOCUS_RING}">Attach</button>`;
+}
+
+// A decision's Attachments group, below its answer form, only while it has any: names, sizes and
+// detach, three to a row from lg up.
 function renderAttachments(node, attachments, editable) {
   const list = attachments || [];
-  const cards = list.map(entry => attachmentCardHtml(entry, editable)).join('');
-
-  const controls = editable ? `
-    <div class="flex items-center gap-2 pt-1.5">
-      <button type="button" class="att-add-btn h-7 px-2 flex items-center rounded-md text-[11px] font-medium text-emerald-400 hover:text-emerald-300 hover:bg-zinc-800 border border-dashed border-zinc-700 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">+ Attach file</button>
-      ${list.length > 0 ? `<button type="button" class="att-recheck-btn h-7 px-2 rounded-md text-[11px] font-medium text-zinc-300 hover:text-white hover:bg-zinc-800 border border-zinc-700 transition">${renderIcon('rotate-cw', 'w-3 h-3 inline -mt-0.5 mr-1')}Re-check</button>` : ''}
-    </div>
-  ` : '';
-
-  if (list.length === 0 && !controls) return '';
-
+  if (list.length === 0) return '';
+  const groupId = `${node.id}::attachments`;
   return `
-    <div class="space-y-1.5 pt-2 border-t border-zinc-800/60">
-      <div class="font-semibold text-zinc-400 uppercase tracking-wider text-[10px]">Attachments${list.length ? ` (${list.length})` : ''}</div>
-      ${list.length ? `<div class="grid grid-cols-2 gap-2">${cards}</div>` : ''}
-      ${controls}
+    <div class="dec-attachments space-y-2.5">
+      ${renderGroupHeader(groupId, 'Attachments', list.length, false)}
+      <div class="grid grid-cols-2 lg:grid-cols-3 gap-3${groupCollapsed(groupId, false) ? ' hidden' : ''}">${list.map(entry => attachmentCardHtml(entry, editable, false)).join('')}</div>
     </div>
   `;
 }
@@ -782,9 +780,9 @@ async function attachFile(node, file, control, afterChange) {
     toast(e.message, 'error');
     return;
   }
-  await submitWrite(control, { method: 'POST', path: `/api/nodes/${node.id}/attachments`, body: { filename: file.name, content_base64 } });
+  const entry = await submitWrite(control, { method: 'POST', path: `/api/nodes/${node.id}/attachments`, body: { filename: file.name, content_base64 } });
   toast(`Attached ${file.name}.`, 'success');
-  if (afterChange) await afterChange();
+  if (afterChange) await afterChange(entry);
 }
 
 function detachAttachment(node, asset, afterChange, name) {
@@ -823,8 +821,6 @@ function wireAttachmentControls(root, node, attachments, editable, afterChange) 
     const entry = (attachments || []).find(a => a.asset === asset);
     btn.addEventListener('click', () => detachAttachment(node, asset, afterChange, entry && entry.name));
   });
-  const recheckBtn = root.querySelector('.att-recheck-btn');
-  if (recheckBtn) recheckBtn.addEventListener('click', () => recheckAttachments(node, recheckBtn, afterChange));
 }
 
 
