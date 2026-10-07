@@ -7,8 +7,12 @@ from typing import Any, cast
 
 import pytest
 import yaml
+from typer.testing import CliRunner
 
-from taskmanager.core.status import ConditionStage, DecisionStatus, Merge, Status
+from taskmanager.cli.main import EXPORT_FORMAT
+from taskmanager.cli.main import app as cli_app
+from taskmanager.core.lifecycle import next_action
+from taskmanager.core.status import Action, ConditionStage, DecisionStatus, Merge, Status
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.renderers.importers import BulkImporter
@@ -40,6 +44,7 @@ def test_import_stores_flags_merge_requires_land_order_and_conditions(
                 "id": "S-P-a",
                 "title": "a",
                 "merge": "parent",
+                "review": True,
                 "fix": False,
                 "requires": ["figma"],
                 "conditions": [{"needs": "staging up", "command": CHECK, "stage": "landing"}],
@@ -175,30 +180,214 @@ def test_a_duplicate_id_refusal_never_opens_a_write_transaction(
         )
 
 
-def test_importing_a_new_child_under_a_completed_plan_is_refused(repo: NodeRepository) -> None:
+@pytest.mark.parametrize("plan_status", ["COMPLETED", "LANDED"])
+def test_importing_a_new_child_under_a_plan_whose_code_landed_is_refused(
+    repo: NodeRepository, plan_status: str
+) -> None:
     importer = BulkImporter(repo)
     importer.import_dict(
-        doc({"id": "S-P-a", "title": "a", "status": "COMPLETED"}, plan={"status": "COMPLETED"})
+        doc(
+            {"id": "S-P-a", "title": "a", "status": "COMPLETED"},
+            plan={"status": plan_status, "review": True, "fix": True},
+        )
     )
-    with pytest.raises(ValueError, match="nothing written"):
+    with pytest.raises(ValueError, match=f"nothing written: S-P-b: S-P is {plan_status}"):
         importer.import_dict(doc({"id": "S-P-b", "title": "b"}))
     assert repo.get_node("S-P-b") is None
 
 
+def test_bringing_a_landed_plan_back_into_play_under_a_completed_spec_is_refused(
+    repo: NodeRepository,
+) -> None:
+    importer = BulkImporter(repo)
+    importer.import_dict(
+        {
+            "spec": {"id": "S", "title": "S", "status": "COMPLETED"},
+            "plans": [
+                {
+                    "id": "S-P",
+                    "title": "P",
+                    "status": "LANDED",
+                    "review": True,
+                    "fix": True,
+                    "tasks": [{"id": "S-P-a", "title": "a", "status": "COMPLETED"}],
+                }
+            ],
+        }
+    )
+    with pytest.raises(ValueError, match="nothing written: S-P: S is COMPLETED"):
+        importer.import_dict(doc(plan={"status": "READY"}))
+    plan = repo.get_node("S-P")
+    assert plan is not None and plan.status == Status.LANDED
+
+
 @pytest.mark.parametrize(
-    ("nothing_to_land", "rolled_up"), [(False, Status.IMPLEMENTED), (True, Status.COMPLETED)]
+    ("review", "nothing_to_land", "rolled_up"),
+    [
+        (False, False, Status.IMPLEMENTED),
+        (False, True, Status.COMPLETED),
+        (True, False, Status.IMPLEMENTED),
+        (True, True, Status.LANDED),
+    ],
 )
 def test_an_imported_plan_whose_tasks_are_all_completed_waits_to_land_only_with_code_to_land(
     repo: NodeRepository,
     monkeypatch: pytest.MonkeyPatch,
+    review: bool,
     nothing_to_land: bool,
     rolled_up: Status,
 ) -> None:
+    """A plan with nothing left to land is where its landing would leave it: one with review on
+    still owes its one review of the target its children's code is on."""
     importer = BulkImporter(repo)
     monkeypatch.setattr(importer.ops, "nothing_to_land", lambda _container: nothing_to_land)
-    importer.import_dict(doc({"id": "S-P-a", "title": "a", "status": "COMPLETED"}))
+    importer.import_dict(
+        doc(
+            {"id": "S-P-a", "title": "a", "status": "COMPLETED"},
+            plan={"review": review, "fix": review},
+        )
+    )
     plan = repo.get_node("S-P")
     assert plan is not None and plan.status == rolled_up
+
+
+def flags(repo: NodeRepository, node_id: str) -> tuple[bool, bool]:
+    node = repo.get_node(node_id)
+    assert node is not None
+    return node.review, node.fix
+
+
+@pytest.mark.parametrize(
+    ("task", "expected"),
+    [
+        ({}, (False, False)),
+        ({"merge": "parent", "review": True}, (True, False)),
+        ({"review": True, "fix": True}, (True, True)),
+    ],
+    ids=["defaults-off", "explicit-review-wins", "explicit-review-and-fix-win"],
+)
+def test_a_task_imported_under_a_reviewed_plan_takes_no_review_of_its_own_unless_it_says_so(
+    repo: NodeRepository, task: dict[str, Any], expected: tuple[bool, bool]
+) -> None:
+    BulkImporter(repo).import_dict(
+        doc({"id": "S-P-a", "title": "a", **task}, plan={"review": True, "fix": True})
+    )
+    assert flags(repo, "S-P-a") == expected
+
+
+def test_a_task_imported_under_a_plan_without_review_keeps_its_own_review_and_fix(
+    repo: NodeRepository,
+) -> None:
+    BulkImporter(repo).import_dict(doc({"id": "S-P-a", "title": "a"}))
+    assert flags(repo, "S-P-a") == (True, True)
+
+
+def test_a_task_imported_straight_under_a_reviewed_spec_takes_no_review_of_its_own(
+    repo: NodeRepository,
+) -> None:
+    BulkImporter(repo).import_dict(
+        {
+            "spec": {"id": "S", "title": "S", "review": True, "fix": True},
+            "tasks": [{"id": "S-a", "title": "a"}],
+        }
+    )
+    assert flags(repo, "S-a") == (False, False)
+
+
+def test_reimporting_a_task_under_a_plan_now_reviewed_keeps_the_flags_it_has(
+    repo: NodeRepository,
+) -> None:
+    importer = BulkImporter(repo)
+    importer.import_dict(doc({"id": "S-P-a", "title": "a"}))
+    importer.import_dict(doc({"id": "S-P-a", "title": "a"}, plan={"review": True, "fix": True}))
+    assert flags(repo, "S-P-a") == (True, True)
+
+
+@pytest.mark.parametrize(
+    ("sensitive", "named"),
+    [("pii", "'pii'"), (["rls", "billing"], "'billing'"), (True, "'True'")],
+)
+def test_an_import_naming_a_sensitive_area_outside_the_four_is_refused_with_its_name(
+    repo: NodeRepository, sensitive: object, named: str
+) -> None:
+    document = doc({"id": "S-P-a", "title": "a", "frontmatter": {"sensitive": sensitive}})
+    with pytest.raises(ValueError, match="nothing written") as exc:
+        BulkImporter(repo).import_dict(document)
+    assert f"S-P-a: sensitive names {named}" in str(exc.value)
+    assert repo.list_nodes() == []
+
+
+@pytest.mark.parametrize("sensitive", ["migration", ["tenant", "rls", "crypto", "migration"]])
+def test_an_import_naming_known_sensitive_areas_is_stored(
+    repo: NodeRepository, sensitive: object
+) -> None:
+    BulkImporter(repo).import_dict(
+        doc({"id": "S-P-a", "title": "a", "frontmatter": {"sensitive": sensitive}})
+    )
+    node = repo.get_node("S-P-a")
+    assert node is not None and node.frontmatter["sensitive"] == sensitive
+
+
+FIXED = {"status": "FIXED", "outcome": "reject", "fix_for": "reject"}
+MIGRATION = "core/migrations/versions/0042_add_tenant.py"
+
+
+@pytest.mark.parametrize(
+    ("task", "action"),
+    [
+        ({}, Action.MERGE),
+        ({"frontmatter": {"sensitive": ["rls"]}}, Action.REVIEW),
+        ({"frontmatter": {"declared_files": [MIGRATION]}}, Action.REVIEW),
+        (
+            {"verifications": [{"type": "file_exists", "target_path": MIGRATION}]},
+            Action.REVIEW,
+        ),
+    ],
+    ids=["plain", "sensitive-key", "declared-migration", "verified-migration"],
+)
+def test_an_imported_fix_is_reviewed_before_it_lands_only_when_the_node_is_sensitive(
+    repo: NodeRepository, task: dict[str, Any], action: Action
+) -> None:
+    importer = BulkImporter(repo)
+    importer.import_dict(doc({"id": "S-P-a", "title": "a", **FIXED, **task}))
+    node = repo.get_node("S-P-a")
+    assert node is not None
+    assert next_action(importer.snapshots.cycle(node)) == action
+
+
+def restore(tmp_path: Path, task: dict[str, Any]) -> tuple[int, str, Path]:
+    """`tm restore` of an export holding one plan with `task` under it, into a new root."""
+    export = tmp_path / "export"
+    export.mkdir()
+    (export / "_format.json").write_text(json.dumps(EXPORT_FORMAT))
+    (export / "S-P.json").write_text(json.dumps(doc({"id": "S-P-a", "title": "a", **task})))
+    root = tmp_path / "restored"
+    root.mkdir()
+    result = CliRunner().invoke(cli_app, ["restore", str(export), "-C", str(root)])
+    return result.exit_code, result.output, root
+
+
+def test_a_restore_naming_an_unknown_sensitive_area_is_refused_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    code, output, root = restore(tmp_path, {"frontmatter": {"sensitive": "pii"}})
+    assert code == 1
+    assert "sensitive names 'pii'" in output
+    restored = NodeRepository(DatabaseManager(root / ".taskmanager"))
+    assert restored.list_nodes() == []
+
+
+def test_a_restored_node_that_writes_a_migration_is_sensitive(tmp_path: Path) -> None:
+    code, output, root = restore(
+        tmp_path, {**FIXED, "frontmatter": {"declared_files": [MIGRATION]}}
+    )
+    assert code == 0, output
+    db = DatabaseManager(root / ".taskmanager")
+    restored = NodeRepository(db)
+    node = restored.get_node("S-P-a")
+    assert node is not None
+    cycle = BulkImporter(restored).snapshots.cycle(node)
+    assert cycle.sensitive and next_action(cycle) == Action.REVIEW
 
 
 def test_a_document_that_states_conditions_replaces_the_set(repo: NodeRepository) -> None:

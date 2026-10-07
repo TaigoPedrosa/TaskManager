@@ -266,13 +266,21 @@ async function work(n, c, s, trail) {
   let type = AGENT_TYPE[repos[0]]
   let body
   if (c.action === 'review') {
+    // Only a sensitive fix is reviewed again, container or task, and that review never widens past
+    // the open findings.
     const again = s.status === 'FIXED'
-    const container = n.kind !== 'task'
+    const container = !again && n.kind !== 'task'
     type = REVIEWER[container ? 'container' : again ? 'rereview' : 'task']
     const base = !c.base || c.base === 'main' ? 'origin/main' : c.base
+    // A landed node's claim names its target as the branch, so base...branch is empty; its code is
+    // what its landing merge brought onto the target. The trailing -- makes git refuse a merge that
+    // is not there instead of printing an empty diff.
+    const landing = `${c.branch}^{/^merge[(]${n.id}[)]: land }`
+    const landed = s.status === 'LANDED'
+    const diff = landed ? `'${landing}^1..${landing}' --` : `${base}...${c.branch}`
     body = again
       ? `Scope: every finding in tm section ${n.id}:review not yet recorded as closed, against the fix commits on ${c.branch} and the fixer's latest :report entry, and, when the last landing failed, the failure its latest :merge entry names. Establish each closure by mutation.`
-      : `Scope: the whole diff of ${c.branch} from its base, in each repository it touched: ${repos.map(r => `git -C ${ROOT}/${r} diff ${base}...${c.branch}`).join('; ')}.${container ? ' This is a container review: read what is true only between its children, and every child tm render lists as rejected by its own review.' : ''}`
+      : `Scope: ${landed ? `what the landing of ${n.id} brought onto ${c.branch}` : `the whole diff of ${c.branch} from its base`}, in each repository it touched: ${repos.map(r => `git -C ${ROOT}/${r} diff ${diff}`).join('; ')}.${landed ? ' A repository where that merge does not resolve had nothing to land.' : ''}${container ? ' This is a container review: read what is true only between its children, and every child tm render lists as rejected by its own review.' : ''}`
     body += `\nFindings: append numbered findings to tm section ${n.id}:review, one line each; write it even when nothing is open, saying so.`
     // One scratch path per repository: a container review may execute code in several.
     const scratch = repos.map(r => `${WT}/${r}-${n.id}-review`).join(' or ') || `${WT}/<repo>-${n.id}-review`

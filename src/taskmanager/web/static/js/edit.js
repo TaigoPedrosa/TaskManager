@@ -453,7 +453,7 @@ function openVerbDialog(node, verb) {
   });
 }
 
-const RESET_TARGETS = ['READY', 'IMPLEMENTED', 'REVIEWED', 'FIXED', 'COMPLETED'];
+const RESET_TARGETS = ['READY', 'IMPLEMENTED', 'REVIEWED', 'FIXED', 'LANDED', 'COMPLETED'];
 const OUTCOMES = ['approve', 'reject', 'merge_failed'];
 
 function openResetDialog(node) {

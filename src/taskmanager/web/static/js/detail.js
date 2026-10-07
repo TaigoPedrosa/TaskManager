@@ -157,7 +157,7 @@ function attachSectionEditControls(root, node, sections) {
 // Verbs, never a status picker: each button is a transition the stored status allows, and
 // every one of them asks for the note it records.
 const REOPENABLE = ['FAILED', 'DEFERRED', 'ABANDONED'];
-const SETTABLE_ASIDE = ['READY', 'IMPLEMENTED', 'REVIEWED', 'FIXED', 'FAILED'];
+const SETTABLE_ASIDE = ['READY', 'IMPLEMENTED', 'REVIEWED', 'FIXED', 'LANDED', 'FAILED'];
 
 function renderActionBar(node, hasLease) {
   const btnCls = 'h-7 px-2.5 rounded-md text-[11px] font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 transition';

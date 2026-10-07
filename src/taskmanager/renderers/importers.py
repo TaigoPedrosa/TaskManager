@@ -144,14 +144,17 @@ class BulkImporter:
         verifications: dict[str, list[NodeVerification]] = {}
         conditions: dict[str, list[Condition]] = {}
 
-        def take(raw: dict[str, Any], kind: NodeKind, parent: str | None) -> None:
-            node = self._parse_node(raw, kind, self.node_repo.get_node(raw["id"]))
+        def take(raw: dict[str, Any], kind: NodeKind, parent: Node | None) -> Node:
+            reviewed_above = parent is not None and parent.review
+            node = self._parse_node(raw, kind, self.node_repo.get_node(raw["id"]), reviewed_above)
             nodes.append(node)
             sections.extend(self._parse_sections(node.id, raw.get("sections")))
             if parent is not None:
                 relations.append(
                     NodeRelation(
-                        source_id=parent, target_id=node.id, relation_type=RelationType.CONTAINS
+                        source_id=parent.id,
+                        target_id=node.id,
+                        relation_type=RelationType.CONTAINS,
                     )
                 )
             relations.extend(
@@ -168,19 +171,18 @@ class BulkImporter:
                 ]
             if "conditions" in raw:
                 conditions[node.id] = [self._parse_condition(node.id, c) for c in raw["conditions"]]
+            return node
 
         spec_data = data.get("spec")
-        spec_id = spec_data["id"] if spec_data else None
-        if spec_data:
-            take(spec_data, NodeKind.SPEC, None)
+        spec = take(spec_data, NodeKind.SPEC, None) if spec_data else None
         for p_idx, plan_data in enumerate(data.get("plans", []), start=1):
             plan_data.setdefault("ordinal", p_idx)
-            take(plan_data, NodeKind.PLAN, spec_id)
+            plan = take(plan_data, NodeKind.PLAN, spec)
             for t_idx, task_data in enumerate(plan_data.get("tasks", []), start=1):
                 task_data.setdefault("ordinal", t_idx)
-                take(task_data, NodeKind.TASK, plan_data["id"])
+                take(task_data, NodeKind.TASK, plan)
         for task_data in data.get("tasks", []):
-            take(task_data, NodeKind.TASK, spec_id)
+            take(task_data, NodeKind.TASK, spec)
         for dec_data in data.get("decisions", []):
             take(dec_data, NodeKind.DECISION, None)
 
@@ -281,10 +283,14 @@ class BulkImporter:
 
     @staticmethod
     def _parse_node(
-        data: dict[str, Any], default_kind: NodeKind, existing: Node | None = None
+        data: dict[str, Any],
+        default_kind: NodeKind,
+        existing: Node | None = None,
+        reviewed_above: bool = False,
     ) -> Node:
         """A key the document omits keeps the value the node already has, so importing a document
-        again never resets the progress recorded since; a key it states wins."""
+        again never resets the progress recorded since; a key it states wins. `reviewed_above`:
+        the parent reviews, so a new task under it is covered by that one review."""
 
         def pick(key: str, default: Any) -> Any:
             if key in data:
@@ -305,8 +311,9 @@ class BulkImporter:
             status = existing.status
         else:
             status = DecisionStatus.OPEN if kind == NodeKind.DECISION else Status.READY
-        review = bool(pick("review", kind == NodeKind.TASK))
-        fix = bool(pick("fix", kind == NodeKind.TASK))
+        own_review = kind == NodeKind.TASK and not reviewed_above
+        review = bool(pick("review", own_review))
+        fix = bool(pick("fix", own_review))
         if fix and not review:
             raise ValueError(
                 f"{REFUSED}node {node_id!r} sets fix without review: a rejection is fixed by "

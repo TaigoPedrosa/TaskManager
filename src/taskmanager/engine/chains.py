@@ -6,6 +6,8 @@ from typing import Final, Protocol
 from taskmanager.core.status import DecisionStatus, Merge, Status
 
 MAIN: Final = "MAIN"
+# Code on its landing target: completed, or landed with its one review still owed.
+ON_TARGET: Final = frozenset({Status.LANDED, Status.COMPLETED})
 
 
 class Tree(Protocol):
@@ -49,7 +51,7 @@ def satisfied(t: Tree, x: str, y: str) -> bool:
     status = t.status(y)
     if isinstance(status, DecisionStatus):
         return status != DecisionStatus.OPEN
-    return status == Status.SUPERSEDED or t.status(meeting(t, x, y)) == Status.COMPLETED
+    return status == Status.SUPERSEDED or t.status(meeting(t, x, y)) in ON_TARGET
 
 
 def sync_pairs(t: Tree, x: str, y: str) -> list[tuple[str, str]]:

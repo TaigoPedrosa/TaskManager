@@ -192,7 +192,8 @@ class AppIcon(Enum):
         "minus",
         '<path d="M5 12h14"/>',
     )
-    # Status icons with no other meaning on the page: a sync merge and a failed node.
+    # Status icons with no other meaning on the page: a sync merge, a failed node and a landed
+    # node whose review is owed.
     GIT_MERGE = IconData(
         "git-merge",
         '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/>',
@@ -200,6 +201,10 @@ class AppIcon(Enum):
     OCTAGON_X = IconData(
         "octagon-x",
         '<path d="m15 9-6 6"/><path d="M2.586 16.726A2 2 0 0 1 2 15.312V8.688a2 2 0 0 1 .586-1.414l4.688-4.688A2 2 0 0 1 8.688 2h6.624a2 2 0 0 1 1.414.586l4.688 4.688A2 2 0 0 1 22 8.688v6.624a2 2 0 0 1-.586 1.414l-4.688 4.688a2 2 0 0 1-1.414.586H8.688a2 2 0 0 1-1.414-.586z"/><path d="m9 9 6 6"/>',
+    )
+    PLANE_LANDING = IconData(
+        "plane-landing",
+        '<path d="M2 22h20"/><path d="M3.77 10.77 2 9l2-4.5 1.1.55c.55.28.9.84.9 1.45s.35 1.17.9 1.45L8 8.5l3-6 1.05.53a2 2 0 0 1 1.09 1.52l.72 5.4a2 2 0 0 0 1.09 1.52l4.4 2.2c.42.22.78.55 1.01.96l.6 1.03c.49.88-.06 1.98-1.06 2.1l-1.18.15c-.47.06-.95-.02-1.37-.24L4.29 11.15a2 2 0 0 1-.52-.38Z"/>',
     )
 
     def as_symbol(self) -> str:
@@ -331,6 +336,18 @@ class StatusVisual(Enum):
         "#14532d",
         "#166534",
         "#dcfce7",
+    )
+    LANDED = StatusTheme(
+        "LANDED",
+        "Landed",
+        AppIcon.PLANE_LANDING,
+        StatusGroup.WAITING,
+        "Landed, review owed: its code is on its target and verified there, and its one review "
+        "is still owed, so it is not done.",
+        "#34d399",
+        "#064e3b",
+        "#065f46",
+        "#d1fae5",
     )
     FAILED = StatusTheme(
         "FAILED",

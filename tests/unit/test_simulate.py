@@ -159,13 +159,13 @@ def test_a_task_with_review_off_skips_straight_from_implement_to_merge(estate: E
 # -- a plan's rollup and its own review, exactly as core.rollup decides --------------------------
 
 
-def test_a_task_under_a_plan_lands_on_the_plan_and_the_plan_reviews_once_done(
+def test_a_task_under_a_plan_lands_on_the_plan_and_the_plan_lands_before_its_one_review(
     estate: Estate,
 ) -> None:
     estate.add("P", NodeKind.PLAN, review=True, fix=True)
     estate.add("T1", parent="P")
 
-    waves = simulate(estate.snap(), depth=4, size=10, max_strong=10, specs=None)
+    waves = simulate(estate.snap(), depth=5, size=10, max_strong=10, specs=None)
 
     assert [action_of(w, "T1").action for w in waves[:3]] == [
         Action.IMPLEMENT,
@@ -174,7 +174,14 @@ def test_a_task_under_a_plan_lands_on_the_plan_and_the_plan_reviews_once_done(
     ]
     assert action_of(waves[2], "T1").status_after == Status.COMPLETED
     # The plan rolls up to IMPLEMENTED the moment its only child lands, in that same wave.
-    assert action_of(waves[3], "P").action == Action.REVIEW
+    assert (action_of(waves[3], "P").action, action_of(waves[3], "P").status_after) == (
+        Action.MERGE,
+        Status.LANDED,
+    )
+    assert (action_of(waves[4], "P").action, action_of(waves[4], "P").status_after) == (
+        Action.REVIEW,
+        Status.COMPLETED,
+    )
 
 
 # -- a dependent waits for its dependency's merge -------------------------------------------------

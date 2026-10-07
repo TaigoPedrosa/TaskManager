@@ -269,9 +269,9 @@ class Claims:
                 return f"condition unmet: {unmet[0].needs}"
         return None
 
-    def next_step(self, node: Node) -> tuple[Action | None, str | None]:
+    def next_step(self, node: Node, snap: Snapshot) -> tuple[Action | None, str | None]:
         """The action a claim would take now, and the model it would name."""
-        return selection.next_step(node)
+        return selection.next_step(node, snap)
 
     def verify(self, node_id: str, ref: str, repo: str | None = None) -> tuple[bool, str]:
         """The node's verifications at `ref` (a container's: every descendant task's), limited to
@@ -380,7 +380,7 @@ class Claims:
             task_id=node.id,
             agent_id=agent,
             session_id=session,
-            branch_name=self.branch_of(node.id),
+            branch_name=self._step_branch(after, action),
             ttl_seconds=ttl or self.ttl_for(action),
             action=cast(LeaseAction, action),
             review_hash=self._review_hash(node.id) if action == Action.REVIEW else None,
@@ -401,17 +401,32 @@ class Claims:
             detail = getattr(exc, "stderr", None) or str(exc)
             raise OperationError(f"claim of {node.id} undone: {detail}".strip(), 409) from exc
 
+    def _step_branch(self, node: Node, action: Action) -> str:
+        """The branch a step works on: the node's own, or for a review of landed code, the
+        target it landed on."""
+        if action == Action.REVIEW and node.claimed_from == Status.LANDED:
+            return self.target_ref(self.target_of(node.id))
+        return self.branch_of(node.id)
+
+    @staticmethod
+    def _past_landing(node: Node, action: Action) -> bool:
+        """A container's review of its landed target, or the fix of what that review found: both
+        work in every repository its code landed in, whether its own branch is there or not."""
+        if action == Action.REVIEW:
+            return node.claimed_from == Status.LANDED
+        return action == Action.FIX and node.fix_for == Outcome.REJECT
+
     def _begin(
         self, node: Node, action: Action, model: str, worktree_dir: Path | None
     ) -> ClaimResult:
         repos = self.repos_of(node.id)
-        branch = self.branch_of(node.id)
-        if self.is_container(node):
+        branch = self._step_branch(node, action)
+        if self.is_container(node) and not self._past_landing(node, action):
             repos = [r for r in repos if gitops.rev_parse(self.root / r, f"refs/heads/{branch}")]
         worktree: str | None = None
         worktrees: dict[str, str] = {}
         if action in (Action.IMPLEMENT, Action.FIX):
-            worktree, worktrees = self._cut(node, repos, worktree_dir)
+            worktree, worktrees = self._cut(node, repos, worktree_dir, fix=action == Action.FIX)
         job = self._landing().start_land(node.id) if action == Action.MERGE else None
         return ClaimResult(
             action,
@@ -431,29 +446,36 @@ class Claims:
         return self.landing
 
     def _cut(
-        self, node: Node, repos: list[str], worktree_dir: Path | None
+        self, node: Node, repos: list[str], worktree_dir: Path | None, *, fix: bool
     ) -> tuple[str, dict[str, str]]:
         """A worktree of the node's branch in each repository. A branch that already exists is
         checked out as it stands, never cut again: a fix continues its implement's commits, and a
         reopened or re-imported node resumes its branch. Write-time validation refuses a change
-        of target once the branch exists, so an existing branch is cut from this node's target."""
+        of target once the branch exists, so an existing branch is cut from this node's target.
+        The exception is a fix whose branch carries nothing its target lacks, as after a landing:
+        that branch is retired and the fix is cut from the target, so it builds on what landed."""
         # An absolute worktree_dir replaces the root: `Path / absolute` is the absolute path.
         base_dir = self.root / (worktree_dir or self.config.worktree_dir)
         branch = self.branch_of(node.id)
-        worktrees: dict[str, str] = {}
+
+        def cut(repo: str, path: Path) -> str:
+            base = self._base_ref(node.id, repo)
+            if fix and self._spent(self.root / repo, branch, base):
+                self._retire(repo, branch)
+            return str(GitManager(self.root / repo).create_worktree(branch, path, base))
+
         if not self.is_container(node):
             repo = repos[0]
-            path = GitManager(self.root / repo).create_worktree(
-                branch, base_dir / f"{repo}-{node.id}", self._base_ref(node.id, repo)
-            )
-            worktrees[repo] = str(path)
-            return str(path), worktrees
-        for repo in repos:
-            path = GitManager(self.root / repo).create_worktree(
-                branch, base_dir / node.id / repo, self._base_ref(node.id, repo)
-            )
-            worktrees[repo] = str(path)
+            path = cut(repo, base_dir / f"{repo}-{node.id}")
+            return path, {repo: path}
+        worktrees = {repo: cut(repo, base_dir / node.id / repo) for repo in repos}
         return str(base_dir / node.id), worktrees
+
+    @staticmethod
+    def _spent(repo_dir: Path, branch: str, base: str) -> bool:
+        return bool(gitops.rev_parse(repo_dir, f"refs/heads/{branch}")) and (
+            gitops.is_ancestor(repo_dir, branch, base) or gitops.diff_quiet(repo_dir, base, branch)
+        )
 
     def _base_ref(self, node_id: str, repo: str) -> str:
         """The ref `node_id`'s branch is cut from in `repo`, creating each ancestor container
@@ -803,7 +825,7 @@ class Claims:
     def reset(self, node_id: str, to: Status, note: str, outcome: Outcome | None = None) -> Status:
         node = self.node(node_id)
         self._idle(node_id)
-        if to == Status.COMPLETED:
+        if to in (Status.LANDED, Status.COMPLETED):
             self._prove_landed(node_id)
         try:
             nxt = lifecycle.reset(self.snapshots.cycle(node), to, outcome)
@@ -888,22 +910,25 @@ class Claims:
         on the old branch in a repository only it touched."""
         branch = self.branch_of(node_id)
         for repo in self.known_repos():
-            repo_dir = self.root / repo
-            if not gitops.rev_parse(repo_dir, f"refs/heads/{branch}"):
-                continue
-            n = 1
-            while gitops.rev_parse(repo_dir, f"refs/heads/{branch}@{n}"):
-                n += 1
-            worktree = GitManager(repo_dir).find_worktree(branch)
-            try:
-                if worktree is not None:
-                    retired = worktree.with_name(f"{worktree.name}@{n}")
-                    gitops.move_worktree(repo_dir, worktree, retired)
-                gitops.rename_branch(repo_dir, branch, f"{branch}@{n}")
-            except CalledProcessError as exc:
-                raise OperationError(
-                    f"could not retire {branch} in {repo}: {exc.stderr or exc}".strip(), 409
-                ) from exc
+            self._retire(repo, branch)
+
+    def _retire(self, repo: str, branch: str) -> None:
+        repo_dir = self.root / repo
+        if not gitops.rev_parse(repo_dir, f"refs/heads/{branch}"):
+            return
+        n = 1
+        while gitops.rev_parse(repo_dir, f"refs/heads/{branch}@{n}"):
+            n += 1
+        worktree = GitManager(repo_dir).find_worktree(branch)
+        try:
+            if worktree is not None:
+                retired = worktree.with_name(f"{worktree.name}@{n}")
+                gitops.move_worktree(repo_dir, worktree, retired)
+            gitops.rename_branch(repo_dir, branch, f"{branch}@{n}")
+        except CalledProcessError as exc:
+            raise OperationError(
+                f"could not retire {branch} in {repo}: {exc.stderr or exc}".strip(), 409
+            ) from exc
 
     def _strand(self, node_id: str, status: Status) -> None:
         dependents = stranded_dependents(self.ops, node_id)

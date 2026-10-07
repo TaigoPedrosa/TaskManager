@@ -1,10 +1,13 @@
+import hashlib
 import sqlite3
 import sys
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import app, main
@@ -18,13 +21,14 @@ from taskmanager.core.models import (
     NodeSection,
     NodeVerification,
 )
-from taskmanager.core.status import JobKind, Status
-from taskmanager.db.connection import DatabaseManager, StateSchemaTooNew
+from taskmanager.core.status import DecisionStatus, JobKind, Status
+from taskmanager.db.connection import DatabaseManager, StateSchemaTooNew, StateSchemaTooOld
 from taskmanager.db.graph_reader import read_graph
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
-from taskmanager.db.schema import SCHEMA_VERSION, STATE_SCHEMA_VERSION
+from taskmanager.db.schema import SCHEMA_VERSION, STATE_MIGRATIONS, STATE_SCHEMA_VERSION
+from taskmanager.web.app import create_app
 
 _FIXTURE = Path(__file__).parent.parent / "fixtures" / "state_v1.sql"
 runner = CliRunner()
@@ -68,8 +72,9 @@ def test_migrated_v1_estate_matches_a_fresh_init(tmp_path: Path) -> None:
     old = tmp_path / "old"
     _build_v1_estate(old)
     migrated = DatabaseManager(old)
+    assert migrated.migrate_state() == 1
     with migrated.get_state_connection() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 3
 
     fresh = DatabaseManager(tmp_path / "fresh")
     fresh.init_all()
@@ -77,6 +82,196 @@ def test_migrated_v1_estate_matches_a_fresh_init(tmp_path: Path) -> None:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION
 
     assert _sqlite_master_rows(migrated) == _sqlite_master_rows(fresh)
+
+
+def _build_v2_estate(taskmanager_dir: Path) -> None:
+    """A `state.db` at schema 2, as 0.3.3 wrote it: its `nodes` CHECK has no LANDED."""
+    _build_v1_estate(taskmanager_dir)
+    conn = sqlite3.connect(taskmanager_dir / "state.db")
+    try:
+        conn.executescript(STATE_MIGRATIONS[2])
+        conn.execute("PRAGMA user_version = 2")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _seed_every_v2_status(taskmanager_dir: Path) -> None:
+    conn = sqlite3.connect(taskmanager_dir / "state.db")
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        # A deleted first row leaves a rowid gap, so a copy that renumbers rowids shows.
+        conn.execute("INSERT INTO nodes (id, kind, title) VALUES ('GAP', 'task', 'gap')")
+        cycle = [s for s in Status if s is not Status.LANDED]
+        for i, status in enumerate(cycle):
+            conn.execute(
+                "INSERT INTO nodes (id, kind, title, status, priority, ordinal, target_repo, "
+                "frontmatter_json, claimed_from, review, fix, merge, outcome, verdict, fix_for, "
+                "review_cycles, merge_attempts, step_failures, branch, requires, land_order, "
+                "created_at, updated_at) VALUES (?, 'task', ?, ?, ?, ?, 'backend', '{\"k\": 1}', "
+                "'READY', 1, 0, 'parent', 'reject', 'needs work', 'reject', 2, 1, 1, ?, "
+                "'[\"gpu\"]', '[\"a\"]', '2026-01-01 00:00:00', '2026-01-02 00:00:00')",
+                (f"T{i:02}", f"task {status}", status.value, 10 + i, i, f"tm/T{i:02}"),
+            )
+        for status in DecisionStatus:
+            conn.execute(
+                "INSERT INTO nodes (id, kind, title, status) VALUES (?, 'decision', ?, ?)",
+                (f"D-{status}", f"decision {status}", status.value),
+            )
+        conn.execute("DELETE FROM nodes WHERE id = 'GAP'")
+        conn.execute("UPDATE nodes SET title = title || '!' WHERE id = 'T00'")
+        conn.execute(
+            "INSERT INTO node_sections (node_id, section_key, ordinal, header, content) "
+            "VALUES ('T00', 'body', 1, '## Body', 'x')"
+        )
+        conn.execute(
+            "INSERT INTO node_relations (source_id, target_id, relation_type) "
+            "VALUES ('T00', 'T01', 'depends_on')"
+        )
+        conn.execute(
+            "INSERT INTO node_verifications (node_id, verification_type, target_path) "
+            "VALUES ('T00', 'file_exists', 'a.py')"
+        )
+        conn.execute(
+            "INSERT INTO node_conditions (node_id, idx, needs, command) "
+            "VALUES ('T00', 0, 'X', 'true')"
+        )
+        conn.execute(
+            "INSERT INTO jobs (id, kind, node_id, repo, target, state, heartbeat) "
+            "VALUES ('J1', 'land', 'T00', 'backend', 'main', 'running', '2026-01-01 00:00:00')"
+        )
+        conn.execute("INSERT INTO nodes_fts (rowid, node_id, title) VALUES (1, 'T00', 'task')")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _raw_rows(state_db: Path) -> dict[str, list[tuple[object, ...]]]:
+    conn = sqlite3.connect(state_db)
+    try:
+        return {
+            "nodes": conn.execute("SELECT rowid, * FROM nodes ORDER BY id").fetchall(),
+            "node_sections": conn.execute("SELECT * FROM node_sections").fetchall(),
+            "node_relations": conn.execute("SELECT * FROM node_relations").fetchall(),
+            "node_verifications": conn.execute("SELECT * FROM node_verifications").fetchall(),
+            "node_conditions": conn.execute("SELECT * FROM node_conditions").fetchall(),
+            "jobs": conn.execute("SELECT * FROM jobs").fetchall(),
+        }
+    finally:
+        conn.close()
+
+
+def _write_landed(state_db: Path, status: str, claimed_from: str | None) -> None:
+    conn = sqlite3.connect(state_db)
+    try:
+        conn.execute(
+            "UPDATE nodes SET status = ?, claimed_from = ? WHERE id = 'T00'",
+            (status, claimed_from),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_migrate_schema_2_estate_keeps_every_row_and_column_unchanged(tmp_path: Path) -> None:
+    old = tmp_path / "old"
+    _build_v2_estate(old)
+    _seed_every_v2_status(old)
+    before = _raw_rows(old / "state.db")
+    seeded = {row[4] for row in before["nodes"]}
+    assert seeded == {s.value for s in Status if s is not Status.LANDED} | set(DecisionStatus)
+
+    db = DatabaseManager(old)
+    assert db.migrate_state() == 2
+    with db.get_state_connection() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert conn.execute("PRAGMA legacy_alter_table").fetchone()[0] == 0
+    db.close()
+
+    assert _raw_rows(old / "state.db") == before
+    assert all(before.values())
+
+
+def test_migrate_schema_2_estate_on_a_foreign_keys_on_build_keeps_every_child_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = tmp_path / "old"
+    _build_v2_estate(old)
+    _seed_every_v2_status(old)
+    before = _raw_rows(old / "state.db")
+    real_connect = sqlite3.connect
+
+    # What a SQLite compiled with SQLITE_DEFAULT_FOREIGN_KEYS=1 hands back.
+    def connect_foreign_keys_on(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        conn = real_connect(*args, **kwargs)
+        conn.execute("PRAGMA foreign_keys = ON")
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", connect_foreign_keys_on)
+    db = DatabaseManager(old)
+    assert db.migrate_state() == 2
+    with db.get_state_connection() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    db.close()
+
+    assert _raw_rows(old / "state.db") == before
+    assert all(before.values())
+
+
+def test_migrate_schema_2_estate_stores_the_fresh_nodes_sql_byte_for_byte(tmp_path: Path) -> None:
+    old = tmp_path / "old"
+    _build_v2_estate(old)
+    migrated = DatabaseManager(old)
+    assert migrated.migrate_state() == 2
+    fresh = DatabaseManager(tmp_path / "fresh")
+    fresh.init_all()
+
+    assert _sqlite_master_rows(migrated) == _sqlite_master_rows(fresh)
+    with migrated.get_state_connection() as conn:
+        (sql,) = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'nodes'").fetchone()
+    assert "'LANDED'" in sql
+
+
+@pytest.mark.parametrize(
+    ("status", "claimed_from"),
+    [("LANDED", None), ("REVIEWING", "LANDED")],
+    ids=["landed-node", "review-claimed-from-landed"],
+)
+def test_migrate_schema_2_estate_then_write_landed_succeeds(
+    tmp_path: Path, status: str, claimed_from: str | None
+) -> None:
+    old = tmp_path / "old"
+    _build_v2_estate(old)
+    _seed_every_v2_status(old)
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+        _write_landed(old / "state.db", status, claimed_from)
+
+    assert DatabaseManager(old).migrate_state() == 2
+
+    _write_landed(old / "state.db", status, claimed_from)
+    conn = sqlite3.connect(old / "state.db")
+    try:
+        row = conn.execute("SELECT status, claimed_from FROM nodes WHERE id = 'T00'").fetchone()
+    finally:
+        conn.close()
+    assert row == (status, claimed_from)
+
+
+def test_open_schema_3_estate_leaves_the_file_bytes_untouched(tmp_path: Path) -> None:
+    estate = tmp_path / "estate"
+    first = DatabaseManager(estate)
+    first.init_all()
+    first.close()
+    before = (estate / "state.db").read_bytes()
+
+    again = DatabaseManager(estate)
+    with again.get_state_connection() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 3
+    again.close()
+
+    assert (estate / "state.db").read_bytes() == before
 
 
 def test_uninitialised_directory_is_left_to_tm_init(tmp_path: Path) -> None:
@@ -98,23 +293,24 @@ def test_two_database_managers_migrate_the_same_estate_exactly_once(tmp_path: Pa
     _build_v1_estate(estate)
 
     errors: list[BaseException] = []
+    migrated_from: list[int | None] = []
     barrier = threading.Barrier(2)
 
-    def open_it() -> None:
+    def migrate_it() -> None:
         try:
             barrier.wait(timeout=5)
-            with DatabaseManager(estate).get_state_connection():
-                pass
+            migrated_from.append(DatabaseManager(estate).migrate_state())
         except BaseException as exc:  # noqa: BLE001 -- captured across the thread boundary
             errors.append(exc)
 
-    threads = [threading.Thread(target=open_it) for _ in range(2)]
+    threads = [threading.Thread(target=migrate_it) for _ in range(2)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
 
     assert errors == []
+    assert sorted(migrated_from, key=str) == [1, None]
     conn = sqlite3.connect(estate / "state.db")
     try:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION
@@ -126,13 +322,13 @@ def test_newer_schema_is_refused_and_nothing_is_written(tmp_path: Path) -> None:
     future = tmp_path / "future"
     _build_v1_estate(future)
     conn = sqlite3.connect(future / "state.db")
-    conn.execute("PRAGMA user_version = 3")
+    conn.execute("PRAGMA user_version = 4")
     conn.commit()
     conn.close()
     before = (future / "state.db").read_bytes()
 
     with (
-        pytest.raises(StateSchemaTooNew, match=r"schema 3.*\(2\)"),
+        pytest.raises(StateSchemaTooNew, match=r"schema 4.*\(3\)"),
         DatabaseManager(future).get_state_connection(),
     ):
         pass
@@ -144,13 +340,71 @@ def test_newer_schema_is_refused_and_nothing_is_written(tmp_path: Path) -> None:
     assert not (future / "state.db-shm").exists()
 
 
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _user_version(state_db: Path) -> int:
+    conn = sqlite3.connect(state_db)
+    try:
+        version: int = conn.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        conn.close()
+    return version
+
+
+@pytest.mark.parametrize(("schema", "build"), [(1, _build_v1_estate), (2, _build_v2_estate)])
+def test_open_older_schema_without_migrate_refuses_and_leaves_the_file_untouched(
+    tmp_path: Path, schema: int, build: Any
+) -> None:
+    estate = tmp_path / "estate"
+    build(estate)
+    before = _sha256(estate / "state.db")
+
+    with (
+        pytest.raises(StateSchemaTooOld) as refused,
+        DatabaseManager(estate).get_state_connection(),
+    ):
+        pass
+
+    assert str(refused.value) == (
+        f"state.db is schema {schema}; run `tm db migrate`, which copies it to "
+        f"{estate / f'state.db.schema{schema}.bak'} and then migrates it to schema "
+        f"{STATE_SCHEMA_VERSION}"
+    )
+    assert _user_version(estate / "state.db") == schema
+    assert _sha256(estate / "state.db") == before
+    assert sorted(p.name for p in estate.iterdir()) == ["state.db"]
+
+
+def test_the_web_app_factory_refuses_an_older_schema_at_startup(tmp_path: Path) -> None:
+    estate = tmp_path / ".taskmanager"
+    _build_v2_estate(estate)
+    before = _sha256(estate / "state.db")
+
+    web = create_app(tmp_path)
+    with (
+        pytest.raises(StateSchemaTooOld, match="state.db is schema 2; run `tm db migrate`"),
+        TestClient(web),
+    ):
+        pass
+
+    assert _user_version(estate / "state.db") == 2
+    assert _sha256(estate / "state.db") == before
+
+
+@pytest.mark.parametrize(
+    ("version", "refusal"),
+    [(STATE_SCHEMA_VERSION + 1, StateSchemaTooNew), (1, StateSchemaTooOld)],
+    ids=["newer", "older"],
+)
 def test_a_refused_connection_is_closed_not_leaked(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version: int, refusal: type[Exception]
 ) -> None:
     future = tmp_path / "future"
     _build_v1_estate(future)
     conn = sqlite3.connect(future / "state.db")
-    conn.execute("PRAGMA user_version = 3")
+    conn.execute(f"PRAGMA user_version = {version}")
     conn.commit()
     conn.close()
 
@@ -161,7 +415,7 @@ def test_a_refused_connection_is_closed_not_leaked(
     )
 
     with (
-        pytest.raises(StateSchemaTooNew),
+        pytest.raises(refusal),
         DatabaseManager(future).get_state_connection(),
     ):
         pass
@@ -190,6 +444,7 @@ _ESTATE_COMMANDS: dict[str, list[str]] = {
     "next": ["next"],
     "render": ["render", "S1"],
     "export": ["export", "exported"],
+    "db": ["db", "migrate"],
 }
 
 
@@ -227,6 +482,42 @@ def test_a_too_new_schema_is_only_its_refusal_from_every_command(
         f"({STATE_SCHEMA_VERSION}): upgrade tm"
     ), out + err
     assert err == ""
+
+
+_OPENING_COMMANDS = {name: argv for name, argv in _ESTATE_COMMANDS.items() if name != "db"}
+
+
+@pytest.mark.parametrize("argv", _OPENING_COMMANDS.values(), ids=_OPENING_COMMANDS.keys())
+def test_an_older_schema_is_only_its_refusal_from_every_command_and_stays_unmigrated(
+    argv: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "estate"
+    state_db = root / ".taskmanager" / "state.db"
+    _build_v2_estate(root / ".taskmanager")
+    _seed_every_v2_status(root / ".taskmanager")
+    before = _sha256(state_db)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["tm", *argv, "-C", str(root)])
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit) as exited:
+        main()
+
+    out, err = capsys.readouterr()
+    assert exited.value.code == 1
+    # Rich wraps a line at the terminal width, and the backup path makes this one long.
+    assert " ".join(out.split()) == (
+        f"state.db is schema 2; run `tm db migrate`, which copies it to "
+        f"{root / '.taskmanager' / 'state.db.schema2.bak'} and then migrates it to schema "
+        f"{STATE_SCHEMA_VERSION}"
+    ), out + err
+    assert err == ""
+    assert _user_version(state_db) == 2
+    assert _sha256(state_db) == before
+    assert not state_db.with_name("state.db.schema2.bak").exists()
 
 
 def test_rev_increases_on_status_and_title_change_through_save_node(tmp_path: Path) -> None:

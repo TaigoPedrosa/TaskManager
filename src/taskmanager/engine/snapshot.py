@@ -45,11 +45,21 @@ def names_origin_main(command: str) -> bool:
     return "origin/main" in _VERIFY_REF_EXPANSION.sub("", command)
 
 
+def sensitive_areas(node: Node) -> tuple[str, ...]:
+    """What `node`'s `sensitive:` frontmatter key names: one area, or a list of them."""
+    value = node.frontmatter.get("sensitive")
+    if value is None:
+        return ()
+    return tuple(str(area) for area in (value if isinstance(value, list) else [value]))
+
+
 def stored_status(node: Node) -> Status | DecisionStatus:
     return node.status
 
 
-def cycle_of(node: Node) -> Cycle:
+def cycle_of(node: Node, files: list[str]) -> Cycle:
+    """`node`'s cycle; `files` are its declared files, since a node writing a migration is
+    sensitive without the key."""
     if not isinstance(node.status, Status):
         raise ValueError(f"decision {node.id!r} has no cycle")  # noqa: TRY004
     return Cycle(
@@ -57,6 +67,7 @@ def cycle_of(node: Node) -> Cycle:
         container=node.kind in CONTAINERS,
         review=node.review,
         fix=node.fix,
+        sensitive=bool(sensitive_areas(node)) or writes_migration(files),
         outcome=node.outcome,
         fix_for=node.fix_for,
         claimed_from=node.claimed_from,
@@ -64,6 +75,12 @@ def cycle_of(node: Node) -> Cycle:
         merge_attempts=node.merge_attempts,
         step_failures=node.step_failures,
     )
+
+
+def cycle_in(snapshot: Snapshot, node: Node) -> Cycle:
+    """`node`'s cycle, its declared files read from `snapshot`'s one bulk read."""
+    files = declared_files_of(node, snapshot.graph_data().verifications.get(node.id, []))
+    return cycle_of(node, files)
 
 
 def apply_cycle(node: Node, c: Cycle) -> Node:
@@ -100,8 +117,8 @@ def roll_up_ancestors(
     """Re-derive each ancestor container's status after a change under it (and `node_id`'s own
     with `include_self`), in the caller's transaction, and return every container that moved
     with its new status. The only rollup: a container reaching IMPLEMENTED with nothing left to
-    land completes, one reaching DEFERRED or ABANDONED strands its dependents, and each move is
-    ledgered."""
+    land is landed already, one reaching DEFERRED or ABANDONED strands its dependents, and each
+    move is ledgered."""
     # decisions imports this module, so importing it back at load time would be circular.
     from taskmanager.engine.decisions import open_stranded_decision, stranded_dependents
 
@@ -118,11 +135,12 @@ def roll_up_ancestors(
         statuses = [
             s for c in children if c is not None and isinstance(s := stored_status(c), Status)
         ]
-        current = cycle_of(parent)
+        current = ops.snapshots.cycle(parent)
         derived = rollup(current.status, statuses)
         if derived == Status.IMPLEMENTED and ops.nothing_to_land(parent.id):
-            # Code already on its target is never reviewed again.
-            derived = Status.COMPLETED
+            # Its code is on its target already, as a landing would have left it: a reviewed
+            # container still owes its one review there.
+            derived = Status.LANDED if current.review else Status.COMPLETED
         if derived != current.status:
             node_repo.save_node(apply_cycle(parent, replace(current, status=derived)))
             moved.append((parent.id, derived))
@@ -146,7 +164,8 @@ class SnapshotBuilder:
     """The whole graph as the pure rules read it, and the per-node facts display derives from.
 
     `build()` reads `state.db` once, through `graph_reader.read_graph`; every other method here
-    reads only that one read's result, carried on the `Snapshot` it returned.
+    but `cycle` reads only that one read's result, carried on the `Snapshot` it returned. `cycle`
+    serves a single live node with no snapshot built, so it reads that node's files itself.
     """
 
     def __init__(
@@ -168,7 +187,7 @@ class SnapshotBuilder:
         return Snapshot(nodes=nodes, edges=data.relations[RelationType.DEPENDS_ON], data=data)
 
     def cycle(self, node: Node) -> Cycle:
-        return cycle_of(node)
+        return cycle_of(node, self.node_repo.declared_files(node.id))
 
     @staticmethod
     def lock_set(node_id: str, snapshot: Snapshot) -> list[str]:
@@ -219,7 +238,7 @@ class SnapshotBuilder:
             raise KeyError(node_id)
         jobs = data.jobs.get(node_id, [])
         work, decisions = waits_on(snapshot, node)
-        locking = next_action(cycle_of(node)) in _LOCKING
+        locking = next_action(cycle_in(snapshot, node)) in _LOCKING
         return Facts(
             lease=self._lease(node_id, data),
             job_needs_agent=any(
@@ -275,6 +294,7 @@ class SnapshotBuilder:
             fix=node.fix,
             repo=node.target_repo,
             writes_migration=writes_migration(self._declared_files(node.id, data)),
+            sensitive=sensitive_areas(node),
             busy=self._busy(node.id, data),
             literal_origin_main=any(names_origin_main(c) for c in commands),
         )
@@ -300,7 +320,7 @@ class DisplayView:
             return False
         data = self.snapshot.graph_data()
         stages = {ConditionStage.CLAIM}
-        if next_action(self.builder.cycle(node)) == Action.MERGE:
+        if next_action(cycle_in(self.snapshot, node)) == Action.MERGE:
             stages.add(ConditionStage.LANDING)
         for condition in data.conditions.get(node.id, []):
             if condition.stage not in stages:
@@ -320,7 +340,7 @@ class DisplayView:
         facts = replace(
             self.builder.facts(node.id, self.snapshot), unmet_condition=self._unmet(node)
         )
-        return display_status(self.builder.cycle(node), facts).value
+        return display_status(cycle_in(self.snapshot, node), facts).value
 
 
 def chain_holder(snapshot: Snapshot, node: Node) -> str | None:
@@ -329,7 +349,7 @@ def chain_holder(snapshot: Snapshot, node: Node) -> str | None:
     if (
         node.kind == NodeKind.DECISION
         or not snapshot.nodes[node.id].writes_migration
-        or next_action(cycle_of(node)) != Action.IMPLEMENT
+        or next_action(cycle_in(snapshot, node)) != Action.IMPLEMENT
     ):
         return None
     return migration_holders(snapshot, node.target_repo or "").get(node.id)

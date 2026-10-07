@@ -44,6 +44,7 @@ def test_a_container_status_is_derived_from_its_counted_children(
         S.FIXING,
         S.MERGING,
         S.IMPLEMENTING,
+        S.LANDED,
         S.COMPLETED,
         S.FAILED,
         S.DEFERRED,

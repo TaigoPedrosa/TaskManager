@@ -420,14 +420,18 @@ function syncConnectionUi() {
 // statuses, facets and bodies several times in a burst (a single CLI write already fans out
 // into more than one item), and re-rendering per store notification re-walks and rebuilds
 // the whole document/tree/filters DOM for each one.
+// The parser can yield between this page's inline scripts, so a store notification can land
+// before tree.js has defined what renderAll calls: nothing renders until every script has run.
 let renderScheduled = false;
 function scheduleRender() {
   if (renderScheduled) return;
   renderScheduled = true;
-  requestAnimationFrame(() => {
+  const frame = () => requestAnimationFrame(() => {
     renderScheduled = false;
     renderAll();
   });
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', frame, { once: true });
+  else frame();
 }
 
 // window.tmStore is created here, before filters.js/tree.js/main.js run, but with whatever
