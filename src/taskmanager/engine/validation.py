@@ -50,6 +50,25 @@ def _flags(after: Snapshot, n: SnapNode) -> list[Refusal]:
                     "turn fix on",
                 )
             )
+    if n.status == Status.LANDED and not n.review:
+        refusals.append(
+            Refusal(
+                n.id,
+                11,
+                f"{n.id}: review is off at LANDED, so nothing reviews or completes it; reset it "
+                "to COMPLETED first, or turn review on",
+            )
+        )
+    if n.claimed_from == Status.LANDED and not n.review:
+        refusals.append(
+            Refusal(
+                n.id,
+                11,
+                f"{n.id}: review is off while its review after landing is in step, and a release "
+                "or a sweep returns it to LANDED, where nothing reviews or completes it; let that "
+                "review end, or release it and reset it to COMPLETED first",
+            )
+        )
     if n.merge == Merge.PARENT and (n.kind == NodeKind.SPEC or n.parent is None):
         refusals.append(
             Refusal(n.id, 3, f"{n.id}: a spec or a parentless node lands on main; set merge=main")
@@ -74,6 +93,32 @@ def _flags(after: Snapshot, n: SnapNode) -> list[Refusal]:
             )
         )
     return refusals
+
+
+def _unreviewed_on_main(before: Snapshot, after: Snapshot, n: SnapNode) -> list[Refusal]:
+    parent = after.nodes.get(n.parent) if n.parent is not None else None
+    if parent is None or not parent.review or n.review or n.merge != Merge.MAIN:
+        return []
+    # Only the write that makes this shape is refused: a node already in it, left as it is,
+    # never blocks a write around it.
+    old = before.nodes.get(n.id)
+    old_parent = before.nodes.get(parent.id)
+    if (
+        old is not None
+        and old_parent is not None
+        and old_parent.review
+        and (old.parent, old.review, old.merge) == (n.parent, n.review, n.merge)
+    ):
+        return []
+    return [
+        Refusal(
+            n.id,
+            10,
+            f"{n.id}: lands on main with review off, so its code would reach main unreviewed: "
+            f"{parent.id}'s review reads only what lands on its branch; set merge=parent, or "
+            "turn review on",
+        )
+    ]
 
 
 def _retarget(
@@ -195,6 +240,7 @@ def validate(
         if n.kind == NodeKind.DECISION:
             continue
         refusals += _flags(after, n)
+        refusals += _unreviewed_on_main(before, after, n)
         refusals += _retarget(before, after, n, branches)
         refusals += _placement(before, after, n)
         refusals += _busy(before, after, n)

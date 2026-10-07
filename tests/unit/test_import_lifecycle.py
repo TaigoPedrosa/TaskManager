@@ -73,6 +73,12 @@ REFUSED = [
     pytest.param(doc({"id": "S-P-a", "title": "a", "fix": False}), None, id="unfixed-on-main"),
     pytest.param({"spec": {"id": "S", "title": "S", "merge": "parent"}}, None, id="spec-on-parent"),
     pytest.param(
+        doc({"id": "S-P-a", "title": "a", "merge": "main"}, plan={"review": True, "fix": True}),
+        "S-P-a: lands on main with review off, so its code would reach main unreviewed: S-P's "
+        "review reads only what lands on its branch",
+        id="unreviewed-on-main-under-a-reviewed-plan",
+    ),
+    pytest.param(
         doc(
             {"id": "S-P-a", "title": "a", "depends_on": ["S-P-b"]},
             {"id": "S-P-b", "title": "b", "depends_on": ["S-P-a"]},
@@ -353,6 +359,66 @@ def test_an_imported_fix_is_reviewed_before_it_lands_only_when_the_node_is_sensi
     node = repo.get_node("S-P-a")
     assert node is not None
     assert next_action(importer.snapshots.cycle(node)) == action
+
+
+@pytest.mark.parametrize(
+    ("task", "expected"),
+    [
+        ({}, (False, False, Merge.PARENT)),
+        ({"frontmatter": {"sensitive": "tenant"}}, (True, True, Merge.PARENT)),
+        ({"frontmatter": {"declared_files": [MIGRATION]}}, (True, True, Merge.PARENT)),
+        (
+            {"verifications": [{"type": "file_exists", "target_path": MIGRATION}]},
+            (True, True, Merge.PARENT),
+        ),
+        ({"frontmatter": {"sensitive": "rls"}, "fix": False}, (True, False, Merge.PARENT)),
+        ({"review": True, "fix": True, "merge": "main"}, (True, True, Merge.MAIN)),
+    ],
+    ids=[
+        "plain",
+        "sensitive-key",
+        "declared-migration",
+        "verified-migration",
+        "explicit-fix-wins",
+        "explicit-main-with-review",
+    ],
+)
+def test_a_child_imported_under_a_reviewed_plan_lands_on_its_branch_and_reviews_only_if_sensitive(
+    repo: NodeRepository, task: dict[str, Any], expected: tuple[bool, bool, Merge]
+) -> None:
+    BulkImporter(repo).import_dict(
+        doc({"id": "S-P-a", "title": "a", **task}, plan={"review": True, "fix": True})
+    )
+    node = repo.get_node("S-P-a")
+    assert node is not None and (node.review, node.fix, node.merge) == expected
+
+
+def test_a_plan_imported_under_a_reviewed_spec_lands_on_the_spec_s_branch(
+    repo: NodeRepository,
+) -> None:
+    BulkImporter(repo).import_dict(
+        {
+            "spec": {"id": "S", "title": "S", "review": True, "fix": True},
+            "plans": [{"id": "S-P", "title": "P"}],
+        }
+    )
+    plan = repo.get_node("S-P")
+    assert plan is not None and (plan.review, plan.fix, plan.merge) == (False, False, Merge.PARENT)
+
+
+def test_reimporting_a_child_already_landing_on_main_unreviewed_leaves_it_as_it_is(
+    repo: NodeRepository,
+) -> None:
+    importer = BulkImporter(repo)
+    importer.import_dict(doc({"id": "S-P-a", "title": "a"}, plan={"review": True, "fix": True}))
+    stored = repo.get_node("S-P-a")
+    assert stored is not None
+    repo.save_node(stored.model_copy(update={"merge": Merge.MAIN}))
+
+    importer.import_dict(doc({"id": "S-P-a", "title": "renamed"}))
+
+    node = repo.get_node("S-P-a")
+    assert node is not None and (node.title, node.merge) == ("renamed", Merge.MAIN)
 
 
 def restore(tmp_path: Path, task: dict[str, Any]) -> tuple[int, str, Path]:

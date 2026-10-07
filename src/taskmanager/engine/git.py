@@ -155,13 +155,18 @@ def fetch(repo: Path) -> bool:
 def ensure_branch(repo: Path, branch: str, base: str) -> bool:
     """Creates `branch` at `base` unless it exists; True when it was created.
 
-    `--no-track`: a branch cut from `origin/main` would otherwise make a bare `git push` target
-    the deploying `main`.
+    One `update-ref` with an empty old value, so of two claims creating the same branch at once
+    exactly one creates it and the other reads False. A bare ref carries no upstream, so a bare
+    `git push` from a branch cut from `origin/main` never targets the deploying `main`.
     """
-    if rev_parse(repo, f"refs/heads/{branch}"):
+    ref = f"refs/heads/{branch}"
+    sha = _run(repo, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}")
+    res = _git(repo, "update-ref", ref, sha, "")
+    if res.returncode == 0:
+        return True
+    if rev_parse(repo, ref):
         return False
-    _run(repo, "branch", "--no-track", branch, base)
-    return True
+    raise subprocess.CalledProcessError(res.returncode, res.args, res.stdout, res.stderr)
 
 
 def rename_branch(repo: Path, old: str, new: str) -> None:

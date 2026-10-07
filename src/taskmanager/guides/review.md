@@ -36,12 +36,13 @@ git -C <repo> diff <base>...<branch>
 git -C <repo> show <branch>:<path>
 ```
 
-For a review claimed from `LANDED`, `<base>...<branch>` is empty: the node's code is what its landing merge brought onto the target. Find that merge by its subject, then read it against its first parent, the target as it stood before:
+For a review claimed from `LANDED`, `<base>...<branch>` is empty: the node's code is what landed on its target, `<base>`. That is its own landing merge, and the landing merge of every node under it that landed on that target itself rather than on the node's branch; a node whose children all landed that way has no landing merge of its own. List the nodes under it, a plan's with `tm task list --plan <node-id> --json`, a spec's with `tm plan list --spec <node-id> --json` and `tm task list --spec <node-id> --json`. Then read every one of those merges against its first parent, the target as it stood before it landed:
 
 ```
-git -C <repo> log --oneline -1 --grep "^merge(<node-id>): land " <branch>
-git -C <repo> diff <landing>^1 <landing>
+git -C <repo> log -p --diff-merges=first-parent -E --grep '^merge[(](<node-id>|<id under it>|...)[)]: land [^ ]+ on <base>$' <branch> --
 ```
+
+A repository where that prints nothing had nothing land.
 
 Read only. Do not check the branch out in the project's own checkout, do not edit a file, do not run a formatter. If you must execute the code, cut a detached worktree where the workflow's prompt says (on your own, under your session's scratch directory), never inside the project, and remove it before you close the step:
 
