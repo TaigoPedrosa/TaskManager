@@ -305,3 +305,19 @@ def test_an_untouched_node_is_not_checked() -> None:
 def test_a_decision_is_not_held_to_node_flag_rules() -> None:
     after = snap(SnapNode("D", DECISION, status=DecisionStatus.OPEN, review=False))
     assert rules(snap(), after, {"D"}) == []
+
+
+@pytest.mark.parametrize(
+    ("status", "review", "refused"),
+    [
+        (Status.LANDED, False, True),
+        (Status.LANDED, True, False),
+        (Status.COMPLETED, False, False),
+    ],
+)
+def test_review_off_is_refused_only_on_a_node_at_landed(
+    status: Status, review: bool, refused: bool
+) -> None:
+    before = snap(SnapNode("P", PLAN, status=status))
+    after = snap(SnapNode("P", PLAN, status=status, review=review, fix=review))
+    assert rules(before, after, {"P"}) == ([("P", 11)] if refused else [])

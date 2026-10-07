@@ -3,7 +3,8 @@
 is sensitive, and a child that would land on main unreviewed is refused with its message. A plan
 with a migration under it, landed for real, has the fix of its one review re-reviewed once before
 that fix lands. A landed plan with review off is never at LANDED: `tm task reset` and the web reset
-refuse to put it there, and one whose review is turned off once landed is offered no review."""
+refuse to put it there, and `tm task update`, the web update and `tm import` refuse to turn review off
+on one that is, until it is reset to COMPLETED."""
 
 import copy
 import json
@@ -234,14 +235,44 @@ def test_a_landed_plan_with_review_off_refuses_a_reset_to_landed_on_the_cli_and_
     assert stored(claims, "S-P").status == Status.COMPLETED
 
 
-def test_a_landed_plan_whose_review_is_turned_off_is_offered_no_review_and_resets_to_completed(
-    tmp_path: Path,
+def by_update(estate: Path) -> tuple[int, str]:
+    return tm(estate, "task", "update", "S-P", "--no-review", "--no-fix")
+
+
+def by_patch(estate: Path) -> tuple[int, str]:
+    response = TestClient(create_app(estate)).patch("/api/nodes/S-P", json=UNREVIEWED)
+    return response.status_code, response.json().get("detail", "")
+
+
+def by_reimport(estate: Path) -> tuple[int, str]:
+    plan = {"id": "S-P", "title": "Plan", **UNREVIEWED}
+    return tm(estate, "import", stdin=json.dumps({"spec": SPEC, "plans": [plan]}))
+
+
+REVIEW_TURNED_OFF_AT_LANDED = (
+    "S-P: review is off at LANDED, so nothing reviews or completes it; reset it to COMPLETED "
+    "first, or turn review on"
+)
+
+
+@pytest.mark.parametrize(
+    ("turn_off", "refused", "accepted"),
+    [(by_update, 1, 0), (by_patch, 400, 200), (by_reimport, 1, 0)],
+)
+def test_turning_review_off_on_a_landed_plan_is_refused_until_it_is_reset_to_completed(
+    tmp_path: Path, turn_off: Callable[[Path], tuple[int, str]], refused: int, accepted: int
 ) -> None:
     claims, estate = landed_plan(tmp_path, reviewed=True)
-    code, output = tm(estate, "task", "update", "S-P", "--no-review", "--no-fix")
-    assert code == 0, output
 
-    assert claims.next_step(stored(claims, "S-P"), claims.snapshots.build()) == (None, None)
+    code, output = turn_off(estate)
+
+    assert (code, REVIEW_TURNED_OFF_AT_LANDED in output) == (refused, True), output
+    landed = stored(claims, "S-P")
+    assert (landed.status, landed.review, landed.fix) == (Status.LANDED, True, True)
+    assert claims.next_step(landed, claims.snapshots.build())[0] == Action.REVIEW
     code, output = tm(estate, "task", "reset", "S-P", "--to", "COMPLETED", "--note", "no review")
     assert code == 0, output
-    assert stored(claims, "S-P").status == Status.COMPLETED
+    code, output = turn_off(estate)
+    assert code == accepted, output
+    completed = stored(claims, "S-P")
+    assert (completed.status, completed.review, completed.fix) == (Status.COMPLETED, False, False)
