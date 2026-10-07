@@ -20,7 +20,7 @@ A sync merges a target into a container branch the same way, under that branch's
 |:--|:--|
 | `conflict` | resolve the merge in the job's worktree and commit it, then resume |
 | `unattributed` | the tip and the untouched target are both red and no report names the failures: read both outputs; if the tip adds a failure, record an own defect, and if it adds none, resume with `--push` |
-| `push_failed` | three failed tries, each in `result.push_errors` with its command, exit code and stderr: an `ls-remote` with no answer is the network or the remote, a refused `push` a permission, a protection rule or a hook; report it, resume only once the cause is gone, and never force |
+| `push_failed` | three failed tries. A push to `main` records each in `result.push_errors` with its command, exit code and stderr: an `ls-remote` with no answer is the network or the remote, a refused `push` a permission, a protection rule or a hook. A container branch, moved by a landing or a sync, records none: it moved under each of three compare-and-swaps, so other landings or syncs onto it kept moving it. Report it, resume only once the cause is gone, and never force |
 | `no gate` | the repository has no `main` gate configured: report it; the owner configures `repos.<repo>.gates.main` |
 | a red sync | the container's `parent` gate went red after the target was merged in: fix it in the job's worktree, commit, resume |
 
