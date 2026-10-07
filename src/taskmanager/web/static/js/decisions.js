@@ -71,7 +71,8 @@ function decisionStatusLabel(status) {
 const DECISION_STATUS_ICON = { OPEN: 'help-circle', ANSWERED: 'check-circle-2', WITHDRAWN: 'x-circle' };
 function decisionStatusIcon(status, size = 'w-3.5 h-3.5') {
   const icon = DECISION_STATUS_ICON[status] || 'help-circle';
-  return `<span class="flex-shrink-0" title="${esc(decisionStatusLabel(status))}">${renderIcon(icon, size)}</span>`;
+  const label = esc(decisionStatusLabel(status));
+  return `<span class="relative z-[1] inline-flex flex-shrink-0 rounded-sm ${FOCUS_RING}" role="img" tabindex="0" data-tip title="${label}" aria-label="${label}">${renderIcon(icon, size)}</span>`;
 }
 
 // Below sm the decision is the page and the list is a drawer over it.

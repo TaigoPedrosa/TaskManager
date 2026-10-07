@@ -373,6 +373,7 @@ function createStore(options) {
     if (!socket || socket.readyState !== 1 /* OPEN */) return;
     const id = nextMsgId++;
     pendingId = id;
+    const wasPending = pending;
     pending = true;
     socket.send(JSON.stringify({
       type: 'subscribe',
@@ -382,6 +383,9 @@ function createStore(options) {
       watch: [...watchSet].slice(0, 200),
       reset: !!reset,
     }));
+    if (!wasPending) {
+      notify({ rowIds: [], bodyIds: [], statusesChanged: false, facetsChanged: false, edgesChanged: false, connectionChanged: false, pendingChanged: true });
+    }
   }
 
   function applySnapshot(msg) {

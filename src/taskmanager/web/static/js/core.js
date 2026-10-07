@@ -11,7 +11,7 @@ let isStaticMode = typeof window.STATIC_DATA !== 'undefined';
 const expandedIds = new Set();
 const expandedSections = new Set();
 // Group headers ("Tasks (N)", "Sections (N)") are a third, independent collapse level:
-// they hide a plan's task-card list or a section list's row of <details> summaries
+// they hide a plan's task-card list or a section list's rows
 // without touching expandedIds (the plan/task body) or expandedSections (a section's
 // own open state). A group id's default (collapsed or not) varies by group type, so this
 // set stores only ids whose state differs from their default; see groupCollapsed().
@@ -125,12 +125,6 @@ function getTheme(status) {
 // What a reader sees for a node: the derived display, else (a decision) its own status.
 function displayOf(n) {
   return n.display || n.status;
-}
-
-function phaseChip(code, size = 'text-[10px]') {
-  const t = window.PHASE_THEMES[code];
-  if (!t) return '';
-  return `<span class="st-chip ph-${t.code} inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full font-medium ${size}" title="${esc(t.description)}">${renderIcon(t.icon, 'w-3 h-3')}<span>${esc(t.label)}</span></span>`;
 }
 
 
@@ -795,7 +789,7 @@ let socketLost = false;
 window.tmStore.onChange((patch) => {
   if (patch && patch.connectionChanged) socketLost = !window.tmStore.connected;
   else if (patch && patch.error) storeError = patch.error;
-  else if (patch) storeAnswered = true;
+  else if (patch && !patch.pendingChanged) storeAnswered = true;
   syncConnectionUi();
   if (patch && patch.error) toast(patch.error, { tone: 'error' });
   scheduleRender();

@@ -20,7 +20,12 @@ from taskmanager.core.status import (
 from taskmanager.db.cache_repo import CacheRepository, _command_hash
 from taskmanager.db.graph_reader import GraphData, read_graph
 from taskmanager.db.job_repo import JobRepository
-from taskmanager.db.node_repo import NodeRepository, declared_files_of, locked_key
+from taskmanager.db.node_repo import (
+    NodeRepository,
+    declared_files_of,
+    is_locked_path,
+    locked_key,
+)
 from taskmanager.db.runtime_repo import RuntimeRepository, lease_alive
 from taskmanager.engine.chains import satisfied
 from taskmanager.engine.stepgraph import SnapNode, Snapshot, migration_holders
@@ -227,11 +232,12 @@ class SnapshotBuilder:
         node = snapshot.nodes[node_id]
         own = SnapshotBuilder._declared_files(node_id, data)
         if own or node.kind not in CONTAINERS:
-            return [locked_key(node.repo, f) for f in own]
+            return [locked_key(node.repo, f) for f in own if is_locked_path(f)]
         keys = [
             locked_key(snapshot.nodes[d].repo, f)
             for d in snapshot.counted_descendants(node_id)
             for f in SnapshotBuilder._declared_files(d, data)
+            if is_locked_path(f)
         ]
         return list(dict.fromkeys(keys))
 

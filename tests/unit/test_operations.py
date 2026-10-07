@@ -248,6 +248,17 @@ def test_set_section_creates_then_updates_in_place(ops_setup: tuple) -> None:
     assert _last_event_actor(ledger_repo) == "tester"
 
 
+def test_set_section_without_a_header_resets_a_custom_header_to_the_key(
+    ops_setup: tuple,
+) -> None:
+    node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    _spec_id, _plan_id, task_id = _seed_task(ops)
+    ops.set_section(task_id, "steps", "first", "## Custom steps")
+    ops.set_section(task_id, "steps", "second", None)
+    section = node_repo.get_section(task_id, "steps")
+    assert (section.header, section.content) == ("## Steps", "second")
+
+
 def test_set_section_missing_node_refuses(ops_setup: tuple) -> None:
     _node_repo, _runtime_repo, ledger_repo, ops = ops_setup
     before = len(ledger_repo.list_events(limit=1000))

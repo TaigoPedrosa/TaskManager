@@ -694,10 +694,17 @@ class Operations:
     ) -> None:
         if is_owed_key(section_key):
             raise OperationError(owed_refusal(node_id), 400)
-        sec_header = header or f"## {section_key.capitalize()}"
         existing_secs = self.node_repo.get_all_sections(node_id)
         existing = next((s for s in existing_secs if s.section_key == section_key), None)
+        stored = existing.header if existing else None
+        sec_header = header or f"## {section_key.capitalize()}"
         ordinal = existing.ordinal if existing else len(existing_secs) + 1
+        # The header renders above the content, so content opening with the section's own header
+        # line would show it twice.
+        for leaked_header in {sec_header, stored}:
+            if leaked_header and content.startswith(f"{leaked_header}\n"):
+                content = content[len(leaked_header) + 1 :]
+                break
         self.node_repo.save_section(
             NodeSection(
                 node_id=node_id,

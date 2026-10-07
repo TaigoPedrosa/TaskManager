@@ -1261,8 +1261,11 @@ def section_get(
     if not sec:
         print(f"[red]Section '{qp.section_key}' not found on node '{qp.node_id}'[/red]")
         raise typer.Exit(code=1)
-    output = f"{sec.header}\n{sec.content}" if sec.header else sec.content
-    sys.stdout.write(output + "\n")
+    # Header on stderr, content alone on stdout, no added newline: `tm section get id:key > f`
+    # then `tm section set id:key -f f` round-trips byte-identical.
+    if sec.header:
+        sys.stderr.write(f"{sec.header}\n")
+    sys.stdout.write(sec.content)
 
 
 @section_app.command("set")
@@ -1273,7 +1276,8 @@ def section_set(
         str | None, typer.Option("--content", help="Section content text")
     ] = None,
     file: Annotated[
-        Path | None, typer.Option("--file", "-f", help="Read content from file")
+        typer.FileText | None,
+        typer.Option("--file", "-f", encoding="utf-8", help="Read content from file, - for stdin"),
     ] = None,
     header: Annotated[
         str | None, typer.Option("--header", "-h", help="Section markdown header")
@@ -1291,14 +1295,18 @@ def section_set(
 
     text_content = ""
     if file:
-        text_content = file.read_text(encoding="utf-8")
+        text_content = file.read()
     elif content_opt is not None:
         text_content = content_opt
     elif content is not None:
         text_content = content
 
+    # Without --header the stored one stays, so `section get | section set --file -` round-trips.
+    stored = container.get(NodeRepository).get_section(qp.node_id, qp.section_key)
     try:
-        ops.set_section(qp.node_id, qp.section_key, text_content, header)
+        ops.set_section(
+            qp.node_id, qp.section_key, text_content, header or (stored.header if stored else None)
+        )
     except OperationError as exc:
         print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc
@@ -1402,18 +1410,44 @@ def wave_discover(
         list[str] | None,
         typer.Option("--hold-merge", help="Node id whose merge is not offered, repeatable"),
     ] = None,
+    lines: Annotated[
+        bool,
+        typer.Option(
+            "--lines",
+            help="Quote-free lines instead of JSON: `N id action model kind repos requires`, "
+            "`H <held>`, `W <waiting>`; an empty list prints `-`",
+        ),
+    ] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     """One dispatch wave's batch: a JSON payload line, then `__CHECK n=<chosen> h=<djb2>`.
 
     A caller with no shell of its own (a Workflow script) echoes the two lines back verbatim;
-    the checksum lets the caller reject a transcription that is not byte-exact.
+    the checksum lets the caller reject a transcription that is not byte-exact. `--lines` exists
+    for a small-model runner, which drops keys when it retypes nested JSON into a string field.
     """
     claims = _claims(_get_root(path))
     payload, chosen_count = discover(
         claims, spec or None, session, slots, max_strong, exclude, hold_merge
     )
-    sys.stdout.write(f"{payload}\n__CHECK n={chosen_count} h={djb2(payload)}\n")
+    if not lines:
+        sys.stdout.write(f"{payload}\n__CHECK n={chosen_count} h={djb2(payload)}\n")
+        return
+    data = json.loads(payload)
+
+    def flat(values: list[str] | None) -> str:
+        return ",".join(values or []) or "-"
+
+    out = [
+        f"N {n['id']} {n['action']} {n['model']} {n['kind']} "
+        f"{flat(n.get('repos'))} {flat(n.get('requires'))}"
+        for n in data["chosen"]
+    ]
+    # A held reason can quote free text, such as a condition's --needs, and the caller reads one
+    # record per line.
+    out += [f"H {' '.join(held.split())}" for held in data.get("held", [])]
+    out.append(f"W {data.get('waiting_for_slot', 0)}")
+    sys.stdout.write("\n".join(out) + "\n")
 
 
 @verify_app.command("add")

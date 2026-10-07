@@ -539,3 +539,54 @@ test('no explanatory text renders: the legend, the resize handle, the search box
   }
   for (const text of REMOVED) assert.ok(!shell.includes(text), `the page still says "${text}"`);
 });
+
+test('the page defines no phase chip: nothing draws one', () => {
+  const page = loadPage();
+  assert.equal(page.run('typeof phaseChip'), 'undefined');
+});
+
+test('the load bar shows from the first subscribe until its answer, while the panes still read loading', async () => {
+  const page = loadPage();
+  await page.settle();
+  const bar = () => !page.$('#load-indicator').classList.contains('hidden');
+  assert.equal(bar(), false, 'nothing is in flight before the socket opens');
+  page.socket.open();
+  await page.settle();
+  assert.equal(bar(), true);
+  assert.equal(page.$('#unified-document .pane-state').getAttribute('data-pane-state'), 'loading', 'a request in flight is not an answer');
+  const subscribe = page.socket.sent.at(-1);
+  page.socket.message({ type: 'snapshot', re: subscribe.id, rows: [], bodies: {}, statuses: [], decisions_open: 0 });
+  await page.settle();
+  assert.equal(bar(), false);
+});
+
+// Which items of the toolbar's first row show at a width, in their flex order, read off the
+// Tailwind classes they carry: display from hidden, sm:hidden, sm:block, sm:flex and lg:block,
+// order from sm:max-lg:order-last.
+function toolbarRowAt(page, width) {
+  const sm = width >= 640;
+  const lg = width >= 1024;
+  const name = (el) => (el.querySelector('#brand-icon') && 'brand') || (el.querySelector('#view-doc-btn') && 'switcher')
+    || (el.querySelector('#search-box') && 'search') || (el.querySelector('#refresh-btn') && 'actions')
+    || el.id || (el.classList.contains('w-px') && 'divider');
+  return page.$('#toolbar').children[0].children
+    .map((el, i) => {
+      const c = (k) => el.classList.contains(k);
+      let shown = !c('hidden');
+      if (sm && (c('sm:block') || c('sm:flex'))) shown = true;
+      if (sm && c('sm:hidden')) shown = false;
+      if (lg && c('lg:block')) shown = true;
+      const order = sm && !lg && c('sm:max-lg:order-last') ? 9999 : 0;
+      return { name: name(el), shown, order, i };
+    })
+    .filter((x) => x.shown)
+    .sort((a, b) => a.order - b.order || a.i - b.i)
+    .map((x) => x.name);
+}
+
+test('the toolbar keeps its actions on the first row beside the search at 768, with no divider left behind', () => {
+  const page = loadPage();
+  assert.deepEqual(toolbarRowAt(page, 768), ['brand', 'switcher', 'search', 'actions', 'filter-controls-group', 'toolbar-actions']);
+  assert.deepEqual(toolbarRowAt(page, 1440), ['brand', 'switcher', 'search', 'divider', 'filter-controls-group', 'toolbar-actions', 'divider', 'actions']);
+  assert.deepEqual(toolbarRowAt(page, 375), ['brand', 'switcher', 'search', 'filters-toggle-btn', 'toolbar-actions', 'actions']);
+});
