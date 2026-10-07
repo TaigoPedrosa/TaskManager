@@ -70,9 +70,14 @@ export function landedRepo(dir, { id, landings = [id], inner = [], onto = 'main'
 
 export const json = (value, exit = 0) => ({ text: JSON.stringify(value), exit })
 
-export function discovery(chosen, extra = {}) {
-  const payload = JSON.stringify({ chosen, held: [], waiting_for_slot: 0, mine: 0, ...extra })
-  return `${payload}\n__CHECK n=${chosen.length} h=${djb2(payload)}`
+// What `tm wave discover --lines` prints for this batch.
+export function discovery(chosen, { held = [], waiting_for_slot = 0 } = {}) {
+  const flat = values => (values || []).join(',') || '-'
+  return [
+    ...chosen.map(n => `N ${n.id} ${n.action} ${n.model} ${n.kind} ${flat(n.repos)} ${flat(n.requires)}`),
+    ...held.map(h => `H ${h}`),
+    `W ${waiting_for_slot}`,
+  ].join('\n')
 }
 
 // A scripted reply list is served in order and its last entry repeats, so a test writes only the
@@ -153,12 +158,11 @@ export function makeTm({ chosen = [], nodes = {}, start = {}, job = {}, parked =
       stopped.delete(id)
     },
     reply(cmd) {
-      if (/^\S+ wave discover\b/.test(cmd)) {
-        return { stdout: `${discover ? discover(cmd) : discovery(chosen)}\n__EXIT:0\n` }
-      }
       const m = cmd.match(/^out=\$\((.*) 2>&1\); rc=\$\?; /)
       if (m) {
-        const { text, exit } = answer(m[1])
+        const { text, exit } = /^\S+ wave discover --lines\b/.test(m[1])
+          ? { text: discover ? discover(m[1]) : discovery(chosen), exit: 0 }
+          : answer(m[1])
         // corrupt's return is either falsy (send the real check), true (mangle it), or a check
         // line of the caller's own choosing (a djb2, or one hashed over different bytes).
         const bad = corrupt(m[1], text)

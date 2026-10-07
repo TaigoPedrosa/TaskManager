@@ -358,18 +358,18 @@ def test_a_container_locks_each_descendants_files_under_its_own_repository(
     """A container spanning two repositories: same repo-relative path, different keys."""
     estate.add("P", NodeKind.PLAN, status=Status.READY)
     estate.add(
-        "T1", parent="P", target_repo="workers", frontmatter={"declared_files": ["pyproject.toml"]}
+        "T1", parent="P", target_repo="workers", frontmatter={"declared_files": ["src/app.py"]}
     )
     estate.add(
         "T2",
         parent="P",
         target_repo="scheduler",
-        frontmatter={"declared_files": ["pyproject.toml"]},
+        frontmatter={"declared_files": ["src/app.py"]},
     )
     snap = estate.builder.build()
     assert estate.builder.lock_set("P", snap) == [
-        "workers:pyproject.toml",
-        "scheduler:pyproject.toml",
+        "workers:src/app.py",
+        "scheduler:src/app.py",
     ]
 
 
