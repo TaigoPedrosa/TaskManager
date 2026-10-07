@@ -79,7 +79,9 @@ function renderGraph() {
     physics: false,
     // A canvas node has no DOM presence of its own; each one gets a focusable proxy over it
     // (syncGraphFocusProxies), and vis's own keyboard interaction pans and zooms the canvas.
-    interaction: { hover: true, selectConnectedEdges: true, keyboard: true }
+    // Bound to the canvas, not the window: vis renders on the first store change in every view,
+    // and its window-bound keys swallow the arrows every other pane reads.
+    interaction: { hover: true, selectConnectedEdges: true, keyboard: { enabled: true, bindToWindow: false } }
   };
 
   networkInstance = new vis.Network(container, data, options);

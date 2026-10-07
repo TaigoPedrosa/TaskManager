@@ -622,26 +622,28 @@ const TOAST_TONE = {
   success: 'bg-emerald-950 border-emerald-700 text-emerald-200',
   error: 'bg-red-950 border-red-700 text-red-200'
 };
+const TOAST_ICON = { success: 'check-circle-2', error: 'octagon-x' };
 const TOAST_MS = 6000;
 let toastTimer = null;
 
 // One toast at a time, announced by #toast-root's polite live region and never focused. An
-// error stays until its Retry, its close button or Escape; any other tone leaves after 6 s.
+// error stays until its Retry, its close button or Escape; any other tone also leaves after 6 s.
+// `action` ({ label, run }) is its one control besides close; `retry` is the Retry action.
 // `opts` may still be a bare tone string.
 function toast(message, opts = {}) {
-  const { tone = 'info', retry = null } = typeof opts === 'string' ? { tone: opts } : opts;
+  const { tone = 'info', retry = null, action = retry && { label: 'Retry', run: retry } } = typeof opts === 'string' ? { tone: opts } : opts;
   dismissToast();
   const el = document.createElement('div');
-  el.className = `toast pointer-events-auto flex items-center gap-3 px-3 py-2 rounded-lg border text-xs shadow-2xl max-w-sm ${TOAST_TONE[tone] || TOAST_TONE.info}`;
+  el.className = `toast pointer-events-auto flex items-center gap-2 px-3 py-2 rounded-lg border text-xs shadow-2xl max-w-sm ${TOAST_TONE[tone] || TOAST_TONE.info}`;
   el.setAttribute('data-tone', tone);
-  el.innerHTML = `<span class="flex-1 min-w-0 break-words">${esc(message)}</span>`
-    + (retry ? `<button type="button" class="toast-retry h-7 px-2.5 rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-[11px] font-medium text-zinc-200 flex-shrink-0 ${FOCUS_RING}">Retry</button>` : '')
-    + (tone === 'error' ? `<button type="button" class="toast-close p-1 rounded-md text-red-200 hover:bg-red-900 flex-shrink-0 ${FOCUS_RING}" aria-label="Close">${renderIcon('x', 'w-3.5 h-3.5')}</button>` : '');
+  el.innerHTML = (TOAST_ICON[tone] ? renderIcon(TOAST_ICON[tone], 'w-3.5 h-3.5 flex-shrink-0') : '')
+    + `<span class="flex-1 min-w-0 break-words">${esc(message)}</span>`
+    + (action ? `<button type="button" class="toast-action${retry ? ' toast-retry' : ''} h-7 px-2.5 rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-[11px] font-medium text-zinc-200 flex-shrink-0 ${FOCUS_RING}">${esc(action.label)}</button>` : '')
+    + `<button type="button" class="toast-close p-1 rounded-md hover:bg-black/20 flex-shrink-0 ${FOCUS_RING}" aria-label="Close">${renderIcon('x', 'w-3.5 h-3.5')}</button>`;
   toastRoot.appendChild(el);
-  const close = el.querySelector('.toast-close');
-  if (close) close.addEventListener('click', dismissToast);
-  const again = el.querySelector('.toast-retry');
-  if (again) again.addEventListener('click', () => { dismissToast(); retry(); });
+  el.querySelector('.toast-close').addEventListener('click', dismissToast);
+  const act = el.querySelector('.toast-action');
+  if (act) act.addEventListener('click', () => { dismissToast(); action.run(); });
   if (tone !== 'error') toastTimer = setTimeout(dismissToast, TOAST_MS);
 }
 
@@ -650,9 +652,9 @@ function dismissToast() {
   toastRoot.innerHTML = '';
 }
 
-// Escape closes an error toast first; a dialog under it stays open for a second Escape.
+// Escape closes a toast first; a dialog under it stays open for a second Escape.
 document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape' || !toastRoot.querySelector('.toast[data-tone="error"]')) return;
+  if (e.key !== 'Escape' || !toastRoot.querySelector('.toast')) return;
   e.preventDefault();
   dismissToast();
 });
@@ -693,14 +695,15 @@ const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabi
 
 // Shows `node` (an overlay holding a role="dialog" panel) with focus on its least
 // destructive control, keeps Tab inside it, and on Cancel, Close or Escape takes it off the
-// page with its fields as typed and returns focus to `opener`.
-function openDialog(node, opener = document.activeElement) {
+// page with its fields as typed, runs `onClose` and returns focus to `opener`.
+function openDialog(node, opener = document.activeElement, onClose = null) {
   dialogRoot.appendChild(node);
   const focusables = () => [...node.querySelectorAll(FOCUSABLE)]
     .filter(el => !el.disabled && !el.closest('.hidden, [hidden]'));
   function close() {
     document.removeEventListener('keydown', onKeydown);
     node.remove();
+    if (onClose) onClose();
     if (opener && opener !== document.body && document.contains(opener)) opener.focus();
   }
   function onKeydown(e) {

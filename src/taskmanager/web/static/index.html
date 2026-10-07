@@ -156,19 +156,19 @@
     </section>
 
     <!-- Decisions View Pane (§6.4): list of open/answered/withdrawn decisions and a detail
-         panel, toggled on by decisions.js -- hidden by default like the graph pane. Below sm
-         the list stacks above the detail and the pane is the one scroll; from sm up the list
-         and the detail scroll side by side. The detail's 140px bottom padding below sm keeps
-         its last field clear of the fixed answer bar. decisions.js keeps both scroll offsets itself
-         across a re-render, so the browser's own scroll anchoring is off here. -->
-    <section id="decisions-pane" class="hidden flex-1 flex flex-col sm:flex-row overflow-y-auto sm:overflow-hidden [overflow-anchor:none] bg-zinc-950">
-      <aside class="w-full sm:w-80 md:w-96 flex-shrink-0 border-b sm:border-b-0 sm:border-r border-zinc-800 flex flex-col sm:overflow-hidden">
+         panel, toggled on by decisions.js -- hidden by default like the graph pane. From sm up
+         the list and the detail scroll side by side. Below sm the decision is the page, the pane
+         is its one scroll, and decisions.js moves the tabs and the list into a drawer while it is
+         open; the scroll padding keeps a focused field clear of the sticky page bar and the fixed
+         answer bar, and the detail's 140px bottom padding keeps its last field clear of the bar.
+         decisions.js keeps both scroll offsets itself across a re-render, so the browser's own
+         scroll anchoring is off here. -->
+    <section id="decisions-pane" class="hidden flex-1 flex flex-col sm:flex-row overflow-y-auto sm:overflow-hidden [overflow-anchor:none] max-sm:scroll-pt-[45px] max-sm:scroll-pb-[81px] bg-zinc-950">
+      <aside class="hidden sm:flex w-80 md:w-96 flex-shrink-0 border-r border-zinc-800 flex-col overflow-hidden">
         <div id="decisions-tabs" role="tablist" aria-label="Decision status" class="flex items-center gap-1 px-4 py-3 sm:px-3 flex-shrink-0"></div>
-        <div id="decisions-list" class="sm:flex-1 sm:overflow-y-auto px-4 pt-1 pb-3 sm:px-2 space-y-2"></div>
+        <div id="decisions-list" class="flex-1 min-h-0 overflow-y-auto px-4 pt-1 pb-3 sm:px-2 space-y-2"></div>
       </aside>
-      <div id="decisions-detail" class="flex-1 min-w-0 sm:overflow-y-auto [overflow-anchor:none] px-4 pt-5 pb-[140px] sm:px-6 sm:pt-6 sm:pb-16">
-        <div class="max-w-2xl mx-auto text-sm text-zinc-400 italic pt-12 text-center">Select a decision to view it.</div>
-      </div>
+      <div id="decisions-detail" class="flex-1 min-w-0 sm:overflow-y-auto [overflow-anchor:none] px-4 pt-5 pb-[140px] sm:px-6 sm:pt-6 sm:pb-16"></div>
     </section>
 
     <!-- Node detail drawer, shared by the Waves, Graph and Document views: it sits over

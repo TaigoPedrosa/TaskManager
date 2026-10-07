@@ -441,13 +441,13 @@ def test_decision_answer_form_custom_text_clears_the_chosen_cards_highlight() ->
     # Typing a custom answer used to clear chosenOption while the previously picked card kept
     # its emerald highlight, showing a choice the form would not actually send.
     body = _function_body(get_web_html(), "wireDecisionAnswerForm")
-    assert "paintChosen(null)" in body
+    assert "if (customAnswer()) chosenOption = null;" in body
     assert "aria-checked" in body
     assert 'role="radio"' in _function_body(get_web_html(), "optionCardHtml")
 
 
 def test_decision_withdraw_collects_a_reason() -> None:
-    body = _function_body(get_web_html(), "wireDecisionAnswerForm")
+    body = _function_body(get_web_html(), "openWithdrawDialog")
     assert "wd-reason" in body
     assert "reason: ''" not in body
 
@@ -459,7 +459,7 @@ def test_open_decision_offers_editing_its_blocked_tasks() -> None:
     assert "dec-block-add" in detail
     assert "dec-block-remove" in detail
     assert "/blocks`, { add:" in detail
-    assert "/blocks`, { remove:" in detail
+    assert "body: { remove: [taskId] }" in detail
 
 
 def test_new_menu_renders_nothing_in_a_read_only_static_export() -> None:
@@ -652,9 +652,9 @@ def test_decisions_load_failure_is_an_error_state_not_an_empty_queue() -> None:
     refresh = _function_body(html, "refreshDecisionsData")
     assert "decisionsLoadFailed = true" in refresh
     assert "toast(`Could not load decisions" in refresh
-    render_list = _function_body(html, "renderDecisionsList")
-    assert "if (decisionsLoadFailed)" in render_list
-    assert 'role="alert"' in render_list
+    list_state = _function_body(html, "decisionsListStateHtml")
+    assert "if (decisionsLoadFailed)" in list_state
+    assert "paneState('error'" in list_state
 
 
 def test_refresh_decisions_data_reads_the_paginated_envelopes_items() -> None:
