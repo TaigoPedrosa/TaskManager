@@ -2,7 +2,7 @@
 let graphData = { nodes: [], edges: [] };
 let selectedNodeId = null;
 let visNodesDS = null;
-let currentMode = window.VIEW_MODES.WAVES;
+let currentMode = window.VIEW_MODES.DOCUMENT;
 let networkInstance = null;
 let isStaticMode = typeof window.STATIC_DATA !== 'undefined';
 // A node's expand/collapse state now lives in the store's open and watch sets (open reveals
@@ -156,6 +156,7 @@ function setViewMode(mode) {
     graphPane.classList.remove('hidden');
     sidebarPane.classList.add('hidden');
     toggleSectionsBtn.classList.add('hidden');
+    initWaves();
   } else if (mode === window.VIEW_MODES.DOCUMENT) {
     viewWavesBtn.className = VIEW_BTN_INACTIVE;
     viewGraphBtn.className = VIEW_BTN_INACTIVE;
@@ -178,9 +179,54 @@ function setViewMode(mode) {
   }
 }
 
-viewWavesBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.WAVES));
-viewGraphBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.GRAPH));
-viewDocBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.DOCUMENT));
+// The drawer's own close button is the one way to close it: its handlers here and in
+// detail.js hide it and release its watch together.
+function closeDetailDrawer() {
+  if (!graphInspector.classList.contains('hidden')) inspectorCloseBtn.click();
+}
+
+// Back to the view's default: the pane at the top, nothing selected, every group at its
+// default open state. Filters are not part of a view, so they stay.
+function resetView() {
+  const view = currentMode;
+  if (view === window.VIEW_MODES.DECISIONS) {
+    resetDecisions();
+  } else {
+    closeDetailDrawer();
+    selectedNodeId = null;
+    if (view === window.VIEW_MODES.WAVES) {
+      resetWaves();
+      wavesPane.scrollTop = 0;
+    } else {
+      if (expandedIds.size > 0) {
+        window.tmStore.close([...expandedIds]);
+        window.tmStore.unwatch([...expandedIds]);
+        expandedIds.clear();
+      }
+      expandedSections.clear();
+      collapsedGroups.clear();
+      documentPane.scrollTop = 0;
+      treeList.scrollTop = 0;
+      if (view === window.VIEW_MODES.GRAPH && networkInstance) {
+        networkInstance.unselectAll();
+        networkInstance.fit();
+      }
+    }
+  }
+  navigate({ view }, { replace: true });
+  scheduleRender();
+}
+
+// Another view's segment opens that view as a new history entry; the current view's
+// segment resets it.
+function onViewSegment(view, id = null) {
+  if (view === currentMode) resetView();
+  else navigate({ view, id });
+}
+
+viewDocBtn.addEventListener('click', () => onViewSegment(window.VIEW_MODES.DOCUMENT));
+viewGraphBtn.addEventListener('click', () => onViewSegment(window.VIEW_MODES.GRAPH));
+viewWavesBtn.addEventListener('click', () => onViewSegment(window.VIEW_MODES.WAVES));
 graphFitBtn.addEventListener('click', () => networkInstance && networkInstance.fit());
 inspectorCloseBtn.addEventListener('click', () => graphInspector.classList.add('hidden'));
 refreshBtn.addEventListener('click', () => window.tmStore.resync());
@@ -435,7 +481,7 @@ function scheduleRender() {
 }
 
 // window.tmStore is created here, before filters.js/tree.js/main.js run, but with whatever
-// filters happen to be in scope at this point (none yet -- readHash() runs later, in main.js).
+// filters happen to be in scope at this point (none yet -- main.js reads the URL later).
 // That is safe: in live mode the store's own connect() only reaches the network on the
 // WebSocket's `onopen`, which cannot fire before this synchronous script pass finishes, so
 // main.js's later setFilters() call still lands before the one subscribe frame this page ever

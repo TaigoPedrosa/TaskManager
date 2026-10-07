@@ -57,7 +57,7 @@ def _parse_score(raw: str | None) -> float | None:
 
 
 def parse_filters(params: Mapping[str, str]) -> Filters:
-    """Mirrors `filters.js` `readHash`'s parsing, minus the DOM it also touches."""
+    """Mirrors `filters.js` `readFilters`'s parsing, minus the DOM it also touches."""
     return Filters(
         status_mode=_mode_map(params, "status", "xstatus", _STATUS_CODES),
         phase_mode=_mode_map(params, "phase", "xphase", _PHASE_CODES),

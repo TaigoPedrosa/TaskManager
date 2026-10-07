@@ -254,7 +254,7 @@ def test_page_inlines_every_static_js_file() -> None:
         "edit.js": "function openDialog(",
         "detail.js": "async function showGraphInspector(nodeId)",
         "waves.js": "function fetchWaves()",
-        "main.js": "readHash();\nrenderLegend();",
+        "main.js": "navigate(readLocation(), { replace: true });",
     }
     for source_file, needle in known_strings_by_file.items():
         assert needle in html, f"{source_file}'s own content ({needle!r}) missing from the page"
@@ -305,15 +305,15 @@ def test_status_chips_use_the_tri_state_grammar_not_a_three_way_cycle() -> None:
     assert "cycleStatusMode" not in body
 
 
-def test_hash_round_trips_include_and_exclude_for_every_tri_state_dimension() -> None:
-    # writeHash() and setFilters() need the same shape (the protocol's F), so both build it
+def test_url_round_trips_include_and_exclude_for_every_tri_state_dimension() -> None:
+    # navigate() and setFilters() need the same shape (the protocol's F), so both build it
     # from filtersToF() rather than each writing their own p.set(...) calls.
     html = get_web_html()
     to_f = _function_body(html, "filtersToF")
-    read_hash = _function_body(html, "readHash")
-    assert "new URLSearchParams(filtersToF())" in _function_body(html, "writeHash")
+    read_filters = _function_body(html, "readFilters")
+    assert "filters: F = filtersToF()" in html
     for key in ("status", "xstatus", "repo", "xrepo", "model", "xmodel", "spec", "xspec"):
-        assert f"p.get('{key}')" in read_hash, f"readHash does not read {key}"
+        assert f"p.get('{key}')" in read_filters, f"readFilters does not read {key}"
         assert f"F.{key} =" in to_f, f"filtersToF does not write {key}"
 
 
@@ -837,10 +837,10 @@ def test_the_page_carries_phase_themes_and_a_phase_filter() -> None:
     assert "window.PHASE_THEMES = " in html
     assert '<div id="phase-filter" class="relative"></div>' in html
     assert "createTriStatePopover(phaseFilterEl" in html
-    read_hash = _function_body(html, "readHash")
+    read_filters = _function_body(html, "readFilters")
     to_f = _function_body(html, "filtersToF")
     for key in ("phase", "xphase"):
-        assert f"p.get('{key}')" in read_hash and f"F.{key} =" in to_f
+        assert f"p.get('{key}')" in read_filters and f"F.{key} =" in to_f
 
 
 def test_action_bar_offers_verbs_by_stored_status() -> None:
@@ -978,20 +978,23 @@ def _class_tokens(tag: str) -> list[str]:
     return match.group(1).split()
 
 
-def test_waves_view_is_the_default() -> None:
+def test_document_view_is_the_default() -> None:
     # Which segment is selected and which pane responds to a click is pinned by
-    # tests/web/switcher.test.mjs, which runs the real setViewMode rather than grepping for it;
-    # this test only pins the default pane visibility index.html itself bakes in.
+    # tests/web/switcher.test.mjs and views.test.mjs, which run the real page; this test only
+    # pins the default pane visibility index.html itself bakes in.
     html = get_web_html()
-    assert "window.VIEW_MODES.WAVES;" in html
+    assert "let currentMode = window.VIEW_MODES.DOCUMENT;" in html
+    assert "let viewModeBeforeDecisions = window.VIEW_MODES.DOCUMENT;" in html
     waves_pane = re.search(r'<div id="waves-pane"[^>]*>', html)
     graph_pane = re.search(r'<section id="graph-pane"[^>]*>', html)
     network_canvas = re.search(r'<div id="network-canvas"[^>]*>', html)
     document_pane = re.search(r'<main id="document-pane"[^>]*>', html)
-    assert waves_pane and "hidden" not in _class_tokens(waves_pane.group(0))
-    assert graph_pane and "hidden" not in _class_tokens(graph_pane.group(0))
+    doc_btn = re.search(r'<button id="view-doc-btn"[^>]*>', html)
+    assert waves_pane and "hidden" in _class_tokens(waves_pane.group(0))
+    assert graph_pane and "hidden" in _class_tokens(graph_pane.group(0))
     assert network_canvas and "hidden" in _class_tokens(network_canvas.group(0))
-    assert document_pane and "hidden" in _class_tokens(document_pane.group(0))
+    assert document_pane and "hidden" not in _class_tokens(document_pane.group(0))
+    assert doc_btn and "bg-zinc-800" in _class_tokens(doc_btn.group(0))
 
 
 def test_one_detail_drawer_follows_every_pane() -> None:
@@ -1010,15 +1013,6 @@ def test_set_view_mode_toggles_the_canvas_layer_and_waves_pane() -> None:
     assert "wavesPane.classList.toggle('hidden', mode !== window.VIEW_MODES.WAVES)" in body
     assert "networkCanvas.classList.toggle('hidden', mode !== window.VIEW_MODES.GRAPH)" in body
     assert "graphFitWrap.classList.toggle('hidden', mode !== window.VIEW_MODES.GRAPH)" in body
-    core_js = _static_js("core.js")
-    assert (
-        "viewWavesBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.WAVES))"
-        in core_js
-    )
-    assert (
-        "viewDocBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.DOCUMENT))"
-        in core_js
-    )
 
 
 def test_wave_size_bounds_come_from_meta_never_a_constant() -> None:
@@ -1065,7 +1059,7 @@ def test_a_filter_change_pushes_to_the_store_exactly_through_one_helper() -> Non
     html = get_web_html()
     apply_change = _function_body(html, "applyFilterChange")
     assert "window.tmStore.setFilters(filtersToF())" in apply_change
-    assert "writeHash()" in apply_change
+    assert "navigate(" in apply_change
     render_all = _function_body(html, "renderAll")
     assert "setFilters" not in render_all
 

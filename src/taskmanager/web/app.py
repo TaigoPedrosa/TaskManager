@@ -48,6 +48,9 @@ from taskmanager.web.rows import build_rows, canonical, decisions_open, statuses
 from taskmanager.web.ui import get_web_html
 from taskmanager.web.visibility import parse_filters, visible_ids
 
+# The page's own paths (filters.js's router): /<view> and /<view>/<id>.
+PAGE_VIEWS = frozenset({"document", "graph", "waves", "decisions"})
+
 
 class SpecCreate(BaseModel):
     title: str
@@ -507,10 +510,6 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             condition_ttl=_condition_ttl(),
             assets_dir=assets_dir,
         )
-
-    @app.get("/", response_class=HTMLResponse)
-    async def index() -> str:
-        return get_web_html()
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
@@ -999,5 +998,14 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         if not mime.startswith("image/"):
             raise HTTPException(404, "not found")
         return FileResponse(candidate, headers=_served_headers(mime, candidate.name))
+
+    # Registered last, so a view path never shadows /api, /assets or /ws.
+    @app.get("/", response_class=HTMLResponse)
+    @app.get("/{view}", response_class=HTMLResponse)
+    @app.get("/{view}/{node_id}", response_class=HTMLResponse)
+    async def page(view: str = "document", node_id: str | None = None) -> str:
+        if view not in PAGE_VIEWS:
+            raise HTTPException(404, "Not Found")
+        return get_web_html()
 
     return app
