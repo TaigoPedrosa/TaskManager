@@ -184,6 +184,21 @@ async function read(n) {
   return r && r.exit === 0 && r.data && typeof r.data.status === 'string' ? r.data : null
 }
 
+// A container's id and every id under it: a spec's plans and tasks, or a plan's tasks. Null when a
+// list cannot be read, since a review scoped without a child's landing never reads that child.
+// ponytail: whole list rows go through the runner's transcript; a --fields on tm task list and
+// tm plan list would cut a large spec's to its ids.
+async function lineage(n) {
+  const lists = n.kind === 'spec' ? ['plan list --spec', 'task list --spec'] : ['task list --plan']
+  const ids = [q(n.id)]
+  for (const list of lists) {
+    const r = await opJson('read', n.id, `${TM} ${list} ${q(n.id)} --json`)
+    if (!r || r.exit !== 0 || !Array.isArray(r.data)) return null
+    ids.push(...r.data.map(row => q(row.id)))
+  }
+  return ids
+}
+
 // Only this claim's own lease is released: tm refuses --agent and --token for any other, so a
 // release racing a later claim of the node changes nothing.
 async function release(n, trail, why, token) {
@@ -273,14 +288,22 @@ async function work(n, c, s, trail) {
     type = REVIEWER[container ? 'container' : again ? 'rereview' : 'task']
     const base = !c.base || c.base === 'main' ? 'origin/main' : c.base
     // A landed node's claim names its target as the branch, so base...branch is empty; its code is
-    // what its landing merge brought onto the target. The trailing -- makes git refuse a merge that
-    // is not there instead of printing an empty diff.
-    const landing = `${c.branch}^{/^merge[(]${n.id}[)]: land }`
+    // what landed there: its own landing merge, and that of every node under it that landed on the
+    // target itself rather than on the node's branch, which leaves the node no landing merge of
+    // its own. Each merge is read against its first parent, the target before it landed. A grep
+    // names no revision, so a merge that is not there prints nothing rather than failing.
     const landed = s.status === 'LANDED'
-    const diff = landed ? `'${landing}^1..${landing}' --` : `${base}...${c.branch}`
+    const family = landed ? await lineage(n) : []
+    if (!family) {
+      await release(n, trail, 'the nodes under it could not be read', c.token)
+      return read(n)
+    }
+    const diff = landed
+      ? `log -p --diff-merges=first-parent -E --grep '^merge[(](${family.join('|')})[)]: land [^ ]+ on ${q(c.base || 'main')}$' ${c.branch} --`
+      : `diff ${base}...${c.branch}`
     body = again
       ? `Scope: every finding in tm section ${n.id}:review not yet recorded as closed, against the fix commits on ${c.branch} and the fixer's latest :report entry, and, when the last landing failed, the failure its latest :merge entry names. Establish each closure by mutation.`
-      : `Scope: ${landed ? `what the landing of ${n.id} brought onto ${c.branch}` : `the whole diff of ${c.branch} from its base`}, in each repository it touched: ${repos.map(r => `git -C ${ROOT}/${r} diff ${diff}`).join('; ')}.${landed ? ' A repository where that merge does not resolve had nothing to land.' : ''}${container ? ' This is a container review: read what is true only between its children, and every child tm render lists as rejected by its own review.' : ''}`
+      : `Scope: ${landed ? `what ${n.id} and every node under it landed on ${c.branch}` : `the whole diff of ${c.branch} from its base`}, in each repository it touched: ${repos.map(r => `git -C ${ROOT}/${r} ${diff}`).join('; ')}.${landed ? ' A repository where that prints nothing had nothing land.' : ''}${container ? ' This is a container review: read what is true only between its children, and every child tm render lists as rejected by its own review.' : ''}`
     body += `\nFindings: append numbered findings to tm section ${n.id}:review, one line each; write it even when nothing is open, saying so.`
     // One scratch path per repository: a container review may execute code in several.
     const scratch = repos.map(r => `${WT}/${r}-${n.id}-review`).join(' or ') || `${WT}/<repo>-${n.id}-review`

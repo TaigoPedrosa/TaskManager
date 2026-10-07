@@ -39,20 +39,30 @@ export function scriptCksum(text) {
   return Function(`"use strict"; return (${SOURCE.slice(start, end)})`)()(text)
 }
 
-// A repository as a landed container leaves it: main holds a commit before the landing merge of
-// `id` and a later merge sharing its `merge(<id>): ` prefix, and origin/main and tm/S1 both point
-// there. Every git call throws on a non-zero exit, so a fixture that failed to build fails the test.
-export function landedRepo(dir, id) {
+// A repository as a landed container leaves it: on main, each of `landings` in turn lands by a
+// `merge(<lander>): land tm/<lander> on <onto>` merge bringing `<lander>.txt`, after a commit of
+// main's own so its first parent differs from the branch; each of `inner` lands on tm/<id> before
+// tm/<id> lands, as a child with merge: parent does. A later commit shares `merge(<id>): `'s
+// prefix, and origin/main and tm/S1 both point there. Every git call throws on a non-zero exit, so
+// a fixture that failed to build fails the test.
+export function landedRepo(dir, { id, landings = [id], inner = [], onto = 'main' }) {
   const git = (...a) => execFileSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { stdio: 'pipe' })
   const commit = (file, subject) => (writeFileSync(`${dir}/${file}`, subject), git('add', file), git('commit', '-q', '-m', subject))
+  const branch = lander => (git('checkout', '-q', '-b', `tm/${lander}`), commit(`${lander}.txt`, `feat(${lander}): its change`))
   mkdirSync(dir, { recursive: true })
   git('init', '-q', '-b', 'main')
   commit('base.txt', 'base')
-  git('checkout', '-q', '-b', `tm/${id}`)
-  commit('landed.txt', `feat(${id}): its change`)
-  git('checkout', '-q', 'main')
-  commit('before.txt', 'before')
-  git('merge', '-q', '--no-ff', '-m', `merge(${id}): land tm/${id} on main`, `tm/${id}`)
+  for (const lander of landings) {
+    branch(lander)
+    for (const child of lander === id ? inner : []) {
+      branch(child)
+      git('checkout', '-q', `tm/${id}`)
+      git('merge', '-q', '--no-ff', '-m', `merge(${child}): land tm/${child} on tm/${id}`, `tm/${child}`)
+    }
+    git('checkout', '-q', 'main')
+    commit(`before-${lander}.txt`, 'before')
+    git('merge', '-q', '--no-ff', '-m', `merge(${lander}): land tm/${lander} on ${onto}`, `tm/${lander}`)
+  }
   commit('after.txt', `merge(${id}): main moved`)
   git('update-ref', 'refs/remotes/origin/main', 'main')
   git('branch', 'tm/S1', 'main')
@@ -76,7 +86,8 @@ function queue(list) {
 }
 
 // `parked` names jobs already stopped for an agent before the run starts, as an earlier tick left them.
-export function makeTm({ chosen = [], nodes = {}, start = {}, job = {}, parked = [], releaseExit = 0, discover, corrupt = () => false } = {}) {
+// `lists` maps a list command, as `task list --plan P1`, to the ids of the rows it prints.
+export function makeTm({ chosen = [], nodes = {}, start = {}, job = {}, parked = [], lists = {}, releaseExit = 0, discover, corrupt = () => false } = {}) {
   const state = structuredClone(nodes)
   const starts = Object.fromEntries(Object.entries(start).map(([id, list]) => [id, queue(list)]))
   const jobs = Object.fromEntries(Object.entries(job).map(([id, list]) => [id, queue(list)]))
@@ -111,6 +122,8 @@ export function makeTm({ chosen = [], nodes = {}, start = {}, job = {}, parked =
       const picked = Object.fromEntries(m[2].split(',').map(f => [f, state[m[1]][f]]))
       return json(picked)
     }
+    m = inner.match(/^\S+ ((?:task|plan) list --(?:plan|spec) \S+) --json$/)
+    if (m && lists[m[1]]) return json(lists[m[1]].map(id => ({ id, kind: m[1].split(' ')[0] })))
     m = inner.match(/^\S+ task start (\S+) --agent wf-\S+ --session \S+ --worktree-dir \S+ --json$/)
     if (m && starts[m[1]]) {
       const reply = starts[m[1]]()
