@@ -173,7 +173,7 @@ test('a refused history write still switches the view', async () => {
 test('clicking the current view segment scrolls its pane to the top, collapses it, clears the selection and keeps the entry', async () => {
   const page = loadPage({ url: '/' });
   await withSpec(page);
-  page.$('.spec-header[data-node-id="S"]').click();
+  page.$('.node-toggle[data-node-id="S"]').click();
   await page.settle();
   page.run("selectNode('S')");
   await page.settle();

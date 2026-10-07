@@ -22,8 +22,8 @@ function renderDependencies(details, status, node, editable) {
       ${d.status ? statusIcon(d.status) : '<span class="text-[10px] font-mono text-red-400">missing</span>'}
       <span class="font-mono text-[11px] text-zinc-300">${esc(d.id)}</span>
       <span class="truncate text-[11px] text-zinc-400 flex-1">${esc(d.title || '')}</span>
-      ${d.inherited_from ? `<span class="text-[10px] text-zinc-500 flex-shrink-0">via ${esc(d.inherited_from)}</span>` : ''}
-      ${d.migration_chain ? `<span class="text-[10px] text-zinc-500 flex-shrink-0">${esc(d.migration_chain)} migration chain</span>` : ''}
+      ${d.inherited_from ? `<span class="text-[10px] text-zinc-400 flex-shrink-0">via ${esc(d.inherited_from)}</span>` : ''}
+      ${d.migration_chain ? `<span class="text-[10px] text-zinc-400 flex-shrink-0">${esc(d.migration_chain)} migration chain</span>` : ''}
       ${editable && !d.inherited_from && !d.migration_chain ? `<button type="button" class="dep-remove-btn p-1 rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-800 flex-shrink-0" data-dep-id="${esc(d.id)}" aria-label="Remove dependency ${esc(d.id)}">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
     </div>
   `).join('');
@@ -219,7 +219,7 @@ function renderLifecycle(detail, editable) {
   const n = detail.node;
   if (n.kind === 'decision') return '';
   const row = (label, value) => `
-    <div class="flex gap-2"><dt class="w-28 flex-shrink-0 text-zinc-500">${esc(label)}</dt><dd class="text-zinc-300 min-w-0 break-words">${value}</dd></div>`;
+    <div class="flex gap-2"><dt class="w-28 flex-shrink-0 text-zinc-400">${esc(label)}</dt><dd class="text-zinc-300 min-w-0 break-words">${value}</dd></div>`;
   const rows = [
     row('Stored status', `${esc(n.status)} ${phaseChip(detail.phase)}`),
     row('Outcome', esc(n.outcome || '-')),
@@ -233,7 +233,7 @@ function renderLifecycle(detail, editable) {
   const conditions = (detail.conditions || []).map(c => `
     <div class="flex items-center gap-2 px-2 py-1.5 bg-zinc-950/60">
       <span class="text-[11px] text-zinc-300 flex-1 min-w-0 truncate">${esc(c.needs)}</span>
-      <span class="text-[10px] uppercase text-zinc-500">${esc(c.stage)}</span>
+      <span class="text-[10px] uppercase text-zinc-400">${esc(c.stage)}</span>
       <code class="text-[10px] text-zinc-400 truncate max-w-[40%]">${esc(c.command)}</code>
       <span class="text-[10px] ${c.last_result === 0 ? 'text-emerald-400' : 'text-amber-400'}">${c.last_result === null || c.last_result === undefined ? 'not run' : (c.last_result === 0 ? 'holds' : `exit ${c.last_result}`)}</span>
       ${editable ? `<button type="button" class="cond-remove-btn p-1 rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-800" data-idx="${c.idx}" data-needs="${esc(c.needs)}" aria-label="Remove condition ${esc(c.needs)}">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
@@ -308,7 +308,7 @@ function renderGraphInspector(nodeId) {
   titleEl.textContent = n.title;
 
   if (!body) {
-    bodyEl.innerHTML = '<div class="text-xs text-zinc-500 italic py-6 text-center">Loading&hellip;</div>';
+    bodyEl.innerHTML = '<div class="text-xs text-zinc-400 italic py-6 text-center">Loading&hellip;</div>';
     return;
   }
 
@@ -453,11 +453,11 @@ function renderAttachments(node, attachments, editable) {
         <div class="flex items-center justify-between gap-1.5 text-[11px] text-zinc-300">
           <span class="truncate min-w-0" title="${esc(entry.name)}">${nameEl}</span>
           <span class="flex items-center gap-1 flex-shrink-0">
-            ${sizeLabel ? `<span class="text-zinc-500">${sizeLabel}</span>` : ''}
+            ${sizeLabel ? `<span class="text-zinc-400">${sizeLabel}</span>` : ''}
             ${editable ? `<button type="button" class="att-detach-btn p-1 rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-800" data-asset="${esc(entry.asset)}" aria-label="Detach ${esc(entry.name)}">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
           </span>
         </div>
-        ${uri ? `<div class="truncate text-[10px] font-mono text-zinc-500" title="${esc(uri)}">${esc(uri)}</div>` : ''}
+        ${uri ? `<div class="truncate text-[10px] font-mono text-zinc-400" title="${esc(uri)}">${esc(uri)}</div>` : ''}
         <div class="flex items-center flex-wrap gap-1">${sourceBadgeHtml(entry.source)}</div>
       </div>
     `;
@@ -549,8 +549,8 @@ function detachAttachment(node, asset, afterChange, name) {
     title: `Detach ${name || asset}?`,
     message: `The attachment will be removed from ${node.id}.`,
     confirmLabel: 'Detach',
-    onConfirm: async () => {
-      await api('DELETE', `/api/nodes/${node.id}/attachments/${encodeURIComponent(asset)}`);
+    onConfirm: async (write) => {
+      await write('DELETE', `/api/nodes/${node.id}/attachments/${encodeURIComponent(asset)}`);
       toast('Attachment detached.', 'success');
       if (afterChange) await afterChange();
     }

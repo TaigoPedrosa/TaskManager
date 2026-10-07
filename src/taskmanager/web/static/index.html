@@ -51,7 +51,7 @@
         <div class="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-zinc-500">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-search"/></svg>
         </div>
-        <input id="search-box" type="text" placeholder="Filter specs, plans, tasks..." class="h-8 w-full bg-zinc-950 border border-zinc-800 rounded-lg pl-8 pr-3 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+        <input id="search-box" type="text" placeholder="Filter" aria-label="Filter" class="h-8 w-full bg-zinc-950 border border-zinc-800 rounded-lg pl-8 pr-3 text-xs text-zinc-200 placeholder-zinc-400 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
       </div>
 
       <div class="hidden sm:block w-px h-6 bg-zinc-800 flex-shrink-0"></div>
@@ -101,9 +101,8 @@
 
   <!-- Status legend -->
   <div id="legend-panel" role="dialog" aria-label="Status legend" class="hidden fixed top-16 right-4 w-[26rem] max-w-[calc(100vw-2rem)] max-h-[75vh] overflow-y-auto z-40 rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl p-4 space-y-2">
-    <div class="flex items-start justify-between gap-3">
-      <p class="text-xs text-zinc-300 leading-relaxed"><strong class="text-white">Done means Completed and nothing else.</strong> Superseded, Abandoned and Deferred work is set aside: progress bars show it as its own segment and never count it as completed. A Superseded task still unblocks its dependents.</p>
-      <button id="legend-close-btn" aria-label="Close legend" class="p-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-800 flex-shrink-0">
+    <div class="flex items-start justify-end">
+      <button id="legend-close-btn" aria-label="Close legend" class="p-1 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-800 flex-shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">
         <svg class="w-4 h-4" fill="none" stroke="currentColor"><use href="#icon-x"/></svg>
       </button>
     </div>
@@ -117,14 +116,14 @@
     <aside id="sidebar-pane" class="hidden relative border-r border-zinc-800 flex flex-col bg-zinc-900/40 flex-shrink-0" style="width:320px">
       <div class="p-3 border-b border-zinc-800 flex items-center justify-between gap-2">
         <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Nodes</span>
-        <button id="expand-all-btn" title="Expand all" aria-label="Expand all tree nodes" class="p-1.5 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-zinc-200 text-xs">
+        <button id="expand-all-btn" title="Expand all" aria-label="Expand all tree nodes" class="h-7 w-7 flex items-center justify-center rounded-md bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-zinc-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-chevrons-up-down"/></svg>
         </button>
       </div>
       <div id="tree-list" role="tree" aria-label="Nodes" class="flex-1 overflow-y-auto p-2 space-y-1">
         <!-- Dynamically Populated Tree -->
       </div>
-      <div id="sidebar-resize-handle" title="Drag to resize" class="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-emerald-500/40"></div>
+      <div id="sidebar-resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize" class="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-emerald-500/40"></div>
     </aside>
 
     <!-- Document View Pane -->
@@ -137,7 +136,7 @@
     <!-- Graph View Pane -->
     <section id="graph-pane" class="hidden flex-1 flex flex-col bg-zinc-950/80 overflow-hidden relative">
       <div id="graph-fit-wrap" class="hidden absolute top-3 right-3 z-10 flex gap-2">
-        <button id="graph-fit-btn" class="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded bg-zinc-900/90 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 backdrop-blur">
+        <button id="graph-fit-btn" class="h-7 flex items-center gap-1.5 px-2.5 text-[11px] font-medium rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-maximize-2"/></svg>
           <span>Fit View</span>
         </button>

@@ -90,9 +90,10 @@ test('landed counts follow completed and stay out of the done count', () => {
 });
 
 test('a plan header keeps its id whole and lets its bar yield the width', () => {
-  const html = page.renderPlanCard({ id: 'LAND-CORE', kind: 'plan', title: 'A plan', display: 'LANDED' }, new Map());
-  assert.match(html, /<div class="flex items-center gap-2\.5 flex-shrink-0 pr-3">[^]*?>LAND-CORE<\/span>/);
-  assert.match(html, /<div class="w-40 min-w-0"><div class="flex w-full /);
+  page.window.tmStore.statuses.push({ spec: 'S', plans: [{ plan: 'LAND-CORE', counts: { LANDED: 1 } }] });
+  const html = page.renderPlanCard({ id: 'LAND-CORE', kind: 'plan', title: 'A plan', display: 'LANDED', parent: 'S' }, new Map());
+  assert.match(html, /<a href="[^"]*" class="id-link [^"]*flex-shrink-0[^"]*"[^>]*>LAND-CORE<\/a>/);
+  assert.match(html, /<div class="hidden sm:block w-40 flex-shrink min-w-0"><div class="flex w-full /);
 });
 
 test('every view names a LANDED node through its theme', () => {
@@ -100,10 +101,10 @@ test('every view names a LANDED node through its theme', () => {
   assert.match(chip, /class="st-chip st-LANDED /);
   assert.match(chip, /<span>Landed<\/span>/);
   assert.match(chip, /title="Landed, review owed: /);
-  assert.match(page.statusDot('LANDED'), /st-dot st-LANDED .*title="Landed"/);
-  assert.match(page.waveStatusChip('LANDED'), /st-chip st-LANDED .*>Landed<\/span>/);
+  assert.match(page.statusIcon('LANDED'), /st-text st-LANDED .*title="Landed" aria-label="Landed"/);
+  assert.equal(page.waveDisplay('LANDED'), 'LANDED');
   const graphNode = page.graphVisNode({ id: 'T1', title: 'A task', kind: 'task', display: 'LANDED' });
-  assert.match(graphNode.label, /\*Landed\*$/);
+  assert.equal(graphNode.label, 'T1');
   assert.equal(graphNode.color.border, page.STATUS_THEMES.LANDED.graph_border);
 });
 
@@ -112,7 +113,7 @@ test('a LANDED node can be reset to, deferred and abandoned from its action bar'
   assert.match(bar, /ab-defer/);
   assert.match(bar, /ab-abandon/);
   let dialog = null;
-  page.openDialog = (opts) => { dialog = opts; };
+  page.formDialog = (opts) => { dialog = opts; };
   page.openResetDialog({ id: 'T1' });
   assert.match(dialog.bodyHtml, /<option value="LANDED">/);
 });

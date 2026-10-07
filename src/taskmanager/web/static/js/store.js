@@ -595,7 +595,16 @@ function createStore(options) {
     closeFn = (ids) => { closeWithDescendants(ids, liveGetParent); sendSubscribe(false); };
     watchFn = (ids) => { toArray(ids).forEach(id => watchSet.add(id)); sendSubscribe(false); };
     unwatchFn = (ids) => { toArray(ids).forEach(id => watchSet.delete(id)); sendSubscribe(false); };
-    resyncFn = () => sendSubscribe(true);
+    // A closed socket reconnects now rather than at its next scheduled attempt; an open one
+    // asks for a fresh snapshot.
+    resyncFn = () => {
+      if (socket && socket.readyState === 1 /* OPEN */) {
+        sendSubscribe(true);
+      } else if (!socket || socket.readyState === 3 /* CLOSED */) {
+        clearTimeout(reconnectTimer);
+        connect();
+      }
+    };
     connect();
   }
 

@@ -84,13 +84,6 @@ def test_sidebar_resize_handle_clamps_and_persists_width() -> None:
     assert "localStorage.getItem('tm-sidebar-width')" in html
 
 
-def test_tree_row_carries_exactly_one_status_marker() -> None:
-    body = _function_body(get_web_html(), "createNodeRow")
-    assert body.count("statusDot(") == 1
-    assert "statusChip(" not in body
-    assert "statusIcon(" not in body
-
-
 def test_tree_row_is_keyboard_reachable_and_operable() -> None:
     # A canvas node in the graph view has no DOM presence to Tab to, so this tree row is the
     # only reachable path to any task's detail panel for a keyboard user; it needs a role,
@@ -117,26 +110,14 @@ def test_plan_and_task_headers_are_not_sticky() -> None:
     html = get_web_html()
     assert "sticky" not in _function_body(html, "renderPlanCard")
     assert "sticky" not in _function_body(html, "renderTaskCard")
-    assert (
-        'class="h-12 px-4 rounded-t-xl bg-zinc-900/95 backdrop-blur-sm border-b border-zinc-800 flex items-center justify-between cursor-pointer plan-header"'
-        in html
-    )
-    assert (
-        'class="h-10 px-3 rounded-t-lg flex items-center justify-between cursor-pointer task-header bg-zinc-900/90 backdrop-blur-sm hover:bg-zinc-900"'
-        in html
-    )
 
 
 def test_status_icon_carries_a_title_and_chip_is_legend_only() -> None:
     html = get_web_html()
     status_icon = _function_body(html, "statusIcon")
-    assert 'title="${esc(t.label)}"' in status_icon
-    # statusChip (visible label) survives only in its own definition, the legend, and the
-    # waves view's from/to transition (a wave card names no other status marker at all).
-    assert html.count("statusChip(") == 3
-    assert "renderLegend" in html
-    legend = _function_body(html, "renderLegend")
-    assert "statusChip(" in legend
+    assert 'title="${esc(t.label)}" aria-label="${esc(t.label)}"' in status_icon
+    # statusChip (visible label) survives only in its own definition until its last caller goes.
+    assert html.count("statusChip(") == 1
 
 
 def test_group_headers_default_all_collapsed() -> None:
@@ -156,11 +137,11 @@ def test_group_headers_default_all_collapsed() -> None:
 def test_group_header_toggle_is_wired_independently_of_node_and_section_collapse() -> None:
     html = get_web_html()
     shared = _function_body(html, "attachGroupHeaderHandlers")
-    assert "'.group-header'" in shared
+    assert "'.disclosure[data-group-id]'" in shared
     assert "collapsedGroups.has(id)) collapsedGroups.delete(id)" in shared
     assert "collapsedGroups.add(id)" in shared
     attach = _function_body(html, "attachCollapsibleHandlers")
-    assert "attachGroupHeaderHandlers(document, renderUnifiedDocument)" in attach
+    assert "attachGroupHeaderHandlers(unifiedDocument, renderUnifiedDocument)" in attach
 
     # The all-sections toolbar button only ever touches expandedSections, never the groups.
     toggle_sections_handler = re.search(
@@ -178,11 +159,12 @@ def test_group_header_is_keyboard_operable_everywhere_it_renders() -> None:
     # group header that neither responds to a click there nor to Enter anywhere.
     html = get_web_html()
     header = _function_body(html, "renderGroupHeader")
-    assert 'role="button"' in header
-    assert 'tabindex="0"' in header
-    assert "aria-expanded=" in header
+    assert "disclosureHeader(" in header
+    disclosure = _function_body(html, "disclosureHeader")
+    assert '<button type="button"' in disclosure
+    assert "aria-expanded=" in disclosure
     shared = _function_body(html, "attachGroupHeaderHandlers")
-    assert "header.onkeydown" in shared
+    assert "header.onclick" in shared
     detail = _function_body(html, "renderDecisionDetail")
     assert "attachGroupHeaderHandlers(decisionsDetailEl" in detail
 
@@ -193,7 +175,7 @@ def test_graph_layout_gives_nodes_room_and_a_shape_per_kind() -> None:
     assert "levelSeparation: 240" in render_graph
     assert "nodeSpacing: 320" in render_graph
     vis_node = _function_body(html, "graphVisNode")
-    assert "size: 16" in vis_node
+    assert "size: 12" in vis_node
     assert "widthConstraint: { minimum: 170, maximum: 260 }" in vis_node
     assert "GRAPH_SHAPE_BY_KIND" in html
 
@@ -208,9 +190,9 @@ def test_graph_never_destroys_the_network_instance() -> None:
     assert "syncGraphEdges()" in sync_graph
 
 
-def test_graph_container_label_is_a_counts_summary_not_a_status() -> None:
-    vis_node = _function_body(get_web_html(), "graphVisNode")
-    assert "progressText(countsForRow(row))" in vis_node
+def test_graph_container_tooltip_carries_its_counts_summary() -> None:
+    tip = _function_body(get_web_html(), "graphTipHtml")
+    assert "progressText(countsForRow(row))" in tip
 
 
 def test_graph_double_click_toggles_a_container_through_the_store() -> None:
@@ -495,16 +477,18 @@ def test_dialog_traps_focus_and_closes_on_escape_with_focus_return() -> None:
     html = get_web_html()
     body = _function_body(html, "openDialog")
     assert "e.key === 'Escape'" in body
-    assert "e.key === 'Tab'" in body
-    assert "trigger.focus()" in body
-    assert "aria-modal" in body
+    assert "e.key !== 'Tab'" in body
+    assert "opener.focus()" in body
+    assert "aria-modal" in _function_body(html, "formDialog")
 
 
 def test_dialog_submit_shows_the_refusal_without_closing() -> None:
     # An OperationError's message (400/404/409) is surfaced in the form, and the dialog is
     # never closed by the catch branch -- only a successful onSubmit calls close().
     html = get_web_html()
-    dialog_call_site = re.search(r"form\.addEventListener\('submit'.*?\}\);", html, re.DOTALL)
+    dialog_call_site = re.search(
+        r"\.dlg-form'\)\.addEventListener\('submit'.*?\}\);", html, re.DOTALL
+    )
     assert dialog_call_site, "dialog submit handler not found"
     handler = dialog_call_site.group(0)
     assert "errorEl.textContent" in handler
@@ -565,17 +549,6 @@ def test_destructive_actions_confirm_before_writing() -> None:
     assert "destructive: verb === 'abandon'" in _function_body(html, "openVerbDialog")
 
 
-def test_confirm_dialog_closes_before_the_reload_not_after() -> None:
-    # A confirm has no fields left to correct on a refusal, so it closes as soon as the button
-    # is pressed; onConfirm routinely ends in a tree/graph reload that used to keep the dialog
-    # open (Withdraw measured closing 65s after its own success toast on a large estate).
-    body = _function_body(get_web_html(), "confirmDialog")
-    close_index = body.index("close();")
-    confirm_index = body.index("await onConfirm();")
-    assert close_index < confirm_index
-    assert "catch (err)" in body
-
-
 def test_edit_dialog_only_offers_models_repo_and_frontmatter_for_tasks() -> None:
     body = _function_body(get_web_html(), "openEditNodeDialog")
     assert "isTask ? fieldRow('Acceptable models" in body
@@ -588,7 +561,7 @@ def test_remove_confirmations_name_the_thing_not_its_internal_id() -> None:
     render_ver = _function_body(html, "renderVerifications")
     assert 'aria-label="Remove verification ${esc(v.target_path)}"' in render_ver
     remove_ver = _function_body(html, "removeVerification")
-    assert 'target ? `"${target}" `' in remove_ver
+    assert "Remove the verification on ${target}?" in remove_ver
     detach = _function_body(html, "detachAttachment")
     assert "name || asset" in detach
 
@@ -629,10 +602,12 @@ def test_decision_option_description_renders_as_markdown() -> None:
 
 def test_dialog_refusal_also_shows_a_toast() -> None:
     html = get_web_html()
-    dialog_call_site = re.search(r"form\.addEventListener\('submit'.*?\}\);", html, re.DOTALL)
+    dialog_call_site = re.search(
+        r"\.dlg-form'\)\.addEventListener\('submit'.*?\}\);", html, re.DOTALL
+    )
     assert dialog_call_site, "dialog submit handler not found"
     catch_block = dialog_call_site.group(0).split("catch")[1].split("finally")[0]
-    assert "toast(message, 'error')" in catch_block
+    assert "toast(message, { tone: 'error' })" in catch_block
 
 
 def test_decision_option_row_inputs_are_named_by_aria_label_not_placeholder() -> None:
@@ -687,12 +662,6 @@ def test_refresh_decisions_data_reads_the_paginated_envelopes_items() -> None:
     assert "const res = await api('GET', `/api/decisions?" in refresh
     assert "decisionsData = res.items;" in refresh
     assert "decisionsNextCursor = res.next;" in refresh
-
-
-def test_dialog_initial_focus_prefers_a_form_field_over_the_close_button() -> None:
-    body = _function_body(get_web_html(), "openDialog")
-    assert "firstFieldOrFallback().focus()" in body
-    assert "(focusables()[0] || panel).focus()" not in body
 
 
 def test_new_menu_item_returns_focus_to_the_trigger_button_not_body() -> None:
@@ -752,7 +721,7 @@ def test_a_refused_subscribe_notifies_the_store_and_core_toasts_it() -> None:
     assert "error: msg.detail" in handle_message
     on_change = re.search(r"window\.tmStore\.onChange\(\(patch\) => \{(.*?)\}\);", html, re.DOTALL)
     assert on_change, "onChange handler not found"
-    assert "toast(patch.error, 'error')" in on_change.group(1)
+    assert "toast(patch.error, { tone: 'error'" in on_change.group(1)
 
 
 def test_tri_state_buttons_use_the_icon_sprite_not_inline_svg() -> None:
@@ -969,7 +938,7 @@ def test_graph_inspector_shows_loading_until_watched_body_arrives() -> None:
 def test_sections_and_relations_render_only_once_a_watched_body_arrives() -> None:
     task_card = _function_body(get_web_html(), "renderTaskCard")
     assert "bodyOf(task.id)" in task_card
-    assert "Loading…" in task_card
+    assert "paneState('loading')" in task_card
 
 
 def _class_tokens(tag: str) -> list[str]:
@@ -1036,14 +1005,6 @@ def test_wave_compute_disabled_while_loading_or_the_last_wave_is_empty() -> None
     body = _function_body(_static_js("waves.js"), "waveComputeDisabled")
     assert "if (waveLoading) return true;" in body
     assert "last.entries.length === 0" in body
-
-
-def test_wave_entry_card_is_a_focusable_button_naming_its_own_id_and_title() -> None:
-    body = _function_body(_static_js("waves.js"), "waveEntryHtml")
-    assert '<button type="button" class="wave-entry-card' in body
-    assert 'aria-label="${esc(entry.id)}: ${esc(entry.title)}"' in body
-    wire = _function_body(_static_js("waves.js"), "wireWavesHandlers")
-    assert "showGraphInspector(btn.getAttribute('data-node-id'))" in wire
 
 
 def test_wave_refetch_on_statuses_change_is_coalesced_per_frame() -> None:

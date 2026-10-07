@@ -1,4 +1,4 @@
-// Editing: a dialog primitive, the toolbar's + New menu, and every write-side form and
+// Editing: the form dialog, the toolbar's + New menu, and every write-side form and
 // action the detail panel wires buttons to. Nothing here renders unless canEdit() -- a
 // static export never even inlines these DOM ids' listeners because renderNewMenu() and
 // every call site in detail.js check it first.
@@ -14,9 +14,9 @@ if (typeof DOMPurify !== 'undefined' && typeof renderSectionBody === 'function')
   };
 }
 
-const INPUT_CLS = 'w-full h-8 px-2.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500';
+const INPUT_CLS = 'w-full h-8 px-2.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-200 placeholder-zinc-400 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500';
 const SELECT_CLS = `${INPUT_CLS} appearance-none`;
-const TEXTAREA_CLS = 'w-full px-2.5 py-2 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-200 placeholder-zinc-500 font-mono leading-relaxed focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500';
+const TEXTAREA_CLS = 'w-full px-2.5 py-2 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-200 placeholder-zinc-400 font-mono leading-relaxed focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500';
 
 function fieldRow(labelText, innerHtml) {
   return `
@@ -28,129 +28,88 @@ function fieldRow(labelText, innerHtml) {
 }
 
 
-// Dialog primitive -----------------------------------------------------------------------
-// Focus trap (Tab/Shift+Tab wraps inside the panel), Esc closes, focus returns to whatever
-// triggered it. onSubmit throwing shows the error as a toast rather than closing the dialog,
-// so a refusal (400/404/409 from OperationError) leaves the form open to correct and retry.
+// Form dialog -----------------------------------------------------------------------------
+// core.js's openDialog shows it, traps focus and returns focus on close. A dialog closed
+// without a successful submit keeps its fields: opening the same one again (same `key`,
+// default its title) brings the draft back. onSubmit(panel, close, write) sends its writes
+// through `write(method, path, body)`, which is submitWrite on the submit button; a throw
+// (a missing field) shows its message in the form and as a toast, and the form stays open.
 
-function openDialog({ title, bodyHtml, onMount, onSubmit, submitLabel = 'Save', cancelLabel = 'Cancel', destructive = false }) {
-  const trigger = document.activeElement;
-  const overlay = document.createElement('div');
-  overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4';
+const dialogDrafts = new Map();
 
-  const panel = document.createElement('div');
-  panel.setAttribute('role', 'dialog');
-  panel.setAttribute('aria-modal', 'true');
-  panel.setAttribute('aria-labelledby', 'dlg-title');
-  panel.className = 'w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl p-4 space-y-4 max-h-[85vh] overflow-y-auto';
-  panel.innerHTML = `
-    <div class="flex items-center justify-between gap-2">
-      <h2 id="dlg-title" class="text-sm font-semibold text-zinc-100">${esc(title)}</h2>
-      <button type="button" class="dlg-close p-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-800" aria-label="Close dialog">${renderIcon('x', 'w-4 h-4')}</button>
-    </div>
-    <form class="dlg-form space-y-3" novalidate>
-      ${bodyHtml}
-      <p class="dlg-error hidden text-xs text-red-400"></p>
-      <div class="flex justify-end gap-2 pt-1">
-        <button type="button" class="dlg-cancel h-8 px-3 rounded-lg text-xs text-zinc-300 hover:text-white hover:bg-zinc-800 transition">${esc(cancelLabel)}</button>
-        <button type="submit" class="dlg-submit h-8 px-3 rounded-lg text-xs font-semibold transition ${destructive ? 'bg-red-600 hover:bg-red-500 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-black'}">${esc(submitLabel)}</button>
+function formDialog({ title, bodyHtml, onMount, onSubmit, submitLabel = 'Save', cancelLabel = 'Cancel', destructive = false, key = title }) {
+  const opener = document.activeElement;
+  let draft = dialogDrafts.get(key);
+  if (!draft) {
+    const overlay = document.createElement('div');
+    overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4';
+    overlay.innerHTML = `
+      <div role="dialog" aria-modal="true" aria-labelledby="dlg-title" class="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl p-4 space-y-4 max-h-[85vh] overflow-y-auto">
+        <div class="flex items-center justify-between gap-2">
+          <h2 id="dlg-title" class="text-sm font-semibold text-zinc-100">${esc(title)}</h2>
+          <button type="button" class="dlg-close p-1 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-800 ${FOCUS_RING}" aria-label="Close">${renderIcon('x', 'w-4 h-4')}</button>
+        </div>
+        <form class="dlg-form space-y-3" novalidate>
+          ${bodyHtml}
+          <p class="dlg-error hidden text-xs text-red-300"></p>
+          <div class="flex justify-end gap-2 pt-1">
+            <button type="button" class="dlg-cancel h-7 px-2.5 rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-[11px] font-medium text-zinc-200 transition ${FOCUS_RING}">${esc(cancelLabel)}</button>
+            <button type="submit" class="dlg-submit h-8 px-3 rounded-lg text-xs font-semibold transition disabled:opacity-40 ${FOCUS_RING} ${destructive ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-black'}">${esc(submitLabel)}</button>
+          </div>
+        </form>
       </div>
-    </form>
-  `;
-  overlay.appendChild(panel);
-  dialogRoot.appendChild(overlay);
-
-  function focusables() {
-    return Array.from(panel.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
-      .filter(el => !el.disabled && el.getClientRects().length > 0);
-  }
-
-  // The header's own close (x) button is the first focusable in DOM order, ahead of every
-  // field the form actually asks for -- initial focus prefers a field inside .dlg-form when
-  // one exists, falling back to the panel's first focusable (the close button) only when a
-  // dialog has none (a bare confirm).
-  function firstFieldOrFallback() {
-    const form = panel.querySelector('.dlg-form');
-    const inForm = form
-      ? Array.from(form.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
-        .filter(el => !el.disabled && el.getClientRects().length > 0)
-      : [];
-    return inForm[0] || focusables()[0] || panel;
-  }
-
-  function close() {
-    document.removeEventListener('keydown', onKeydown);
-    overlay.remove();
-    if (trigger && typeof trigger.focus === 'function' && trigger.isConnected) trigger.focus();
-  }
-
-  function onKeydown(e) {
-    if (e.key === 'Escape') {
+    `;
+    draft = { overlay, close: () => {} };
+    const panel = overlay.querySelector('[role="dialog"]');
+    const errorEl = panel.querySelector('.dlg-error');
+    const submitBtn = panel.querySelector('.dlg-submit');
+    const write = (method, path, body) => submitWrite(submitBtn, { method, path, body });
+    const done = () => {
+      dialogDrafts.delete(key);
+      draft.close();
+    };
+    overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) draft.close(); });
+    if (onMount) onMount(panel);
+    panel.querySelector('.dlg-form').addEventListener('submit', async (e) => {
       e.preventDefault();
-      close();
-      return;
-    }
-    if (e.key === 'Tab') {
-      const els = focusables();
-      if (els.length === 0) return;
-      const first = els[0];
-      const last = els[els.length - 1];
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first.focus();
+      errorEl.classList.add('hidden');
+      submitBtn.disabled = true;
+      try {
+        await onSubmit(panel, done, write);
+      } catch (err) {
+        const message = err && err.message ? err.message : 'Request failed.';
+        errorEl.textContent = message;
+        errorEl.classList.remove('hidden');
+        toast(message, { tone: 'error' });
+      } finally {
+        submitBtn.disabled = false;
       }
-    }
+    });
+    dialogDrafts.set(key, draft);
   }
-  document.addEventListener('keydown', onKeydown);
-
-  panel.querySelector('.dlg-close').addEventListener('click', close);
-  panel.querySelector('.dlg-cancel').addEventListener('click', close);
-  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
-
-  if (onMount) onMount(panel);
-
-  const form = panel.querySelector('.dlg-form');
-  const errorEl = panel.querySelector('.dlg-error');
-  const submitBtn = panel.querySelector('.dlg-submit');
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    errorEl.classList.add('hidden');
-    submitBtn.disabled = true;
-    try {
-      await onSubmit(panel, close);
-    } catch (err) {
-      const message = err && err.message ? err.message : 'Request failed.';
-      errorEl.textContent = message;
-      errorEl.classList.remove('hidden');
-      toast(message, 'error');
-    } finally {
-      submitBtn.disabled = false;
-    }
-  });
-
-  firstFieldOrFallback().focus();
-  return { panel, close };
+  draft.close = openDialog(draft.overlay, opener).close;
+  return { panel: draft.overlay.querySelector('[role="dialog"]'), close: () => draft.close() };
 }
 
-// A confirm is just a dialog whose only field is the warning text -- and, unlike an editable
-// form, there is nothing in it left to correct on a refusal, so it closes as soon as the
-// button is pressed rather than staying open for the write that follows it.
-function confirmDialog({ title, message, confirmLabel = 'Confirm', destructive = true, onConfirm }) {
-  return openDialog({
+// A confirm's one control is its button: it spins while the write runs, and the dialog
+// leaves as soon as the write succeeds, before any re-read onConfirm runs after it.
+function confirmDialog({ title, message = '', confirmLabel = 'Confirm', destructive = true, onConfirm }) {
+  return formDialog({
     title,
     submitLabel: confirmLabel,
     destructive,
-    bodyHtml: `<p class="text-xs text-zinc-300 leading-relaxed">${esc(message)}</p>`,
-    onSubmit: async (panel, close) => {
-      close();
-      try {
-        await onConfirm();
-      } catch (err) {
-        toast(err && err.message ? err.message : 'Request failed.', 'error');
-      }
+    bodyHtml: message ? `<p class="text-xs text-zinc-300 leading-relaxed">${esc(message)}</p>` : '',
+    onSubmit: async (panel, close, write) => {
+      let closed = false;
+      const closeOnce = () => {
+        if (!closed) close();
+        closed = true;
+      };
+      await onConfirm((method, path, body) => write(method, path, body).then((res) => {
+        closeOnce();
+        return res;
+      }));
+      closeOnce();
     }
   });
 }
@@ -199,12 +158,12 @@ function frontmatterRowHtml(key, value) {
       ? JSON.stringify(value, null, 2)
       : (typeof value === 'string' ? value : JSON.stringify(value ?? ''));
   const valueField = kind === 'scalar'
-    ? `<input type="text" class="fm-value ${INPUT_CLS} font-mono" value="${esc(valueText)}">`
-    : `<textarea rows="${kind === 'json' ? 6 : 3}" class="fm-value ${TEXTAREA_CLS}" data-fm-kind="${kind}" placeholder="${kind === 'json' ? 'JSON' : 'one path per line'}">${esc(valueText)}</textarea>`;
+    ? `<input type="text" class="fm-value ${INPUT_CLS} font-mono" value="${esc(valueText)}" aria-label="Value">`
+    : `<textarea rows="${kind === 'json' ? 6 : 3}" class="fm-value ${TEXTAREA_CLS}" data-fm-kind="${kind}" aria-label="Value">${esc(valueText)}</textarea>`;
   return `
     <div class="fm-row flex items-start gap-2">
       <div class="flex-1 space-y-1 min-w-0">
-        <input type="text" class="fm-key ${INPUT_CLS} font-mono" value="${esc(key)}" placeholder="key">
+        <input type="text" class="fm-key ${INPUT_CLS} font-mono" value="${esc(key)}" aria-label="Key">
         ${valueField}
       </div>
       <label class="flex items-center gap-1 text-[10px] text-zinc-400 pt-1.5 flex-shrink-0">
@@ -220,7 +179,7 @@ function frontmatterEditorHtml(frontmatter) {
     <div class="space-y-2 pt-1">
       <div class="flex items-center justify-between">
         <span class="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Frontmatter</span>
-        <button type="button" class="fm-add text-[11px] text-emerald-400 hover:text-emerald-300">+ Add field</button>
+        <button type="button" class="fm-add h-7 px-2 rounded-md text-[11px] text-emerald-400 hover:text-emerald-300 hover:bg-zinc-800 ${FOCUS_RING}">+ Add field</button>
       </div>
       <div class="fm-rows space-y-2">${rows}</div>
     </div>
@@ -262,24 +221,32 @@ function readFrontmatterEditor(panel) {
 
 // Node create/edit -------------------------------------------------------------------------
 
+function checkboxRow(cls, checked, label) {
+  return `<label class="flex items-center gap-2 text-xs text-zinc-300"><input type="checkbox" class="${cls} rounded border-zinc-600 bg-zinc-950 text-emerald-500 focus:ring-emerald-500" ${checked ? 'checked' : ''}>${esc(label)}</label>`;
+}
+
+function commaList(panel, selector) {
+  return panel.querySelector(selector).value.split(',').map(s => s.trim()).filter(Boolean);
+}
+
 function openNewSpecDialog() {
-  openDialog({
+  formDialog({
     title: 'New spec',
     submitLabel: 'Create',
     bodyHtml: `
-      ${fieldRow('Title', `<input type="text" required class="ns-title ${INPUT_CLS}" placeholder="Spec title">`)}
-      ${fieldRow('Slug', `<input type="text" class="ns-slug ${INPUT_CLS}" placeholder="(derived from title)">`)}
+      ${fieldRow('Title', `<input type="text" required class="ns-title ${INPUT_CLS}">`)}
+      ${fieldRow('Slug', `<input type="text" class="ns-slug ${INPUT_CLS}">`)}
       ${fieldRow('Priority', `<input type="number" min="1" max="100" class="ns-priority ${INPUT_CLS}" value="50">`)}
     `,
-    onSubmit: async (panel, close) => {
+    onSubmit: async (panel, close, write) => {
       const title = panel.querySelector('.ns-title').value.trim();
       if (!title) throw new Error('Title is required.');
-      const res = await api('POST', '/api/specs', {
+      const res = await write('POST', '/api/specs', {
         title,
         slug: panel.querySelector('.ns-slug').value.trim() || undefined,
         priority: Number(panel.querySelector('.ns-priority').value) || 50,
       });
-      toast(`Spec ${res.id} created.`, 'success');
+      toast(`Spec ${res.id} created.`, { tone: 'success' });
       close();
       openAndSelectCreated(res.id, null);
     }
@@ -291,31 +258,31 @@ async function openNewPlanDialog() {
   try {
     meta = await api('GET', '/api/meta');
   } catch (e) {
-    toast(e.message, 'error');
+    toast(e.message, { tone: 'error' });
     return;
   }
   if (meta.specs.length === 0) {
-    toast('No specs exist yet -- create one first.', 'error');
+    toast('No specs exist yet.', { tone: 'error' });
     return;
   }
-  openDialog({
+  formDialog({
     title: 'New plan',
     submitLabel: 'Create',
     bodyHtml: `
-      ${fieldRow('Title', `<input type="text" required class="np-title ${INPUT_CLS}" placeholder="Plan title">`)}
+      ${fieldRow('Title', `<input type="text" required class="np-title ${INPUT_CLS}">`)}
       ${fieldRow('Spec', `<select class="np-spec ${SELECT_CLS}">${meta.specs.map(s => `<option value="${esc(s.id)}">${esc(s.id)} -- ${esc(s.title)}</option>`).join('')}</select>`)}
-      ${fieldRow('Slug', `<input type="text" class="np-slug ${INPUT_CLS}" placeholder="(derived from title)">`)}
+      ${fieldRow('Slug', `<input type="text" class="np-slug ${INPUT_CLS}">`)}
       <div class="grid grid-cols-2 gap-2">
         ${fieldRow('Priority', `<input type="number" min="1" max="100" class="np-priority ${INPUT_CLS}" value="50">`)}
         ${fieldRow('Order', `<input type="number" class="np-order ${INPUT_CLS}" value="0">`)}
       </div>
-      <label class="flex items-center gap-2 text-xs text-zinc-300"><input type="checkbox" class="np-review rounded border-zinc-600 bg-zinc-950 text-emerald-500 focus:ring-emerald-500">A review step follows its tasks</label>
-      <label class="flex items-center gap-2 text-xs text-zinc-300"><input type="checkbox" class="np-fix rounded border-zinc-600 bg-zinc-950 text-emerald-500 focus:ring-emerald-500">The plan fixes what its review rejects</label>
+      ${checkboxRow('np-review', false, 'Review')}
+      ${checkboxRow('np-fix', false, 'Fix')}
     `,
-    onSubmit: async (panel, close) => {
+    onSubmit: async (panel, close, write) => {
       const title = panel.querySelector('.np-title').value.trim();
       if (!title) throw new Error('Title is required.');
-      const res = await api('POST', '/api/plans', {
+      const res = await write('POST', '/api/plans', {
         title,
         spec: panel.querySelector('.np-spec').value,
         slug: panel.querySelector('.np-slug').value.trim() || undefined,
@@ -324,7 +291,7 @@ async function openNewPlanDialog() {
         review: panel.querySelector('.np-review').checked,
         fix: panel.querySelector('.np-fix').checked,
       });
-      toast(`Plan ${res.id} created.`, 'success');
+      toast(`Plan ${res.id} created.`, { tone: 'success' });
       close();
       openAndSelectCreated(res.id, panel.querySelector('.np-spec').value);
     }
@@ -336,41 +303,41 @@ async function openNewTaskDialog() {
   try {
     meta = await api('GET', '/api/meta');
   } catch (e) {
-    toast(e.message, 'error');
+    toast(e.message, { tone: 'error' });
     return;
   }
   if (meta.plans.length === 0) {
-    toast('No plans exist yet -- create one first.', 'error');
+    toast('No plans exist yet.', { tone: 'error' });
     return;
   }
-  openDialog({
+  formDialog({
     title: 'New task',
     submitLabel: 'Create',
     bodyHtml: `
-      ${fieldRow('Title', `<input type="text" required class="nt-title ${INPUT_CLS}" placeholder="Task title">`)}
+      ${fieldRow('Title', `<input type="text" required class="nt-title ${INPUT_CLS}">`)}
       ${fieldRow('Plan', `<select class="nt-plan ${SELECT_CLS}">${meta.plans.map(p => `<option value="${esc(p.id)}">${esc(p.id)} -- ${esc(p.title)}</option>`).join('')}</select>`)}
-      ${fieldRow('Slug', `<input type="text" class="nt-slug ${INPUT_CLS}" placeholder="(derived from title)">`)}
+      ${fieldRow('Slug', `<input type="text" class="nt-slug ${INPUT_CLS}">`)}
       <div class="grid grid-cols-2 gap-2">
         ${fieldRow('Priority', `<input type="number" min="1" max="100" class="nt-priority ${INPUT_CLS}" value="50">`)}
         ${fieldRow('Order', `<input type="number" class="nt-order ${INPUT_CLS}" value="0">`)}
       </div>
-      ${fieldRow('Depends on (comma separated ids)', `<input type="text" class="nt-deps ${INPUT_CLS}" placeholder="(optional)">`)}
-      ${fieldRow('Acceptable models (comma separated)', `<input type="text" class="nt-models ${INPUT_CLS}" list="nt-models-list" placeholder="(optional)">`)}
+      ${fieldRow('Depends on', `<input type="text" class="nt-deps ${INPUT_CLS}">`)}
+      ${fieldRow('Acceptable models', `<input type="text" class="nt-models ${INPUT_CLS}" list="nt-models-list">`)}
       <datalist id="nt-models-list">${meta.models.map(m => `<option value="${esc(m)}">`).join('')}</datalist>
     `,
-    onSubmit: async (panel, close) => {
+    onSubmit: async (panel, close, write) => {
       const title = panel.querySelector('.nt-title').value.trim();
       if (!title) throw new Error('Title is required.');
-      const res = await api('POST', '/api/tasks', {
+      const res = await write('POST', '/api/tasks', {
         title,
         plan: panel.querySelector('.nt-plan').value,
         slug: panel.querySelector('.nt-slug').value.trim() || undefined,
         priority: Number(panel.querySelector('.nt-priority').value) || 50,
         order: Number(panel.querySelector('.nt-order').value) || 0,
-        depends_on: panel.querySelector('.nt-deps').value.split(',').map(s => s.trim()).filter(Boolean),
-        models: panel.querySelector('.nt-models').value.split(',').map(s => s.trim()).filter(Boolean),
+        depends_on: commaList(panel, '.nt-deps'),
+        models: commaList(panel, '.nt-models'),
       });
-      toast(`Task ${res.id} created.`, 'success');
+      toast(`Task ${res.id} created.`, { tone: 'success' });
       close();
       openAndSelectCreated(res.id, panel.querySelector('.nt-plan').value);
     }
@@ -379,13 +346,13 @@ async function openNewTaskDialog() {
 
 function openEditNodeDialog(node) {
   const isTask = node.kind === 'task';
-  openDialog({
+  formDialog({
     title: `Edit ${node.id}`,
     submitLabel: 'Save',
     bodyHtml: `
       ${fieldRow('Title', `<input type="text" required class="ed-title ${INPUT_CLS}" value="${esc(node.title)}">`)}
-      ${fieldRow('Priority', `<input type="number" min="1" max="100" class="ed-priority ${INPUT_CLS}" value="${node.priority || 50}">`)}
-      ${isTask ? fieldRow('Acceptable models (comma separated)', `<input type="text" class="ed-models ${INPUT_CLS}" value="${esc((node.acceptable_models || []).join(', '))}">`) : ''}
+      ${fieldRow('Priority', `<input type="number" min="1" max="100" class="ed-priority ${INPUT_CLS}" value="${esc(node.priority || 50)}">`)}
+      ${isTask ? fieldRow('Acceptable models', `<input type="text" class="ed-models ${INPUT_CLS}" value="${esc((node.acceptable_models || []).join(', '))}">`) : ''}
       ${isTask ? fieldRow('Target repo', `<input type="text" class="ed-repo ${INPUT_CLS}" value="${esc(node.target_repo || '')}">`) : ''}
       ${isTask ? frontmatterEditorHtml(node.frontmatter) : ''}
     `,
@@ -397,12 +364,11 @@ function openEditNodeDialog(node) {
         });
       }
     },
-    onSubmit: async (panel, close) => {
+    onSubmit: async (panel, close, write) => {
       const title = panel.querySelector('.ed-title').value.trim();
       if (!title) throw new Error('Title is required.');
       const body = { title, priority: Number(panel.querySelector('.ed-priority').value) || 50 };
-      const modelsEl = panel.querySelector('.ed-models');
-      if (modelsEl) body.acceptable_models = modelsEl.value.split(',').map(s => s.trim()).filter(Boolean);
+      if (panel.querySelector('.ed-models')) body.acceptable_models = commaList(panel, '.ed-models');
       const repoEl = panel.querySelector('.ed-repo');
       if (repoEl) body.target_repo = repoEl.value.trim() || null;
       if (isTask) {
@@ -410,8 +376,8 @@ function openEditNodeDialog(node) {
         if (Object.keys(set).length) body.frontmatter_set = set;
         if (unset.length) body.frontmatter_unset = unset;
       }
-      await api('PATCH', `/api/nodes/${node.id}`, body);
-      toast(`${node.id} updated.`, 'success');
+      await write('PATCH', `/api/nodes/${node.id}`, body);
+      toast(`${node.id} updated.`, { tone: 'success' });
       close();
     }
   });
@@ -420,34 +386,30 @@ function openEditNodeDialog(node) {
 
 // Verbs -------------------------------------------------------------------------------------
 
-async function postVerb(node, verb, body) {
-  const res = await api('POST', `/api/nodes/${node.id}/${verb}`, body);
-  toast(`${node.id} is now ${res.status}.`, 'success');
+async function postVerb(write, node, verb, body) {
+  const res = await write('POST', `/api/nodes/${node.id}/${verb}`, body);
+  toast(`${node.id} is now ${res.status}.`, { tone: 'success' });
 }
 
-const VERB_COPY = {
-  reopen: { title: 'Reopen', label: 'What should the next attempt do differently?' },
-  defer: { title: 'Defer', label: 'Why, and until when?' },
-  abandon: { title: 'Abandon', label: 'Why is it dropped for good?' },
-};
+const VERB_TITLE = { reopen: 'Reopen', defer: 'Defer', abandon: 'Abandon' };
 
 function openVerbDialog(node, verb) {
-  const copy = VERB_COPY[verb];
-  openDialog({
-    title: `${copy.title} ${node.id}`,
-    submitLabel: copy.title,
+  const title = VERB_TITLE[verb];
+  formDialog({
+    title: `${title} ${node.id}`,
+    submitLabel: title,
     destructive: verb === 'abandon',
     bodyHtml: `
-      ${fieldRow(copy.label, `<textarea required class="vb-note ${TEXTAREA_CLS}" rows="3"></textarea>`)}
-      ${verb === 'reopen' ? `<label class="flex items-center gap-2 text-xs text-zinc-300"><input type="checkbox" class="vb-new-branch rounded border-zinc-600 bg-zinc-950">Start on a new branch; the old one is kept as ${esc(node.branch || `tm/${node.id}`)}@n</label>` : ''}
+      ${fieldRow('Note', `<textarea required class="vb-note ${TEXTAREA_CLS}" rows="3"></textarea>`)}
+      ${verb === 'reopen' ? checkboxRow('vb-new-branch', false, 'New branch') : ''}
     `,
-    onSubmit: async (panel, close) => {
+    onSubmit: async (panel, close, write) => {
       const note = panel.querySelector('.vb-note').value.trim();
       if (!note) throw new Error('A note is required.');
       const body = { note };
       const newBranch = panel.querySelector('.vb-new-branch');
       if (newBranch) body.new_branch = newBranch.checked;
-      await postVerb(node, verb, body);
+      await postVerb(write, node, verb, body);
       close();
     }
   });
@@ -457,21 +419,21 @@ const RESET_TARGETS = ['READY', 'IMPLEMENTED', 'REVIEWED', 'FIXED', 'LANDED', 'C
 const OUTCOMES = ['approve', 'reject', 'merge_failed'];
 
 function openResetDialog(node) {
-  openDialog({
+  formDialog({
     title: `Reset ${node.id}`,
     submitLabel: 'Reset',
     bodyHtml: `
       ${fieldRow('To', `<select class="rs-to ${SELECT_CLS}">${RESET_TARGETS.map(s => `<option value="${s}">${esc(s)}</option>`).join('')}</select>`)}
-      ${fieldRow('Outcome (for REVIEWED)', `<select class="rs-outcome ${SELECT_CLS}"><option value="">(none)</option>${OUTCOMES.map(o => `<option value="${o}">${esc(o)}</option>`).join('')}</select>`)}
-      ${fieldRow('Why the stored state was wrong', `<textarea required class="rs-note ${TEXTAREA_CLS}" rows="3"></textarea>`)}
+      ${fieldRow('Outcome', `<select class="rs-outcome ${SELECT_CLS}"><option value="">none</option>${OUTCOMES.map(o => `<option value="${o}">${esc(o)}</option>`).join('')}</select>`)}
+      ${fieldRow('Note', `<textarea required class="rs-note ${TEXTAREA_CLS}" rows="3"></textarea>`)}
     `,
-    onSubmit: async (panel, close) => {
+    onSubmit: async (panel, close, write) => {
       const note = panel.querySelector('.rs-note').value.trim();
       if (!note) throw new Error('A note is required.');
       const body = { to: panel.querySelector('.rs-to').value, note };
       const outcome = panel.querySelector('.rs-outcome').value;
       if (outcome) body.outcome = outcome;
-      await postVerb(node, 'reset', body);
+      await postVerb(write, node, 'reset', body);
       close();
     }
   });
@@ -481,28 +443,26 @@ function openResetDialog(node) {
 // refusal stays in the dialog to correct.
 function openFlagsDialog(node) {
   const isContainer = node.kind === 'plan' || node.kind === 'spec';
-  const checkbox = (cls, checked, label) => `<label class="flex items-center gap-2 text-xs text-zinc-300"><input type="checkbox" class="${cls} rounded border-zinc-600 bg-zinc-950 text-emerald-500 focus:ring-emerald-500" ${checked ? 'checked' : ''}>${esc(label)}</label>`;
-  openDialog({
+  formDialog({
     title: `Flags of ${node.id}`,
     submitLabel: 'Save',
     bodyHtml: `
-      ${checkbox('fl-review', node.review, 'A review step follows implement')}
-      ${checkbox('fl-fix', node.fix, 'This node fixes what its review rejects')}
-      ${fieldRow('Lands on', `<select class="fl-merge ${SELECT_CLS}"><option value="main" ${node.merge === 'main' ? 'selected' : ''}>main</option><option value="parent" ${node.merge === 'parent' ? 'selected' : ''}>the parent's branch</option></select>`)}
-      ${fieldRow('Requires (comma separated capabilities)', `<input type="text" class="fl-requires ${INPUT_CLS}" value="${esc((node.requires || []).join(', '))}">`)}
-      ${isContainer ? fieldRow('Land order (comma separated repositories)', `<input type="text" class="fl-land-order ${INPUT_CLS}" value="${esc((node.land_order || []).join(', '))}">`) : ''}
+      ${checkboxRow('fl-review', node.review, 'Review')}
+      ${checkboxRow('fl-fix', node.fix, 'Fix')}
+      ${fieldRow('Lands on', `<select class="fl-merge ${SELECT_CLS}"><option value="main" ${node.merge === 'main' ? 'selected' : ''}>main</option><option value="parent" ${node.merge === 'parent' ? 'selected' : ''}>parent</option></select>`)}
+      ${fieldRow('Requires', `<input type="text" class="fl-requires ${INPUT_CLS}" value="${esc((node.requires || []).join(', '))}">`)}
+      ${isContainer ? fieldRow('Land order', `<input type="text" class="fl-land-order ${INPUT_CLS}" value="${esc((node.land_order || []).join(', '))}">`) : ''}
     `,
-    onSubmit: async (panel, close) => {
-      const list = (selector) => panel.querySelector(selector).value.split(',').map(s => s.trim()).filter(Boolean);
+    onSubmit: async (panel, close, write) => {
       const body = {
         review: panel.querySelector('.fl-review').checked,
         fix: panel.querySelector('.fl-fix').checked,
         merge: panel.querySelector('.fl-merge').value,
-        requires: list('.fl-requires'),
+        requires: commaList(panel, '.fl-requires'),
       };
-      if (isContainer) body.land_order = list('.fl-land-order');
-      await api('PATCH', `/api/nodes/${node.id}`, body);
-      toast(`${node.id} flags saved.`, 'success');
+      if (isContainer) body.land_order = commaList(panel, '.fl-land-order');
+      await write('PATCH', `/api/nodes/${node.id}`, body);
+      toast(`${node.id} flags saved.`, { tone: 'success' });
       close();
     }
   });
@@ -512,20 +472,20 @@ function openFlagsDialog(node) {
 // Conditions ---------------------------------------------------------------------------------
 
 function openAddConditionDialog(node) {
-  openDialog({
+  formDialog({
     title: `Add a condition to ${node.id}`,
     submitLabel: 'Add',
     bodyHtml: `
-      ${fieldRow('Waits for (a state outside the corpus)', `<input type="text" required class="cd-needs ${INPUT_CLS}" placeholder="staging is up">`)}
-      ${fieldRow('Command that exits 0 once it holds', `<input type="text" required class="cd-command ${INPUT_CLS} font-mono" placeholder="curl -fsS https://staging.example/health">`)}
+      ${fieldRow('Waits for', `<input type="text" required class="cd-needs ${INPUT_CLS}">`)}
+      ${fieldRow('Command', `<input type="text" required class="cd-command ${INPUT_CLS} font-mono">`)}
       ${fieldRow('Holds', `<select class="cd-stage ${SELECT_CLS}"><option value="claim">every claim</option><option value="landing">only the landing</option></select>`)}
     `,
-    onSubmit: async (panel, close) => {
+    onSubmit: async (panel, close, write) => {
       const needs = panel.querySelector('.cd-needs').value.trim();
       const command = panel.querySelector('.cd-command').value.trim();
-      if (!needs || !command) throw new Error('Name what it waits for and the command that checks it.');
-      await api('POST', `/api/nodes/${node.id}/conditions`, { needs, command, stage: panel.querySelector('.cd-stage').value });
-      toast(`Condition added to ${node.id}.`, 'success');
+      if (!needs || !command) throw new Error('Waits for and Command are required.');
+      await write('POST', `/api/nodes/${node.id}/conditions`, { needs, command, stage: panel.querySelector('.cd-stage').value });
+      toast(`Condition added to ${node.id}.`, { tone: 'success' });
       close();
     }
   });
@@ -534,11 +494,10 @@ function openAddConditionDialog(node) {
 function removeCondition(node, idx, needs) {
   confirmDialog({
     title: `Remove the condition "${needs}"?`,
-    message: `${node.id} will no longer wait for it.`,
     confirmLabel: 'Remove',
-    onConfirm: async () => {
-      await api('DELETE', `/api/nodes/${node.id}/conditions/${idx}`);
-      toast(`Condition removed from ${node.id}.`, 'success');
+    onConfirm: async (write) => {
+      await write('DELETE', `/api/nodes/${node.id}/conditions/${idx}`);
+      toast(`Condition removed from ${node.id}.`, { tone: 'success' });
     }
   });
 }
@@ -547,12 +506,12 @@ function removeCondition(node, idx, needs) {
 // Supersede / move --------------------------------------------------------------------------
 
 function openSupersedeDialog(node) {
-  openDialog({
+  formDialog({
     title: `Supersede ${node.id}`,
     submitLabel: 'Supersede',
     destructive: true,
     bodyHtml: `
-      ${fieldRow('Superseded by (task id)', `<input type="text" required class="sup-by ${INPUT_CLS} font-mono" placeholder="task-id">`)}
+      ${fieldRow('Superseded by', `<input type="text" required class="sup-by ${INPUT_CLS} font-mono">`)}
       ${fieldRow('Transfer blocked dependents', `
         <select class="sup-mode ${SELECT_CLS}">
           <option value="all">All to the new task</option>
@@ -560,7 +519,7 @@ function openSupersedeDialog(node) {
           <option value="custom">Custom ids</option>
         </select>`)}
       <div class="sup-custom-wrap hidden">
-        ${fieldRow('Ids (comma separated)', `<input type="text" class="sup-custom ${INPUT_CLS} font-mono" placeholder="t1, t2">`)}
+        ${fieldRow('Ids', `<input type="text" class="sup-custom ${INPUT_CLS} font-mono">`)}
       </div>
     `,
     onMount: (panel) => {
@@ -568,13 +527,13 @@ function openSupersedeDialog(node) {
         panel.querySelector('.sup-custom-wrap').classList.toggle('hidden', e.target.value !== 'custom');
       });
     },
-    onSubmit: async (panel, close) => {
+    onSubmit: async (panel, close, write) => {
       const by = panel.querySelector('.sup-by').value.trim();
-      if (!by) throw new Error('Superseded-by id is required.');
+      if (!by) throw new Error('Superseded by is required.');
       const mode = panel.querySelector('.sup-mode').value;
       const transfer_blocks = mode === 'custom' ? panel.querySelector('.sup-custom').value : mode;
-      await api('POST', `/api/nodes/${node.id}/supersede`, { by, transfer_blocks });
-      toast(`${node.id} superseded by ${by}.`, 'success');
+      await write('POST', `/api/nodes/${node.id}/supersede`, { by, transfer_blocks });
+      toast(`${node.id} superseded by ${by}.`, { tone: 'success' });
       close();
     }
   });
@@ -585,21 +544,21 @@ async function openMoveDialog(node) {
   try {
     meta = await api('GET', '/api/meta');
   } catch (e) {
-    toast(e.message, 'error');
+    toast(e.message, { tone: 'error' });
     return;
   }
   if (meta.plans.length === 0) {
-    toast('No plans exist to move into.', 'error');
+    toast('No plans exist to move into.', { tone: 'error' });
     return;
   }
-  openDialog({
+  formDialog({
     title: `Move ${node.id} to plan`,
     submitLabel: 'Move',
     bodyHtml: fieldRow('Plan', `<select class="mv-plan ${SELECT_CLS}">${meta.plans.map(p => `<option value="${esc(p.id)}">${esc(p.id)} -- ${esc(p.title)}</option>`).join('')}</select>`),
-    onSubmit: async (panel, close) => {
+    onSubmit: async (panel, close, write) => {
       const plan = panel.querySelector('.mv-plan').value;
-      await api('POST', `/api/nodes/${node.id}/move`, { plan });
-      toast(`${node.id} moved to ${plan}.`, 'success');
+      await write('POST', `/api/nodes/${node.id}/move`, { plan });
+      toast(`${node.id} moved to ${plan}.`, { tone: 'success' });
       close();
     }
   });
@@ -620,7 +579,7 @@ async function openAddDependencyDialog(node, decisionsOnly = false) {
     try {
       candidates = (await api('GET', '/api/decisions?status=open&limit=200')).items.filter(d => d.id !== node.id);
     } catch (e) {
-      toast(e.message, 'error');
+      toast(e.message, { tone: 'error' });
       return;
     }
   } else {
@@ -628,21 +587,21 @@ async function openAddDependencyDialog(node, decisionsOnly = false) {
   }
   const listId = 'dep-picker-list';
   const optionsHtml = candidates.map(n => `<option value="${esc(n.id)}">${esc(n.title)}</option>`).join('');
-  openDialog({
+  formDialog({
     title: decisionsOnly ? `Wait on decision (${node.id})` : `Add dependency to ${node.id}`,
     submitLabel: 'Add',
     bodyHtml: `
-      ${fieldRow(decisionsOnly ? 'Decision (id or title)' : 'Depends on (id or title)', `<input type="text" required list="${listId}" class="dep-id ${INPUT_CLS} font-mono" placeholder="${decisionsOnly ? 'decision-id' : 'task-id'}"><datalist id="${listId}">${optionsHtml}</datalist>`)}
+      ${fieldRow(decisionsOnly ? 'Decision' : 'Depends on', `<input type="text" required list="${listId}" class="dep-id ${INPUT_CLS} font-mono"><datalist id="${listId}">${optionsHtml}</datalist>`)}
     `,
-    onSubmit: async (panel, close) => {
+    onSubmit: async (panel, close, write) => {
       const typed = panel.querySelector('.dep-id').value.trim();
       if (!typed) throw new Error('Dependency id is required.');
       // The datalist's <option value> is the id; a typed title resolves back to its id so
       // picking "Which auth flow?" from the list works the same as typing the id directly.
       const match = candidates.find(n => n.id === typed || n.title === typed);
       const id = match ? match.id : typed;
-      await api('POST', `/api/nodes/${node.id}/dependencies`, { add: [{ id }] });
-      toast(`${id} added as a dependency of ${node.id}.`, 'success');
+      await write('POST', `/api/nodes/${node.id}/dependencies`, { add: [{ id }] });
+      toast(`${id} added as a dependency of ${node.id}.`, { tone: 'success' });
       close();
     }
   });
@@ -651,11 +610,10 @@ async function openAddDependencyDialog(node, decisionsOnly = false) {
 function removeDependency(node, depId) {
   confirmDialog({
     title: `Remove dependency ${depId}?`,
-    message: `${node.id} will no longer depend on ${depId}.`,
     confirmLabel: 'Remove',
-    onConfirm: async () => {
-      await api('POST', `/api/nodes/${node.id}/dependencies`, { remove: [depId] });
-      toast(`${depId} removed from ${node.id}'s dependencies.`, 'success');
+    onConfirm: async (write) => {
+      await write('POST', `/api/nodes/${node.id}/dependencies`, { remove: [depId] });
+      toast(`${depId} removed from ${node.id}'s dependencies.`, { tone: 'success' });
     }
   });
 }
@@ -665,18 +623,19 @@ function removeDependency(node, depId) {
 
 function openSectionDialog(node, existing) {
   const isEdit = !!existing;
-  openDialog({
+  formDialog({
     title: isEdit ? `Edit section ${existing.key}` : `Add section to ${node.id}`,
+    key: `${node.id}::section::${isEdit ? existing.key : ''}`,
     submitLabel: isEdit ? 'Save' : 'Add',
     bodyHtml: `
-      ${isEdit ? '' : fieldRow('Key', `<input type="text" required class="sec-key ${INPUT_CLS} font-mono" placeholder="context">`)}
-      ${fieldRow('Header', `<input type="text" class="sec-header ${INPUT_CLS}" placeholder="(optional)" value="${esc(existing ? existing.header || '' : '')}">`)}
+      ${isEdit ? '' : fieldRow('Key', `<input type="text" required class="sec-key ${INPUT_CLS} font-mono">`)}
+      ${fieldRow('Header', `<input type="text" class="sec-header ${INPUT_CLS}" value="${esc(existing ? existing.header || '' : '')}">`)}
       <div class="space-y-1.5">
         <div class="flex items-center gap-1 border-b border-zinc-800">
           <button type="button" class="sec-tab-write px-2 py-1 text-[11px] font-medium text-white border-b-2 border-emerald-500">Write</button>
           <button type="button" class="sec-tab-preview px-2 py-1 text-[11px] font-medium text-zinc-400 border-b-2 border-transparent hover:text-white">Preview</button>
         </div>
-        <textarea class="sec-content ${TEXTAREA_CLS}" rows="8" placeholder="Markdown content">${esc(existing ? existing.content || '' : '')}</textarea>
+        <textarea class="sec-content ${TEXTAREA_CLS}" rows="8" aria-label="Content">${esc(existing ? existing.content || '' : '')}</textarea>
         <div class="sec-preview hidden prose prose-invert max-w-none text-xs leading-relaxed text-zinc-400 border border-zinc-800 rounded-lg p-2 min-h-[8rem]"></div>
       </div>
     `,
@@ -701,13 +660,13 @@ function openSectionDialog(node, existing) {
         previewTab.className = INACTIVE;
       });
     },
-    onSubmit: async (panel, close) => {
+    onSubmit: async (panel, close, write) => {
       const key = isEdit ? existing.key : panel.querySelector('.sec-key').value.trim();
       if (!key) throw new Error('Section key is required.');
       const header = panel.querySelector('.sec-header').value.trim() || null;
       const content = panel.querySelector('.sec-content').value;
-      await api('PUT', `/api/nodes/${node.id}/sections/${encodeURIComponent(key)}`, { content, header });
-      toast(`Section ${key} saved.`, 'success');
+      await write('PUT', `/api/nodes/${node.id}/sections/${encodeURIComponent(key)}`, { content, header });
+      toast(`Section ${key} saved.`, { tone: 'success' });
       close();
     }
   });
@@ -716,11 +675,10 @@ function openSectionDialog(node, existing) {
 function removeSection(node, key) {
   confirmDialog({
     title: `Delete section ${key}?`,
-    message: `The "${key}" section on ${node.id} will be removed.`,
     confirmLabel: 'Delete',
-    onConfirm: async () => {
-      await api('DELETE', `/api/nodes/${node.id}/sections/${encodeURIComponent(key)}`);
-      toast(`Section ${key} deleted.`, 'success');
+    onConfirm: async (write) => {
+      await write('DELETE', `/api/nodes/${node.id}/sections/${encodeURIComponent(key)}`);
+      toast(`Section ${key} deleted.`, { tone: 'success' });
     }
   });
 }
@@ -730,23 +688,23 @@ function removeSection(node, key) {
 
 function openAddVerificationDialog(node) {
   const types = Object.keys(typeof VERIFICATION_LABEL !== 'undefined' ? VERIFICATION_LABEL : {});
-  openDialog({
+  formDialog({
     title: `Add verification to ${node.id}`,
     submitLabel: 'Add',
     bodyHtml: `
       ${fieldRow('Type', `<select class="ver-type ${SELECT_CLS}">${types.map(t => `<option value="${esc(t)}">${esc(VERIFICATION_LABEL[t] || t)}</option>`).join('')}</select>`)}
-      ${fieldRow('Target path', `<input type="text" required class="ver-target ${INPUT_CLS} font-mono" placeholder="path/or/symbol">`)}
-      ${fieldRow('Expected pattern', `<input type="text" class="ver-pattern ${INPUT_CLS} font-mono" placeholder="(optional)">`)}
+      ${fieldRow('Target path', `<input type="text" required class="ver-target ${INPUT_CLS} font-mono">`)}
+      ${fieldRow('Expected pattern', `<input type="text" class="ver-pattern ${INPUT_CLS} font-mono">`)}
     `,
-    onSubmit: async (panel, close) => {
+    onSubmit: async (panel, close, write) => {
       const target_path = panel.querySelector('.ver-target').value.trim();
       if (!target_path) throw new Error('Target path is required.');
-      await api('POST', `/api/nodes/${node.id}/verifications`, {
+      await write('POST', `/api/nodes/${node.id}/verifications`, {
         type: panel.querySelector('.ver-type').value,
         target_path,
         expected_pattern: panel.querySelector('.ver-pattern').value.trim() || null,
       });
-      toast('Verification added.', 'success');
+      toast('Verification added.', { tone: 'success' });
       close();
     }
   });
@@ -754,12 +712,11 @@ function openAddVerificationDialog(node) {
 
 function removeVerification(node, verificationId, target) {
   confirmDialog({
-    title: `Remove verification?`,
-    message: `The ${target ? `"${target}" ` : ''}verification on ${node.id} will be removed.`,
+    title: target ? `Remove the verification on ${target}?` : 'Remove the verification?',
     confirmLabel: 'Remove',
-    onConfirm: async () => {
-      await api('DELETE', `/api/nodes/${node.id}/verifications/${verificationId}`);
-      toast('Verification removed.', 'success');
+    onConfirm: async (write) => {
+      await write('DELETE', `/api/nodes/${node.id}/verifications/${verificationId}`);
+      toast('Verification removed.', { tone: 'success' });
     }
   });
 }
@@ -770,11 +727,10 @@ function removeVerification(node, verificationId, target) {
 function releaseLease(node) {
   confirmDialog({
     title: `Release lease on ${node.id}?`,
-    message: 'The step is given back: the node returns to the status it was claimed from and counts one step failure.',
     confirmLabel: 'Release',
-    onConfirm: async () => {
-      await api('DELETE', `/api/nodes/${node.id}/lease`);
-      toast(`Lease released on ${node.id}.`, 'success');
+    onConfirm: async (write) => {
+      await write('DELETE', `/api/nodes/${node.id}/lease`);
+      toast(`Lease released on ${node.id}.`, { tone: 'success' });
     }
   });
 }
