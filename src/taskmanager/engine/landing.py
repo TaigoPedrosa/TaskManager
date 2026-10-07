@@ -7,11 +7,12 @@ only when it stops at `needs_agent`.
 
 import argparse
 import os
+import shlex
 import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -31,6 +32,8 @@ from taskmanager.engine.operations import OperationError
 
 HEARTBEAT_SECONDS = 30
 PUSH_TRIES = 3
+PUSH_PAUSE_SECONDS = 5
+PUSH_ERROR_LINES = 5
 LOCK_WAIT_SECONDS = 120
 LIVE = frozenset({JobState.RUNNING, JobState.NEEDS_AGENT})
 
@@ -57,6 +60,8 @@ class Landing:
         cache: CacheRepository,
         jobs: JobRepository,
         detach: bool = True,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.root = root
         self.config = config
@@ -64,6 +69,7 @@ class Landing:
         self.cache = cache
         self.jobs = jobs
         self.detach = detach
+        self.sleep = sleep
         claims.landing = self
 
     @classmethod
@@ -273,8 +279,12 @@ class Landing:
         if job.target != "main":
             return self._move_branch(job, worktree, "verify")
         repo_dir = self._dir(job)
-        while int(job.result.get("push_tries", 0)) < PUSH_TRIES:
-            remote = gitops.ls_remote(repo_dir, "refs/heads/main")
+        while (tries := int(job.result.get("push_tries", 0))) < PUSH_TRIES:
+            if tries:
+                # A remote that did not answer usually does a few seconds later; trying again at
+                # once spends every try on the same blip.
+                self.sleep(PUSH_PAUSE_SECONDS * tries)
+            remote, run = gitops.ls_remote(repo_dir, "refs/heads/main")
             if remote and remote != job.result["base_sha"]:
                 # The full gate runs at the tip that is pushed, so a moved main is merged in and
                 # gated again.
@@ -284,11 +294,14 @@ class Landing:
                     return self._needs_agent(job, "conflict")
                 job.result["base_sha"] = gitops.rev_parse(repo_dir, "origin/main")
                 return "gate"
-            if not self._running(job):
-                return self._state(job)
-            if remote and gitops.push(worktree, "main"):
-                return "verify"
-            job.result["push_tries"] = int(job.result.get("push_tries", 0)) + 1
+            if remote:
+                if not self._running(job):
+                    return self._state(job)
+                run = gitops.push(worktree, "main")
+                if run.returncode == 0:
+                    return "verify"
+            job.result["push_tries"] = tries + 1
+            job.result.setdefault("push_errors", []).append(_git_failure(run))
         return self._needs_agent(job, "push_failed")
 
     def _move_branch(self, job: Job, worktree: Path, done: str) -> str | JobState:
@@ -627,6 +640,14 @@ class Landing:
         if job.worktree and Path(job.worktree).exists():
             GitManager(self._dir(job)).remove_worktree(Path(job.worktree), force=True)
         job.worktree = None
+
+
+def _git_failure(run: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+    return {
+        "command": shlex.join(run.args),
+        "exit_code": run.returncode,
+        "stderr": "\n".join(run.stderr.splitlines()[:PUSH_ERROR_LINES]),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:

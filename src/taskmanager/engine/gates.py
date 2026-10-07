@@ -112,7 +112,7 @@ def red_target_cleared(
     branch) moved past `sha`, and the baseline at the new sha, if one ran, no longer fails the
     parked set. An unreadable target is not cleared."""
     current = (
-        gitops.ls_remote(repo_dir, "refs/heads/main")
+        gitops.ls_remote(repo_dir, "refs/heads/main")[0]
         if target == "main"
         else gitops.rev_parse(repo_dir, f"refs/heads/{target}")
     )

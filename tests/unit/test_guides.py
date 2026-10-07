@@ -535,6 +535,22 @@ def test_merge_guide_ends_a_reviewed_container_s_landing_at_landed(
     ) in rendered("merge")
 
 
+def test_merge_guide_scopes_push_errors_to_a_push_to_main(
+    rendered: Callable[[str], str],
+) -> None:
+    """A container branch's compare-and-swap stops at push_failed without any push_errors."""
+    text = rendered("merge")
+    assert (
+        "A push to `main` records each in `result.push_errors` with its command, exit code and "
+        "stderr: an `ls-remote` with no answer is the network or the remote, a refused `push` a "
+        "permission, a protection rule or a hook."
+    ) in text
+    assert (
+        "A container branch, moved by a landing or a sync, records none: it moved under each of "
+        "three compare-and-swaps, so other landings or syncs onto it kept moving it."
+    ) in text
+
+
 def test_review_guide_scopes_a_re_review_to_the_open_findings_of_a_sensitive_fix(
     rendered: Callable[[str], str],
 ) -> None:
