@@ -758,10 +758,20 @@ test('every pointer action is a focusable button or link: rows, options, ids, ×
 
   const attach = page.$('.att-add-btn');
   reachable(attach, 'Attach');
+  assert.equal(attach.localName, 'button', 'Attach is a native button');
   let picked = 0;
-  page.$('.att-file-input').click = () => { picked += 1; };
-  key(attach, 'Enter');
-  key(attach, ' ');
+  const create = page.document.createElement.bind(page.document);
+  page.document.createElement = (tag, ...rest) => {
+    const el = create(tag, ...rest);
+    if (tag === 'input') el.click = () => { picked += 1; };
+    return el;
+  };
+  // The DOM shim has no native activation: a browser clicks a button on Enter or Space unless a
+  // keydown handler prevented it.
+  const activate = (el, k) => { if (!key(el, k).defaultPrevented && el.localName === 'button') el.click(); };
+  activate(attach, 'Enter');
+  activate(attach, ' ');
+  page.document.createElement = create;
   assert.equal(picked, 2, 'Enter and Space open the file picker');
 
   await closeElsewhere(page, server, 'decision-D43', { status: 'WITHDRAWN', withdrawn_by: 'Ana' });
