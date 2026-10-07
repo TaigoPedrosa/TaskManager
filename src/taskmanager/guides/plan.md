@@ -119,12 +119,12 @@ One agent, one sitting, one branch: an objective of a sentence, acceptance of a 
 - **`review_models` is who runs it.** Set it wherever checking is harder than writing.
 - **A landing precondition is an edge or a condition, never a sentence.** Written into `acceptance` it reads as a review check, passes review, and is found only when the landing is already under way.
 - An acceptance that something is left unchanged names its measurement: the file's bytes or sha256 before and after, never a field or two read back.
-- An invariant or a refusal in acceptance names where it holds: the one function every write or command passes through, or each path by name, with a check for each; a changed shape names every caller.
+- An invariant or a refusal in acceptance names where it holds: the one function every write or command passes through, or each path by name, with a check for each. An invariant over two fields (a status and a flag, a default and every path that creates the node) names the writes of both fields, not only the one the task touches. A changed shape names every caller.
 - A limit or default a spec states that a tm config key covers is written as the project's key, never a number.
 - An acceptance that one thing matches another ("matches `tm wave discover`", "byte-identical to before") lists every input the reference reads (conditions, locks, config keys such as `repo_order`) and has a test holding each.
-- A task that makes one implementation of something names the function that stays and each one it replaces; the replaced ones are deleted in the same task.
+- A task that replaces or removes something names each thing that goes (the implementations one now replaces; a feature's markup, handlers, styles and the state it reset) and deletes each one in the same task, or moves it to where it is still used; its acceptance lists them, each with a check that fails when it comes back.
+- A UI task's acceptance names each interaction's behaviour, not only its look: the feedback for every write, where focus lands after it, the keyboard route to every pointer action, what a live update does to a field mid-edit, what survives a reload, and how a reviewer reaches each state (a route, a fixture). Each line has a check that drives it.
 - A brief never copies a figure from a source still under review or still being measured; it names the source, and the implementer reads the current value.
-- A task that removes a feature names what only that feature reached (its markup, handlers, styles, the state it reset) and deletes each one, or moves it to where it is still used; its acceptance lists them, each with a check that fails when it comes back.
 - A test of behaviour runs the code it tests: it calls the function, drives the page's scripts, or runs the command, and asserts what comes out. Searching the source for a call or a string is not a test of behaviour, even when it fails once the line is deleted.
 - A test that checks a generated artifact against its generator fails, never skips, when the generator is missing: a skipped check reads as a pass in every gate that runs it.
 

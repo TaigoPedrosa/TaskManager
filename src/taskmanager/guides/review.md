@@ -16,7 +16,7 @@ What this review covers follows from the status it was claimed from, which `tm t
 
 - `IMPLEMENTED`: a task's review, of its own branch before it lands.
 - `LANDED`: a plan's or spec's one review. Its branch has already landed, so the claim's `branch` names the target it landed on, not its own.
-- `FIXED`: the re-review of a sensitive node's fix (`tm guide plan`, §2). It is the only review a fix gets; every other fix lands without one.
+- `FIXED`: the re-review of a sensitive node's fix (`tm guide plan`, §2).
 
 ## 2. Read what was asked for
 
@@ -54,7 +54,7 @@ git -C <repo> worktree remove <scratch>/<repo>-<node-id>-review
 Say in the review that you executed it, and where.
 
 - **A task's review** reads the whole diff against the brief.
-- **A plan's or spec's review** runs once, on its landed target. It reads the whole landing against the brief, and for what is true only between its children: a producer nobody calls, a column only ever written as null, two halves that do not join. Its findings are fixed on a branch cut from that target, and the fix lands without coming back to review unless the node is sensitive.
+- **A plan's or spec's review** runs once, on its landed target. It reads the whole landing against the brief, and for what is true only between its children: a producer nobody calls, a column only ever written as null, two halves that do not join.
 - **A re-review** is scoped to the open findings of a sensitive fix: each finding in `:review` not yet recorded as closed, checked against the fix commits and the fixer's latest `:report` entry, and, when the last landing failed, the failure the latest `:merge` entry names. Establish each closure by making it fail. It never widens: no fresh read of the rest of the diff and no new finding outside those; anything else you notice goes in the report.
 
 ## 4. Run the checks
@@ -68,6 +68,8 @@ The path checks read that ref directly, with no fetch, so a check against the un
 A test that fails on the branch rejects the node, whichever task declared the test's file; another task's ownership of a file never excuses a failure this diff caused.
 
 Run every check the acceptance lists. A check you could not run is named in the findings as not run, and the node is not approved over it. A test that only searches source text is not evidence for an acceptance line about behaviour; name it in the findings.
+
+A UI node's behaviour lines are checked by driving them in the running app: the write and its feedback, the focus after it, the keyboard route, a live update mid-edit, a reload. A screenshot beside the frame shows the look and proves none of them.
 
 ## 5. Write the findings
 

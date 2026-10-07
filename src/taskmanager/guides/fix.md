@@ -60,7 +60,7 @@ Then the `tm verify run` exit code, and anything you found and did not touch.
 tm task complete <node-id> --agent <name> --token <token>
 ```
 
-On every path that finished the round, including one where a finding was contested rather than closed. The node moves to `FIXED`, and tm lands it next, or, for a sensitive node, runs its one re-review first. Leave the worktree in place.
+On every path that finished the round, including one where a finding was contested rather than closed. The node moves to `FIXED`. Leave the worktree in place.
 
 ## Never
 
