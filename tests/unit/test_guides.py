@@ -308,9 +308,19 @@ def test_plan_guide_names_the_measurement_for_an_unchanged_acceptance() -> None:
     assert "names its measurement" in _guide_text("plan")
 
 
-def test_plan_guide_names_where_an_invariant_or_refusal_holds() -> None:
-    """A rule enforced on one path of several is a rule not enforced; acceptance must name each path."""
-    assert "names where it holds" in _guide_text("plan")
+def test_plan_guide_names_where_an_invariant_or_refusal_holds(
+    rendered: Callable[[str], str],
+) -> None:
+    """A rule enforced on one path of several is a rule not enforced; acceptance must name each path,
+    and for an invariant tying two fields, the paths that write each field."""
+    text = rendered("plan")
+    assert "names where it holds" in text
+    assert (
+        "An invariant over two fields (a status and a flag, a default and every path that creates "
+        "the node) names the writes of both fields, not only the one the task touches. A changed "
+        "shape names every caller."
+    ) in text
+    assert "a changed shape names every caller" not in text
 
 
 def test_plan_guide_writes_a_config_backed_limit_as_its_key() -> None:
@@ -326,11 +336,6 @@ def test_plan_guide_asks_a_reviewed_plan_for_its_own_verification() -> None:
 def test_plan_guide_lists_every_input_a_matches_acceptance_reads() -> None:
     """A dropped condition, lock or config key in a 'matches' acceptance is a mismatch a test never catches."""
     assert "lists every input the reference reads" in _guide_text("plan")
-
-
-def test_plan_guide_names_the_function_that_stays_and_the_ones_it_replaces() -> None:
-    """A copied-not-moved implementation leaves the replaced ones alive for a caller to find by accident."""
-    assert "names the function that stays" in _guide_text("plan")
 
 
 def test_review_guide_rejects_on_a_red_test_whoever_declared_its_file() -> None:
@@ -373,13 +378,42 @@ def test_plan_guide_names_the_source_instead_of_copying_a_moving_figure() -> Non
     ) in _guide_text("plan")
 
 
-def test_plan_guide_names_what_a_removed_feature_reached() -> None:
-    """A removal task with no list of what only that feature reached leaves its markup and handlers behind."""
+def test_plan_guide_names_each_thing_a_replacement_or_removal_deletes(
+    rendered: Callable[[str], str],
+) -> None:
+    """A replaced implementation or a removed feature's markup left behind is found by a caller by accident."""
+    text = rendered("plan")
     assert (
-        "A task that removes a feature names what only that feature reached (its markup, handlers, "
-        "styles, the state it reset) and deletes each one, or moves it to where it is still used; "
-        "its acceptance lists them, each with a check that fails when it comes back."
-    ) in _guide_text("plan")
+        "- A task that replaces or removes something names each thing that goes (the "
+        "implementations one now replaces; a feature's markup, handlers, styles and the state it "
+        "reset) and deletes each one in the same task, or moves it to where it is still used; its "
+        "acceptance lists them, each with a check that fails when it comes back."
+    ) in text
+    assert "names the function that stays" not in text
+    assert "A task that removes a feature names" not in text
+
+
+def test_plan_guide_asks_a_ui_acceptance_for_each_interaction_s_behaviour(
+    rendered: Callable[[str], str],
+) -> None:
+    """A UI brief that names only the look gets a review that compares screenshots and never clicks."""
+    assert (
+        "- A UI task's acceptance names each interaction's behaviour, not only its look: the "
+        "feedback for every write, where focus lands after it, the keyboard route to every pointer "
+        "action, what a live update does to a field mid-edit, what survives a reload, and how a "
+        "reviewer reaches each state (a route, a fixture). Each line has a check that drives it."
+    ) in rendered("plan")
+
+
+def test_review_guide_drives_a_ui_node_s_behaviour_in_the_running_app(
+    rendered: Callable[[str], str],
+) -> None:
+    """A screenshot beside the frame passes a page whose writes, focus and keyboard route are broken."""
+    assert (
+        "A UI node's behaviour lines are checked by driving them in the running app: the write and "
+        "its feedback, the focus after it, the keyboard route, a live update mid-edit, a reload. A "
+        "screenshot beside the frame shows the look and proves none of them."
+    ) in rendered("review")
 
 
 def test_review_guide_runs_every_check_the_acceptance_lists() -> None:
@@ -515,8 +549,22 @@ def test_fix_guide_lands_a_fix_without_a_re_review_unless_the_node_is_sensitive(
     rendered: Callable[[str], str],
 ) -> None:
     text = rendered("fix")
-    assert "A fix lands without a re-review unless the node is sensitive" in text
+    assert text.count("A fix lands without a re-review unless the node is sensitive") == 1
     assert "is reviewed again" not in text
+    assert "The node moves to `FIXED`. Leave the worktree in place." in text
+    assert "runs its one re-review first" not in text
+
+
+def test_review_guide_says_once_that_a_fix_lands_without_a_re_review_unless_sensitive(
+    rendered: Callable[[str], str],
+) -> None:
+    text = rendered("review")
+    assert text.count("unless the node is sensitive") == 1
+    assert "lands without another review unless the node is sensitive" in text
+    assert "It is the only review a fix gets; every other fix lands without one." not in text
+    assert "- `FIXED`: the re-review of a sensitive node's fix (`tm guide plan`, §2).\n" in text
+    assert "two halves that do not join.\n" in text
+    assert "the fix lands without coming back to review" not in text
 
 
 def test_plan_guide_gives_children_of_a_reviewed_plan_no_review_of_their_own(
