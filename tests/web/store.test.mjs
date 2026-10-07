@@ -88,12 +88,13 @@ test('canonical and the hash of statuses_hash.json match its own golden vector',
 test('every visibility_cases.json case passes through the static path', () => {
   const ctx = freshContext();
   for (const c of VISIBILITY_FIXTURE.cases) {
+    const estate = c.estate || VISIBILITY_FIXTURE;
     const store = ctx.createStore({
       staticData: {
         statuses: [],
         hash: '',
-        rows: VISIBILITY_FIXTURE.rows,
-        edges: VISIBILITY_FIXTURE.edges,
+        rows: estate.rows,
+        edges: estate.edges,
         bodies: {},
         decisions: [],
       },
@@ -103,6 +104,13 @@ test('every visibility_cases.json case passes through the static path', () => {
     assert.deepEqual([...store.rows.keys()], c.visible, c.name);
     assert.deepEqual(plain(store.edges), c.edges, c.name);
     assert.deepEqual(plain(store.facets), c.facets, c.name);
+  }
+});
+
+test('countsAsWork holds for a task or a started container with children', () => {
+  const ctx = freshContext();
+  for (const c of VISIBILITY_FIXTURE.counts_as_work) {
+    assert.equal(ctx.countsAsWork(c.row), c.counts, JSON.stringify(c.row));
   }
 });
 

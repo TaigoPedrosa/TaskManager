@@ -32,14 +32,14 @@
       </div>
 
       <div class="h-8 bg-zinc-900 p-0.5 rounded-lg border border-zinc-800 flex text-xs flex-shrink-0">
-        <button id="view-waves-btn" title="Waves view" aria-label="Waves view" class="h-full aspect-square flex items-center justify-center rounded-md font-medium bg-zinc-800 text-white shadow-sm transition">
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-layers"/></svg>
+        <button id="view-doc-btn" title="Document view" aria-label="Document view" class="h-full aspect-square flex items-center justify-center rounded-md font-medium bg-zinc-800 text-white shadow-sm transition">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-file-text"/></svg>
         </button>
         <button id="view-graph-btn" title="Graph view" aria-label="Graph view" class="h-full aspect-square flex items-center justify-center rounded-md font-medium text-zinc-400 hover:text-white transition">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-network"/></svg>
         </button>
-        <button id="view-doc-btn" title="Document view" aria-label="Document view" class="h-full aspect-square flex items-center justify-center rounded-md font-medium text-zinc-400 hover:text-white transition">
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-file-text"/></svg>
+        <button id="view-waves-btn" title="Waves view" aria-label="Waves view" class="h-full aspect-square flex items-center justify-center rounded-md font-medium text-zinc-400 hover:text-white transition">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-layers"/></svg>
         </button>
         <button id="view-decisions-btn" title="Decisions view" aria-label="Decisions view" class="relative h-full aspect-square flex items-center justify-center rounded-md font-medium text-zinc-400 hover:text-white transition">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-help-circle"/></svg>
@@ -51,7 +51,7 @@
         <div class="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-zinc-500">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-search"/></svg>
         </div>
-        <input id="search-box" type="text" placeholder="Filter specs, plans, tasks..." class="h-8 w-full bg-zinc-950 border border-zinc-800 rounded-lg pl-8 pr-3 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+        <input id="search-box" type="text" placeholder="Filter" aria-label="Filter" class="h-8 w-full bg-zinc-950 border border-zinc-800 rounded-lg pl-8 pr-3 text-xs text-zinc-200 placeholder-zinc-400 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
       </div>
 
       <div class="hidden sm:block w-px h-6 bg-zinc-800 flex-shrink-0"></div>
@@ -76,6 +76,10 @@
       <div class="hidden sm:block w-px h-6 bg-zinc-800 flex-shrink-0"></div>
 
       <div class="flex items-center gap-1.5 flex-shrink-0 lg:ml-auto">
+        <div id="sort-control" role="group" aria-label="Sort" class="h-8 bg-zinc-900 p-0.5 rounded-lg border border-zinc-800 flex text-xs flex-shrink-0">
+          <button type="button" data-sort="progress" aria-pressed="true" class="h-full px-2.5 flex items-center rounded-md font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 bg-zinc-800 text-white shadow-sm">Progress</button>
+          <button type="button" data-sort="priority" aria-pressed="false" class="h-full px-2.5 flex items-center rounded-md font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 text-zinc-400 hover:text-white">Priority</button>
+        </div>
         <button id="toggle-sections-btn" title="Expand all sections" aria-label="Expand all sections" class="h-8 aspect-square flex items-center justify-center rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-chevrons-up-down"/></svg>
         </button>
@@ -101,9 +105,8 @@
 
   <!-- Status legend -->
   <div id="legend-panel" role="dialog" aria-label="Status legend" class="hidden fixed top-16 right-4 w-[26rem] max-w-[calc(100vw-2rem)] max-h-[75vh] overflow-y-auto z-40 rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl p-4 space-y-2">
-    <div class="flex items-start justify-between gap-3">
-      <p class="text-xs text-zinc-300 leading-relaxed"><strong class="text-white">Done means Completed and nothing else.</strong> Superseded, Abandoned and Deferred work is set aside: progress bars show it as its own segment and never count it as completed. A Superseded task still unblocks its dependents.</p>
-      <button id="legend-close-btn" aria-label="Close legend" class="p-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-800 flex-shrink-0">
+    <div class="flex items-start justify-end">
+      <button id="legend-close-btn" aria-label="Close legend" class="p-1 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-800 flex-shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">
         <svg class="w-4 h-4" fill="none" stroke="currentColor"><use href="#icon-x"/></svg>
       </button>
     </div>
@@ -117,27 +120,27 @@
     <aside id="sidebar-pane" class="hidden relative border-r border-zinc-800 flex flex-col bg-zinc-900/40 flex-shrink-0" style="width:320px">
       <div class="p-3 border-b border-zinc-800 flex items-center justify-between gap-2">
         <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Nodes</span>
-        <button id="expand-all-btn" title="Expand all" aria-label="Expand all tree nodes" class="p-1.5 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-zinc-200 text-xs">
+        <button id="expand-all-btn" title="Expand all" aria-label="Expand all tree nodes" class="h-7 w-7 flex items-center justify-center rounded-md bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-zinc-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-chevrons-up-down"/></svg>
         </button>
       </div>
       <div id="tree-list" role="tree" aria-label="Nodes" class="flex-1 overflow-y-auto p-2 space-y-1">
         <!-- Dynamically Populated Tree -->
       </div>
-      <div id="sidebar-resize-handle" title="Drag to resize" class="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-emerald-500/40"></div>
+      <div id="sidebar-resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize" class="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-emerald-500/40"></div>
     </aside>
 
     <!-- Document View Pane -->
-    <main id="document-pane" class="hidden flex-1 overflow-y-auto p-6 space-y-8 bg-zinc-950">
+    <main id="document-pane" class="flex-1 overflow-y-auto p-6 space-y-8 bg-zinc-950">
       <div id="unified-document" class="max-w-4xl mx-auto space-y-8 pb-16">
         <!-- Dynamically rendered unified spec document -->
       </div>
     </main>
 
     <!-- Graph View Pane -->
-    <section id="graph-pane" class="flex-1 flex flex-col bg-zinc-950/80 overflow-hidden relative">
+    <section id="graph-pane" class="hidden flex-1 flex flex-col bg-zinc-950/80 overflow-hidden relative">
       <div id="graph-fit-wrap" class="hidden absolute top-3 right-3 z-10 flex gap-2">
-        <button id="graph-fit-btn" class="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded bg-zinc-900/90 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 backdrop-blur">
+        <button id="graph-fit-btn" class="h-7 flex items-center gap-1.5 px-2.5 text-[11px] font-medium rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-maximize-2"/></svg>
           <span>Fit View</span>
         </button>
@@ -147,7 +150,7 @@
       <!-- Waves view: rendered inside graph-pane -- core.js's setViewMode(WAVES) keeps
            graph-pane itself visible and swaps #network-canvas/#graph-fit-wrap for this
            instead. waves.js owns everything under #waves-content. -->
-      <div id="waves-pane" class="absolute inset-0 overflow-y-auto p-4 sm:p-6 bg-zinc-950">
+      <div id="waves-pane" class="hidden absolute inset-0 overflow-y-auto p-4 sm:p-6 bg-zinc-950">
         <div id="waves-content" class="max-w-4xl mx-auto space-y-4 pb-16"></div>
       </div>
     </section>
@@ -170,23 +173,21 @@
 
     <!-- Node detail drawer, shared by the Waves, Graph and Document views: it sits over
          whichever pane is showing. Full width below lg: at 375/768 a fixed 384px (w-96)
-         panel next to a 320px sidebar left no usable canvas. -->
-    <div id="graph-inspector" class="hidden absolute top-0 right-0 w-full lg:w-96 h-full bg-zinc-900/95 border-l border-zinc-800 backdrop-blur z-20 flex flex-col shadow-2xl transition-transform duration-200">
-      <div class="p-4 border-b border-zinc-800 flex items-start justify-between">
-        <div class="space-y-1">
-          <div class="flex items-center gap-2">
-            <span id="inspector-kind" class="px-1.5 py-0.5 rounded text-[10px] font-mono uppercase bg-zinc-800 text-zinc-400">TASK</span>
-            <span id="inspector-id" class="font-mono text-xs font-semibold text-emerald-400">---</span>
-          </div>
-          <h3 id="inspector-title" class="text-sm font-semibold text-zinc-100">---</h3>
+         panel next to a 320px sidebar left no usable canvas. detail.js fills its header
+         line, title, pills and body. -->
+    <div id="graph-inspector" role="dialog" aria-modal="true" aria-labelledby="inspector-title" class="hidden absolute top-0 right-0 w-full lg:w-96 h-full bg-zinc-900 border-l border-zinc-800 z-20 flex flex-col shadow-2xl">
+      <div class="px-4 py-3.5 border-b border-zinc-800 space-y-2 flex-shrink-0">
+        <div class="flex items-center gap-2 min-w-0">
+          <div id="inspector-line" class="flex flex-1 flex-wrap items-center gap-x-2 gap-y-1 min-w-0"></div>
+          <div id="inspector-actions" class="flex-shrink-0"></div>
+          <button id="inspector-close-btn" type="button" aria-label="Close details" class="w-7 h-7 flex items-center justify-center flex-shrink-0 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor"><use href="#icon-x"/></svg>
+          </button>
         </div>
-        <button id="inspector-close-btn" class="p-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-800">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor"><use href="#icon-x"/></svg>
-        </button>
+        <h2 id="inspector-title" tabindex="-1" class="text-sm leading-5 font-semibold text-zinc-100 break-words focus:outline-none"></h2>
+        <div id="inspector-pills" class="flex flex-wrap items-center gap-1.5"></div>
       </div>
-      <div id="inspector-body" class="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
-        <!-- Populated dynamically on node select -->
-      </div>
+      <div id="inspector-body" class="flex-1 min-h-0 overflow-y-auto p-4 text-xs"></div>
     </div>
 
   </div>

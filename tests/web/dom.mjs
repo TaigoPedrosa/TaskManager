@@ -115,6 +115,7 @@ class Node {
     for (let n = this; n; n = n.parentNode) {
       event.currentTarget = n;
       [...(n.listeners[event.type] || [])].forEach((fn) => fn.call(n, event));
+      if (typeof n[`on${event.type}`] === 'function') n[`on${event.type}`].call(n, event);
       if (event.propagationStopped || !event.bubbles) break;
     }
     return !event.defaultPrevented;
@@ -496,11 +497,44 @@ function defaultResponse(url) {
   return jsonResponse(404, { detail: 'Not Found' });
 }
 
-// Loads the served page into a fresh Document and runs its inline scripts in one vm context.
-// `fetch` answers every request the page makes; `beforeScripts` can seed globals (a static
-// export's window.STATIC_DATA) before the first script runs.
-export function loadPage({ fetch, beforeScripts } = {}) {
-  const html = servedPage();
+// The address bar and session history: pushState and replaceState move `location`, and back()
+// and forward() move it and fire popstate on the window, as a browser does.
+function sessionHistory(location, fire) {
+  const entries = [location.href];
+  let index = 0;
+  const show = (href) => {
+    const url = new URL(href, location.href);
+    Object.assign(location, { href: url.href, pathname: url.pathname, search: url.search, hash: url.hash });
+  };
+  show(location.href);
+  const go = (delta) => {
+    if (!entries[index + delta]) return;
+    index += delta;
+    show(entries[index]);
+    fire('popstate');
+  };
+  return {
+    entries,
+    get length() { return entries.length; },
+    pushState(state, title, href) {
+      show(href);
+      entries.splice(index + 1, entries.length, location.href);
+      index += 1;
+    },
+    replaceState(state, title, href) {
+      show(href);
+      entries[index] = location.href;
+    },
+    back: () => go(-1),
+    forward: () => go(1),
+  };
+}
+
+// Loads the served page (or `html`, an exported one) into a fresh Document at `url` and runs
+// its inline scripts in one vm context. `fetch` answers every request the page makes;
+// `beforeScripts` can seed globals (a static export's window.STATIC_DATA) before the first
+// script runs.
+export function loadPage({ fetch, beforeScripts, url = '/', html = servedPage() } = {}) {
   const doc = new Document();
   const bodyHtml = html.slice(html.indexOf('>', html.indexOf('<body')) + 1, html.lastIndexOf('</body>'));
   parseInto(doc.body, bodyHtml.replace(/<script>[\s\S]*?<\/script>/g, ''));
@@ -508,14 +542,16 @@ export function loadPage({ fetch, beforeScripts } = {}) {
   const bodyScripts = [...bodyHtml.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
   const rafQueue = [];
   const fetchCalls = [];
+  const windowListeners = {};
+  const location = { protocol: 'http:', host: 'test', href: new URL(url, 'http://test/').href };
   const sandbox = {
     console,
     document: doc,
     Event,
     DOMParser,
     WebSocket: FakeSocket,
-    location: { protocol: 'http:', host: 'test', hash: '', pathname: '/' },
-    history: { replaceState() {} },
+    location,
+    history: sessionHistory(location, (type) => sandbox.dispatchEvent(new Event(type))),
     localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
     navigator: { clipboard: { writeText: async () => {} } },
     requestAnimationFrame: (fn) => rafQueue.push(fn),
@@ -523,7 +559,14 @@ export function loadPage({ fetch, beforeScripts } = {}) {
     URLSearchParams, TextEncoder, crypto: globalThis.crypto,
     CSS: { escape: (s) => String(s) },
     innerWidth: 1440, innerHeight: 900,
-    addEventListener() {}, removeEventListener() {},
+    addEventListener(type, fn) { (windowListeners[type] ||= []).push(fn); },
+    removeEventListener(type, fn) {
+      if (windowListeners[type]) windowListeners[type] = windowListeners[type].filter((f) => f !== fn);
+    },
+    dispatchEvent(event) {
+      [...(windowListeners[event.type] || [])].forEach((fn) => fn(event));
+      return !event.defaultPrevented;
+    },
     tailwind: {},
     lucide: { createIcons() {} },
     fetch: async (url, opts) => {

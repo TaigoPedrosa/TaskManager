@@ -19,18 +19,9 @@ code, pre, .font-mono {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(156, 163, 175, 0.45);
 }
-@keyframes pulse-highlight {
-  0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
-  70% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
-}
-.node-highlighted {
-  animation: pulse-highlight 1.5s ease-out;
-  border-color: var(--tone-accent) !important;
-}
 <!--slot:status-css-->
 
-:root { --tone-dim-fg: #71717a; --tone-dim-border: #3f3f46; --tone-accent: #10b981; } /* Tailwind zinc-500 / zinc-700 / emerald-500 */
+:root { --tone-dim-fg: #71717a; --tone-dim-border: #3f3f46; --tone-zero-border: #27272a; --tone-accent: #10b981; } /* Tailwind zinc-500 / zinc-700 / zinc-800 / emerald-500 */
 .st-chip { color: var(--st-fg); background: var(--st-bg); border: 1px solid color-mix(in srgb, var(--st-fg) 40%, transparent); }
 /* Figma "Status / Landed" draws this one chip's border at full strength. */
 .st-chip.st-LANDED { border-color: var(--st-fg); }
@@ -38,9 +29,11 @@ code, pre, .font-mono {
 .st-seg { background: var(--st-fg); height: 100%; }
 .st-dot { background: var(--st-fg); }
 /* Status filter chip, three states: neutral (colour, no border) / include (colour,
-   coloured border) / exclude (no colour, dim disabled-looking border). */
+   coloured border) / exclude (no colour, dim disabled-looking border). A neutral chip at
+   zero keeps its icon colour and drops only its fill. */
 .st-toggle { color: var(--st-fg); background: var(--st-bg); border: 1px solid transparent; }
 .st-toggle.st-mode-include { border-color: var(--st-fg); }
+.st-toggle.st-zero { background: transparent; border-color: var(--tone-zero-border); }
 .st-toggle.st-mode-exclude { color: var(--tone-dim-fg); background: transparent; border: 1px solid var(--tone-dim-border); }
 /* Dual-handle score slider: two overlapping range inputs share one track, only their
    thumbs are interactive, so both ends stay independently draggable. */

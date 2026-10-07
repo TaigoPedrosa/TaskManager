@@ -3,7 +3,7 @@ items. `build_bodies` reads sections and jobs in one bulk query each; every othe
 node itself, its relations, its verifications, its conditions, its lease -- comes from the
 snapshot's own bulk read, so the statement count never grows with how many ids are asked for."""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,6 +30,8 @@ from taskmanager.engine.snapshot import (
 # time instead, so it is handled separately in `body_items`.
 _BODY_PARTS = (
     "node",
+    "display",
+    "phase",
     "dependency_details",
     "dependent_details",
     "verifications",
@@ -154,6 +156,8 @@ def lease_dict(lease: Lease | None) -> dict[str, Any] | None:
         "branch_name": lease.branch_name,
         "worktree_path": lease.worktree_path,
         "action": lease.action.value if lease.action else None,
+        "acquired_at": lease.acquired_at.isoformat(),
+        "last_heartbeat": lease.last_heartbeat.isoformat(),
         "ttl_seconds": lease.ttl_seconds,
     }
 
@@ -250,29 +254,38 @@ def dependency_maps(data: GraphData) -> tuple[dict[str, list[str]], dict[str, li
     return deps_by_source, blocked_by_target
 
 
+def _row_status(node_part: dict[str, Any]) -> dict[str, Any]:
+    # The row's own two fields at the body's top level, so a node opened without its row loaded
+    # (a decision link's target) never falls back to its stored status.
+    return {"display": node_part["display"], "phase": node_part.get("phase")}
+
+
 def refresh_relations(
-    view: DisplayView, data: GraphData, ids: Sequence[str]
+    view: DisplayView, data: GraphData, bodies: Mapping[str, dict[str, Any]]
 ) -> dict[str, dict[str, Any]]:
-    """`dependency_details`, `dependent_details` and every one of the node's own `lifecycle_fields`
-    (display, phase, landing_chain, base_chain, ...), recomputed for a watched id whose `rev` did
-    not move. All of it reads the view already built for this rebuild, at no query cost, and a
-    neighbour landing or a chain's holder or merge target changing can move any of these fields
-    with this node's own row untouched. `lifecycle_fields` is one function, so a field added there
-    is refreshed here too, rather than named again by hand."""
+    """`dependency_details`, `dependent_details`, and `node` with every one of its own
+    `lifecycle_fields` (display, phase, landing_chain, base_chain, ...) and the top-level display
+    and phase, recomputed for a watched body whose `rev` did not move. All of it reads the view
+    already built for this rebuild, at no query cost, and a neighbour landing or a chain's holder
+    or merge target changing can move any of these fields with this node's own row untouched.
+    `lifecycle_fields` is one function, so a field added there is refreshed here too, rather than
+    named again by hand."""
     deps_by_source, blocked_by_target = dependency_maps(data)
     parts: dict[str, dict[str, Any]] = {}
-    for node_id in ids:
+    for node_id, body in bodies.items():
         node = data.nodes.get(node_id)
         if node is None:
             continue
+        node_part = {**body["node"], **lifecycle_fields(node, view)}
         parts[node_id] = {
+            "node": node_part,
+            **_row_status(node_part),
             "dependency_details": dependency_details(
                 node_id, view, data.nodes, deps_by_source.get(node_id, [])
             ),
             "dependent_details": dependent_details(
                 node_id, view, data.nodes, blocked_by_target.get(node_id, [])
             ),
-            "lifecycle": lifecycle_fields(node, view),
         }
     return parts
 
@@ -292,20 +305,20 @@ def build_bodies(
     bodies: dict[str, dict[str, Any]] = {}
     for node_id in wanted:
         node = data.nodes[node_id]
+        node_part = {
+            "id": node.id,
+            "kind": node.kind.value,
+            "title": node.title,
+            **lifecycle_fields(node, view),
+            "priority": node.priority,
+            "ordinal": node.ordinal,
+            "target_repo": node.target_repo,
+            "acceptable_models": node.acceptable_models,
+            "frontmatter": frontmatter_with_attachment_sizes(repos.assets_dir, node.frontmatter),
+        }
         bodies[node_id] = {
-            "node": {
-                "id": node.id,
-                "kind": node.kind.value,
-                "title": node.title,
-                **lifecycle_fields(node, view),
-                "priority": node.priority,
-                "ordinal": node.ordinal,
-                "target_repo": node.target_repo,
-                "acceptable_models": node.acceptable_models,
-                "frontmatter": frontmatter_with_attachment_sizes(
-                    repos.assets_dir, node.frontmatter
-                ),
-            },
+            "node": node_part,
+            **_row_status(node_part),
             "dependency_details": dependency_details(
                 node_id, view, data.nodes, deps_by_source.get(node_id, [])
             ),

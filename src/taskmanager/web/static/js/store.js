@@ -84,7 +84,7 @@ function structuralFilterActive(filters) {
 
 // mirrors visibility.py's _spec_of
 function specOf(rows, id) {
-  let current = rows[id] ? rows[id].parent : null;
+  let current = rows[id] ? id : null;
   while (current !== null && current !== undefined) {
     const row = rows[current];
     if (!row) return NO_SPEC;
@@ -92,6 +92,15 @@ function specOf(rows, id) {
     current = row.parent;
   }
   return NO_SPEC;
+}
+
+// mirrors rows.py's _NOT_A_CYCLE
+const NOT_A_CYCLE = new Set(['READY', 'DEFERRED', 'ABANDONED', 'SUPERSEDED']);
+
+// mirrors rows.py's counts_as_work
+function countsAsWork(row) {
+  if (row.kind === 'task') return true;
+  return row.child_count > 0 && !NOT_A_CYCLE.has(row.status);
 }
 
 // mirrors visibility.py's _task_passes
@@ -149,10 +158,8 @@ function nodeVisibleById(rows, byParent, filters, textOk) {
   function visit(id) {
     if (id in visible) return visible[id];
     const row = rows[id];
-    let result;
-    if (row.kind === 'task') {
-      result = textOk[id] && taskPasses(filters, rows, row);
-    } else {
+    let result = countsAsWork(row) && textOk[id] && taskPasses(filters, rows, row);
+    if (!result && row.kind !== 'task') {
       const children = byParent.get(id) || [];
       result = children.some(visit) || (!structuralActive && textOk[id]);
     }
@@ -196,7 +203,7 @@ function passesOtherDimensions(filters, rows, row, exclude) {
 function dimensionCounts(filters, rows, dimension, valuesOf) {
   const counts = {};
   Object.values(rows).forEach(row => {
-    if (row.kind !== 'task' || !passesOtherDimensions(filters, rows, row, dimension)) return;
+    if (!countsAsWork(row) || !passesOtherDimensions(filters, rows, row, dimension)) return;
     valuesOf(row).forEach(v => { counts[v] = (counts[v] || 0) + 1; });
   });
   return counts;
@@ -588,7 +595,16 @@ function createStore(options) {
     closeFn = (ids) => { closeWithDescendants(ids, liveGetParent); sendSubscribe(false); };
     watchFn = (ids) => { toArray(ids).forEach(id => watchSet.add(id)); sendSubscribe(false); };
     unwatchFn = (ids) => { toArray(ids).forEach(id => watchSet.delete(id)); sendSubscribe(false); };
-    resyncFn = () => sendSubscribe(true);
+    // A closed socket reconnects now rather than at its next scheduled attempt; an open one
+    // asks for a fresh snapshot.
+    resyncFn = () => {
+      if (socket && socket.readyState === 1 /* OPEN */) {
+        sendSubscribe(true);
+      } else if (!socket || socket.readyState === 3 /* CLOSED */) {
+        clearTimeout(reconnectTimer);
+        connect();
+      }
+    };
     connect();
   }
 

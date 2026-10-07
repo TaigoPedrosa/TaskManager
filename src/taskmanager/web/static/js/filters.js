@@ -1,7 +1,7 @@
-// Filters (mirrored into the URL hash so a view is shareable). Visibility itself -- which
-// rows this produces, which facet counts they add up to -- is the store's job (live: the
-// server; static: store.js's own port of web/visibility.py); this file only owns the
-// controls, the URL-hash round trip, and forwarding the result to the store.
+// Filters, and the router that keeps them in the URL with the view and its selection.
+// Visibility itself -- which rows this produces, which facet counts they add up to -- is the
+// store's job (live: the server; static: store.js's own port of web/visibility.py); this file
+// only owns the controls, the URL round trip, and forwarding the result to the store.
 // NO_REPO/NO_SPEC/NO_PHASE are store.js's own sentinel constants (loaded before this file);
 // declaring them again here would be a duplicate top-level const in the same script scope.
 // Every dimension below is tri-state: absent from the Map = no opinion (neutral),
@@ -20,8 +20,7 @@ function anyFilterActive() {
     filters.scoreMin !== null || filters.scoreMax !== null;
 }
 
-function readHash() {
-  const p = new URLSearchParams(location.hash.slice(1));
+function readFilters(p) {
   filters.statusMode = new Map();
   (p.get('status') || '').split(',').filter(c => window.STATUS_THEMES[c]).forEach(c => filters.statusMode.set(c, 'include'));
   (p.get('xstatus') || '').split(',').filter(c => window.STATUS_THEMES[c]).forEach(c => filters.statusMode.set(c, 'exclude'));
@@ -51,7 +50,7 @@ function modeEntries(modeMap) {
   return { inc, exc };
 }
 
-// The same shape both writeHash() (a URL) and setFilters() (the store's F, protocol §"Filters,
+// The same shape both navigate() (a URL) and setFilters() (the store's F, protocol §"Filters,
 // visibility, facets and edges") need: only the keys with an opinion, values already strings.
 function filtersToF() {
   const F = {};
@@ -76,19 +75,107 @@ function filtersToF() {
   return F;
 }
 
-function writeHash() {
-  const p = new URLSearchParams(filtersToF());
+// The page's state is its URL: /<view>[/<id>] names the view and what it has selected, the
+// query string holds the filters. A static export, opened from a file, has no paths of its own,
+// so it carries the same path and query after the "#": #/decisions?status=OPEN.
+function locationParts() {
+  const hash = location.hash.slice(1);
+  // Links from before the router carried their filters in the hash: /#status=REVIEWING.
+  if (hash && !hash.startsWith('/')) return { path: isStaticMode ? '' : location.pathname, query: hash };
+  if (!isStaticMode) return { path: location.pathname, query: location.search.slice(1) };
+  const q = hash.indexOf('?');
+  return q < 0 ? { path: hash, query: '' } : { path: hash.slice(0, q), query: hash.slice(q + 1) };
+}
+
+function decodeSegment(segment) {
   try {
-    history.replaceState(null, '', p.toString() ? '#' + p : location.pathname + location.search);
+    return decodeURIComponent(segment);
   } catch (e) {
-    console.error('Could not update the URL hash:', e);
+    return segment;
   }
 }
+
+// Sibling order in Document and the tree: 'progress' (the default, absent from the query) or
+// 'priority' (?sort=priority). Not a filter, so the store never sees it.
+const SORTED_VIEWS = [window.VIEW_MODES.DOCUMENT, window.VIEW_MODES.GRAPH];
+let sortOrder = 'progress';
+
+function readLocation() {
+  const { path, query } = locationParts();
+  const [view, id] = path.split('/').filter(Boolean).map(decodeSegment);
+  const known = Object.values(window.VIEW_MODES).includes(view) &&
+    !(isStaticMode && view === window.VIEW_MODES.WAVES);
+  const params = new URLSearchParams(query);
+  const sort = params.get('sort') === 'priority' ? 'priority' : 'progress';
+  params.delete('sort');
+  return {
+    view: known ? view : window.VIEW_MODES.DOCUMENT,
+    id: known && id ? id : null,
+    filters: Object.fromEntries(params),
+    sort,
+  };
+}
+
+function pathFor(view, id = null) {
+  const path = `/${view}${id ? `/${encodeURIComponent(id)}` : ''}`;
+  return isStaticMode ? `#${path}` : path;
+}
+
+// Brings the screen to a location, touching only what differs from what it shows now: a
+// filter change re-renders without re-entering its view, and a location written by navigate()
+// and read back by popstate changes nothing.
+function applyLocation({ view, id, filters: F, sort }) {
+  if (new URLSearchParams(F).toString() !== new URLSearchParams(filtersToF()).toString()) {
+    readFilters(new URLSearchParams(F));
+    window.tmStore.setFilters(filtersToF());
+    scheduleRender();
+    scheduleWavesRefetch();
+  }
+  if (view === window.VIEW_MODES.DECISIONS && id !== selectedDecisionId) {
+    selectedDecisionId = id;
+    if (currentMode === view) renderDecisionsView();
+  }
+  if (view !== currentMode) setViewMode(view);
+  if (sort !== sortOrder) {
+    sortOrder = sort;
+    scheduleRender();
+  }
+  renderSortControl();
+  applyNodeLocation(view, id);
+}
+
+// A view switch is a new history entry; pass `replace` for a change within the view (a
+// filter, a sort, a reset) so Back still leaves the view.
+function navigate({ view = currentMode, id = null, filters: F = filtersToF(), sort = sortOrder } = {}, { replace = false } = {}) {
+  const here = readLocation();
+  const params = new URLSearchParams(F);
+  if (sort === 'priority') params.set('sort', sort);
+  const query = params.toString();
+  // "/" and "/document" both open Document, so a write that keeps the view and its selection
+  // keeps the path it found.
+  const path = !isStaticMode && view === here.view && id === here.id ? location.pathname : pathFor(view, id);
+  try {
+    history[replace ? 'replaceState' : 'pushState'](null, '', query ? `${path}?${query}` : path);
+  } catch (e) {
+    // A browser can refuse a history write on a page opened from a file; the screen still
+    // follows, only the address bar does not.
+    console.error('Could not update the URL:', e);
+  }
+  applyLocation({ view, id, filters: F, sort });
+}
+
+// Rewritten in place as well as applied: an old hash link typed over the current page arrives
+// here rather than as a load.
+function reapplyLocation() {
+  navigate(readLocation(), { replace: true });
+}
+window.addEventListener('popstate', reapplyLocation);
+if (isStaticMode) window.addEventListener('hashchange', reapplyLocation);
 
 // Every control below calls this, never renderAll() directly, on an actual filter change:
 // the URL, the store's own filters and the DOM must all move together, exactly once.
 function applyFilterChange() {
-  writeHash();
+  navigate({ ...readLocation(), filters: filtersToF() }, { replace: true });
   window.tmStore.setFilters(filtersToF());
   scheduleRender();
   // Waves reads filters.specMode itself (waveSpecFilter) rather than taking it as an argument,
@@ -160,7 +247,7 @@ function updateStatsDigest() {
   // A rebuild replaces every chip with a new DOM node, so the one that had focus (Enter on a
   // status chip is a normal way to apply a filter) would otherwise drop to BODY and a
   // following Shift+Enter would land on nothing. Re-find and refocus its replacement by the
-  // status code it carries, __all__ standing in for the "All tasks" chip.
+  // status code it carries, __all__ standing in for the "All work" chip.
   const focusedCode = statsDigest.contains(document.activeElement)
     ? document.activeElement.dataset.statusCode
     : null;
@@ -170,12 +257,11 @@ function updateStatsDigest() {
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   const allActive = filters.statusMode.size === 0;
   const totalChip = document.createElement('button');
-  totalChip.className = `flex items-center gap-1 px-2 py-1 rounded-md border text-xs transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${allActive ? 'bg-zinc-800 text-white border-zinc-700' : 'bg-zinc-900/60 text-zinc-400 border-zinc-800 hover:bg-zinc-800'}`;
-  totalChip.title = 'All tasks';
+  totalChip.className = `flex items-center gap-1.5 px-1.5 py-1 rounded-full border text-xs leading-4 transition ${FOCUS_RING} ${allActive ? 'bg-zinc-800 text-white border-zinc-700' : 'bg-zinc-900/60 text-zinc-400 border-zinc-800 hover:bg-zinc-800'}`;
   totalChip.dataset.statusCode = '__all__';
-  totalChip.setAttribute('aria-label', `All tasks: ${total}`);
+  totalChip.setAttribute('aria-label', `All work: ${total}`);
   totalChip.setAttribute('aria-pressed', String(allActive));
-  totalChip.innerHTML = `${renderIcon('layers', 'w-3.5 h-3.5')}<strong>${total}</strong>`;
+  totalChip.innerHTML = `${renderIcon('layers', 'w-3 h-3')}<span class="font-medium${allActive ? ' text-zinc-200' : ''}">All work</span><strong class="font-mono">${total}</strong>`;
   totalChip.onclick = () => {
     filters.statusMode.clear();
     applyFilterChange();
@@ -194,11 +280,13 @@ function updateStatsDigest() {
       const mode = filters.statusMode.get(code);
       const chip = document.createElement('button');
       const modeClass = mode === 'include' ? 'st-mode-include' : mode === 'exclude' ? 'st-mode-exclude' : '';
-      chip.className = `st-toggle st-${code} ${modeClass} flex items-center gap-1 px-1.5 py-1 rounded-md text-xs transition hover:brightness-125 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${count === 0 && !mode ? 'opacity-50' : ''}`;
+      // A zero count keeps its icon's colour and drops only the fill, so it never dims below AA.
+      const zero = count === 0 && !mode;
+      chip.className = `st-toggle st-${code} ${modeClass} ${zero ? 'st-zero' : ''} flex items-center gap-1 px-1.5 py-1 rounded-full text-xs leading-4 transition hover:brightness-125 ${FOCUS_RING}`;
       chip.title = `${theme.label} · ${triModeLabel(mode)}`;
       chip.dataset.statusCode = code;
       chip.setAttribute('aria-label', `Status ${theme.label}: ${triModeLabel(mode)}`);
-      chip.innerHTML = `${renderIcon(theme.icon, 'w-3.5 h-3.5')}<strong>${count}</strong>`;
+      chip.innerHTML = `${renderIcon(theme.icon, 'w-3 h-3')}<strong class="font-mono ${zero ? 'text-zinc-400' : ''}">${count}</strong>`;
       triStateHandlers(chip, () => filters.statusMode.get(code), (mode) => {
         if (mode === null) filters.statusMode.delete(code); else filters.statusMode.set(code, mode);
         applyFilterChange();
@@ -263,7 +351,7 @@ function createTriStatePopover(container, { label, dimension, getOptions, modeMa
     const options = getOptions();
     const pop = container.querySelector('.tri-pop');
     pop.innerHTML = options.length === 0
-      ? '<div class="px-2 py-1.5 text-zinc-500 text-xs">No options</div>'
+      ? '<div class="px-2 py-1.5 text-zinc-400 text-xs">No options</div>'
       : options.map(o => {
         const mode = modeMap.get(o.value);
         return `
@@ -523,23 +611,56 @@ clearFiltersBtn.addEventListener('click', () => {
 });
 
 
-// Legend
+// The sort control, drawn like the view switcher; only Document and Graph, the two lists it
+// orders, show it. A segment shows itself picked from the click, ahead of the re-sort.
+const sortControl = document.getElementById('sort-control');
+const SORT_BTN_BASE = `h-full px-2.5 flex items-center rounded-md font-medium transition ${FOCUS_RING}`;
+
+function renderSortControl() {
+  sortControl.classList.toggle('hidden', !SORTED_VIEWS.includes(currentMode));
+  sortControl.querySelectorAll('[data-sort]').forEach(btn => {
+    const picked = btn.dataset.sort === sortOrder;
+    btn.setAttribute('aria-pressed', String(picked));
+    btn.className = `${SORT_BTN_BASE} ${picked ? 'bg-zinc-800 text-white shadow-sm' : 'text-zinc-400 hover:text-white'}`;
+  });
+}
+
+// Below sm (Tailwind's 640px) the control ends the Filters panel's controls, so it adds no row
+// to the toolbar there; from sm up it leads the actions group.
+const SM_MIN_PX = 640;
+const sortActionsGroup = sortControl.parentNode;
+
+function placeSortControl() {
+  const home = window.innerWidth >= SM_MIN_PX ? sortActionsGroup : filterControlsGroup;
+  if (sortControl.parentNode !== home) home.insertBefore(sortControl, home === sortActionsGroup ? home.firstChild : null);
+}
+
+window.addEventListener('resize', placeSortControl);
+placeSortControl();
+
+// The picked segment again resets the lists: Progress, from the top.
+sortControl.querySelectorAll('[data-sort]').forEach(btn => btn.addEventListener('click', () => {
+  const again = btn.dataset.sort === sortOrder;
+  if (again) {
+    documentPane.scrollTop = 0;
+    treeList.scrollTop = 0;
+  }
+  navigate({ ...readLocation(), sort: again ? 'progress' : btn.dataset.sort }, { replace: true });
+}));
+
+
+// Legend: each status and phase icon beside its name.
+function legendRow(colourCls, theme) {
+  return `<div class="flex items-center gap-2 py-1"><span class="${colourCls} inline-flex flex-shrink-0">${renderIcon(theme.icon, 'w-3.5 h-3.5')}</span><span class="text-xs text-zinc-300">${esc(theme.label)}</span></div>`;
+}
+
 function renderLegend() {
   const statusRows = window.STATUS_GROUPS.map(group => {
-    const rows = Object.values(window.STATUS_THEMES).filter(t => t.group === group.code).map(t => `
-      <div class="flex items-start gap-2 py-1">
-        <div class="w-36 flex-shrink-0">${statusChip(t.code)}</div>
-        <p class="text-xs text-zinc-300">${esc(t.description)}</p>
-      </div>
-    `).join('');
+    const rows = Object.values(window.STATUS_THEMES).filter(t => t.group === group.code)
+      .map(t => legendRow(`st-text st-${t.code}`, t)).join('');
     return `<div><div class="text-[10px] uppercase tracking-wider text-zinc-400 mt-2">${esc(group.label)}</div>${rows}</div>`;
   }).join('');
-  const phaseRows = Object.values(window.PHASE_THEMES).map(t => `
-    <div class="flex items-start gap-2 py-1">
-      <div class="w-36 flex-shrink-0">${phaseChip(t.code)}</div>
-      <p class="text-xs text-zinc-300">${esc(t.description)}</p>
-    </div>
-  `).join('');
+  const phaseRows = Object.values(window.PHASE_THEMES).map(t => legendRow(`st-text ph-${t.code}`, t)).join('');
   legendBody.innerHTML = `${statusRows}<div><div class="text-[10px] uppercase tracking-wider text-zinc-400 mt-2">Phases</div>${phaseRows}</div>`;
 }
 

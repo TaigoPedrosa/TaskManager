@@ -42,11 +42,14 @@ from taskmanager.engine.landing import Landing
 from taskmanager.engine.operations import OperationError, Operations
 from taskmanager.engine.simulate import simulate
 from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder, stored_status
-from taskmanager.web.bodies import BodyRepos, attachments_with_size, build_bodies
+from taskmanager.web.bodies import BodyRepos, attachments_with_size, build_bodies, lease_dict
 from taskmanager.web.live import LiveHub
 from taskmanager.web.rows import build_rows, canonical, decisions_open, statuses, statuses_hash
 from taskmanager.web.ui import get_web_html
 from taskmanager.web.visibility import parse_filters, visible_ids
+
+# The page's own paths (filters.js's router): /<view> and /<view>/<id>.
+PAGE_VIEWS = frozenset({"document", "graph", "waves", "decisions"})
 
 
 class SpecCreate(BaseModel):
@@ -289,8 +292,6 @@ def _node_details(ids: list[str], view: DisplayView, repos: BodyRepos) -> dict[s
     return {
         node_id: {
             **body,
-            "display": body["node"]["display"],
-            "phase": body["node"].get("phase"),
             "dependencies": repos.node_repo.get_dependencies(node_id),
             "blocked_by": repos.node_repo.get_blocked_by(node_id),
         }
@@ -510,10 +511,6 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             assets_dir=assets_dir,
         )
 
-    @app.get("/", response_class=HTMLResponse)
-    async def index() -> str:
-        return get_web_html()
-
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.accept()
@@ -632,7 +629,8 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         # this built, in memory (see `engine.simulate`). Conditions are read from the cache once
         # here too, the same read a display uses -- a simulated wave has no real claim to run a
         # condition's command under.
-        snap = snapshots.build()
+        view = new_view()
+        snap = view.snapshot
         cached_conditions = cache.all_conditions(_condition_ttl())
         waves = simulate(
             snap,
@@ -643,7 +641,23 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             repo_order=_repo_order(),
             cached_conditions=cached_conditions,
         )
-        return {"waves": [asdict(w) for w in waves], "max_depth": _MAX_WAVE_DEPTH}
+        # What a wave row draws beyond the simulator's own fields: a held node's status and
+        # title, and the live lease an in-flight step runs under.
+        data = snap.graph_data()
+        named = {entry.id for wave in waves for entry in wave.entries} | {
+            held.split(": ", 1)[0] for wave in waves for held in wave.held
+        }
+        nodes = {
+            node_id: {
+                "kind": node.kind.value,
+                "title": node.title,
+                "display": view.display(node),
+                "lease": lease_dict(data.leases.get(node_id)),
+            }
+            for node_id in sorted(named)
+            if (node := data.nodes.get(node_id)) is not None
+        }
+        return {"waves": [asdict(w) for w in waves], "max_depth": _MAX_WAVE_DEPTH, "nodes": nodes}
 
     @app.post("/api/specs", status_code=201)
     def create_spec(body: SpecCreate, actor: Actor) -> dict[str, str]:
@@ -1001,5 +1015,14 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         if not mime.startswith("image/"):
             raise HTTPException(404, "not found")
         return FileResponse(candidate, headers=_served_headers(mime, candidate.name))
+
+    # Registered last, so a view path never shadows /api, /assets or /ws.
+    @app.get("/", response_class=HTMLResponse)
+    @app.get("/{view}", response_class=HTMLResponse)
+    @app.get("/{view}/{node_id}", response_class=HTMLResponse)
+    async def page(view: str = "document", node_id: str | None = None) -> str:
+        if view not in PAGE_VIEWS:
+            raise HTTPException(404, "Not Found")
+        return get_web_html()
 
     return app

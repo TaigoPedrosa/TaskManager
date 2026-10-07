@@ -12,32 +12,41 @@ const GRAPH_SHAPE_BY_KIND = {
 };
 
 let visEdgesDS = null;
+// zinc-100: the selected node's stroke, in place of its status stroke.
+const SELECTED_STROKE = '#f4f4f5';
 
 function graphEdgeId(source, target, type) {
   return `${source}\u0000${target}\u0000${type}`;
 }
 
-// A task's summary line is its status; a container's is the counts tree's roll-up
-// (countsForRow/progressText, both core.js's), which already folds in the container's own
-// unit once its own review/fix/merge cycle has started (rows.py's `statuses`).
+// A box shows the node's id on its status fill; its status, title and roll-up are its tooltip.
 function graphVisNode(row) {
   const theme = getTheme(displayOf(row));
-  const summary = row.kind === 'task' ? theme.label : progressText(countsForRow(row));
   return {
     id: row.id,
-    label: `${row.id}\n${row.title}\n*${summary}*`,
+    label: row.id,
     ...(GRAPH_SHAPE_BY_KIND[row.kind] || GRAPH_SHAPE_BY_KIND.task),
-    margin: 16,
+    margin: 10,
     widthConstraint: { minimum: 170, maximum: 260 },
     color: {
       background: theme.graph_bg,
-      border: theme.graph_border,
-      highlight: { background: theme.graph_bg, border: '#ffffff' }
+      border: row.id === selectedNodeId ? SELECTED_STROKE : theme.graph_border,
+      highlight: { background: theme.graph_bg, border: SELECTED_STROKE }
     },
-    font: { color: '#f3f4f6', face: 'Inter', size: 16, multi: 'md' },
+    font: { color: '#ffffff', face: 'Inter', size: 12, mod: '600' },
     borderWidth: 2,
     shadow: { enabled: true, color: 'rgba(0,0,0,0.5)', size: 4 }
   };
+}
+
+// The status label is spelled out here, so no status icon sits beside it; a container adds
+// its roll-up from the counts tree.
+function graphTipHtml(id) {
+  const row = window.tmStore.rows.get(id);
+  if (!row) return esc(id);
+  const theme = getTheme(displayOf(row));
+  const rollup = row.kind === 'task' ? '' : `<div class="text-zinc-400">${esc(progressText(countsForRow(row)))}</div>`;
+  return `<div class="font-mono font-bold text-emerald-400">${esc(row.id)}</div><div class="text-zinc-200">${esc(row.title)}</div><div class="graph-tip-status st-text st-${theme.code}">${esc(theme.label)}</div>${rollup}`;
 }
 
 function graphVisEdge([source, target, type]) {
@@ -68,9 +77,8 @@ function renderGraph() {
       }
     },
     physics: false,
-    // A canvas node has no DOM presence to Tab to (createNodeRow's tree row is the reachable
-    // path to the same inspector), but vis's own keyboard interaction at least lets someone
-    // already focused on the canvas pan/zoom/select without a mouse.
+    // A canvas node has no DOM presence of its own; each one gets a focusable proxy over it
+    // (syncGraphFocusProxies), and vis's own keyboard interaction pans and zooms the canvas.
     interaction: { hover: true, selectConnectedEdges: true, keyboard: true }
   };
 
@@ -81,12 +89,63 @@ function renderGraph() {
       showGraphInspector(params.nodes[0]);
     }
   });
+  networkInstance.on('hoverNode', (params) => {
+    const proxy = graphFocusProxies.get(params.node);
+    if (proxy) showTip(proxy, graphTipHtml(params.node));
+  });
+  networkInstance.on('blurNode', hideTip);
+  networkInstance.on('dragStart', hideTip);
+  networkInstance.on('zoom', hideTip);
+  networkInstance.on('afterDrawing', syncGraphFocusProxies);
   // A container stands for its subtree; opening or closing one is the same store-driven
   // toggle the tree view's own rows use, so the two views can never disagree about what's open.
   networkInstance.on('doubleClick', (params) => {
     if (params.nodes.length === 0) return;
     const row = window.tmStore.rows.get(params.nodes[0]);
     if (row && row.kind !== 'task') toggleExpand(row);
+  });
+}
+
+// One transparent button over each drawn node: Tab reaches the node, focus opens its tooltip
+// as hover does, and Enter opens its details. Pointer events pass through to the canvas.
+const graphFocusLayer = document.createElement('div');
+graphFocusLayer.className = 'absolute inset-0 overflow-hidden pointer-events-none';
+const graphFocusProxies = new Map();
+
+function syncGraphFocusProxies() {
+  if (graphFocusLayer.parentNode !== networkCanvas) networkCanvas.appendChild(graphFocusLayer);
+  const ids = visNodesDS.getIds();
+  const keep = new Set(ids);
+  graphFocusProxies.forEach((btn, id) => {
+    if (!keep.has(id)) {
+      btn.remove();
+      graphFocusProxies.delete(id);
+    }
+  });
+  ids.forEach((id) => {
+    let btn = graphFocusProxies.get(id);
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `graph-node-focus absolute rounded-md pointer-events-none ${FOCUS_RING}`;
+      btn.setAttribute('tabindex', '0');
+      btn.setAttribute('data-node-id', id);
+      btn.addEventListener('focusin', () => showTip(btn, graphTipHtml(id)));
+      btn.addEventListener('focusout', hideTip);
+      btn.addEventListener('click', () => showGraphInspector(id));
+      graphFocusLayer.appendChild(btn);
+      graphFocusProxies.set(id, btn);
+    }
+    const row = window.tmStore.rows.get(id);
+    btn.setAttribute('aria-label', row ? `${row.id}: ${row.title}` : id);
+    const box = networkInstance.getBoundingBox(id);
+    if (!box) return;
+    const topLeft = networkInstance.canvasToDOM({ x: box.left, y: box.top });
+    const bottomRight = networkInstance.canvasToDOM({ x: box.right, y: box.bottom });
+    btn.style.left = `${topLeft.x}px`;
+    btn.style.top = `${topLeft.y}px`;
+    btn.style.width = `${bottomRight.x - topLeft.x}px`;
+    btn.style.height = `${bottomRight.y - topLeft.y}px`;
   });
 }
 

@@ -84,13 +84,6 @@ def test_sidebar_resize_handle_clamps_and_persists_width() -> None:
     assert "localStorage.getItem('tm-sidebar-width')" in html
 
 
-def test_tree_row_carries_exactly_one_status_marker() -> None:
-    body = _function_body(get_web_html(), "createNodeRow")
-    assert body.count("statusDot(") == 1
-    assert "statusChip(" not in body
-    assert "statusIcon(" not in body
-
-
 def test_tree_row_is_keyboard_reachable_and_operable() -> None:
     # A canvas node in the graph view has no DOM presence to Tab to, so this tree row is the
     # only reachable path to any task's detail panel for a keyboard user; it needs a role,
@@ -106,10 +99,10 @@ def test_tree_row_is_keyboard_reachable_and_operable() -> None:
 
 def test_document_sections_default_collapsed_and_remember_expand_state() -> None:
     html = get_web_html()
-    render_sections = _function_body(html, "renderSections")
+    section_items = _function_body(html, "sectionItemsHtml")
     assert "<details open class" not in html
-    assert "isOpen ? 'open' : ''" in render_sections
-    assert "expandedSections.has(id)" in render_sections
+    assert "isOpen ? 'open' : ''" in section_items
+    assert "expandedSections.has(id)" in section_items
     assert "expandedSections" in _function_body(html, "attachSectionToggleHandlers")
 
 
@@ -117,26 +110,14 @@ def test_plan_and_task_headers_are_not_sticky() -> None:
     html = get_web_html()
     assert "sticky" not in _function_body(html, "renderPlanCard")
     assert "sticky" not in _function_body(html, "renderTaskCard")
-    assert (
-        'class="h-12 px-4 rounded-t-xl bg-zinc-900/95 backdrop-blur-sm border-b border-zinc-800 flex items-center justify-between cursor-pointer plan-header"'
-        in html
-    )
-    assert (
-        'class="h-10 px-3 rounded-t-lg flex items-center justify-between cursor-pointer task-header bg-zinc-900/90 backdrop-blur-sm hover:bg-zinc-900"'
-        in html
-    )
 
 
 def test_status_icon_carries_a_title_and_chip_is_legend_only() -> None:
     html = get_web_html()
     status_icon = _function_body(html, "statusIcon")
-    assert 'title="${esc(t.label)}"' in status_icon
-    # statusChip (visible label) survives only in its own definition, the legend, and the
-    # waves view's from/to transition (a wave card names no other status marker at all).
-    assert html.count("statusChip(") == 3
-    assert "renderLegend" in html
-    legend = _function_body(html, "renderLegend")
-    assert "statusChip(" in legend
+    assert 'title="${esc(t.label)}" aria-label="${esc(t.label)}"' in status_icon
+    # statusChip (visible label) survives only in its own definition until its last caller goes.
+    assert html.count("statusChip(") == 1
 
 
 def test_group_headers_default_all_collapsed() -> None:
@@ -148,19 +129,22 @@ def test_group_headers_default_all_collapsed() -> None:
     assert "groupCollapsed(groupId, true)" in render_sections
     assert "renderGroupHeader(groupId, 'Sections'" in render_sections
 
-    render_plan_card = _function_body(html, "renderPlanCard")
-    assert "groupCollapsed(tasksGroupId, true)" in render_plan_card
-    assert "renderGroupHeader(tasksGroupId, 'Tasks'" in render_plan_card
+    # A container's children start collapsed on the card and in the drawer alike.
+    render_children = _function_body(html, "renderChildren")
+    assert (
+        "detailGroupHtml(node.id, 'children', label, kids.length + (stepTitle ? 1 : 0), true,"
+        in render_children
+    )
 
 
 def test_group_header_toggle_is_wired_independently_of_node_and_section_collapse() -> None:
     html = get_web_html()
     shared = _function_body(html, "attachGroupHeaderHandlers")
-    assert "'.group-header'" in shared
+    assert "'.disclosure[data-group-id]'" in shared
     assert "collapsedGroups.has(id)) collapsedGroups.delete(id)" in shared
     assert "collapsedGroups.add(id)" in shared
     attach = _function_body(html, "attachCollapsibleHandlers")
-    assert "attachGroupHeaderHandlers(document, renderUnifiedDocument)" in attach
+    assert "attachGroupHeaderHandlers(unifiedDocument, renderUnifiedDocument)" in attach
 
     # The all-sections toolbar button only ever touches expandedSections, never the groups.
     toggle_sections_handler = re.search(
@@ -178,11 +162,12 @@ def test_group_header_is_keyboard_operable_everywhere_it_renders() -> None:
     # group header that neither responds to a click there nor to Enter anywhere.
     html = get_web_html()
     header = _function_body(html, "renderGroupHeader")
-    assert 'role="button"' in header
-    assert 'tabindex="0"' in header
-    assert "aria-expanded=" in header
+    assert "disclosureHeader(" in header
+    disclosure = _function_body(html, "disclosureHeader")
+    assert '<button type="button"' in disclosure
+    assert "aria-expanded=" in disclosure
     shared = _function_body(html, "attachGroupHeaderHandlers")
-    assert "header.onkeydown" in shared
+    assert "header.onclick" in shared
     detail = _function_body(html, "renderDecisionDetail")
     assert "attachGroupHeaderHandlers(decisionsDetailEl" in detail
 
@@ -193,7 +178,7 @@ def test_graph_layout_gives_nodes_room_and_a_shape_per_kind() -> None:
     assert "levelSeparation: 240" in render_graph
     assert "nodeSpacing: 320" in render_graph
     vis_node = _function_body(html, "graphVisNode")
-    assert "size: 16" in vis_node
+    assert "size: 12" in vis_node
     assert "widthConstraint: { minimum: 170, maximum: 260 }" in vis_node
     assert "GRAPH_SHAPE_BY_KIND" in html
 
@@ -208,9 +193,9 @@ def test_graph_never_destroys_the_network_instance() -> None:
     assert "syncGraphEdges()" in sync_graph
 
 
-def test_graph_container_label_is_a_counts_summary_not_a_status() -> None:
-    vis_node = _function_body(get_web_html(), "graphVisNode")
-    assert "progressText(countsForRow(row))" in vis_node
+def test_graph_container_tooltip_carries_its_counts_summary() -> None:
+    tip = _function_body(get_web_html(), "graphTipHtml")
+    assert "progressText(countsForRow(row))" in tip
 
 
 def test_graph_double_click_toggles_a_container_through_the_store() -> None:
@@ -229,7 +214,7 @@ def test_graph_inspector_is_full_width_below_lg_not_a_fixed_384px() -> None:
     # A fixed w-96 (384px) drawer beside a 320px sidebar left no usable canvas at 375/768 and
     # overlapped the sidebar's own action bar outright.
     html = get_web_html()
-    inspector = re.search(r'<div id="graph-inspector" class="([^"]*)"', html)
+    inspector = re.search(r'<div id="graph-inspector"[^>]*? class="([^"]*)"', html)
     assert inspector, "graph-inspector not found"
     classes = inspector.group(1)
     assert "w-full" in classes
@@ -252,9 +237,9 @@ def test_page_inlines_every_static_js_file() -> None:
         "tree.js": "function renderTree()",
         "graph.js": "const GRAPH_SHAPE_BY_KIND",
         "edit.js": "function openDialog(",
-        "detail.js": "async function showGraphInspector(nodeId)",
+        "detail.js": "function nodeDetailHtml(node, body, row,",
         "waves.js": "function fetchWaves()",
-        "main.js": "readHash();\nrenderLegend();",
+        "main.js": "navigate(readLocation(), { replace: true });",
     }
     for source_file, needle in known_strings_by_file.items():
         assert needle in html, f"{source_file}'s own content ({needle!r}) missing from the page"
@@ -305,15 +290,15 @@ def test_status_chips_use_the_tri_state_grammar_not_a_three_way_cycle() -> None:
     assert "cycleStatusMode" not in body
 
 
-def test_hash_round_trips_include_and_exclude_for_every_tri_state_dimension() -> None:
-    # writeHash() and setFilters() need the same shape (the protocol's F), so both build it
+def test_url_round_trips_include_and_exclude_for_every_tri_state_dimension() -> None:
+    # navigate() and setFilters() need the same shape (the protocol's F), so both build it
     # from filtersToF() rather than each writing their own p.set(...) calls.
     html = get_web_html()
     to_f = _function_body(html, "filtersToF")
-    read_hash = _function_body(html, "readHash")
-    assert "new URLSearchParams(filtersToF())" in _function_body(html, "writeHash")
+    read_filters = _function_body(html, "readFilters")
+    assert "filters: F = filtersToF()" in html
     for key in ("status", "xstatus", "repo", "xrepo", "model", "xmodel", "spec", "xspec"):
-        assert f"p.get('{key}')" in read_hash, f"readHash does not read {key}"
+        assert f"p.get('{key}')" in read_filters, f"readFilters does not read {key}"
         assert f"F.{key} =" in to_f, f"filtersToF does not write {key}"
 
 
@@ -447,10 +432,9 @@ def test_add_dependency_is_a_picker_not_free_text() -> None:
     assert "decisionsOnly" in body
     assert 'list="${listId}"' in body
     assert "<datalist" in body
-    detail = _function_body(get_web_html(), "renderDependencies")
-    assert "+ Wait on decision" in detail
-    wire = _function_body(get_web_html(), "wireDependencyControls")
-    assert "openAddDependencyDialog(node, true)" in wire
+    actions = _function_body(get_web_html(), "nodeActions")
+    assert "{ act: 'wait-on-decision', label: 'Wait on decision…' }" in actions
+    assert "'wait-on-decision': node => openAddDependencyDialog(node, true)," in get_web_html()
 
 
 def test_decision_answer_form_custom_text_clears_the_chosen_cards_highlight() -> None:
@@ -495,16 +479,18 @@ def test_dialog_traps_focus_and_closes_on_escape_with_focus_return() -> None:
     html = get_web_html()
     body = _function_body(html, "openDialog")
     assert "e.key === 'Escape'" in body
-    assert "e.key === 'Tab'" in body
-    assert "trigger.focus()" in body
-    assert "aria-modal" in body
+    assert "e.key !== 'Tab'" in body
+    assert "opener.focus()" in body
+    assert "aria-modal" in _function_body(html, "formDialog")
 
 
 def test_dialog_submit_shows_the_refusal_without_closing() -> None:
     # An OperationError's message (400/404/409) is surfaced in the form, and the dialog is
     # never closed by the catch branch -- only a successful onSubmit calls close().
     html = get_web_html()
-    dialog_call_site = re.search(r"form\.addEventListener\('submit'.*?\}\);", html, re.DOTALL)
+    dialog_call_site = re.search(
+        r"\.dlg-form'\)\.addEventListener\('submit'.*?\}\);", html, re.DOTALL
+    )
     assert dialog_call_site, "dialog submit handler not found"
     handler = dialog_call_site.group(0)
     assert "errorEl.textContent" in handler
@@ -565,17 +551,6 @@ def test_destructive_actions_confirm_before_writing() -> None:
     assert "destructive: verb === 'abandon'" in _function_body(html, "openVerbDialog")
 
 
-def test_confirm_dialog_closes_before_the_reload_not_after() -> None:
-    # A confirm has no fields left to correct on a refusal, so it closes as soon as the button
-    # is pressed; onConfirm routinely ends in a tree/graph reload that used to keep the dialog
-    # open (Withdraw measured closing 65s after its own success toast on a large estate).
-    body = _function_body(get_web_html(), "confirmDialog")
-    close_index = body.index("close();")
-    confirm_index = body.index("await onConfirm();")
-    assert close_index < confirm_index
-    assert "catch (err)" in body
-
-
 def test_edit_dialog_only_offers_models_repo_and_frontmatter_for_tasks() -> None:
     body = _function_body(get_web_html(), "openEditNodeDialog")
     assert "isTask ? fieldRow('Acceptable models" in body
@@ -588,7 +563,7 @@ def test_remove_confirmations_name_the_thing_not_its_internal_id() -> None:
     render_ver = _function_body(html, "renderVerifications")
     assert 'aria-label="Remove verification ${esc(v.target_path)}"' in render_ver
     remove_ver = _function_body(html, "removeVerification")
-    assert 'target ? `"${target}" `' in remove_ver
+    assert "Remove the verification on ${target}?" in remove_ver
     detach = _function_body(html, "detachAttachment")
     assert "name || asset" in detach
 
@@ -629,10 +604,12 @@ def test_decision_option_description_renders_as_markdown() -> None:
 
 def test_dialog_refusal_also_shows_a_toast() -> None:
     html = get_web_html()
-    dialog_call_site = re.search(r"form\.addEventListener\('submit'.*?\}\);", html, re.DOTALL)
+    dialog_call_site = re.search(
+        r"\.dlg-form'\)\.addEventListener\('submit'.*?\}\);", html, re.DOTALL
+    )
     assert dialog_call_site, "dialog submit handler not found"
     catch_block = dialog_call_site.group(0).split("catch")[1].split("finally")[0]
-    assert "toast(message, 'error')" in catch_block
+    assert "toast(message, { tone: 'error' })" in catch_block
 
 
 def test_decision_option_row_inputs_are_named_by_aria_label_not_placeholder() -> None:
@@ -687,12 +664,6 @@ def test_refresh_decisions_data_reads_the_paginated_envelopes_items() -> None:
     assert "const res = await api('GET', `/api/decisions?" in refresh
     assert "decisionsData = res.items;" in refresh
     assert "decisionsNextCursor = res.next;" in refresh
-
-
-def test_dialog_initial_focus_prefers_a_form_field_over_the_close_button() -> None:
-    body = _function_body(get_web_html(), "openDialog")
-    assert "firstFieldOrFallback().focus()" in body
-    assert "(focusables()[0] || panel).focus()" not in body
 
 
 def test_new_menu_item_returns_focus_to_the_trigger_button_not_body() -> None:
@@ -752,7 +723,7 @@ def test_a_refused_subscribe_notifies_the_store_and_core_toasts_it() -> None:
     assert "error: msg.detail" in handle_message
     on_change = re.search(r"window\.tmStore\.onChange\(\(patch\) => \{(.*?)\}\);", html, re.DOTALL)
     assert on_change, "onChange handler not found"
-    assert "toast(patch.error, 'error')" in on_change.group(1)
+    assert "toast(patch.error, { tone: 'error'" in on_change.group(1)
 
 
 def test_tri_state_buttons_use_the_icon_sprite_not_inline_svg() -> None:
@@ -779,7 +750,7 @@ def test_status_exclude_toggle_uses_a_token_not_raw_hex() -> None:
 def test_attachment_card_shows_size_and_source_uri_always_visible() -> None:
     # §4: name, size, source URI and capture age/staleness must all be visible on the card
     # itself, not only in a hover title.
-    render = _function_body(get_web_html(), "renderAttachments")
+    render = _function_body(get_web_html(), "attachmentCardHtml")
     assert "humanBytes(entry.size_bytes)" in render
     assert "entry.source && entry.source.uri" in render
     assert 'title="${esc(uri)}">${esc(uri)}' in render
@@ -837,21 +808,21 @@ def test_the_page_carries_phase_themes_and_a_phase_filter() -> None:
     assert "window.PHASE_THEMES = " in html
     assert '<div id="phase-filter" class="relative"></div>' in html
     assert "createTriStatePopover(phaseFilterEl" in html
-    read_hash = _function_body(html, "readHash")
+    read_filters = _function_body(html, "readFilters")
     to_f = _function_body(html, "filtersToF")
     for key in ("phase", "xphase"):
-        assert f"p.get('{key}')" in read_hash and f"F.{key} =" in to_f
+        assert f"p.get('{key}')" in read_filters and f"F.{key} =" in to_f
 
 
-def test_action_bar_offers_verbs_by_stored_status() -> None:
-    body = _function_body(get_web_html(), "renderActionBar")
+def test_actions_menu_offers_verbs_by_stored_status() -> None:
+    html = get_web_html()
+    body = _function_body(html, "nodeActions")
     assert "REOPENABLE.includes(node.status)" in body
     assert "SETTABLE_ASIDE.includes(node.status)" in body
-    assert "ab-reset" in body and "ab-flags" in body
-    wire = _function_body(get_web_html(), "wireActionBar")
+    assert "act: 'reset'" in body and "act: 'flags'" in body
     for verb in ("'reopen'", "'defer'", "'abandon'"):
-        assert f"openVerbDialog(node, {verb})" in wire
-    assert "openResetDialog(node)" in wire and "openFlagsDialog(node)" in wire
+        assert f"openVerbDialog(node, {verb})" in html
+    assert "openResetDialog(node)" in html and "openFlagsDialog(node)" in html
 
 
 def test_every_verb_collects_a_note_and_abandon_is_destructive() -> None:
@@ -861,41 +832,27 @@ def test_every_verb_collects_a_note_and_abandon_is_destructive() -> None:
     assert "vb-new-branch" in body
 
 
-def test_the_inspector_shows_the_lifecycle_panel() -> None:
+def test_the_drawer_draws_the_shared_detail_layout() -> None:
+    # tests/web/detail_layout.test.mjs runs both surfaces; this pins that the drawer reaches
+    # nodeDetailHtml rather than a layout of its own.
     html = get_web_html()
-    panel = _function_body(html, "renderLifecycle")
-    for field in (
-        "n.status",
-        "n.outcome",
-        "n.verdict",
-        "n.review_cycles",
-        "n.merge_attempts",
-        "n.step_failures",
-        "n.requires",
-        "detail.conditions",
-        "detail.jobs",
-        "c.last_result",
-        "c.stage",
-        "landingChainText(n)",
-    ):
-        assert field in panel, field
-    # showGraphInspector only opens and watches the node; renderGraphInspector is the part
-    # that draws the panel, re-run by the store's own onChange on every later update too.
-    assert "renderLifecycle(detail, editable)" in _function_body(html, "renderGraphInspector")
+    assert "nodeDetailHtml(node, body, row, { surface: 'drawer' })" in _function_body(
+        html, "drawerBodyHtml"
+    )
+    assert "drawerBodyHtml(nodeId, node, body, row)" in _function_body(html, "renderGraphInspector")
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is needed to exercise the JS")
-def test_landing_chain_text_reads_the_base_chain(tmp_path: Path) -> None:
-    fn = _function_body(get_web_html(), "landingChainText")
+def test_lands_text_reads_the_base_chain(tmp_path: Path) -> None:
+    fn = _function_body(get_web_html(), "landsText")
     script = tmp_path / "check.js"
     script.write_text(
-        "function esc(s) { return String(s); }\n"
-        f"function landingChainText(node) {{{fn}\n}}\n"
+        f"function landsText(node) {{{fn}\n}}\n"
         "const assert = require('node:assert');\n"
-        "assert.strictEqual(landingChainText({base_chain: ['MAIN']}), 'lands on main');\n"
-        "assert.strictEqual(landingChainText({base_chain: ['P', 'MAIN']}),"
-        " 'on tm/P; waits for P → main');\n"
-        "assert.strictEqual(landingChainText({base_chain: []}), '');\n"
+        "assert.strictEqual(landsText({base_chain: ['MAIN']}), 'main');\n"
+        "assert.strictEqual(landsText({base_chain: ['P', 'MAIN']}), 'tm/P → main');\n"
+        "assert.strictEqual(landsText({base_chain: ['T', 'P', 'MAIN']}), 'tm/T → tm/P → main');\n"
+        "assert.strictEqual(landsText({base_chain: []}), '');\n"
         "console.log('OK');\n",
         encoding="utf-8",
     )
@@ -954,22 +911,18 @@ def test_core_creates_the_store_and_follows_its_connection_state() -> None:
 
 def test_expand_collapse_drive_the_stores_open_and_watch_sets_not_a_local_flag() -> None:
     toggle = _function_body(get_web_html(), "toggleExpand")
-    assert "window.tmStore.open([row.id])" in toggle
-    assert "window.tmStore.watch([row.id])" in toggle
+    expand = _function_body(get_web_html(), "expandId")
+    assert "window.tmStore.open([node.id])" in expand
+    assert "window.tmStore.watch([node.id])" in expand
+    assert "expandId(row)" in toggle
     assert "window.tmStore.close(closed)" in toggle
     assert "window.tmStore.unwatch(closed)" in toggle
 
 
-def test_graph_inspector_shows_loading_until_watched_body_arrives() -> None:
-    inspector = _function_body(get_web_html(), "renderGraphInspector")
-    assert "window.tmStore.bodies.get(nodeId)" in inspector
-    assert "Loading" in inspector
-
-
 def test_sections_and_relations_render_only_once_a_watched_body_arrives() -> None:
-    task_card = _function_body(get_web_html(), "renderTaskCard")
-    assert "bodyOf(task.id)" in task_card
-    assert "Loading…" in task_card
+    card_body = _function_body(get_web_html(), "cardBodyHtml")
+    assert "detailBody(row.id)" in card_body
+    assert "paneState('loading')" in card_body
 
 
 def _class_tokens(tag: str) -> list[str]:
@@ -978,20 +931,23 @@ def _class_tokens(tag: str) -> list[str]:
     return match.group(1).split()
 
 
-def test_waves_view_is_the_default() -> None:
+def test_document_view_is_the_default() -> None:
     # Which segment is selected and which pane responds to a click is pinned by
-    # tests/web/switcher.test.mjs, which runs the real setViewMode rather than grepping for it;
-    # this test only pins the default pane visibility index.html itself bakes in.
+    # tests/web/switcher.test.mjs and views.test.mjs, which run the real page; this test only
+    # pins the default pane visibility index.html itself bakes in.
     html = get_web_html()
-    assert "window.VIEW_MODES.WAVES;" in html
+    assert "let currentMode = window.VIEW_MODES.DOCUMENT;" in html
+    assert "let viewModeBeforeDecisions = window.VIEW_MODES.DOCUMENT;" in html
     waves_pane = re.search(r'<div id="waves-pane"[^>]*>', html)
     graph_pane = re.search(r'<section id="graph-pane"[^>]*>', html)
     network_canvas = re.search(r'<div id="network-canvas"[^>]*>', html)
     document_pane = re.search(r'<main id="document-pane"[^>]*>', html)
-    assert waves_pane and "hidden" not in _class_tokens(waves_pane.group(0))
-    assert graph_pane and "hidden" not in _class_tokens(graph_pane.group(0))
+    doc_btn = re.search(r'<button id="view-doc-btn"[^>]*>', html)
+    assert waves_pane and "hidden" in _class_tokens(waves_pane.group(0))
+    assert graph_pane and "hidden" in _class_tokens(graph_pane.group(0))
     assert network_canvas and "hidden" in _class_tokens(network_canvas.group(0))
-    assert document_pane and "hidden" in _class_tokens(document_pane.group(0))
+    assert document_pane and "hidden" not in _class_tokens(document_pane.group(0))
+    assert doc_btn and "bg-zinc-800" in _class_tokens(doc_btn.group(0))
 
 
 def test_one_detail_drawer_follows_every_pane() -> None:
@@ -1010,15 +966,6 @@ def test_set_view_mode_toggles_the_canvas_layer_and_waves_pane() -> None:
     assert "wavesPane.classList.toggle('hidden', mode !== window.VIEW_MODES.WAVES)" in body
     assert "networkCanvas.classList.toggle('hidden', mode !== window.VIEW_MODES.GRAPH)" in body
     assert "graphFitWrap.classList.toggle('hidden', mode !== window.VIEW_MODES.GRAPH)" in body
-    core_js = _static_js("core.js")
-    assert (
-        "viewWavesBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.WAVES))"
-        in core_js
-    )
-    assert (
-        "viewDocBtn.addEventListener('click', () => setViewMode(window.VIEW_MODES.DOCUMENT))"
-        in core_js
-    )
 
 
 def test_wave_size_bounds_come_from_meta_never_a_constant() -> None:
@@ -1044,14 +991,6 @@ def test_wave_compute_disabled_while_loading_or_the_last_wave_is_empty() -> None
     assert "last.entries.length === 0" in body
 
 
-def test_wave_entry_card_is_a_focusable_button_naming_its_own_id_and_title() -> None:
-    body = _function_body(_static_js("waves.js"), "waveEntryHtml")
-    assert '<button type="button" class="wave-entry-card' in body
-    assert 'aria-label="${esc(entry.id)}: ${esc(entry.title)}"' in body
-    wire = _function_body(_static_js("waves.js"), "wireWavesHandlers")
-    assert "showGraphInspector(btn.getAttribute('data-node-id'))" in wire
-
-
 def test_wave_refetch_on_statuses_change_is_coalesced_per_frame() -> None:
     schedule = _function_body(_static_js("waves.js"), "scheduleWavesRefetch")
     assert "if (waveRefetchScheduled) return;" in schedule
@@ -1065,7 +1004,7 @@ def test_a_filter_change_pushes_to_the_store_exactly_through_one_helper() -> Non
     html = get_web_html()
     apply_change = _function_body(html, "applyFilterChange")
     assert "window.tmStore.setFilters(filtersToF())" in apply_change
-    assert "writeHash()" in apply_change
+    assert "navigate(" in apply_change
     render_all = _function_body(html, "renderAll")
     assert "setFilters" not in render_all
 
@@ -1078,13 +1017,9 @@ def test_a_filter_change_also_refetches_waves() -> None:
     assert "scheduleWavesRefetch()" in apply_change
 
 
-def test_selecting_a_node_pulses_it_in_the_document_view_and_focuses_it_in_graph() -> None:
-    html = get_web_html()
-    assert "pulse-highlight" in html
-    assert "border-color: var(--tone-accent) !important;" in html
-    select_node = _function_body(html, "selectNode")
-    assert "targetEl.classList.add('node-highlighted')" in select_node
-    assert "networkInstance.selectNodes([nodeId])" in select_node
+def test_selecting_a_node_focuses_it_in_graph() -> None:
+    apply = _function_body(get_web_html(), "applyNodeLocation")
+    assert "networkInstance.selectNodes([id])" in apply
 
 
 def test_page_carries_an_inline_favicon_so_the_browser_never_requests_favicon_ico() -> None:

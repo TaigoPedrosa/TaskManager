@@ -1,6 +1,7 @@
 """Integration tests for `GET /api/waves`: the wave simulator served from live state."""
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,11 @@ from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import app as cli_app
+from taskmanager.core.models import Lease
+from taskmanager.core.status import Action, Status
 from taskmanager.db.connection import DatabaseManager
+from taskmanager.db.node_repo import NodeRepository
+from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.di.container import create_container
 from taskmanager.engine.config import DISPATCH_DEFAULTS, ConfigStore
 from taskmanager.engine.operations import Operations
@@ -144,3 +149,39 @@ def test_a_call_builds_the_snapshot_once_however_deep(
     assert res.status_code == 200
     assert len(res.json()["waves"]) == 5
     assert len(calls) == 1
+
+
+def test_waves_name_each_held_node_and_the_lease_an_in_flight_step_runs_under(web: Web) -> None:
+    client, root = web
+    running = _claimable_task(root, "S", "A")
+    waiting = _claimable_task(root, "S2", "B")
+    ops = create_container(root).get(Operations)
+    ops.set_dependencies(waiting, [running], [])
+    node_repo = NodeRepository(DatabaseManager(root / ".taskmanager"))
+    node = node_repo.get_node(running)
+    assert node is not None
+    node.status, node.claimed_from = Status.IMPLEMENTING, Status.READY
+    heartbeat = datetime.now(tz=UTC)
+    lease = Lease(
+        task_id=running,
+        agent_id="wf-a",
+        session_id="s",
+        branch_name=f"tm/{running}",
+        action=Action.IMPLEMENT,
+        last_heartbeat=heartbeat,
+    )
+    assert RuntimeRepository(node_repo.db).claim(lease, [], node)
+
+    body = client.get("/api/waves").json()
+
+    entry = next(e for e in body["waves"][0]["entries"] if e["id"] == running)
+    assert entry["in_flight"]
+    assert body["nodes"][running]["lease"]["agent_id"] == "wf-a"
+    assert datetime.fromisoformat(body["nodes"][running]["lease"]["last_heartbeat"]) == heartbeat
+    assert any(h.startswith(f"{waiting}: ") for h in body["waves"][0]["held"])
+    assert body["nodes"][waiting] == {
+        "kind": "task",
+        "title": "B",
+        "display": "BLOCKED_BY_TASK",
+        "lease": None,
+    }

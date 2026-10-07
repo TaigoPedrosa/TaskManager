@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from taskmanager.core.status import DisplayStatus, Phase
+from taskmanager.web.rows import counts_as_work
 
 NO_REPO = "(none)"
 NO_SPEC = "(none)"
@@ -56,7 +57,7 @@ def _parse_score(raw: str | None) -> float | None:
 
 
 def parse_filters(params: Mapping[str, str]) -> Filters:
-    """Mirrors `filters.js` `readHash`'s parsing, minus the DOM it also touches."""
+    """Mirrors `filters.js` `readFilters`'s parsing, minus the DOM it also touches."""
     return Filters(
         status_mode=_mode_map(params, "status", "xstatus", _STATUS_CODES),
         phase_mode=_mode_map(params, "phase", "xphase", _PHASE_CODES),
@@ -91,9 +92,9 @@ def _structural_filter_active(filters: Filters) -> bool:
 
 
 def _spec_of(rows: Mapping[str, Mapping[str, Any]], node_id: str) -> str:
-    # mirrors the `_specId` filters.js's `collectTasks` stamps on every task: its nearest
-    # spec ancestor, NO_SPEC when it hangs off a standalone plan or nothing at all
-    current: str | None = rows[node_id]["parent"]
+    # the nearest spec at or above the row, so a spec's own step falls under that spec; NO_SPEC
+    # when it hangs off a standalone plan or nothing at all
+    current: str | None = node_id
     while current is not None:
         row = rows.get(current)
         if row is None:
@@ -186,9 +187,8 @@ def _node_visible_by_id(
         if node_id in visible:
             return visible[node_id]
         row = rows[node_id]
-        if row["kind"] == "task":
-            result = text_ok[node_id] and _task_passes(filters, rows, row)
-        else:
+        result = counts_as_work(row) and text_ok[node_id] and _task_passes(filters, rows, row)
+        if not result and row["kind"] != "task":
             result = any(visit(child) for child in by_parent.get(node_id, [])) or (
                 not structural_active and text_ok[node_id]
             )
@@ -265,7 +265,7 @@ def _dimension_counts(
     # mirrors filters.js `computeDimensionCounts`
     counts: dict[str, int] = {}
     for row in rows.values():
-        if row["kind"] != "task" or not _passes_other_dimensions(filters, rows, row, dimension):
+        if not counts_as_work(row) or not _passes_other_dimensions(filters, rows, row, dimension):
             continue
         for value in values_of(row):
             counts[value] = counts.get(value, 0) + 1
