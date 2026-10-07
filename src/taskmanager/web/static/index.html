@@ -23,9 +23,11 @@
 <body class="bg-zinc-950 text-zinc-100 flex flex-col h-screen overflow-hidden selection:bg-emerald-500 selection:text-black">
 <!--slot:icon-sprite-->
 
-  <!-- Toolbar: brand, view switcher, search and filters on row 1; status counts on row 2 -->
+  <!-- Toolbar: brand, view switcher, search and filters on row 1; status counts on row 2. Below sm
+       row 1 holds the brand, switcher, search and the Filters toggle alone, and the toggle opens
+       everything else under it. -->
   <header id="toolbar" class="border-b border-zinc-800 px-4 py-2 bg-zinc-900/60 backdrop-blur z-20 flex-shrink-0 space-y-2">
-    <div class="flex items-center gap-3 flex-wrap lg:flex-nowrap">
+    <div class="flex items-center gap-2 sm:gap-3 flex-wrap lg:flex-nowrap">
       <div class="flex items-center gap-2 flex-shrink-0">
         <svg id="brand-icon" class="w-5 h-5 text-emerald-400 transition-colors" fill="none" stroke="currentColor"><title id="brand-icon-title">Synced</title><use href="#icon-layers"/></svg>
         <span class="text-sm font-semibold tracking-wide text-zinc-100 hidden sm:inline">TaskManager</span>
@@ -47,7 +49,7 @@
         </button>
       </div>
 
-      <div class="relative flex-1 min-w-[160px]">
+      <div class="relative flex-1 min-w-0 sm:min-w-[160px]">
         <div class="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-zinc-500">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-search"/></svg>
         </div>
@@ -56,43 +58,44 @@
 
       <div class="hidden lg:block w-px h-6 bg-zinc-800 flex-shrink-0"></div>
 
-      <!-- Below `sm` the five filter controls plus + New routinely wrap the toolbar onto 3-4
-           lines, leaving no height for the document below it; a single toggle keeps the
-           toolbar one row there while 768/1440 (>= sm) show the controls inline as before. -->
-      <button id="filters-toggle-btn" type="button" aria-expanded="false" aria-controls="filter-controls-group"
-        class="sm:hidden h-8 px-2.5 flex items-center gap-1 rounded-lg text-xs bg-zinc-950 text-zinc-300 border border-zinc-800 hover:bg-zinc-900 flex-shrink-0">
+      <button id="filters-toggle-btn" type="button" aria-expanded="false" aria-controls="filters-panel"
+        class="group sm:hidden h-8 px-2.5 flex items-center gap-1.5 rounded-lg text-xs bg-zinc-950 aria-expanded:bg-zinc-800 text-zinc-200 border border-zinc-800 hover:bg-zinc-900 flex-shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">
         <span class="filters-toggle-label">Filters</span>
+        <svg class="w-3 h-3 group-aria-expanded:rotate-180 transition-transform" fill="none" stroke="currentColor" aria-hidden="true"><use href="#icon-chevron-down"/></svg>
       </button>
-      <div id="filter-controls-group" class="hidden sm:flex sm:max-lg:order-last flex-wrap items-center gap-1.5 text-xs">
-        <div id="repo-filter" class="relative"></div>
-        <div id="model-filter" class="relative"></div>
-        <div id="spec-filter" class="relative"></div>
-        <div id="phase-filter" class="relative"></div>
-        <div id="score-filter" class="relative"></div>
-        <button id="clear-filters-btn" class="hidden h-8 px-2 flex items-center rounded-lg text-zinc-400 hover:text-white underline decoration-dotted">Clear</button>
-      </div>
-      <div id="toolbar-actions" class="sm:max-lg:order-last"></div>
-
-      <div class="hidden lg:block w-px h-6 bg-zinc-800 flex-shrink-0"></div>
-
-      <div class="flex items-center gap-1.5 flex-shrink-0 lg:ml-auto">
-        <div id="sort-control" role="group" aria-label="Sort" class="h-8 bg-zinc-900 p-0.5 rounded-lg border border-zinc-800 flex text-xs flex-shrink-0">
-          <button type="button" data-sort="progress" aria-pressed="true" class="h-full px-2.5 flex items-center rounded-md font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 bg-zinc-800 text-white shadow-sm">Progress</button>
-          <button type="button" data-sort="priority" aria-pressed="false" class="h-full px-2.5 flex items-center rounded-md font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 text-zinc-400 hover:text-white">Priority</button>
+      <!-- From sm up the panel draws nothing of its own: its controls are row 1's. -->
+      <div id="filters-panel" class="max-sm:hidden w-full flex flex-wrap items-center gap-x-1.5 gap-y-2 sm:contents">
+        <div id="filter-controls-group" class="w-full sm:w-auto flex sm:max-lg:order-last flex-wrap items-center gap-1.5 text-xs">
+          <div id="repo-filter" class="relative"></div>
+          <div id="model-filter" class="relative"></div>
+          <div id="spec-filter" class="relative"></div>
+          <div id="phase-filter" class="relative"></div>
+          <div id="score-filter" class="relative"></div>
+          <button id="clear-filters-btn" class="hidden h-8 px-2 flex items-center rounded-lg text-zinc-400 hover:text-white underline decoration-dotted">Clear</button>
         </div>
-        <button id="toggle-sections-btn" title="Expand all sections" aria-label="Expand all sections" class="h-8 aspect-square flex items-center justify-center rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition">
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-chevrons-up-down"/></svg>
-        </button>
-        <button id="legend-btn" aria-expanded="false" aria-controls="legend-panel" title="Legend" aria-label="Legend" class="h-8 aspect-square flex items-center justify-center rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 hover:text-white transition">
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-info"/></svg>
-        </button>
-        <button id="refresh-btn" title="Refresh state" aria-label="Refresh state" class="h-8 aspect-square flex items-center justify-center rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor"><use href="#icon-rotate-cw"/></svg>
-        </button>
+        <div id="toolbar-actions" class="sm:max-lg:order-last"></div>
+
+        <div class="hidden lg:block w-px h-6 bg-zinc-800 flex-shrink-0"></div>
+
+        <div class="flex items-center gap-1.5 flex-shrink-0 lg:ml-auto">
+          <div id="sort-control" role="group" aria-label="Sort" class="h-8 bg-zinc-900 p-0.5 rounded-lg border border-zinc-800 flex text-xs flex-shrink-0">
+            <button type="button" data-sort="progress" aria-pressed="true" class="h-full px-2.5 flex items-center rounded-md font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 bg-zinc-800 text-white shadow-sm">Progress</button>
+            <button type="button" data-sort="priority" aria-pressed="false" class="h-full px-2.5 flex items-center rounded-md font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 text-zinc-400 hover:text-white">Priority</button>
+          </div>
+          <button id="toggle-sections-btn" title="Expand all sections" aria-label="Expand all sections" class="h-8 aspect-square flex items-center justify-center rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-chevrons-up-down"/></svg>
+          </button>
+          <button id="legend-btn" aria-expanded="false" aria-controls="legend-panel" title="Legend" aria-label="Legend" class="h-8 aspect-square flex items-center justify-center rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 hover:text-white transition">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-info"/></svg>
+          </button>
+          <button id="refresh-btn" title="Refresh state" aria-label="Refresh state" class="h-8 aspect-square flex items-center justify-center rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor"><use href="#icon-rotate-cw"/></svg>
+          </button>
+        </div>
       </div>
     </div>
 
-    <div id="stats-digest" class="flex items-center justify-center gap-1 flex-wrap text-xs"></div>
+    <div id="stats-digest" class="flex items-center justify-center max-sm:justify-start max-sm:w-full gap-1 max-sm:gap-y-1.5 flex-wrap text-xs"></div>
   </header>
 
   <!-- A subscribe on the estate's own 541-task tree can still take a couple of seconds; with
@@ -156,19 +159,19 @@
     </section>
 
     <!-- Decisions View Pane (§6.4): list of open/answered/withdrawn decisions and a detail
-         panel, toggled on by decisions.js -- hidden by default like the graph pane. Below sm
-         the list stacks above the detail and the pane is the one scroll; from sm up the list
-         and the detail scroll side by side. The detail's 140px bottom padding below sm keeps
-         its last field clear of the fixed answer bar. decisions.js keeps both scroll offsets itself
-         across a re-render, so the browser's own scroll anchoring is off here. -->
-    <section id="decisions-pane" class="hidden flex-1 flex flex-col sm:flex-row overflow-y-auto sm:overflow-hidden [overflow-anchor:none] bg-zinc-950">
-      <aside class="w-full sm:w-80 md:w-96 flex-shrink-0 border-b sm:border-b-0 sm:border-r border-zinc-800 flex flex-col sm:overflow-hidden">
+         panel, toggled on by decisions.js -- hidden by default like the graph pane. From sm up
+         the list and the detail scroll side by side. Below sm the decision is the page, the pane
+         is its one scroll, and decisions.js moves the tabs and the list into a drawer while it is
+         open; the scroll padding keeps a focused field clear of the sticky page bar and the fixed
+         answer bar, and the detail's 140px bottom padding keeps its last field clear of the bar.
+         decisions.js keeps both scroll offsets itself across a re-render, so the browser's own
+         scroll anchoring is off here. -->
+    <section id="decisions-pane" class="hidden flex-1 flex flex-col sm:flex-row overflow-y-auto sm:overflow-hidden [overflow-anchor:none] max-sm:scroll-pt-[45px] max-sm:scroll-pb-[81px] bg-zinc-950">
+      <aside class="hidden sm:flex w-80 md:w-96 flex-shrink-0 border-r border-zinc-800 flex-col overflow-hidden">
         <div id="decisions-tabs" role="tablist" aria-label="Decision status" class="flex items-center gap-1 px-4 py-3 sm:px-3 flex-shrink-0"></div>
-        <div id="decisions-list" class="sm:flex-1 sm:overflow-y-auto px-4 pt-1 pb-3 sm:px-2 space-y-2"></div>
+        <div id="decisions-list" class="flex-1 min-h-0 overflow-y-auto px-4 pt-1 pb-3 sm:px-2 space-y-2"></div>
       </aside>
-      <div id="decisions-detail" class="flex-1 min-w-0 sm:overflow-y-auto [overflow-anchor:none] px-4 pt-5 pb-[140px] sm:px-6 sm:pt-6 sm:pb-16">
-        <div class="max-w-2xl mx-auto text-sm text-zinc-400 italic pt-12 text-center">Select a decision to view it.</div>
-      </div>
+      <div id="decisions-detail" class="flex-1 min-w-0 sm:overflow-y-auto [overflow-anchor:none] px-4 pt-5 pb-[140px] sm:px-6 sm:pt-6 sm:pb-16"></div>
     </section>
 
     <!-- Node detail drawer, shared by the Waves, Graph and Document views: it sits over

@@ -233,7 +233,7 @@ test('the header line shows the status as an icon and never a decision chip, on 
 
 test('a node opened without its row reads display and phase from the body: a decision link shows Awaiting Decision', async () => {
   const page = await openAt('/graph', { rows: [SPEC] });
-  page.run("viewModeBeforeDecisions = 'graph'; openBlockedNodeDetail('T')");
+  page.run("openNode('T')");
   await page.settle();
   assert.equal(page.window.tmStore.rows.has('T'), false);
   assert.equal(page.$('#inspector-line [role="img"]').getAttribute('aria-label'), 'Awaiting Decision');
@@ -662,8 +662,8 @@ for (const [label, path, fire] of WRITES) {
   });
 }
 
-test("the Decisions pane's + Attach file and Re-check are buttons that spin through the same write", async () => {
-  for (const [selector, path] of [['.att-add-btn', '/api/nodes/decision-D1/attachments'], ['.att-recheck-btn', '/api/nodes/decision-D1/attachments/check']]) {
+test("the Decisions pane's Attach is a button that spins through the attachment write", async () => {
+  for (const [selector, path] of [['.att-add-btn', '/api/nodes/decision-D1/attachments']]) {
     const write = held();
     const page = loadPage({ fetch: server({ [path]: write.route }), beforeScripts: withFiles });
     const picked = [];
@@ -677,7 +677,7 @@ test("the Decisions pane's + Attach file and Re-check are buttons that spin thro
     const box = page.document.createElement('div');
     page.document.body.appendChild(box);
     page.window.box = box;
-    page.run("box.innerHTML = renderAttachments({ id: 'decision-D1' }, attachments, true); wireAttachmentControls(box, { id: 'decision-D1' }, attachments, true, null)");
+    page.run("box.innerHTML = attachButtonHtml() + renderAttachments({ id: 'decision-D1' }, attachments, true); wireAttachmentControls(box, { id: 'decision-D1' }, attachments, true, null)");
     const control = box.querySelector(selector);
     assert.equal(control.localName, 'button');
     control.click();

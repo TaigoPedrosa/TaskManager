@@ -293,7 +293,7 @@ test('a Waves row is one line: now -> next icons, the kind badge on a container,
   assert.equal(held.querySelector('[role="img"]').getAttribute('aria-label'), 'Awaiting Decision');
   assert.equal(held.querySelector('a.id-link').textContent, 'T-2');
   assert.ok(held.textContent.includes('Held task') && held.textContent.includes('waits on decision-D1'));
-  assert.equal(held.querySelectorAll('a[data-decision], .decision-chip').length, 0, 'no decision chip');
+  assert.equal(held.querySelectorAll('.decision-chip').length, 0, 'no decision chip');
   const toggle = content.querySelector('.disclosure[data-group-id="wave-held-0"]');
   assert.equal(toggle.getAttribute('aria-expanded'), 'false');
 });
@@ -372,7 +372,8 @@ test('a Graph node is focusable, its tooltip spells the status with no icon besi
   network.emit('hoverNode', { node: 'T-1' });
   assert.ok(tooltip(page));
   network.emit('blurNode', { node: 'T-1' });
-  assert.equal(tooltip(page), null);
+  await new Promise((r) => setTimeout(r, 250));
+  assert.ok(!tooltip(page), 'gone once the pointer has had its moment to reach it');
 });
 
 test('toasts: one polite region, never focused, a new one replaces the last, gone after 6 s; an error stays until Retry, close or Escape', () => {
@@ -561,18 +562,20 @@ test('the load bar shows from the first subscribe until its answer, while the pa
 });
 
 // Which items of the toolbar's first row show at a width, in their flex order, read off the
-// Tailwind classes they carry: display from hidden, sm:hidden, sm:block, sm:flex and lg:block,
-// order from sm:max-lg:order-last.
+// Tailwind classes they carry: display from hidden, max-sm:hidden, sm:hidden, sm:block, sm:flex
+// and lg:block, an sm:contents wrapper's children as row items from sm up, order from
+// sm:max-lg:order-last.
 function toolbarRowAt(page, width) {
   const sm = width >= 640;
   const lg = width >= 1024;
   const name = (el) => (el.querySelector('#brand-icon') && 'brand') || (el.querySelector('#view-doc-btn') && 'switcher')
     || (el.querySelector('#search-box') && 'search') || (el.querySelector('#refresh-btn') && 'actions')
     || el.id || (el.classList.contains('w-px') && 'divider');
-  return page.$('#toolbar').children[0].children
+  const items = (parent) => parent.children.flatMap((el) => (sm && el.classList.contains('sm:contents') ? items(el) : [el]));
+  return items(page.$('#toolbar').children[0])
     .map((el, i) => {
       const c = (k) => el.classList.contains(k);
-      let shown = !c('hidden');
+      let shown = !c('hidden') && !(!sm && c('max-sm:hidden'));
       if (sm && (c('sm:block') || c('sm:flex'))) shown = true;
       if (sm && c('sm:hidden')) shown = false;
       if (lg && c('lg:block')) shown = true;
@@ -584,9 +587,9 @@ function toolbarRowAt(page, width) {
     .map((x) => x.name);
 }
 
-test('the toolbar keeps its actions on the first row beside the search at 768, with no divider left behind', () => {
+test('the toolbar keeps its actions on the first row beside the search at 768, with no divider left behind, and folds them below sm', () => {
   const page = loadPage();
   assert.deepEqual(toolbarRowAt(page, 768), ['brand', 'switcher', 'search', 'actions', 'filter-controls-group', 'toolbar-actions']);
   assert.deepEqual(toolbarRowAt(page, 1440), ['brand', 'switcher', 'search', 'divider', 'filter-controls-group', 'toolbar-actions', 'divider', 'actions']);
-  assert.deepEqual(toolbarRowAt(page, 375), ['brand', 'switcher', 'search', 'filters-toggle-btn', 'toolbar-actions', 'actions']);
+  assert.deepEqual(toolbarRowAt(page, 375), ['brand', 'switcher', 'search', 'filters-toggle-btn']);
 });

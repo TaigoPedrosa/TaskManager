@@ -565,13 +565,14 @@ const phaseTriState = createTriStatePopover(phaseFilterEl, {
 const scoreFilter = createScoreFilter(scoreFilterEl);
 
 
-// Below `sm` the filter controls stay off the toolbar's one row until this button opens them;
-// at `sm` and up `filter-controls-group`'s own `sm:flex` shows them regardless of this state,
-// which is what keeps 768/1440 unchanged.
+// Below `sm` the toolbar is one row and everything but the brand, the switcher and the search
+// waits in the Filters panel until this button opens it; from `sm` up the panel's own
+// `sm:contents` shows its controls regardless of this state, which keeps 768/1440 unchanged.
 let filtersPanelOpen = false;
 
+// The status chips fold into the panel too, so a status filter counts while it is closed.
 function activeFilterCount() {
-  return filters.phaseMode.size + filters.repoMode.size + filters.modelMode.size +
+  return filters.statusMode.size + filters.phaseMode.size + filters.repoMode.size + filters.modelMode.size +
     filters.specMode.size + (filters.scoreMin !== null || filters.scoreMax !== null ? 1 : 0);
 }
 
@@ -579,7 +580,7 @@ function renderFiltersToggle() {
   const count = activeFilterCount();
   filtersToggleBtn.querySelector('.filters-toggle-label').textContent = count ? `Filters (${count})` : 'Filters';
   filtersToggleBtn.setAttribute('aria-expanded', String(filtersPanelOpen));
-  filterControlsGroup.classList.toggle('hidden', !filtersPanelOpen);
+  filtersPanel.classList.toggle('max-sm:hidden', !filtersPanelOpen);
 }
 
 filtersToggleBtn.addEventListener('click', () => {
@@ -625,18 +626,19 @@ function renderSortControl() {
   });
 }
 
-// Below sm (Tailwind's 640px) the control ends the Filters panel's controls, so it adds no row
-// to the toolbar there; from sm up it leads the actions group.
+// Below sm (Tailwind's 640px) the status chips sit in the Filters panel between the filters and
+// the actions, and from sm up they are the toolbar's second row: moved, not restyled, so Tab
+// meets them where they show.
 const SM_MIN_PX = 640;
-const sortActionsGroup = sortControl.parentNode;
 
-function placeSortControl() {
-  const home = window.innerWidth >= SM_MIN_PX ? sortActionsGroup : filterControlsGroup;
-  if (sortControl.parentNode !== home) home.insertBefore(sortControl, home === sortActionsGroup ? home.firstChild : null);
+function placeStatsDigest() {
+  const narrow = window.innerWidth < SM_MIN_PX;
+  if (narrow && statsDigest.nextSibling !== toolbarActions) filtersPanel.insertBefore(statsDigest, toolbarActions);
+  if (!narrow && statsDigest.parentNode !== toolbarEl) toolbarEl.appendChild(statsDigest);
 }
 
-window.addEventListener('resize', placeSortControl);
-placeSortControl();
+window.addEventListener('resize', placeStatsDigest);
+placeStatsDigest();
 
 // The picked segment again resets the lists: Progress, from the top.
 sortControl.querySelectorAll('[data-sort]').forEach(btn => btn.addEventListener('click', () => {

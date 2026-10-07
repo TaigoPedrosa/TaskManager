@@ -112,12 +112,12 @@ def test_plan_and_task_headers_are_not_sticky() -> None:
     assert "sticky" not in _function_body(html, "renderTaskCard")
 
 
-def test_status_icon_carries_a_title_and_chip_is_legend_only() -> None:
+def test_status_icon_carries_a_title_and_no_status_chip_is_left() -> None:
     html = get_web_html()
     status_icon = _function_body(html, "statusIcon")
     assert 'title="${esc(t.label)}" aria-label="${esc(t.label)}"' in status_icon
-    # statusChip (visible label) survives only in its own definition until its last caller goes.
-    assert html.count("statusChip(") == 1
+    assert "statusChip" not in html
+    assert "st-chip" not in html
 
 
 def test_group_headers_default_all_collapsed() -> None:
@@ -441,13 +441,13 @@ def test_decision_answer_form_custom_text_clears_the_chosen_cards_highlight() ->
     # Typing a custom answer used to clear chosenOption while the previously picked card kept
     # its emerald highlight, showing a choice the form would not actually send.
     body = _function_body(get_web_html(), "wireDecisionAnswerForm")
-    assert "paintChosen(null)" in body
+    assert "if (customAnswer()) chosenOption = null;" in body
     assert "aria-checked" in body
     assert 'role="radio"' in _function_body(get_web_html(), "optionCardHtml")
 
 
 def test_decision_withdraw_collects_a_reason() -> None:
-    body = _function_body(get_web_html(), "wireDecisionAnswerForm")
+    body = _function_body(get_web_html(), "openWithdrawDialog")
     assert "wd-reason" in body
     assert "reason: ''" not in body
 
@@ -459,7 +459,7 @@ def test_open_decision_offers_editing_its_blocked_tasks() -> None:
     assert "dec-block-add" in detail
     assert "dec-block-remove" in detail
     assert "/blocks`, { add:" in detail
-    assert "/blocks`, { remove:" in detail
+    assert "body: { remove: [taskId] }" in detail
 
 
 def test_new_menu_renders_nothing_in_a_read_only_static_export() -> None:
@@ -651,9 +651,9 @@ def test_decisions_load_failure_is_an_error_state_not_an_empty_queue() -> None:
     refresh = _function_body(html, "refreshDecisionsData")
     assert "decisionsLoadFailed = true" in refresh
     assert "toast(`Could not load decisions" in refresh
-    render_list = _function_body(html, "renderDecisionsList")
-    assert "if (decisionsLoadFailed)" in render_list
-    assert 'role="alert"' in render_list
+    list_state = _function_body(html, "decisionsListStateHtml")
+    assert "if (decisionsLoadFailed)" in list_state
+    assert "paneState('error'" in list_state
 
 
 def test_refresh_decisions_data_reads_the_paginated_envelopes_items() -> None:
@@ -760,19 +760,6 @@ def test_human_bytes_formats_and_hides_unknown_size(tmp_path: Path) -> None:
     result = subprocess.run(["node", str(script)], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     assert "OK" in result.stdout
-
-
-def test_toolbar_filters_collapse_behind_a_toggle_below_sm() -> None:
-    # At 375px the five filter controls plus + New routinely wrapped the toolbar onto
-    # several lines; below `sm` they now sit behind one toggle, keeping row 1 to one row.
-    html = get_web_html()
-    assert '<button id="filters-toggle-btn" type="button" aria-expanded="false"' in html
-    assert "sm:hidden" in html.split('id="filters-toggle-btn"')[1].split(">")[0]
-    assert 'id="filter-controls-group" class="hidden sm:flex' in html
-    toggle = _function_body(html, "renderFiltersToggle")
-    assert "activeFilterCount()" in toggle
-    assert "filterControlsGroup.classList.toggle('hidden', !filtersPanelOpen)" in toggle
-    assert "aria-expanded" in toggle
 
 
 def test_the_page_names_no_pre_lifecycle_status_or_status_setter() -> None:

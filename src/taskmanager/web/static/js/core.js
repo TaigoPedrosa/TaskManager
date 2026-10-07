@@ -3,6 +3,8 @@ let graphData = { nodes: [], edges: [] };
 let selectedNodeId = null;
 let visNodesDS = null;
 let currentMode = window.VIEW_MODES.DOCUMENT;
+// The view the toolbar left for Decisions. Decisions shows no node, so a node opens there.
+let viewModeBeforeDecisions = window.VIEW_MODES.DOCUMENT;
 let networkInstance = null;
 let isStaticMode = typeof window.STATIC_DATA !== 'undefined';
 // A node's expand/collapse state now lives in the store's open and watch sets (open reveals
@@ -52,8 +54,9 @@ const specFilterEl = document.getElementById('spec-filter');
 const phaseFilterEl = document.getElementById('phase-filter');
 const scoreFilterEl = document.getElementById('score-filter');
 const clearFiltersBtn = document.getElementById('clear-filters-btn');
+const toolbarEl = document.getElementById('toolbar');
 const filtersToggleBtn = document.getElementById('filters-toggle-btn');
-const filterControlsGroup = document.getElementById('filter-controls-group');
+const filtersPanel = document.getElementById('filters-panel');
 const legendBtn = document.getElementById('legend-btn');
 const legendPanel = document.getElementById('legend-panel');
 const legendBody = document.getElementById('legend-body');
@@ -285,11 +288,6 @@ function clampToViewport(el, margin = 8) {
   }
 }
 
-function statusChip(code, size = 'text-[10px]') {
-  const t = getTheme(code);
-  return `<span class="st-chip st-${t.code} inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full font-medium ${size}" title="${esc(t.description)}">${renderIcon(t.icon, 'w-3 h-3')}<span>${esc(t.label)}</span></span>`;
-}
-
 // The shared renderers every view draws a node's facts with. Each returns markup; a
 // focusable one carries `data-tip`, which the one tooltip below opens on hover and on focus.
 const FOCUS_RING = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400';
@@ -299,13 +297,27 @@ function statusIcon(code, size = 'w-3.5 h-3.5') {
   return `<span class="st-text st-${t.code} relative z-[1] inline-flex flex-shrink-0 rounded-sm ${FOCUS_RING}" role="img" tabindex="0" data-tip title="${esc(t.label)}" aria-label="${esc(t.label)}">${renderIcon(t.icon, size)}</span>`;
 }
 
-// A node opens in the view it is named in; a decision always opens the Decisions pane. An id
-// never truncates; where nothing else on its line can yield (`wrap`), it breaks instead.
-function idLink(id, kind, wrap = false) {
+function nodeView() {
+  return currentMode === window.VIEW_MODES.DECISIONS ? viewModeBeforeDecisions : currentMode;
+}
+
+// How an id link draws: inline (the default) never truncates; `wrap` breaks where nothing else on
+// its line can yield; `row` stretches over its `relative` row, which takes the click and the focus
+// ring while the row's own controls sit above it; `chip` is the awaiting-decision chip.
+const ID_TEXT = 'font-bold text-xs leading-4 text-emerald-400';
+const ID_LOOK = {
+  inline: `relative z-[1] flex-shrink-0 whitespace-nowrap rounded-sm ${ID_TEXT} hover:underline ${FOCUS_RING}`,
+  wrap: `relative z-[1] min-w-0 break-all rounded-sm ${ID_TEXT} hover:underline ${FOCUS_RING}`,
+  row: `flex-shrink-0 whitespace-nowrap ${ID_TEXT} focus:outline-none after:absolute after:inset-0 after:rounded-lg after:content-[''] focus-visible:after:ring-2 focus-visible:after:ring-emerald-400`,
+  chip: `decision-chip relative z-[1] inline-flex items-center gap-1 flex-shrink-0 whitespace-nowrap px-1.5 py-0.5 rounded-full bg-amber-950 border border-amber-400/40 hover:border-amber-400 font-medium text-[10px] leading-[14px] text-amber-400 ${FOCUS_RING}`,
+};
+
+// A node opens in the view it is named in; a decision always opens the Decisions pane.
+function idLink(id, kind, look = 'inline') {
   const isDecision = kind === 'decision';
-  const view = isDecision ? window.VIEW_MODES.DECISIONS : currentMode;
-  const fit = wrap ? 'min-w-0 break-all' : 'flex-shrink-0 whitespace-nowrap';
-  return `<a href="${esc(pathFor(view, id))}" class="id-link relative z-[1] ${fit} rounded-sm font-mono font-bold text-xs leading-4 text-emerald-400 hover:underline ${FOCUS_RING}" data-id="${esc(id)}"${isDecision ? ' data-decision' : ''}>${esc(id)}</a>`;
+  const view = isDecision ? window.VIEW_MODES.DECISIONS : nodeView();
+  const icon = look === 'chip' ? renderIcon('help-circle', 'w-3 h-3 flex-shrink-0') : '';
+  return `<a href="${esc(pathFor(view, id))}" class="id-link font-mono ${ID_LOOK[look]}" data-id="${esc(id)}"${isDecision ? ' data-decision' : ''}>${icon}${esc(id)}</a>`;
 }
 
 function kindBadge(kind) {
@@ -394,8 +406,9 @@ document.addEventListener('click', (e) => {
 // Opening a node is a new history entry naming it in the current view; the location then
 // reveals it (Document) or opens the drawer on it (Graph, Waves).
 function openNode(id) {
+  const view = nodeView();
   const here = readLocation();
-  navigate({ view: currentMode, id }, { replace: here.view === currentMode && here.id === id });
+  navigate({ view, id }, { replace: here.view === view && here.id === id });
 }
 
 // A plain click on an id link opens it in place; a modified one is left to the browser.
@@ -403,6 +416,7 @@ document.addEventListener('click', (e) => {
   const link = e.target.closest && e.target.closest('a.id-link');
   if (!link || e.button > 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
   e.preventDefault();
+  hideTip();
   const id = link.getAttribute('data-id');
   if (!link.hasAttribute('data-decision')) openNode(id);
   else if (typeof goToDecision === 'function') goToDecision(id);
@@ -419,7 +433,8 @@ tipEl.className = 'hidden fixed z-50 max-w-xs px-2 py-1 rounded-md border border
 document.body.appendChild(tipEl);
 let tipAnchor = null;
 
-function showTip(anchor, html) {
+// An `interactive` tooltip (the Graph node's, with its decision links) takes the pointer.
+function showTip(anchor, html, interactive = false) {
   hideTip();
   tipAnchor = anchor;
   const title = anchor.getAttribute('title');
@@ -428,6 +443,7 @@ function showTip(anchor, html) {
     anchor.removeAttribute('title');
   }
   tipEl.innerHTML = html;
+  tipEl.classList.toggle('pointer-events-none', !interactive);
   tipEl.classList.remove('hidden');
   const r = anchor.getBoundingClientRect();
   const w = tipEl.getBoundingClientRect().width;
@@ -465,6 +481,7 @@ document.addEventListener('focusin', (e) => {
 document.addEventListener('focusout', (e) => {
   if (tipAnchor && tipTarget(e) === tipAnchor) hideTip();
 });
+tipEl.addEventListener('mouseleave', hideTip);
 // An open tooltip takes the first Escape, so the dialog or drawer under it stays open.
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || !tipAnchor) return;
@@ -472,14 +489,14 @@ document.addEventListener('keydown', (e) => {
   hideTip();
 });
 
-// Copy-id button: "(icon ID)", wired via attachCopyHandlers so it works after any
-// re-render; stopPropagation keeps it from also toggling the card it sits on.
+// Copy-id button: a 28px icon button, wired via attachCopyHandlers so it works after any
+// re-render; stopPropagation keeps it from also toggling the card it sits on. A copy shows
+// check-circle-2 for COPY_FEEDBACK_MS and says "Copied" through the button's own live region,
+// which is on the page before the copy so the announcement is read.
+const COPY_FEEDBACK_MS = 1500;
+
 function copyIdButton(id) {
-  return `
-    <button class="copy-id-btn relative z-[1] h-7 flex items-center gap-1 px-1.5 rounded-md text-[10px] font-mono text-zinc-400 hover:text-white hover:bg-zinc-800 transition flex-shrink-0 ${FOCUS_RING}" data-copy-id="${esc(id)}" title="Copy ID: ${esc(id)}" aria-label="Copy ID ${esc(id)}">
-      ${renderIcon('copy', 'w-3 h-3')}<span>ID</span>
-    </button>
-  `;
+  return `<button type="button" class="copy-id-btn relative z-[1] w-7 h-7 flex items-center justify-center flex-shrink-0 rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 hover:text-zinc-100 transition ${FOCUS_RING}" data-copy-id="${esc(id)}" title="Copy ID" aria-label="Copy ID ${esc(id)}">${renderIcon('copy', 'copy-id-icon w-3.5 h-3.5')}<span class="copy-id-live sr-only" aria-live="polite"></span></button>`;
 }
 
 function attachCopyHandlers(root) {
@@ -488,9 +505,14 @@ function attachCopyHandlers(root) {
       e.stopPropagation();
       const id = btn.getAttribute('data-copy-id');
       navigator.clipboard.writeText(id).then(() => {
-        const original = btn.innerHTML;
-        btn.innerHTML = `${renderIcon('check', 'w-3 h-3')}<span>Copied</span>`;
-        setTimeout(() => { if (btn.isConnected) btn.innerHTML = original; }, 1200);
+        const icon = btn.querySelector('.copy-id-icon use');
+        const live = btn.querySelector('.copy-id-live');
+        icon.setAttribute('href', '#icon-check-circle-2');
+        live.textContent = 'Copied';
+        setTimeout(() => {
+          icon.setAttribute('href', '#icon-copy');
+          live.textContent = '';
+        }, COPY_FEEDBACK_MS);
       }).catch(err => console.error('Could not copy id:', err));
     };
   });
@@ -616,26 +638,28 @@ const TOAST_TONE = {
   success: 'bg-emerald-950 border-emerald-700 text-emerald-200',
   error: 'bg-red-950 border-red-700 text-red-200'
 };
+const TOAST_ICON = { success: 'check-circle-2', error: 'octagon-x' };
 const TOAST_MS = 6000;
 let toastTimer = null;
 
 // One toast at a time, announced by #toast-root's polite live region and never focused. An
-// error stays until its Retry, its close button or Escape; any other tone leaves after 6 s.
+// error stays until its Retry, its close button or Escape; any other tone also leaves after 6 s.
+// `action` ({ label, run }) is its one control besides close; `retry` is the Retry action.
 // `opts` may still be a bare tone string.
 function toast(message, opts = {}) {
-  const { tone = 'info', retry = null } = typeof opts === 'string' ? { tone: opts } : opts;
+  const { tone = 'info', retry = null, action = retry && { label: 'Retry', run: retry } } = typeof opts === 'string' ? { tone: opts } : opts;
   dismissToast();
   const el = document.createElement('div');
-  el.className = `toast pointer-events-auto flex items-center gap-3 px-3 py-2 rounded-lg border text-xs shadow-2xl max-w-sm ${TOAST_TONE[tone] || TOAST_TONE.info}`;
+  el.className = `toast pointer-events-auto flex items-center gap-2 px-3 py-2 rounded-lg border text-xs shadow-2xl max-w-sm ${TOAST_TONE[tone] || TOAST_TONE.info}`;
   el.setAttribute('data-tone', tone);
-  el.innerHTML = `<span class="flex-1 min-w-0 break-words">${esc(message)}</span>`
-    + (retry ? `<button type="button" class="toast-retry h-7 px-2.5 rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-[11px] font-medium text-zinc-200 flex-shrink-0 ${FOCUS_RING}">Retry</button>` : '')
-    + (tone === 'error' ? `<button type="button" class="toast-close p-1 rounded-md text-red-200 hover:bg-red-900 flex-shrink-0 ${FOCUS_RING}" aria-label="Close">${renderIcon('x', 'w-3.5 h-3.5')}</button>` : '');
+  el.innerHTML = (TOAST_ICON[tone] ? renderIcon(TOAST_ICON[tone], 'w-3.5 h-3.5 flex-shrink-0') : '')
+    + `<span class="flex-1 min-w-0 break-words">${esc(message)}</span>`
+    + (action ? `<button type="button" class="toast-action${retry ? ' toast-retry' : ''} h-7 px-2.5 rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-[11px] font-medium text-zinc-200 flex-shrink-0 ${FOCUS_RING}">${esc(action.label)}</button>` : '')
+    + `<button type="button" class="toast-close p-1 rounded-md hover:bg-black/20 flex-shrink-0 ${FOCUS_RING}" aria-label="Close">${renderIcon('x', 'w-3.5 h-3.5')}</button>`;
   toastRoot.appendChild(el);
-  const close = el.querySelector('.toast-close');
-  if (close) close.addEventListener('click', dismissToast);
-  const again = el.querySelector('.toast-retry');
-  if (again) again.addEventListener('click', () => { dismissToast(); retry(); });
+  el.querySelector('.toast-close').addEventListener('click', dismissToast);
+  const act = el.querySelector('.toast-action');
+  if (act) act.addEventListener('click', () => { dismissToast(); action.run(); });
   if (tone !== 'error') toastTimer = setTimeout(dismissToast, TOAST_MS);
 }
 
@@ -644,9 +668,9 @@ function dismissToast() {
   toastRoot.innerHTML = '';
 }
 
-// Escape closes an error toast first; a dialog under it stays open for a second Escape.
+// Escape closes a toast first; a dialog under it stays open for a second Escape.
 document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape' || !toastRoot.querySelector('.toast[data-tone="error"]')) return;
+  if (e.key !== 'Escape' || !toastRoot.querySelector('.toast')) return;
   e.preventDefault();
   dismissToast();
 });
@@ -687,14 +711,15 @@ const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabi
 
 // Shows `node` (an overlay holding a role="dialog" panel) with focus on its least
 // destructive control, keeps Tab inside it, and on Cancel, Close or Escape takes it off the
-// page with its fields as typed and returns focus to `opener`.
-function openDialog(node, opener = document.activeElement) {
+// page with its fields as typed, runs `onClose` and returns focus to `opener`.
+function openDialog(node, opener = document.activeElement, onClose = null) {
   dialogRoot.appendChild(node);
   const focusables = () => [...node.querySelectorAll(FOCUSABLE)]
     .filter(el => !el.disabled && !el.closest('.hidden, [hidden]'));
   function close() {
     document.removeEventListener('keydown', onKeydown);
     node.remove();
+    if (onClose) onClose();
     if (opener && opener !== document.body && document.contains(opener)) opener.focus();
   }
   function onKeydown(e) {

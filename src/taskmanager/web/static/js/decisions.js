@@ -9,24 +9,43 @@ window.VIEW_MODES.DECISIONS = 'decisions';
 let decisionsData = [];
 let decisionsNextCursor = null;
 let decisionsLoading = false;
+// False until the current tab's first page answers, so a list still in flight never reads as
+// empty and never resolves a bare /decisions to its top row.
+let decisionsLoaded = false;
+// The router's (filters.js applyLocation) to write; this file selects through navigate().
 let selectedDecisionId = null;
 let decisionsTab = 'open';
 // /api/decisions' own per-status totals, refreshed on every page fetch -- the only source for
 // the Answered/Withdrawn tab counts, since (unlike Open) nothing pushes those live.
 let decisionsCounts = null;
-// The view mode active right before the toolbar switched into Decisions, so a blocked-node
-// chip sends the owner back to the view they came from.
-let viewModeBeforeDecisions = window.VIEW_MODES.DOCUMENT;
-// Last status this session saw a given decision hold, keyed by id -- a later render seeing a
-// different status than this is a change made elsewhere while the owner was looking, not the
-// owner's own write (afterDecisionWrite pre-seeds the new status, so its own render never diffs).
+// Last status this session saw a given decision hold, keyed by id -- a later render of the
+// same decision seeing OPEN turn into anything else is a change made elsewhere.
 const decisionDetailLastStatus = new Map();
+// Each decision's unsent answer (picked option, custom text, rationale), for this page load
+// only: nothing here reaches browser storage.
+const decisionDrafts = new Map();
+// Decisions this page has sent an answer or a withdrawal for: the push that write causes is
+// its own echo, never a change made elsewhere, and their detail waits for the write's follow-up.
+const ownWrites = new Set();
+// The decision another session closed while its form was on screen: the form stays, disabled
+// with its draft, until the owner asks for the closed record or moves on.
+let heldOpenId = null;
+// Where focus goes once a decision's detail has rendered: { id, to: 'option' | 'heading' }.
+let pendingFocus = null;
+// Below sm: the open drawer ({ close }), its list's scroll kept between openings, and whether
+// closing it hands focus back to the Drawer button (a pick sends it to the page instead).
+let decisionsDrawer = null;
+let drawerListScroll = 0;
+let drawerReturnsFocus = true;
 const DECISIONS_PAGE_LIMIT = 50;
+// The effects that set nodes aside: an answer carrying one names it and is confirmed first.
+const DESTRUCTIVE_EFFECTS = ['abandon', 'defer'];
 
 const decisionsPane = document.getElementById('decisions-pane');
 const decisionsTabsEl = document.getElementById('decisions-tabs');
 const decisionsListEl = document.getElementById('decisions-list');
 const decisionsDetailEl = document.getElementById('decisions-detail');
+const decisionsAside = decisionsListEl.parentNode;
 
 const DECISION_TABS = [
   { key: 'open', label: 'Open', status: 'OPEN' },
@@ -53,6 +72,19 @@ function decisionStatusIcon(status, size = 'w-3.5 h-3.5') {
   return `<span class="relative z-[1] inline-flex flex-shrink-0 rounded-sm ${FOCUS_RING}" role="img" tabindex="0" data-tip title="${label}" aria-label="${label}">${renderIcon(icon, size)}</span>`;
 }
 
+// Below sm the decision is the page and the list is a drawer over it.
+function decisionsNarrow() {
+  return window.innerWidth < SM_MIN_PX;
+}
+
+function nodeCount(n) {
+  return `${n} node${n === 1 ? '' : 's'}`;
+}
+
+function waitingNodes(n) {
+  return `${n} waiting ${n === 1 ? 'node' : 'nodes'}`;
+}
+
 
 // Data ---------------------------------------------------------------------------------------
 // Decisions are not rows (§ "Rows"): nothing pushes their list over the store's subscription,
@@ -63,6 +95,10 @@ function decisionStatusIcon(status, size = 'w-3.5 h-3.5') {
 
 let decisionsLoadFailed = false;
 let lastSeenDecisionsOpen = isStaticMode ? null : window.tmStore.decisionsOpen;
+// Set once a first page has been in flight LOADING_DELAY_MS, so a fast answer never flashes
+// the loading state.
+let decisionsSlowLoad = false;
+let decisionsLoadTimer = null;
 
 function decisionsQueryParams(cursor) {
   const status = DECISION_TABS.find(t => t.key === decisionsTab).status;
@@ -72,17 +108,30 @@ function decisionsQueryParams(cursor) {
 }
 
 async function refreshDecisionsData() {
+  const tab = decisionsTab;
+  if (!decisionsLoaded) {
+    clearTimeout(decisionsLoadTimer);
+    decisionsLoadTimer = setTimeout(() => {
+      decisionsSlowLoad = true;
+      if (currentMode !== window.VIEW_MODES.DECISIONS) return;
+      renderDecisionsList();
+      if (!selectedDecisionId) renderNoSelection();
+    }, LOADING_DELAY_MS);
+  }
   if (isStaticMode) {
     decisionsData = (window.STATIC_DATA && window.STATIC_DATA.decisions) || [];
     decisionsNextCursor = null;
   } else {
     try {
       const res = await api('GET', `/api/decisions?${decisionsQueryParams()}`);
+      // A tab picked while this page was in flight has its own request, which renders.
+      if (tab !== decisionsTab) return;
       decisionsData = res.items;
       decisionsNextCursor = res.next;
       decisionsCounts = res.counts;
       decisionsLoadFailed = false;
     } catch (e) {
+      if (tab !== decisionsTab) return;
       // A load failure used to read as "No open decisions." -- an empty queue, not a broken
       // one -- with the badge hiding too, which is the one case that most looks like nothing
       // is wrong.
@@ -94,6 +143,9 @@ async function refreshDecisionsData() {
       toast(`Could not load decisions: ${e.message}`, 'error');
     }
   }
+  clearTimeout(decisionsLoadTimer);
+  decisionsSlowLoad = false;
+  decisionsLoaded = true;
   updateDecisionsBadge();
   if (currentMode === window.VIEW_MODES.DECISIONS) renderDecisionsView();
 }
@@ -174,28 +226,32 @@ if (typeof setViewMode === 'function') {
       return;
     }
     if (mode === window.VIEW_MODES.DOCUMENT) closeDetailDrawer();
+    if (decisionsDrawer) closeDecisionsDrawer(false);
+    liftToasts(null);
     decisionsPane.classList.add('hidden');
     viewDecisionsBtn.className = DECISIONS_BTN_INACTIVE;
     previousSetViewMode(mode);
   };
 }
 
-// Reached from a document-view "Awaiting decision" banner (detail.js) or a decision-detail
-// task chip: switch to the Decisions view and open that decision.
-function goToDecision(decisionId) {
-  const row = decisionsData.find(d => d.id === decisionId);
-  decisionsTab = row ? decisionTabFor(row.status) : 'open';
-  navigate({ view: window.VIEW_MODES.DECISIONS, id: decisionId });
+// Selecting a decision is a new history entry naming it; the router's applyLocation is what
+// moves selectedDecisionId and renders it.
+function selectDecision(decisionId) {
+  const here = readLocation();
+  const same = here.view === window.VIEW_MODES.DECISIONS && here.id === decisionId;
+  navigate({ view: window.VIEW_MODES.DECISIONS, id: decisionId }, { replace: same });
 }
 
-// The reverse trip: a blocked/raising node inside a decision's own detail reopens the view
-// the owner left off in and opens the detail drawer on that node. In the Document view the
-// node is also expanded and scrolled to, under the drawer.
-function openBlockedNodeDetail(nodeId) {
-  const target = viewModeBeforeDecisions;
-  navigate({ view: target });
-  if (target === window.VIEW_MODES.DOCUMENT) selectNode(nodeId);
-  showGraphInspector(nodeId);
+// Reached from a decision id link in any view: switch to the Decisions view and open that
+// decision under the tab it is listed in.
+function goToDecision(decisionId) {
+  if (decisionsDrawer) {
+    pickFromDrawer(decisionId);
+    return;
+  }
+  const row = decisionsData.find(d => d.id === decisionId);
+  if (row && decisionTabFor(row.status) !== decisionsTab) setDecisionsTab(decisionTabFor(row.status));
+  selectDecision(decisionId);
 }
 
 
@@ -218,6 +274,7 @@ function decisionsTabCount(tab) {
 }
 
 function renderDecisionsTabs() {
+  const focusedTab = decisionsTabsEl.contains(document.activeElement) ? document.activeElement.getAttribute('data-tab') : null;
   decisionsTabsEl.innerHTML = DECISION_TABS.map(t => {
     const count = decisionsTabCount(t);
     const active = t.key === decisionsTab;
@@ -245,47 +302,85 @@ function renderDecisionsTabs() {
       activate(next.getAttribute('data-tab'), true);
     });
   });
+  if (focusedTab) {
+    const btn = decisionsTabsEl.querySelector(`[data-tab="${focusedTab}"]`);
+    if (btn) btn.focus();
+  }
   decisionsListEl.setAttribute('role', 'tabpanel');
   decisionsListEl.setAttribute('aria-labelledby', `dec-tab-${decisionsTab}`);
 }
 
+// A tab shows its own list. From sm up it also selects that list's top row, and activating the
+// tab on screen again does the same from the top, read afresh. In the drawer only a pick changes
+// the page, so a tab there changes the list alone, and the tab on screen scrolls it back to the top.
 function selectDecisionsTab(key) {
+  decisionsListEl.scrollTop = 0;
+  if (key !== decisionsTab) setDecisionsTab(key);
+  else refreshDecisionsData();
+  if (decisionsNarrow()) return;
+  decisionsDetailEl.scrollTop = 0;
+  navigate({ view: window.VIEW_MODES.DECISIONS }, { replace: true });
+}
+
+function setDecisionsTab(key) {
   decisionsTab = key;
   decisionsData = [];
   decisionsNextCursor = null;
-  // A decision from the old tab stayed selected under the new one otherwise -- its detail is
-  // not wrong, just no longer listed under any tab the owner can see it come from.
-  selectedDecisionId = null;
-  navigate({ view: window.VIEW_MODES.DECISIONS }, { replace: true });
-  renderDecisionsView();
+  decisionsLoaded = false;
+  decisionsLoadFailed = false;
+  renderDecisionsTabs();
+  renderDecisionsList();
   refreshDecisionsData();
 }
 
-// The Decisions view's default: the Open tab at the top, nothing selected.
+// The Decisions view's default: the Open tab from the top. resetView's own navigate, right
+// after this, clears the selection, and the list's top row then takes it.
 function resetDecisions() {
-  selectDecisionsTab('open');
+  if (decisionsTab !== 'open') setDecisionsTab('open');
   [decisionsPane, decisionsListEl, decisionsDetailEl].forEach(el => { el.scrollTop = 0; });
 }
 
-function decisionAgeText(iso) {
-  return ageFromNow(iso);
+// Newest first, as /api/decisions pages them, and sorted here so a static export reads the same.
+function visibleDecisionRows() {
+  return decisionsData
+    .filter(d => decisionTabFor(d.status) === decisionsTab)
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+}
+
+// What stands in for the rows, through paneState: the failed request with Retry, the loading
+// state once the first page has been in flight a while, or the empty tab. '' while there are
+// rows, and while a request too fast to show loading is still out.
+function decisionsListStateHtml() {
+  if (decisionsLoadFailed) return paneState('error', 'Could not load decisions.', refreshDecisionsData);
+  if (!decisionsLoaded) return decisionsSlowLoad ? paneState('loading') : '';
+  return visibleDecisionRows().length ? '' : paneState('empty', `No ${decisionsTab} decisions.`);
+}
+
+// One line, as the Decision row draws it: the id, the title truncating with the whole question
+// as its tooltip, the priority when it is not 50, a closed row's "Was blocking n", the age. The
+// tab is the status, so no row repeats it. The title is the row's own target and its overlay
+// spans the line; the id link sits above it, so no link nests in another.
+function decisionRowHtml(d) {
+  const active = d.id === selectedDecisionId;
+  const priority = d.priority ?? 50;
+  return `
+    <div class="dec-row-line relative flex items-center gap-2 h-9 px-2.5 rounded-lg border transition ${active ? 'bg-zinc-800 border-zinc-700' : 'bg-zinc-900/60 border-zinc-800 hover:bg-zinc-900 hover:border-zinc-700 active:bg-zinc-800'}">
+      ${idLink(d.id, 'decision')}
+      <button type="button" class="dec-row flex-1 min-w-0 truncate text-left text-xs leading-4 font-medium text-zinc-100 focus:outline-none after:absolute after:inset-0 after:rounded-lg after:content-[''] focus-visible:after:ring-2 focus-visible:after:ring-emerald-400" data-decision-id="${esc(d.id)}" title="${esc(d.title)}"${active ? ' aria-current="page"' : ''}>${esc(d.title)}</button>
+      ${priority !== 50 ? priorityPill(priority) : ''}
+      ${d.status !== 'OPEN' ? `<span class="dec-was-blocking flex-shrink-0 text-[10px] leading-[14px] text-zinc-400">Was blocking ${esc(d.was_blocking ?? 0)}</span>` : ''}
+      <time class="dec-age flex-shrink-0 font-mono text-[11px] leading-4 text-zinc-400" datetime="${esc(d.created_at)}">${esc(heartbeatAge(d.created_at))}</time>
+    </div>`;
 }
 
 function renderDecisionsList() {
-  const rows = decisionsData
-    .filter(d => decisionTabFor(d.status) === decisionsTab)
-    .sort((a, b) => decisionsTab === 'open'
-      ? (b.priority - a.priority) || (new Date(a.created_at) - new Date(b.created_at))
-      : (new Date(b.created_at) - new Date(a.created_at)));
-
-  if (decisionsLoadFailed) {
-    decisionsListEl.innerHTML = `<div role="alert" class="text-xs text-red-400 px-2 py-6 text-center">Could not load decisions. <button type="button" class="dec-retry-btn underline rounded ${DEC_FOCUS}">Retry</button></div>`;
-    const retryBtn = decisionsListEl.querySelector('.dec-retry-btn');
-    if (retryBtn) retryBtn.addEventListener('click', refreshDecisionsData);
-    return;
-  }
-  if (rows.length === 0) {
-    decisionsListEl.innerHTML = `<div class="text-xs ${DEC_MUTED} italic px-2 pt-6 pb-2 text-center">No ${decisionsTab} decisions.</div>`;
+  // A row's title or its id link: whichever had focus has it again in the redrawn list.
+  const focused = document.activeElement;
+  const focusedAttr = decisionsListEl.contains(focused) && ['data-decision-id', 'data-id'].find(a => focused.hasAttribute(a));
+  const focusedSel = focusedAttr ? `${focused.localName}[${focusedAttr}="${CSS.escape(focused.getAttribute(focusedAttr))}"]` : null;
+  const state = decisionsListStateHtml();
+  if (state || !decisionsLoaded) {
+    decisionsListEl.innerHTML = state;
     return;
   }
 
@@ -293,47 +388,165 @@ function renderDecisionsList() {
     ? `<button type="button" id="dec-load-more-btn" class="w-full h-8 rounded-lg text-xs font-medium text-zinc-300 hover:text-white hover:bg-zinc-900 active:bg-zinc-800 border border-dashed border-zinc-700 transition ${DEC_FOCUS}" ${decisionsLoading ? 'disabled' : ''}>${decisionsLoading ? 'Loading…' : 'Load more'}</button>`
     : '';
 
-  decisionsListEl.innerHTML = rows.map(d => {
-    const active = d.id === selectedDecisionId;
-    return `
-      <button type="button" class="dec-row w-full text-left p-2.5 rounded-lg border transition ${active ? 'bg-zinc-800 border-zinc-700' : 'bg-zinc-900/50 border-zinc-800 hover:bg-zinc-900 hover:border-zinc-700 active:bg-zinc-800'} ${DEC_FOCUS}" data-decision-id="${esc(d.id)}" ${active ? 'aria-current="true"' : ''}>
-        <div class="text-xs leading-4 font-medium text-zinc-100 line-clamp-2">${esc(d.title)}</div>
-        <div class="flex items-center gap-2 mt-1.5 text-[10px] text-zinc-400">
-          <span class="font-mono">${esc(d.id)}</span>
-          ${d.waiting_count > 0 ? `<span class="px-1.5 py-0.5 rounded-full bg-amber-950/60 text-amber-300 border border-amber-800/60">${d.waiting_count} waiting</span>` : ''}
-          <span class="ml-auto">${esc(decisionAgeText(d.created_at))}</span>
-        </div>
-      </button>
-    `;
-  }).join('') + loadMoreHtml;
+  const top = decisionsListEl.scrollTop;
+  decisionsListEl.innerHTML = visibleDecisionRows().map(decisionRowHtml).join('') + loadMoreHtml;
+  decisionsListEl.scrollTop = top;
 
   decisionsListEl.querySelectorAll('.dec-row').forEach(btn => {
-    btn.addEventListener('click', () => {
-      selectedDecisionId = btn.getAttribute('data-decision-id');
-      decisionsChangedElsewhere.delete(selectedDecisionId);
-      renderedDecisionId = null;
-      renderDecisionsList();
-      renderDecisionDetail(selectedDecisionId);
-      navigate({ view: window.VIEW_MODES.DECISIONS, id: selectedDecisionId });
-    });
+    btn.addEventListener('click', () => pickDecision(btn.getAttribute('data-decision-id')));
   });
   const loadMoreBtn = decisionsListEl.querySelector('#dec-load-more-btn');
   if (loadMoreBtn) loadMoreBtn.addEventListener('click', loadMoreDecisions);
+  const again = focusedSel && decisionsListEl.querySelector(focusedSel);
+  if (again) again.focus();
 }
+
+function focusDecisionRow(decisionId) {
+  const row = decisionsListEl.querySelector(`.dec-row[data-decision-id="${CSS.escape(decisionId)}"]`);
+  if (row) row.focus();
+}
+
+function pickDecision(decisionId) {
+  if (decisionsDrawer) pickFromDrawer(decisionId);
+  else selectDecision(decisionId);
+}
+
+
+// Below sm the list is a dialog over the page. It holds the pane's own tabs and list, moved in
+// while it is open and back into the hidden list column when it closes, so every render keeps
+// drawing into one place.
+
+function drawerButtonHtml() {
+  return `<button type="button" class="dec-drawer-btn sm:hidden w-7 h-7 flex items-center justify-center flex-shrink-0 rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 hover:text-zinc-100 ${FOCUS_RING}" aria-label="Decisions" aria-haspopup="dialog" aria-expanded="${Boolean(decisionsDrawer)}" aria-controls="decisions-drawer">${renderIcon('panel-left-open', 'w-4 h-4')}</button>`;
+}
+
+function paintDrawerButtons() {
+  decisionsDetailEl.querySelectorAll('.dec-drawer-btn').forEach(btn => btn.setAttribute('aria-expanded', String(Boolean(decisionsDrawer))));
+}
+
+function openDecisionsDrawer() {
+  const overlay = document.createElement('div');
+  overlay.className = 'fixed inset-0 z-50 bg-black/60';
+  overlay.innerHTML = `
+    <div id="decisions-drawer" role="dialog" aria-modal="true" aria-labelledby="decisions-drawer-title" class="absolute inset-y-0 left-0 w-[calc(100%-32px)] flex flex-col bg-zinc-950 border-r border-zinc-700 shadow-2xl">
+      <div class="flex items-center gap-2 pl-4 pr-3 pt-3 flex-shrink-0">
+        <h2 id="decisions-drawer-title" class="flex-1 min-w-0 text-sm leading-5 font-semibold text-zinc-100">Decisions</h2>
+        <button type="button" class="dlg-close w-7 h-7 flex items-center justify-center flex-shrink-0 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-800 ${FOCUS_RING}" aria-label="Close">${renderIcon('x', 'w-4 h-4')}</button>
+      </div>
+    </div>`;
+  const panel = overlay.querySelector('#decisions-drawer');
+  panel.append(decisionsTabsEl, decisionsListEl);
+  decisionsListEl.scrollTop = drawerListScroll;
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeDecisionsDrawer(true); });
+  // ↑/↓ move focus between rows; only a pick changes the page.
+  panel.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    const row = e.target.closest && e.target.closest('.dec-row');
+    if (!row) return;
+    e.preventDefault();
+    const rows = Array.from(decisionsListEl.querySelectorAll('.dec-row'));
+    const next = rows[rows.indexOf(row) + (e.key === 'ArrowDown' ? 1 : -1)];
+    if (next) next.focus();
+  });
+  drawerReturnsFocus = true;
+  decisionsDrawer = openDialog(overlay, null, () => {
+    drawerListScroll = decisionsListEl.scrollTop;
+    decisionsAside.append(decisionsTabsEl, decisionsListEl);
+    decisionsDrawer = null;
+    paintDrawerButtons();
+    const btn = decisionsDetailEl.querySelector('.dec-drawer-btn');
+    if (drawerReturnsFocus && btn) btn.focus();
+  });
+  paintDrawerButtons();
+  const current = selectedDecisionId && decisionsListEl.querySelector(`.dec-row[data-decision-id="${CSS.escape(selectedDecisionId)}"]`);
+  (current || decisionsTabsEl.querySelector('[aria-selected="true"]') || panel).focus();
+}
+
+function closeDecisionsDrawer(returnFocus) {
+  drawerReturnsFocus = returnFocus;
+  decisionsDrawer.close();
+}
+
+// A pick closes the drawer and opens that decision's page, with focus on its heading.
+function pickFromDrawer(decisionId) {
+  closeDecisionsDrawer(false);
+  if (decisionId === selectedDecisionId) {
+    focusDecisionPage('heading');
+    return;
+  }
+  pendingFocus = { id: decisionId, to: 'heading' };
+  selectDecision(decisionId);
+}
+
+decisionsDetailEl.addEventListener('click', (e) => {
+  if (e.target.closest && e.target.closest('.dec-drawer-btn')) openDecisionsDrawer();
+});
+
+window.addEventListener('resize', () => {
+  if (decisionsDrawer && !decisionsNarrow()) closeDecisionsDrawer(false);
+});
+
+// The page bar of a page with no decision drawn below sm: the Drawer button, then the id the
+// location names while that decision loads or fails.
+function pageBarHtml(decisionId = null) {
+  return `<div class="dec-page-bar sm:hidden sticky top-0 z-10 -mx-4 -mt-5 mb-5 px-4 py-2 flex items-center gap-2 bg-zinc-950 border-b border-zinc-800">${drawerButtonHtml()}${decisionId ? idLink(decisionId, 'decision') : ''}</div>`;
+}
+
+// Below sm a toast sits above the fixed answer bar, across the page: 12px over the bar, whose
+// height is 57px, or 81px once its "Answer <pick>" line shows.
+function liftToasts(bar) {
+  toastRoot.classList.toggle('max-sm:left-4', Boolean(bar));
+  toastRoot.classList.toggle('max-sm:items-stretch', Boolean(bar));
+  toastRoot.classList.toggle('max-sm:bottom-[69px]', bar === 'empty');
+  toastRoot.classList.toggle('max-sm:bottom-[93px]', bar === 'picked');
+}
+
+
+// Keys: ↑/↓ select the previous or next row from the list or the detail, 1-9 pick an option
+// in the order shown; neither acts inside a text field, where digits and arrows type.
+// Ctrl/Cmd+Enter is the answer form's own (wireDecisionAnswerForm), and an open dialog keeps
+// its keys.
+
+function isTextField(el) {
+  return Boolean(el && el.matches && el.matches('input, textarea, select, [contenteditable]'));
+}
+
+document.addEventListener('keydown', (e) => {
+  if (currentMode !== window.VIEW_MODES.DECISIONS || e.defaultPrevented || dialogRoot.children.length > 0) return;
+  const target = e.target;
+  if (target !== document.body && !decisionsPane.contains(target)) return;
+  if (isTextField(target) || e.altKey || e.ctrlKey || e.metaKey) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    // The page below sm has no list to move through.
+    if (decisionsNarrow()) return;
+    const rows = visibleDecisionRows();
+    if (rows.length === 0) return;
+    e.preventDefault();
+    const at = rows.findIndex(d => d.id === selectedDecisionId);
+    const next = rows[at < 0 ? 0 : Math.min(rows.length - 1, Math.max(0, at + (e.key === 'ArrowDown' ? 1 : -1)))];
+    if (next.id !== selectedDecisionId) selectDecision(next.id);
+    focusDecisionRow(next.id);
+    return;
+  }
+  if (/^[1-9]$/.test(e.key)) {
+    const card = decisionsDetailEl.querySelectorAll('.dec-answer-form .dec-option-card')[Number(e.key) - 1];
+    if (!card || card.disabled) return;
+    e.preventDefault();
+    card.focus();
+    card.click();
+  }
+});
 
 
 // Detail -----------------------------------------------------------------------------------------
 
 // The decision whose detail is on screen now, so a re-render of that same decision (a live
 // status change, the owner's own write) swaps the markup in place instead of passing through
-// the loading placeholder, which would drop the reader's scroll position with it.
+// the loading state, which would drop the reader's scroll position with it.
 let renderedDecisionId = null;
-// Decisions answered or withdrawn elsewhere while open in this pane: the notice stays with the
-// decision until the owner selects it again or acts on it themselves.
-const decisionsChangedElsewhere = new Set();
-
-const ANSWER_HINT = 'Pick an option or write a custom answer';
-const NOTHING_PICKED = 'Nothing picked yet — pick an option or write a custom answer';
+// What that render drew (the detail as fetched, and whether its form is held), so a refresh
+// that brings back the same decision unchanged leaves the screen, its focus and caret alone.
+let renderedDetailKey = null;
 
 // Every task row the store currently holds -- the same "on the store" candidate source
 // edit.js's own dependency picker uses, since a task picker here has nothing else to draw
@@ -343,57 +556,57 @@ function visibleTaskRows() {
 }
 
 // A 404 is a real answer -- there is no such decision -- so it resolves to null; any other
-// failure rethrows with the request and its status in the message, which the error state
-// shows as-is.
+// failure rethrows with the request's own message, which the error state shows as-is.
 async function fetchNodeDetail(id) {
   if (isStaticMode) return (window.STATIC_DATA.bodies || {})[id] || null;
-  const path = `/api/nodes/${id}`;
-  let res;
   try {
-    res = await fetch(path);
+    return await api('GET', `/api/nodes/${id}`);
   } catch (e) {
-    throw new Error(`Could not load ${id}: GET ${path} failed (network error).`);
+    if (e.status === 404) return null;
+    throw e;
   }
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`Could not load ${id}: GET ${path} failed (${res.status}).`);
-  return res.json();
 }
 
-function chosenOptionLabel(data) {
-  const key = data.answer && data.answer.option;
-  const opt = key ? (data.options || []).find(o => o.key === key) : null;
-  return opt ? opt.label : null;
+// What an effect does to the n nodes waiting on the decision, in the pill's own words and tone.
+const EFFECT_PILL = {
+  none: { cls: 'bg-zinc-900 border-zinc-800 text-zinc-400', text: () => 'No effect on waiting nodes' },
+  drop_edge: { cls: 'bg-zinc-800 border-zinc-700 text-zinc-300', text: n => `${waitingNodes(n)} ${n === 1 ? 'stops' : 'stop'} waiting` },
+  reopen: { cls: 'bg-zinc-800 border-zinc-700 text-zinc-300', text: (n, subject) => `Reopens ${subject || 'its subject'}` },
+  defer: { cls: 'bg-amber-950/60 border-amber-800/60 text-amber-300', text: n => `Defers ${waitingNodes(n)}` },
+  abandon: { cls: 'bg-red-950 border-red-900/60 text-red-300', text: n => `Abandons ${waitingNodes(n)}` },
+};
+
+function effectPillHtml(effect, waitingCount, subject) {
+  const pill = EFFECT_PILL[effect] || EFFECT_PILL.none;
+  return `<span class="dec-effect-pill self-start inline-flex px-2 py-0.5 rounded-full border text-[10px] leading-[14px] font-medium whitespace-nowrap ${pill.cls}" data-effect="${esc(effect || 'none')}">${esc(pill.text(waitingCount, subject))}</span>`;
 }
 
-function optionEffectHtml(opt) {
-  return opt.effect && opt.effect !== 'none'
-    ? `<span class="self-start px-1.5 py-0.5 rounded-full bg-amber-950/60 text-amber-300 border border-amber-800/60 text-[10px] font-medium">Then: ${esc(opt.effect.replace('_', ' '))} the blocked nodes</span>`
-    : `<span class="text-[11px] ${DEC_MUTED}">Effect: none</span>`;
+// The recommended option leads, the rest keep their own order; the number keys follow it.
+function shownOptions(data) {
+  return [...(data.options || [])].sort((a, b) => Number(Boolean(b.recommended)) - Number(Boolean(a.recommended)));
 }
 
 // An option reads the same selectable or not: label and Recommended, then the description,
-// then the effect. A selectable one is a radio whose colours follow its own aria-checked; a
-// read-only one (an answered decision) marks the chosen card with a check instead of a dot.
-function optionCardHtml(opt, { selectable = false, chosen = false, tabbable = false } = {}) {
+// then its effect on the `waiting` nodes. A selectable one is a radio whose colours follow its
+// own aria-checked; the chosen one of an answered decision keeps the checked look, without a dot.
+function optionCardHtml(opt, { selectable = false, tabbable = false, waiting = 0, subject = null } = {}) {
   const body = `
     <div class="flex-1 min-w-0 flex flex-col gap-1">
       <div class="flex items-center gap-2">
         <span class="text-sm font-medium text-zinc-100">${esc(opt.label)}</span>
         ${opt.recommended ? '<span class="px-1.5 py-0.5 rounded-full bg-emerald-950/60 text-emerald-300 border border-emerald-800/60 text-[10px] font-medium">Recommended</span>' : ''}
-        ${chosen && !selectable ? `<span class="ml-auto text-emerald-400" title="Chosen">${renderIcon('check-circle-2', 'w-3.5 h-3.5')}</span>` : ''}
       </div>
       ${opt.description ? `<div class="dec-option-desc text-xs leading-[18px] ${DEC_MUTED}">${renderSectionBody(opt.description)}</div>` : ''}
-      ${optionEffectHtml(opt)}
+      ${effectPillHtml(opt.effect, waiting, subject)}
     </div>`;
   if (!selectable) {
-    const cls = chosen ? 'bg-emerald-950/40 border-emerald-600' : 'bg-zinc-900/60 border-zinc-800';
-    return `<div class="dec-option-card flex items-start p-3 rounded-lg border ${cls}" data-option-key="${esc(opt.key)}"${chosen ? ' data-chosen="true"' : ''}>${body}</div>`;
+    return `<div class="dec-option-card flex items-start p-3 rounded-lg border bg-emerald-950/40 border-emerald-600" data-option-key="${esc(opt.key)}" data-chosen="true">${body}</div>`;
   }
   // Roving tabindex: only the checked card (or, with none checked yet, the first) is a tab
   // stop, so Tab enters the group once instead of stopping on every option in turn.
   return `
     <button type="button" role="radio" aria-checked="false" tabindex="${tabbable ? '0' : '-1'}" data-option-key="${esc(opt.key)}"
-      class="dec-option-card group w-full text-left flex items-start gap-2.5 p-3 rounded-lg border transition bg-zinc-900/60 border-zinc-800 hover:border-zinc-600 active:bg-zinc-900 aria-checked:bg-emerald-950/40 aria-checked:border-emerald-600 ${DEC_FOCUS}">
+      class="dec-option-card group w-full text-left flex items-start gap-2.5 p-3 rounded-lg border transition bg-zinc-900/60 border-zinc-800 hover:border-zinc-600 active:bg-zinc-900 aria-checked:bg-emerald-950/40 aria-checked:border-emerald-600 disabled:opacity-60 disabled:cursor-not-allowed ${DEC_FOCUS}">
       <span class="pt-px flex-shrink-0" aria-hidden="true">
         <span class="dec-radio-dot flex items-center justify-center w-4 h-4 rounded-full border-[1.5px] border-zinc-500 group-aria-checked:border-emerald-500">
           <span class="hidden w-2 h-2 rounded-full bg-emerald-500 group-aria-checked:block"></span>
@@ -403,70 +616,49 @@ function optionCardHtml(opt, { selectable = false, chosen = false, tabbable = fa
     </button>`;
 }
 
-// One row per blocked node: its display chip, id and title, then a chevron. Below lg the
-// title wraps under the chip and id.
+// One line per node waiting on the decision, or that was: its current status, its kind when it
+// is a container, its id and its title truncating, a chevron, and on an open decision the remove
+// ×. The id link spans the line and opens the node in the view the owner came from; the status
+// icon and × sit above it.
 function waitingRowHtml(t, canEditBlocks) {
-  const theme = getTheme(t.status || 'STALE');
   return `
-    <div class="dec-waiting-row flex items-stretch rounded-lg bg-zinc-900/60 border border-zinc-800 hover:border-zinc-700 transition">
-      <button type="button" class="dec-task-link flex-1 min-w-0 flex items-center gap-2 px-2.5 py-2 text-left rounded-lg active:bg-zinc-900 ${DEC_FOCUS}" data-task-id="${esc(t.id)}">
-        <span class="flex-1 min-w-0 flex flex-col gap-1 lg:flex-row lg:items-center lg:gap-2">
-          <span class="flex items-center gap-2 flex-shrink-0">
-            <span class="st-chip st-${theme.code} px-1.5 py-0.5 rounded text-[10px] font-medium" title="${esc(theme.description)}">${esc(theme.label)}</span>
-            <span class="font-mono text-[11px] text-zinc-200">${esc(t.id)}</span>
-          </span>
-          <span class="dec-waiting-title min-w-0 text-xs text-zinc-400">${esc(t.title || '')}</span>
-        </span>
-        <span class="flex-shrink-0 text-zinc-400" aria-hidden="true">${renderIcon('chevron-right', 'w-3.5 h-3.5')}</span>
-      </button>
-      ${canEditBlocks ? `<button type="button" class="dec-block-remove flex-shrink-0 px-2 rounded-r-lg text-zinc-400 hover:text-red-400 hover:bg-zinc-800 active:bg-zinc-700 ${DEC_FOCUS}" data-task-id="${esc(t.id)}" aria-label="Stop ${esc(t.id)} waiting on this decision">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
+    <div class="dec-waiting-row relative flex items-center gap-2 px-2.5 py-2 rounded-lg bg-zinc-900/60 border border-zinc-800 hover:border-zinc-700 active:bg-zinc-900 transition">
+      ${statusIcon(t.status || 'STALE')}
+      ${kindBadge(t.kind)}
+      ${idLink(t.id, t.kind, 'row')}
+      <span class="dec-waiting-title flex-1 min-w-0 truncate text-xs leading-4 text-zinc-400" title="${esc(t.title || '')}">${esc(t.title || '')}</span>
+      <span class="flex-shrink-0 text-zinc-400" aria-hidden="true">${renderIcon('chevron-right', 'w-3.5 h-3.5')}</span>
+      ${canEditBlocks ? `<button type="button" class="dec-block-remove relative z-[1] flex-shrink-0 p-1 rounded-md text-zinc-400 hover:text-red-400 hover:bg-zinc-800 active:bg-zinc-700 ${DEC_FOCUS}" data-task-id="${esc(t.id)}" aria-label="Stop ${esc(t.id)} waiting on this decision">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
     </div>`;
 }
 
-// lucide's alert-circle, inline: the page's icon sprite carries no exclamation-in-circle.
-const ALERT_CIRCLE_SVG = '<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>';
-
+// "Oct 6, 2026, 14:32" in the reader's own locale.
 function localTime(iso) {
-  return new Date(iso).toLocaleString();
-}
-
-function elsewhereNoticeHtml(node, data) {
-  let heading;
-  let what;
-  if (node.status === 'ANSWERED' && data.answer) {
-    heading = 'Answered elsewhere while you were reading';
-    const answered = chosenOptionLabel(data) || data.answer.text || '(no answer text)';
-    what = `${data.answer.answered_by} answered “${answered}” at ${localTime(data.answer.answered_at)}.`;
-  } else {
-    heading = 'Withdrawn elsewhere while you were reading';
-    const when = data.withdrawn_at ? ` at ${localTime(data.withdrawn_at)}` : '';
-    const why = data.withdrawn_reason ? `: ${data.withdrawn_reason}` : '';
-    what = `${data.withdrawn_by || 'Someone'} withdrew it${when}${why}.`;
-  }
-  return `
-    <div role="status" class="dec-elsewhere-notice flex items-start gap-2.5 px-3 py-2.5 rounded-lg bg-amber-950/60 border border-amber-800/60">
-      <span class="flex-shrink-0 pt-px text-amber-300">${ALERT_CIRCLE_SVG}</span>
-      <div class="flex-1 min-w-0 space-y-0.5 text-xs">
-        <div class="font-semibold text-amber-300">${esc(heading)}</div>
-        <div class="leading-[18px] text-zinc-300">${esc(what)} This decision is no longer open; the page stays where it was.</div>
-      </div>
-    </div>`;
+  return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 }
 
 // A decision's context is real markdown (marked.parse); the page's Tailwind build carries no
-// Typography plugin, so each rendered tag gets the app's own type scale as classes.
+// Typography plugin, so each rendered tag gets the app's own type scale as classes. The card
+// spaces its blocks, so no tag carries a margin.
 const CONTEXT_TYPE = {
-  h1: 'text-base leading-6 font-bold text-white mb-2',
-  h2: 'text-base leading-6 font-bold text-white mb-2',
-  h3: 'text-sm leading-5 font-semibold text-zinc-100 mt-3 mb-1.5',
-  h4: 'text-xs leading-5 font-semibold text-zinc-100 mt-3 mb-1',
-  p: 'text-xs leading-5 text-zinc-300 mb-2',
-  ul: 'list-disc pl-5 mb-2 marker:text-zinc-400',
-  ol: 'list-decimal pl-5 mb-2 marker:text-zinc-400',
+  h1: 'text-base leading-6 font-bold text-white',
+  h2: 'text-base leading-6 font-bold text-white',
+  h3: 'text-sm leading-5 font-semibold text-zinc-100',
+  h4: 'text-xs leading-5 font-semibold text-zinc-100',
+  p: 'text-xs leading-5 text-zinc-300',
+  ul: 'list-disc pl-5 space-y-0.5 marker:text-zinc-400',
+  ol: 'list-decimal pl-5 space-y-0.5 marker:text-zinc-400',
   li: 'text-xs leading-5 text-zinc-300',
+  table: 'w-full table-fixed',
+  th: 'px-2.5 py-1.5 bg-zinc-900 text-left align-top text-xs leading-[18px] font-semibold text-zinc-200 break-words',
+  td: 'px-2.5 py-1.5 border-t border-zinc-800 align-top text-xs leading-[18px] text-zinc-300 break-words',
+  pre: 'p-3 rounded-lg bg-zinc-950 border border-zinc-800 font-mono text-xs leading-5 text-zinc-200 whitespace-pre overflow-x-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400',
   code: 'font-mono text-[11px] text-emerald-300',
+  blockquote: 'pl-3 py-0.5 border-l-2 border-zinc-700 text-xs leading-5 italic text-zinc-400',
   a: 'text-emerald-400 underline',
 };
+// A tag inside one of these reads as its block does: code in a code block, a quote's paragraphs.
+const CONTEXT_TYPE_INSIDE = { code: 'pre', p: 'blockquote' };
 
 function contextBodyHtml(markdown) {
   // renderSectionBody's output is already sanitised; DOMParser keeps the walk below inert (no
@@ -476,88 +668,172 @@ function contextBodyHtml(markdown) {
   // hard-wrapped at 100 columns reads as ragged short lines.
   doc.body.querySelectorAll('p br, li br').forEach(br => br.replaceWith(' '));
   Object.entries(CONTEXT_TYPE).forEach(([tag, cls]) => {
-    doc.body.querySelectorAll(tag).forEach(el => el.classList.add(...cls.split(' ')));
+    doc.body.querySelectorAll(tag).forEach(el => {
+      if (CONTEXT_TYPE_INSIDE[tag] && el.closest(CONTEXT_TYPE_INSIDE[tag])) return;
+      el.classList.add(...cls.split(' '));
+    });
+  });
+  // A code block scrolls sideways inside itself, so the keyboard can reach it to scroll it. A
+  // table's rounded border sits on a wrapper, which also scrolls one that cannot fit.
+  doc.body.querySelectorAll('pre').forEach(pre => pre.setAttribute('tabindex', '0'));
+  doc.body.querySelectorAll('table').forEach(table => {
+    const wrap = doc.createElement('div');
+    wrap.className = 'overflow-x-auto rounded-lg border border-zinc-800';
+    table.replaceWith(wrap);
+    wrap.appendChild(table);
   });
   return doc.body.innerHTML;
 }
 
-function resolvedHtml(node, data, editable) {
+// "<Verb> by <name> · <date, time>", the name the API recorded.
+function closedByHtml(verb, name, at) {
+  return `<div class="dec-closed-by text-[11px] leading-4 text-zinc-400">${verb} by <span class="dec-closed-name font-medium text-zinc-200">${esc(name)}</span>${at ? ` &middot; ${esc(localTime(at))}` : ''}</div>`;
+}
+
+function resolvedHtml(node, data, editable, waiting) {
   const reopen = editable
-    ? `<button type="button" class="dec-reopen-btn h-8 px-3 rounded-lg text-xs font-medium bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-200 border border-zinc-700 transition ${DEC_FOCUS}">Reopen</button>`
+    ? `<button type="button" class="dec-reopen-btn self-start h-7 px-2.5 rounded-md text-[11px] font-medium bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-200 border border-zinc-700 transition ${DEC_FOCUS}">Reopen</button>`
     : '';
+  const label = (text, tone) => `<div class="text-[11px] leading-4 font-semibold uppercase tracking-[0.05em] ${tone}">${text}</div>`;
   if (node.status === 'ANSWERED' && data.answer) {
     const a = data.answer;
-    const cards = a.option
-      ? `<div class="grid gap-2">${(data.options || []).map(o => optionCardHtml(o, { chosen: o.key === a.option })).join('')}</div>`
-      : '';
+    const chosen = (data.options || []).find(o => o.key === a.option);
     return `
-      <div class="dec-answer space-y-2">
-        <div class="text-[11px] font-semibold text-emerald-400 uppercase tracking-wider">Answer</div>
-        ${cards}
-        ${a.text || !a.option ? `<div class="text-sm text-zinc-100">${esc(a.text || '(no answer text)')}</div>` : ''}
-        ${a.rationale ? `<div class="text-xs ${DEC_MUTED}"><span class="font-semibold text-zinc-300">Rationale:</span> ${esc(a.rationale)}</div>` : ''}
-        <div class="text-[11px] ${DEC_MUTED}">by ${esc(a.answered_by)} &middot; ${esc(localTime(a.answered_at))}</div>
+      <div class="dec-answer flex flex-col gap-2.5">
+        ${label('Answer', 'text-emerald-400')}
+        ${chosen ? optionCardHtml(chosen, { waiting, subject: data.subject }) : ''}
+        ${a.text ? `<div class="text-sm text-zinc-100">${esc(a.text)}</div>` : ''}
+        ${a.rationale ? `<div class="text-xs leading-[18px]"><div class="font-semibold text-zinc-300">Rationale</div><div class="text-zinc-400">${esc(a.rationale)}</div></div>` : ''}
+        ${closedByHtml('Answered', a.answered_by, a.answered_at)}
         ${reopen}
       </div>`;
   }
   if (node.status === 'WITHDRAWN') {
-    const who = [data.withdrawn_by ? `by ${esc(data.withdrawn_by)}` : '', data.withdrawn_at ? esc(localTime(data.withdrawn_at)) : ''].filter(Boolean).join(' &middot; ');
     return `
-      <div class="dec-answer space-y-2">
-        <div class="text-[11px] font-semibold ${DEC_MUTED} uppercase tracking-wider">Withdrawn</div>
+      <div class="dec-answer flex flex-col gap-2.5">
+        ${label('Withdrawn', 'text-zinc-400')}
         ${data.withdrawn_reason ? `<div class="text-sm text-zinc-100">${esc(data.withdrawn_reason)}</div>` : ''}
-        ${who ? `<div class="text-[11px] ${DEC_MUTED}">${who}</div>` : ''}
+        ${data.withdrawn_by ? closedByHtml('Withdrawn', data.withdrawn_by, data.withdrawn_at) : ''}
         ${reopen}
       </div>`;
   }
   return '';
 }
 
-// Options, custom answer and rationale scroll with the detail. Answer and Withdraw sit under
-// them from sm up; below sm they live in a bar fixed to the bottom of the viewport, with the
-// picked answer, and the detail's bottom padding (index.html) keeps the last field clear of it.
-function answerFormHtml(data) {
-  const options = data.options || [];
-  const textarea = TEXTAREA_CLS.replace('placeholder-zinc-500', 'placeholder-zinc-400');
-  const submit = `<button type="submit" class="dec-answer-submit h-8 px-3 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-black transition disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-600 ${DEC_FOCUS}" disabled>Answer</button>`;
-  const withdraw = `<button type="button" class="dec-withdraw-btn h-8 px-3 rounded-lg text-xs font-medium bg-zinc-900 hover:bg-red-950 active:bg-red-900 text-red-300 border border-red-900/60 transition ${DEC_FOCUS}">Withdraw&hellip;</button>`;
+const ANSWER_PRIMARY = 'bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-black disabled:hover:bg-emerald-600';
+const ANSWER_DESTRUCTIVE = 'bg-red-600 hover:bg-red-700 active:bg-red-800 text-white';
+
+// Options, custom answer and rationale scroll with the detail. Answer and Withdraw are one pair
+// of controls: under the fields from sm up, and below sm a bar fixed to the bottom of the
+// viewport, with the picked answer above them; the detail's bottom padding (index.html) keeps
+// the last field clear of it.
+function answerFormHtml(data, waitingCount) {
+  const options = shownOptions(data);
   return `
     <form class="dec-answer-form space-y-3">
       ${options.length ? `
         <div class="space-y-3">
           <div id="dec-options-label" class="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Options</div>
-          <div class="grid gap-2" role="radiogroup" aria-labelledby="dec-options-label">${options.map((o, i) => optionCardHtml(o, { selectable: true, tabbable: i === 0 })).join('')}</div>
+          <div class="grid gap-2" role="radiogroup" aria-labelledby="dec-options-label">${options.map((o, i) => optionCardHtml(o, { selectable: true, tabbable: i === 0, waiting: waitingCount, subject: data.subject })).join('')}</div>
         </div>` : ''}
       ${data.allow_custom !== false ? `
         <label class="dec-custom-card block p-3 rounded-lg border border-zinc-800 bg-zinc-900/60 space-y-1.5">
           <span class="block text-xs font-medium text-zinc-300">Custom answer</span>
-          <textarea class="dec-custom-text ${textarea}" rows="2" placeholder="Write a custom answer instead of picking an option"></textarea>
+          <textarea class="dec-custom-text ${TEXTAREA_CLS}" rows="2"></textarea>
         </label>` : ''}
-      ${fieldRow('Rationale', `<textarea class="dec-rationale ${textarea}" rows="2" placeholder="(optional)"></textarea>`)}
-      <div class="dec-answer-actions hidden sm:block space-y-2 pt-1">
-        <div class="flex items-center gap-2">${submit}<span class="flex-1"></span>${withdraw}</div>
-        <p class="dec-answer-hint text-[11px] ${DEC_MUTED}">${ANSWER_HINT}</p>
-      </div>
-      <div class="dec-answer-bar sm:hidden fixed inset-x-0 bottom-0 z-10 px-4 pt-2.5 pb-3.5 space-y-2 bg-zinc-900 border-t border-zinc-800">
-        <div class="flex items-center gap-1.5">
-          <span class="flex-shrink-0 text-[11px] ${DEC_MUTED}">Answer:</span>
-          <span class="dec-answer-pick flex-1 min-w-0 text-xs font-medium ${DEC_MUTED}">${NOTHING_PICKED}</span>
+      ${fieldRow('Rationale', `<textarea class="dec-rationale ${TEXTAREA_CLS}" rows="2"></textarea>`)}
+      <div class="dec-answer-actions fixed inset-x-0 bottom-0 z-10 flex flex-col gap-2 px-4 pt-2.5 pb-3.5 bg-zinc-900 border-t border-zinc-800 sm:static sm:z-auto sm:p-0 sm:pt-1 sm:bg-transparent sm:border-0">
+        <div class="dec-answer-pick-line hidden items-center gap-1.5 min-w-0">
+          <span class="flex-shrink-0 text-[11px] leading-4 ${DEC_MUTED}">Answer</span>
+          <span class="dec-answer-pick flex-1 min-w-0 truncate text-xs leading-4 font-medium text-zinc-100"></span>
         </div>
-        <div class="flex items-center gap-2">${submit}<span class="flex-1"></span>${withdraw}</div>
+        <div class="flex items-center gap-2">
+          <button type="submit" class="dec-answer-submit h-8 px-3 rounded-lg text-xs font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed ${ANSWER_PRIMARY} ${DEC_FOCUS}" disabled>Answer</button>
+          <span class="flex-1"></span>
+          <button type="button" class="dec-withdraw-btn h-7 px-2.5 rounded-md text-[11px] font-medium bg-zinc-900 hover:bg-red-950 active:bg-red-900 text-red-300 border border-red-900/60 transition disabled:opacity-40 disabled:cursor-not-allowed ${DEC_FOCUS}">Withdraw&hellip;</button>
+        </div>
       </div>
     </form>`;
 }
 
+// Focus once a decision's detail is drawn: 'option' is its first option (else its first
+// field), 'heading' its title, and anything else a selector in the detail; the title stands in
+// for a target that is not there.
+function focusDecisionPage(to) {
+  let target = null;
+  if (to === 'option') {
+    const form = decisionsDetailEl.querySelector('.dec-answer-form');
+    target = form && (form.querySelector('.dec-option-card') || form.querySelector('textarea'));
+  } else if (to !== 'heading') {
+    target = decisionsDetailEl.querySelector(to);
+  }
+  target = target || decisionsDetailEl.querySelector('.dec-title');
+  if (target) target.focus();
+}
+
+function takePendingFocus(id) {
+  if (!pendingFocus || pendingFocus.id !== id) return;
+  focusDecisionPage(pendingFocus.to);
+  pendingFocus = null;
+}
+
+function closedElsewhereText(node, data) {
+  if (node.status === 'ANSWERED' && data.answer) return `${node.id} answered by ${data.answer.answered_by}`;
+  return data.withdrawn_by ? `${node.id} withdrawn by ${data.withdrawn_by}` : `${node.id} withdrawn`;
+}
+
+// The toast's Show: the held decision's closed record, under the tab it now belongs to.
+function showClosedDecision(decisionId) {
+  if (heldOpenId === decisionId) heldOpenId = null;
+  if (selectedDecisionId !== decisionId) return;
+  const tab = decisionTabFor(decisionDetailLastStatus.get(decisionId));
+  if (tab !== decisionsTab) setDecisionsTab(tab);
+  else renderDecisionDetail(decisionId);
+}
+
+// The focused control in the detail as a selector that finds it again in a redraw: its tag, its
+// first class (each control's own name in this pane) and the attribute naming its item.
+const DETAIL_ITEM_ATTRS = ['data-option-key', 'data-task-id', 'data-asset', 'data-group-id', 'data-id'];
+function focusedDetailSelector() {
+  const el = document.activeElement;
+  if (!el || el === decisionsDetailEl || !decisionsDetailEl.contains(el)) return null;
+  const cls = (el.getAttribute('class') || '').trim().split(/\s+/)[0];
+  const attr = DETAIL_ITEM_ATTRS.find(a => el.hasAttribute(a));
+  return `${el.localName}${cls ? `.${CSS.escape(cls)}` : ''}${attr ? `[${attr}="${CSS.escape(el.getAttribute(attr))}"]` : ''}`;
+}
+
+// The detail's Retry reads the selected decision again; one stable function, as paneState keeps
+// one handler per function.
+function retryDecisionDetail() {
+  if (selectedDecisionId) renderDecisionDetail(selectedDecisionId);
+}
+
+let detailLoadTimer = null;
+
 function renderDecisionDetail(id) {
   if (renderedDecisionId !== id) {
     renderedDecisionId = null;
-    decisionsDetailEl.innerHTML = `<div class="max-w-2xl mx-auto text-sm ${DEC_MUTED} italic pt-12 text-center">Loading ${esc(id)}&hellip;</div>`;
+    if (heldOpenId !== id) heldOpenId = null;
+    decisionsDetailEl.scrollTop = 0;
+    if (decisionsNarrow()) decisionsPane.scrollTop = 0;
+    // The loading state shows only once the read has been in flight LOADING_DELAY_MS, so a fast
+    // answer never flashes it.
+    decisionsDetailEl.innerHTML = `<div class="max-w-2xl mx-auto">${pageBarHtml(id)}</div>`;
+    clearTimeout(detailLoadTimer);
+    detailLoadTimer = setTimeout(() => {
+      if (selectedDecisionId !== id || renderedDecisionId === id) return;
+      decisionsDetailEl.innerHTML = `<div class="max-w-2xl mx-auto">${pageBarHtml(id)}${paneState('loading')}</div>`;
+    }, LOADING_DELAY_MS);
   }
   fetchNodeDetail(id).then(detail => {
     if (selectedDecisionId !== id) return; // a later click superseded this fetch
+    clearTimeout(detailLoadTimer);
+    // The owner's own answer or withdrawal is in flight: its response picks what shows next.
+    if (ownWrites.has(id) && renderedDecisionId === id) return;
     if (!detail) {
       renderedDecisionId = null;
-      decisionsDetailEl.innerHTML = '<div class="max-w-2xl mx-auto text-sm text-red-400 pt-12 text-center">Decision not found.</div>';
+      liftToasts(null);
+      decisionsDetailEl.innerHTML = `<div class="max-w-2xl mx-auto">${pageBarHtml()}${paneState('empty', `${id} not found.`)}</div>`;
       return;
     }
     const node = detail.node;
@@ -565,31 +841,47 @@ function renderDecisionDetail(id) {
     const isOpen = node.status === 'OPEN';
     const editable = canEdit();
     const attachments = (node.frontmatter && node.frontmatter.attachments) || [];
+    const firstRender = renderedDecisionId !== id;
 
-    // A status seen as OPEN on a previous render, now something else, is a live push: someone
-    // else answered or withdrew it while it sat open in this pane. The owner's own write
-    // (afterDecisionWrite) seeds this map with the new status first, so that path never diffs.
+    // A decision seen OPEN on screen, now something else, was closed by another session while
+    // the owner was looking: the form stays, disabled with its draft, and a toast offers the
+    // closed record; nothing moves until the owner acts.
     const previousStatus = decisionDetailLastStatus.get(id);
-    if (previousStatus === 'OPEN' && !isOpen) decisionsChangedElsewhere.add(id);
-    if (isOpen) decisionsChangedElsewhere.delete(id);
     decisionDetailLastStatus.set(id, node.status);
-    const noticeHtml = decisionsChangedElsewhere.has(id) ? elsewhereNoticeHtml(node, data) : '';
+    if (previousStatus === 'OPEN' && !isOpen && !firstRender && !ownWrites.has(id)) {
+      heldOpenId = id;
+      toast(closedElsewhereText(node, data), { action: { label: 'Show', run: () => showClosedDecision(id) } });
+    }
+    const held = heldOpenId === id;
+    // A decision opened by its location (a link, Back, a reload) brings its own tab with it.
+    if (firstRender && !held && decisionTabFor(node.status) !== decisionsTab) setDecisionsTab(decisionTabFor(node.status));
+    const detailKey = `${JSON.stringify(detail)}${held ? ':held' : ''}`;
+    if (!firstRender && detailKey === renderedDetailKey) {
+      takePendingFocus(id);
+      return;
+    }
+    const rerender = () => {
+      renderedDetailKey = null;
+      renderDecisionDetail(id);
+    };
 
     const raisedByHtml = data.raised_by ? `
-      <button type="button" class="dec-raised-by-link text-xs font-mono text-emerald-400 hover:text-emerald-300 hover:underline active:text-emerald-200 rounded ${DEC_FOCUS}" data-task-id="${esc(data.raised_by)}">
-        Raised by ${esc(data.raised_by)}
-      </button>` : '';
+      <div class="dec-raised-by flex items-center gap-1.5 text-xs leading-4 text-zinc-400">Raised by ${idLink(data.raised_by)}</div>` : '';
 
     // §6.4: open decisions offer editing of blocked tasks. A withdrawn/answered decision only
     // ever shows the read-only list -- removing a block from one that already resolved
     // wouldn't change anything downstream, since the tasks it unblocked have already moved on.
+    // Its group reads "Was blocking", each node with the status it holds now.
     const canEditBlocks = isOpen && editable;
     const waiting = detail.dependent_details || [];
+    const waitingGroup = `${node.id}::waiting`;
     const waitingHtml = (waiting.length || canEditBlocks) ? `
-      <div class="space-y-2">
-        <div class="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Waiting on this (${waiting.length})</div>
-        ${waiting.map(t => waitingRowHtml(t, canEditBlocks)).join('')}
-        ${canEditBlocks ? `<button type="button" class="dec-block-add h-7 px-2 rounded-md text-[11px] font-medium text-emerald-400 hover:text-emerald-300 hover:bg-zinc-800 active:bg-zinc-700 border border-dashed border-zinc-700 transition ${DEC_FOCUS}">+ Add task</button>` : ''}
+      <div class="dec-waiting space-y-2">
+        ${renderGroupHeader(waitingGroup, isOpen || held ? 'Waiting on this' : 'Was blocking', waiting.length, false)}
+        <div class="space-y-2${groupCollapsed(waitingGroup, false) ? ' hidden' : ''}">
+          ${waiting.map(t => waitingRowHtml(t, canEditBlocks)).join('')}
+          ${canEditBlocks ? `<button type="button" class="dec-block-add h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] font-medium text-emerald-400 hover:text-emerald-300 hover:bg-zinc-800 active:bg-zinc-700 border border-dashed border-zinc-700 transition ${DEC_FOCUS}">${renderIcon('plus', 'w-3 h-3')}Add task</button>` : ''}
+        </div>
       </div>` : '';
 
     // The context section reads first and expanded, above the options -- not folded into the
@@ -599,60 +891,68 @@ function renderDecisionDetail(id) {
     const otherSections = allSections.filter(s => s.key !== 'context');
     const contextHtml = contextSection ? `
       <div class="space-y-2.5">
-        <div class="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Context</div>
-        <div class="dec-context-body max-w-none px-4 pt-3.5 pb-2 rounded-lg bg-zinc-900/40 border border-zinc-800">${contextBodyHtml(contextSection.content)}</div>
+        <div class="text-[11px] leading-4 font-semibold text-zinc-400 uppercase tracking-[0.05em]">Context</div>
+        <div class="dec-context-body px-4 py-3.5 space-y-2.5 rounded-lg bg-zinc-900/30 border border-zinc-800">${contextBodyHtml(contextSection.content)}</div>
       </div>` : '';
     const sectionsHtml = renderSections(otherSections, node.id);
     const attachmentsHtml = renderAttachments(node, attachments, editable);
-    const actionHtml = isOpen ? (editable ? answerFormHtml(data) : '') : resolvedHtml(node, data, editable);
+    const actionHtml = (isOpen || held) ? (editable ? answerFormHtml(data, waiting.length) : '') : resolvedHtml(node, data, editable, waiting.length);
+    // An attachment added moves focus to its name, one detached to Attach.
+    const afterAttachmentChange = (added) => {
+      pendingFocus = { id, to: added ? `.att-card[data-asset="${CSS.escape(added.asset)}"] .att-name` : '.att-add-btn' };
+      rerender();
+    };
 
     const scroll = [decisionsDetailEl.scrollTop, decisionsPane.scrollTop];
     const inPlace = renderedDecisionId === id;
+    // The same decision drawn again keeps focus on the same control, found by what it is rather
+    // than where it sits, since a row arriving above it moves it.
+    const refocus = inPlace ? focusedDetailSelector() : null;
+    // The header line: id, status icon, priority, then Attach and Copy ID. Below sm it is the page
+    // bar, held under the toolbar while the page scrolls, where the priority shows only when it
+    // is not 50; from sm up it sits 8px above the title (its -12px margin collapses with the
+    // column's 20px).
+    const priority = node.priority ?? 50;
     decisionsDetailEl.innerHTML = `
       <div class="max-w-2xl mx-auto space-y-5">
-        ${noticeHtml}
-        <div class="space-y-2">
-          <div class="flex items-center gap-2">
-            <span class="px-1.5 py-0.5 rounded text-[10px] font-mono uppercase bg-amber-500/10 text-amber-300 border border-amber-500/30">decision</span>
-            <span class="font-mono text-xs font-semibold text-zinc-400">${esc(node.id)}</span>
-            ${decisionStatusIcon(node.status, 'w-3.5 h-3.5')}
-            <span class="text-xs font-medium text-zinc-300">${esc(decisionStatusLabel(node.status))}</span>
-            ${copyIdButton(node.id)}
+        <div class="dec-page-bar flex items-center gap-2 max-sm:sticky max-sm:top-0 max-sm:z-10 max-sm:-mx-4 max-sm:-mt-5 max-sm:px-4 max-sm:py-2 max-sm:bg-zinc-950 max-sm:border-b max-sm:border-zinc-800 sm:-mb-3">
+          ${drawerButtonHtml()}
+          <div class="dec-header-meta flex-1 min-w-0 flex flex-wrap items-center gap-x-2 gap-y-1.5">
+            ${idLink(node.id, 'decision')}
+            ${decisionStatusIcon(node.status)}
+            <span class="inline-flex${priority === 50 ? ' max-sm:hidden' : ''}">${priorityPill(priority)}</span>
           </div>
-          <h1 class="text-xl font-bold tracking-tight text-white">${esc(node.title)}</h1>
+          ${editable ? attachButtonHtml() : ''}
+          ${copyIdButton(node.id)}
+        </div>
+        <div class="space-y-2">
+          <h1 tabindex="-1" class="dec-title text-xl leading-7 font-bold text-white focus:outline-none">${esc(node.title)}</h1>
           ${raisedByHtml}
         </div>
         ${contextHtml}
         ${waitingHtml}
         ${sectionsHtml}
-        ${attachmentsHtml}
         ${actionHtml}
+        ${attachmentsHtml}
       </div>
     `;
     renderedDecisionId = id;
+    renderedDetailKey = detailKey;
     if (inPlace) [decisionsDetailEl.scrollTop, decisionsPane.scrollTop] = scroll;
 
     attachSectionToggleHandlers(decisionsDetailEl);
-    attachGroupHeaderHandlers(decisionsDetailEl, () => renderDecisionDetail(id));
+    attachGroupHeaderHandlers(decisionsDetailEl, rerender);
     attachCopyHandlers(decisionsDetailEl);
-    wireAttachmentControls(decisionsDetailEl, node, attachments, editable, () => renderDecisionDetail(id));
+    wireAttachmentControls(decisionsDetailEl, node, attachments, editable, afterAttachmentChange);
 
-    decisionsDetailEl.querySelectorAll('.dec-task-link, .dec-raised-by-link').forEach(btn => {
-      btn.addEventListener('click', () => openBlockedNodeDetail(btn.getAttribute('data-task-id')));
-    });
-
+    // Removing a node sends focus to + Add task; adding one sends it to the new row.
     decisionsDetailEl.querySelectorAll('.dec-block-remove').forEach(btn => {
       btn.addEventListener('click', () => {
         const taskId = btn.getAttribute('data-task-id');
-        confirmDialog({
-          title: `Stop ${taskId} waiting on ${node.id}?`,
-          message: `${taskId} will no longer depend on this decision.`,
-          confirmLabel: 'Remove',
-          onConfirm: async (write) => {
-            await write('POST', `/api/decisions/${node.id}/blocks`, { remove: [taskId] });
-            toast(`${taskId} no longer waits on ${node.id}.`, 'success');
-            await afterDecisionWrite(node.id);
-          }
+        submitWrite(btn, { method: 'POST', path: `/api/decisions/${node.id}/blocks`, body: { remove: [taskId] } }).then(() => {
+          pendingFocus = { id, to: '.dec-block-add' };
+          toast(`${taskId} no longer waits on ${node.id}`, { tone: 'success' });
+          refreshDecisionsData();
         });
       });
     });
@@ -662,102 +962,131 @@ function renderDecisionDetail(id) {
         const taskOptions = visibleTaskRows();
         const listId = 'dec-block-picker-list';
         formDialog({
-          title: `Block a task on ${node.id}`,
+          title: `Add task to ${node.id}`,
           submitLabel: 'Add',
           bodyHtml: `
-            ${fieldRow('Task (id or title)', `<input type="text" required list="${listId}" class="dbk-task ${INPUT_CLS} font-mono" placeholder="task-id"><datalist id="${listId}">${taskOptions.map(t => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join('')}</datalist>`)}
+            ${fieldRow('Task', `<input type="text" required list="${listId}" class="dbk-task ${INPUT_CLS} font-mono"><datalist id="${listId}">${taskOptions.map(t => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join('')}</datalist>`)}
           `,
-          onSubmit: async (panel, close) => {
+          onSubmit: async (panel, close, write) => {
             const typed = panel.querySelector('.dbk-task').value.trim();
             if (!typed) throw new Error('Task id is required.');
             const match = taskOptions.find(t => t.id === typed || t.title === typed);
             const taskId = match ? match.id : typed;
-            await api('POST', `/api/decisions/${node.id}/blocks`, { add: [taskId] });
-            toast(`${taskId} now waits on ${node.id}.`, 'success');
+            await write('POST', `/api/decisions/${node.id}/blocks`, { add: [taskId] });
             close();
-            await afterDecisionWrite(node.id);
+            pendingFocus = { id, to: `.dec-waiting-row a.id-link[data-id="${CSS.escape(taskId)}"]` };
+            toast(`${taskId} now waits on ${node.id}`, { tone: 'success' });
+            refreshDecisionsData();
           }
         });
       });
     }
 
-    wireDecisionAnswerForm(decisionsDetailEl, node.id, data);
+    wireDecisionAnswerForm(decisionsDetailEl, node.id, data, waiting, held);
+    if (!decisionsDetailEl.querySelector('.dec-answer-form')) liftToasts(null);
 
     const reopenBtn = decisionsDetailEl.querySelector('.dec-reopen-btn');
     if (reopenBtn) {
-      reopenBtn.addEventListener('click', async () => {
-        try {
-          await api('POST', `/api/decisions/${node.id}/reopen`);
-          toast(`${node.id} reopened.`, 'success');
-          await afterDecisionWrite(node.id);
-        } catch (e) {
-          toast(e.message, 'error');
-        }
+      // Reopen clears the answer record alone; the decision is open again under the Open tab,
+      // with focus on its first option.
+      reopenBtn.addEventListener('click', () => {
+        submitWrite(reopenBtn, { method: 'POST', path: `/api/decisions/${node.id}/reopen` }).then(() => {
+          pendingFocus = { id: node.id, to: 'option' };
+          toast(`${node.id} reopened`, { tone: 'success' });
+          if (decisionsTab === 'open') refreshDecisionsData();
+          else setDecisionsTab('open');
+        });
       });
     }
+
+    const again = refocus && decisionsDetailEl.querySelector(refocus);
+    if (again) again.focus();
+    takePendingFocus(id);
   }).catch(e => {
     if (selectedDecisionId !== id) return;
+    clearTimeout(detailLoadTimer);
     renderedDecisionId = null;
+    liftToasts(null);
     // A real 404 already resolved to null above and took the "not found" branch; anything
-    // reaching here is the request itself failing (network, 5xx) -- distinct copy and a retry,
-    // since retrying a genuinely missing decision would only fail the same way again.
-    decisionsDetailEl.innerHTML = `
-      <div class="max-w-2xl mx-auto text-center space-y-3 pt-12">
-        <div role="alert" class="text-sm text-red-400">${esc(e.message)}</div>
-        <div class="text-xs ${DEC_MUTED}">This is a failed request, not a missing decision.</div>
-        <button type="button" class="dec-detail-retry-btn h-8 px-3 rounded-lg text-xs font-medium bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-200 border border-zinc-700 transition ${DEC_FOCUS}">Retry</button>
-      </div>
-    `;
-    const retryBtn = decisionsDetailEl.querySelector('.dec-detail-retry-btn');
-    if (retryBtn) retryBtn.addEventListener('click', () => renderDecisionDetail(id));
+    // reaching here is the request itself failing (network, 5xx), so it offers Retry.
+    decisionsDetailEl.innerHTML = `<div class="max-w-2xl mx-auto">${pageBarHtml(id)}${paneState('error', e.message, retryDecisionDetail)}</div>`;
   });
 }
 
-function wireDecisionAnswerForm(root, decisionId, data) {
+// The answer form keeps its draft per decision. Picking an option keeps any custom text; typing
+// a custom answer unchecks the option, since it is written instead of one. An abandon or defer
+// effect names itself on Answer and is confirmed before it is sent.
+function wireDecisionAnswerForm(root, decisionId, data, waiting, held) {
   const form = root.querySelector('.dec-answer-form');
   if (!form) return;
-  const submitBtns = form.querySelectorAll('.dec-answer-submit');
-  const hint = form.querySelector('.dec-answer-hint');
+  const options = data.options || [];
+  const submitBtn = form.querySelector('.dec-answer-submit');
+  const pickLine = form.querySelector('.dec-answer-pick-line');
   const pick = form.querySelector('.dec-answer-pick');
   const cards = Array.from(form.querySelectorAll('.dec-option-card'));
-  let chosenOption = null;
   const customText = form.querySelector('.dec-custom-text');
+  const rationale = form.querySelector('.dec-rationale');
+  const draft = decisionDrafts.get(decisionId) || {};
+  let chosenOption = draft.option || null;
+  if (customText) customText.value = draft.text || '';
+  rationale.value = draft.rationale || '';
 
-  function updateAnswerState() {
-    const custom = customText ? customText.value.trim() : '';
-    const chosen = chosenOption ? (data.options || []).find(o => o.key === chosenOption) : null;
-    const picked = chosen ? chosen.label : custom;
-    submitBtns.forEach(btn => { btn.disabled = !picked; });
-    hint.classList.toggle('hidden', Boolean(picked));
-    pick.textContent = picked || NOTHING_PICKED;
-    pick.classList.toggle('text-zinc-100', Boolean(picked));
-    pick.classList.toggle('text-zinc-400', !picked);
+  const chosen = () => options.find(o => o.key === chosenOption) || null;
+  const customAnswer = () => (customText ? customText.value.trim() : '');
+  function effect() {
+    if (chosen()) return chosen().effect || 'none';
+    return customAnswer() ? (data.custom_effect || 'none') : 'none';
+  }
+  function save() {
+    decisionDrafts.set(decisionId, { option: chosenOption, text: customText ? customText.value : '', rationale: rationale.value });
   }
 
-  // Shared by an option click and a custom-text edit, so the two can never disagree about
-  // which card (if any) is checked. The card's colours follow aria-checked (optionCardHtml).
-  function paintChosen(chosenCard) {
+  function paint() {
+    const picked = chosen() ? chosen().label : customAnswer();
     cards.forEach((c, i) => {
-      const isChosen = c === chosenCard;
-      c.setAttribute('aria-checked', String(isChosen));
-      // Roving tabindex follows the checked card; with none checked (a custom answer typed
-      // instead) the first card stays the group's one tab stop.
-      c.setAttribute('tabindex', isChosen || (!chosenCard && i === 0) ? '0' : '-1');
+      const on = c.getAttribute('data-option-key') === chosenOption;
+      c.setAttribute('aria-checked', String(on));
+      c.setAttribute('tabindex', on || (!chosenOption && i === 0) ? '0' : '-1');
     });
+    pickLine.classList.toggle('max-sm:flex', Boolean(picked));
+    pick.textContent = picked;
+    liftToasts(picked ? 'picked' : 'empty');
+    // A write in flight owns the button's label (its spinner) until the response.
+    if (submitBtn.getAttribute('aria-busy') === 'true') return;
+    const fx = effect();
+    const destructive = Boolean(picked) && DESTRUCTIVE_EFFECTS.includes(fx);
+    submitBtn.disabled = held || !picked;
+    submitBtn.textContent = destructive ? `Answer — ${fx} ${nodeCount(waiting.length)}` : 'Answer';
+    ANSWER_PRIMARY.split(' ').forEach(c => submitBtn.classList.toggle(c, !destructive));
+    ANSWER_DESTRUCTIVE.split(' ').forEach(c => submitBtn.classList.toggle(c, destructive));
+  }
+
+  function submit() {
+    if (submitBtn.disabled) return;
+    const at = decisionRowIndex(decisionId);
+    const body = { option: chosenOption, text: customAnswer(), rationale: rationale.value.trim() };
+    const message = `${decisionId} answered: ${chosen() ? chosen().label : body.text}`;
+    const request = { method: 'POST', path: `/api/decisions/${decisionId}/answer`, body };
+    const fx = effect();
+    if (DESTRUCTIVE_EFFECTS.includes(fx)) {
+      submitBtn.focus();
+      confirmEffect(decisionId, fx, waiting, request, () => afterDecisionClosed(decisionId, message, at));
+      return;
+    }
+    ownWrites.add(decisionId);
+    submitWrite(submitBtn, request).then(() => afterDecisionClosed(decisionId, message, at));
   }
 
   cards.forEach((card, i) => {
     card.addEventListener('click', () => {
       chosenOption = card.getAttribute('data-option-key');
-      if (customText) customText.value = '';
-      paintChosen(card);
-      updateAnswerState();
+      paint();
+      save();
     });
-    // WAI-ARIA radio group: Down/Right move to the next option and Up/Left to the previous,
-    // wrapping, checking it as focus lands (Space checks the focused option for free -- a real
-    // <button> fires its own click on Space).
+    // ←/→ move between options and check the one focus lands on (Space checks the focused
+    // option for free -- a real <button> fires its own click on Space). ↑/↓ belong to the list.
     card.addEventListener('keydown', (e) => {
-      const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key];
+      const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
       if (!step) return;
       e.preventDefault();
       const next = cards[(i + step + cards.length) % cards.length];
@@ -767,94 +1096,135 @@ function wireDecisionAnswerForm(root, decisionId, data) {
   });
   if (customText) {
     customText.addEventListener('input', () => {
-      if (customText.value.trim()) {
-        chosenOption = null;
-        paintChosen(null);
-      }
-      updateAnswerState();
+      if (customAnswer()) chosenOption = null;
+      paint();
+      save();
     });
   }
-
-  form.addEventListener('submit', async (e) => {
+  rationale.addEventListener('input', save);
+  form.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || !(e.ctrlKey || e.metaKey)) return;
     e.preventDefault();
-    const rationale = form.querySelector('.dec-rationale').value.trim();
-    const text = customText ? customText.value.trim() : '';
-    try {
-      await api('POST', `/api/decisions/${decisionId}/answer`, {
-        option: chosenOption,
-        text,
-        rationale,
-      });
-      toast(`${decisionId} answered.`, 'success');
-      await afterDecisionWrite(decisionId);
-    } catch (err) {
-      toast(err.message, 'error');
-    }
+    submit();
   });
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    submit();
+  });
+  form.querySelector('.dec-withdraw-btn').addEventListener('click', () => openWithdrawDialog(decisionId, waiting.length));
+  paint();
+  if (held) form.querySelectorAll('button, textarea').forEach(el => { el.disabled = true; });
+}
 
-  form.querySelectorAll('.dec-withdraw-btn').forEach(withdrawBtn => {
-    withdrawBtn.addEventListener('click', () => {
-      // §6.4: a decision is withdrawn with a reason, so this is a full dialog (a text field)
-      // rather than confirmDialog's plain message-only shape.
-      formDialog({
-        title: `Withdraw ${decisionId}?`,
-        submitLabel: 'Withdraw',
-        destructive: true,
-        bodyHtml: `
-          <p class="text-xs text-zinc-300 leading-relaxed">The decision is dropped; tasks waiting on it unblock immediately.</p>
-          ${fieldRow('Reason', `<textarea class="wd-reason ${TEXTAREA_CLS}" rows="2" placeholder="(optional)"></textarea>`)}
-        `,
-        onSubmit: async (panel, close) => {
-          const reason = panel.querySelector('.wd-reason').value.trim();
-          await api('POST', `/api/decisions/${decisionId}/withdraw`, { reason });
-          toast(`${decisionId} withdrawn.`, 'success');
-          close();
-          await afterDecisionWrite(decisionId);
-        }
-      });
-    });
+function effectNodeHtml(t) {
+  return `<div class="dec-effect-node flex items-center gap-2 px-2.5 py-2 rounded-lg bg-zinc-900/60 border border-zinc-800">${statusIcon(t.status || 'STALE')}${idLink(t.id, t.kind)}<span class="flex-1 min-w-0 truncate text-xs leading-4 text-zinc-400">${esc(t.title || '')}</span></div>`;
+}
+
+// An abandon or defer is confirmed before it is sent, and nothing undoes it after: the confirm
+// lists the nodes it hits and opens on Cancel; Escape, Close and Cancel return to Answer.
+function confirmEffect(decisionId, effect, waiting, request, done) {
+  const verb = effect === 'abandon' ? 'Abandon' : 'Defer';
+  const key = `effect:${decisionId}`;
+  // Built fresh each time: what it lists and sends is the form's state now.
+  dialogDrafts.delete(key);
+  formDialog({
+    key,
+    title: `${verb} ${nodeCount(waiting.length)}?`,
+    submitLabel: verb,
+    destructive: true,
+    bodyHtml: `<div class="space-y-2">${waiting.map(effectNodeHtml).join('')}</div>`,
+    onSubmit: async (panel, close, write) => {
+      ownWrites.add(decisionId);
+      await write(request.method, request.path, request.body);
+      close();
+      await done();
+    },
   });
 }
 
-// A decision write never reloads anything either -- but a decision is not a row, so nothing
-// pushes its own new status here the way a row's write updates arrive at the drawer; its
-// detail is re-read straight from GET /api/nodes/{id} (§ "Bodies": "A decision's own detail
-// may keep reading" it), and the list's own refetch (below) is what makes the tab it now
-// belongs under current.
-async function afterDecisionWrite(decisionId) {
-  selectedDecisionId = decisionId;
-  decisionsChangedElsewhere.delete(decisionId);
-  let detail = null;
-  try {
-    detail = await fetchNodeDetail(decisionId);
-  } catch (e) {
-    // Left null: the render below re-fetches on its own and shows this same failure there.
-  }
-  if (detail) {
-    decisionsTab = decisionTabFor(detail.node.status);
-    // The owner's own write, not a change seen elsewhere -- seed the tracked status with the
-    // new one now, so renderDecisionDetail's own fetch (below, via renderDecisionsView) finds
-    // no diff and never mistakes this write for an "answered elsewhere" notice.
-    decisionDetailLastStatus.set(decisionId, detail.node.status);
-  }
+// §6.4: a decision is withdrawn with a reason, so this is a full dialog (a text field) rather
+// than confirmDialog's plain message-only shape. Every node waiting on it stops waiting, which
+// its effect pill says.
+function openWithdrawDialog(decisionId, waitingCount) {
+  formDialog({
+    title: `Withdraw ${decisionId}?`,
+    submitLabel: 'Withdraw',
+    destructive: true,
+    bodyHtml: `
+      <div class="flex">${effectPillHtml('drop_edge', waitingCount)}</div>
+      ${fieldRow('Reason', `<textarea class="wd-reason ${TEXTAREA_CLS}" rows="2"></textarea>`)}
+    `,
+    onSubmit: async (panel, close, write) => {
+      const reason = panel.querySelector('.wd-reason').value.trim();
+      const at = decisionRowIndex(decisionId);
+      ownWrites.add(decisionId);
+      await write('POST', `/api/decisions/${decisionId}/withdraw`, { reason });
+      close();
+      await afterDecisionClosed(decisionId, `${decisionId} withdrawn`, at);
+    }
+  });
+}
+
+// The closed decision's place in its list, read when the write is sent: a push can take its row
+// out before the response comes back.
+function decisionRowIndex(decisionId) {
+  return Math.max(0, visibleDecisionRows().findIndex(d => d.id === decisionId));
+}
+
+// Answer and Withdraw end the same way, from the write's response: the tab stays, the row that
+// followed the closed one is selected (the one before it when it was last) with focus on its
+// first option, and with no row left focus lands on the tab, or below sm on the Drawer button.
+async function afterDecisionClosed(decisionId, message, at) {
+  decisionDrafts.delete(decisionId);
   await refreshDecisionsData();
-  renderDecisionsView();
+  const rows = visibleDecisionRows().filter(d => d.id !== decisionId);
+  const next = rows[Math.min(at, rows.length - 1)];
+  ownWrites.delete(decisionId);
+  toast(message, { tone: 'success' });
+  if (next) {
+    pendingFocus = { id: next.id, to: 'option' };
+    navigate({ view: window.VIEW_MODES.DECISIONS, id: next.id }, { replace: true });
+    return;
+  }
+  navigate({ view: window.VIEW_MODES.DECISIONS }, { replace: true });
+  const target = decisionsNarrow()
+    ? decisionsDetailEl.querySelector('.dec-drawer-btn')
+    : decisionsTabsEl.querySelector(`[data-tab="${decisionsTab}"]`);
+  if (target) target.focus();
+}
+
+// A decision raised from the page opens under the Open tab.
+function openCreatedDecision(decisionId) {
+  if (decisionsTab === 'open') refreshDecisionsData();
+  else setDecisionsTab('open');
+  navigate({ view: window.VIEW_MODES.DECISIONS, id: decisionId });
+}
+
+// With nothing selected the detail is empty from sm up; below sm it is the page, which shows
+// what the list shows in place of rows.
+function renderNoSelection() {
+  renderedDecisionId = null;
+  liftToasts(null);
+  const state = decisionsListStateHtml();
+  decisionsDetailEl.innerHTML = `<div class="max-w-2xl mx-auto">${pageBarHtml()}${state ? `<div class="sm:hidden">${state}</div>` : ''}</div>`;
 }
 
 function renderDecisionsView() {
-  // Below sm the list sits above the detail in one page scroll; a list that grows or shrinks
-  // (a row leaving Open) would shift the detail under the reader, so the pane's scroll takes
-  // up the difference.
-  const detailTop = decisionsDetailEl.getBoundingClientRect().top;
   renderDecisionsTabs();
   renderDecisionsList();
-  decisionsPane.scrollTop += decisionsDetailEl.getBoundingClientRect().top - detailTop;
   if (selectedDecisionId) {
     renderDecisionDetail(selectedDecisionId);
-  } else {
-    renderedDecisionId = null;
-    decisionsDetailEl.innerHTML = `<div class="max-w-2xl mx-auto text-sm ${DEC_MUTED} italic pt-12 text-center">Select a decision to view it.</div>`;
+    return;
   }
+  // /decisions names no decision: it resolves to the top row in place, so Back never returns
+  // to the bare path. Below sm that is the top open decision; another tab in the drawer only
+  // changes the drawer.
+  const top = visibleDecisionRows()[0];
+  if (top && decisionsLoaded && !decisionsLoadFailed && (decisionsTab === 'open' || !decisionsNarrow())) {
+    navigate({ view: window.VIEW_MODES.DECISIONS, id: top.id }, { replace: true });
+    return;
+  }
+  renderNoSelection();
 }
 
 
@@ -874,7 +1244,7 @@ function decisionOptionRowHtml(index, key = '', label = '', description = '', re
         </label>
         <button type="button" class="dec-opt-remove p-1 rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-800 flex-shrink-0" aria-label="Remove option">${renderIcon('x', 'w-3 h-3')}</button>
       </div>
-      <input type="text" class="dec-opt-desc ${INPUT_CLS}" placeholder="Description (optional)" aria-label="Option description" value="${esc(description)}">
+      <input type="text" class="dec-opt-desc ${INPUT_CLS}" placeholder="Description" aria-label="Option description" value="${esc(description)}">
     </div>
   `;
 }
@@ -885,8 +1255,8 @@ function openNewDecisionDialog() {
     title: 'New decision',
     submitLabel: 'Raise',
     bodyHtml: `
-      ${fieldRow('Question', `<input type="text" required class="nd-question ${INPUT_CLS}" placeholder="Which auth flow?">`)}
-      ${fieldRow('Context', `<textarea class="nd-context ${TEXTAREA_CLS}" rows="3" placeholder="(optional, markdown)"></textarea>`)}
+      ${fieldRow('Question', `<input type="text" required class="nd-question ${INPUT_CLS}">`)}
+      ${fieldRow('Context', `<textarea class="nd-context ${TEXTAREA_CLS}" rows="3"></textarea>`)}
       <div class="space-y-2">
         <div class="flex items-center justify-between">
           <span class="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Options</span>
@@ -895,7 +1265,7 @@ function openNewDecisionDialog() {
         <div class="nd-opt-rows space-y-2"></div>
       </div>
       <label class="flex items-center gap-2 text-xs text-zinc-300"><input type="checkbox" class="nd-allow-custom rounded border-zinc-600 bg-zinc-950 text-emerald-500 focus:ring-emerald-500" checked>Allow a custom answer</label>
-      ${fieldRow('Blocks tasks (comma separated ids)', `<input type="text" class="nd-blocks ${INPUT_CLS} font-mono" list="nd-blocks-list" placeholder="(optional)"><datalist id="nd-blocks-list">${visibleTaskRows().map(t => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join('')}</datalist>`)}
+      ${fieldRow('Blocks tasks', `<input type="text" class="nd-blocks ${INPUT_CLS} font-mono" list="nd-blocks-list"><datalist id="nd-blocks-list">${visibleTaskRows().map(t => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join('')}</datalist>`)}
     `,
     onMount: (panel) => {
       const rows = panel.querySelector('.nd-opt-rows');
@@ -927,9 +1297,9 @@ function openNewDecisionDialog() {
         allow_custom: panel.querySelector('.nd-allow-custom').checked,
         blocks: panel.querySelector('.nd-blocks').value.split(',').map(s => s.trim()).filter(Boolean),
       });
-      toast(`Decision ${res.id} raised.`, 'success');
+      toast(`${res.id} raised`, { tone: 'success' });
       close();
-      await afterDecisionWrite(res.id);
+      openCreatedDecision(res.id);
     }
   });
 }
