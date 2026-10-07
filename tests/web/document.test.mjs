@@ -29,14 +29,14 @@ async function documentWithOneSpec() {
 
 test('rendering the document again never grows the set of sections the toggle-all button acts on', async () => {
   const page = await documentWithOneSpec();
-  assert.equal(page.$$('details[data-section-id]').length, 2, 'the spec\'s two sections rendered');
+  assert.equal(page.$$('.section-toggle').length, 2, 'the spec\'s two sections rendered');
   for (let i = 0; i < 3; i++) page.run('renderUnifiedDocument()');
   assert.equal(page.run('allSectionIds.length'), 2);
 
   page.$('#toggle-sections-btn').click();
   await page.settle();
   assert.deepEqual(JSON.parse(page.run('JSON.stringify([...expandedSections].sort())')), ['S::acceptance', 'S::brief'], 'expand-all opens exactly the rendered sections');
-  assert.ok(page.$$('details[data-section-id]').every((d) => d.open));
+  assert.ok(page.$$('.section-toggle').every((b) => b.getAttribute('aria-expanded') === 'true'));
   assert.equal(page.$('#toggle-sections-btn').getAttribute('aria-label'), 'Collapse all sections');
 });
 

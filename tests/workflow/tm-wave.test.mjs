@@ -21,6 +21,7 @@ const jobAt = (state, extra = {}) =>
 const starts = ops => ops.filter(c => / task start /.test(c))
 const releases = ops => ops.filter(c => / task release /.test(c))
 const gets = ops => ops.filter(c => / task get /.test(c))
+const discoverCmd = ops => ops[0].match(/^out=\$\((.*) 2>&1\); rc=/)[1]
 // A release the script makes without having read a claim can name only the agent.
 const RELEASE_T1 = 'tm task release T1 --agent wf-s1-T1 >/dev/null 2>&1'
 const releaseOf = token => `tm task release T1 --agent wf-s1-T1 --token ${token} >/dev/null 2>&1`
@@ -40,18 +41,30 @@ for (const key of ['release', 'maxFixRounds']) {
 test('discovery asks about every spec unless specs names some', async () => {
   const all = await runWave({ args: ARGS, tm: makeTm() })
   const some = await runWave({ args: { ...ARGS, specs: ['S1', 'S2'] }, tm: makeTm() })
-  assert.equal(all.ops[0], 'tm wave discover --session s1 --slots 9 --max-strong 5')
-  assert.equal(some.ops[0], 'tm wave discover --spec S1 --spec S2 --session s1 --slots 9 --max-strong 5')
+  assert.equal(discoverCmd(all.ops), 'tm wave discover --lines --session s1 --slots 9 --max-strong 5')
+  assert.equal(discoverCmd(some.ops), 'tm wave discover --lines --spec S1 --spec S2 --session s1 --slots 9 --max-strong 5')
 })
 
 test('discovery is told which merges to hold, so a held merge never takes a slot', async () => {
   const { ops } = await runWave({ args: { ...ARGS, holdMerge: ['T1', 'T2'] }, tm: makeTm() })
-  assert.equal(ops[0], 'tm wave discover --session s1 --slots 9 --max-strong 5 --hold-merge T1 --hold-merge T2')
+  assert.equal(discoverCmd(ops), 'tm wave discover --lines --session s1 --slots 9 --max-strong 5 --hold-merge T1 --hold-merge T2')
 })
 
-test('a discovery payload whose checksum never matches claims nothing', async () => {
-  const tm = makeTm({ discover: () => '{"chosen":[],"held":[],"waiting_for_slot":0,"mine":0}\n__CHECK n=0 h=1' })
+test('a discovery transcript whose cksum never matches claims nothing', async () => {
+  const tm = makeTm({ chosen: [T1], corrupt: inner => /wave discover/.test(inner) })
   await assert.rejects(runWave({ args: ARGS, tm }), /discovery failed three times/)
+})
+
+test('a discovery line of an unknown shape claims nothing', async () => {
+  const tm = makeTm({ discover: () => 'N T1 implement sonnet task core\nW 0' })
+  await assert.rejects(runWave({ args: ARGS, tm }), /discovery failed three times/)
+})
+
+test('discovery lines carry kind, repos and requires through to the claim', async () => {
+  const tm = makeTm({ chosen: [{ ...T1, kind: 'plan', repos: ['api', 'web'], requires: ['figma'] }], nodes: { T1: node('COMPLETED', null) } })
+  const { logs, errors } = await runWave({ args: ARGS, tm })
+  assert.deepEqual(errors, [])
+  assert.ok(logs.some(l => l.startsWith('wave: T1@implement/sonnet')))
 })
 
 test('a payload carrying non-ASCII text passes its checksum', async () => {

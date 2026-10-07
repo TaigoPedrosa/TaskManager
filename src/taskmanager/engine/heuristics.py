@@ -4,7 +4,12 @@ from taskmanager.core.enums import NodeKind, RecommendationStrategy
 from taskmanager.core.models import Node
 from taskmanager.core.status import DisplayStatus, Status
 from taskmanager.db.cache_repo import CacheRepository
-from taskmanager.db.node_repo import NodeRepository, declared_files_of, locked_key
+from taskmanager.db.node_repo import (
+    NodeRepository,
+    declared_files_of,
+    is_locked_path,
+    locked_key,
+)
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder
 from taskmanager.engine.stepgraph import Snapshot
@@ -235,7 +240,7 @@ class RecommendationEngine:
         taken: set[str] = set()
         for candidate in scored:
             repo = nodes[candidate.task_id].target_repo
-            keys = [locked_key(repo, f) for f in candidate.declared_files]
+            keys = [locked_key(repo, f) for f in candidate.declared_files if is_locked_path(f)]
             if taken.intersection(keys):
                 continue
             chosen.append(candidate)
