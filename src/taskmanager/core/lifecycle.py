@@ -69,7 +69,8 @@ def next_action(c: Cycle) -> Action | None:
             # Only a sensitive fix is re-reviewed; every other fix lands as it is.
             return Action.REVIEW if c.sensitive else Action.MERGE
         case Status.LANDED:
-            return Action.REVIEW
+            # A landing completes a node with review off; nothing reviews one stored at LANDED.
+            return Action.REVIEW if c.review else None
         case _:
             return None
 
@@ -250,6 +251,11 @@ def reset(c: Cycle, to: Status, outcome: Outcome | None) -> Cycle:
         raise LifecycleError("a fix answers reject or merge_failed, never approve")
     if not c.fix and (to == Status.FIXED or outcome == Outcome.MERGE_FAILED):
         raise LifecycleError("this node has fix off: nothing fixes it; turn fix on first")
+    if not c.review and to == Status.LANDED:
+        raise LifecycleError(
+            "this node has review off: nothing reviews it at LANDED; reset it to COMPLETED, or "
+            "turn review on first"
+        )
     return replace(
         c,
         status=to,
