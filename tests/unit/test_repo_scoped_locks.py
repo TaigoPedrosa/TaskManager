@@ -11,7 +11,7 @@ from taskmanager.engine.discovery import discover
 from taskmanager.engine.heuristics import RecommendationEngine
 from taskmanager.engine.snapshot import DisplayView
 
-LOCK_FILES = ["pyproject.toml", "uv.lock"]
+LOCK_FILES = ["src/app.py", "src/db.py"]
 
 
 def batch(claims: Claims, **args: Any) -> dict[str, Any]:
@@ -57,8 +57,8 @@ def test_two_same_repo_tasks_on_the_same_path_collide_in_discovery_heuristics_an
     tmp_path: Path,
 ) -> None:
     claims = make_estate(tmp_path, repos=("workers",))
-    add(claims, "W1", repo="workers", files=["pyproject.toml"], priority=90)
-    add(claims, "W2", repo="workers", files=["pyproject.toml"], priority=80)
+    add(claims, "W1", repo="workers", files=["src/app.py"], priority=90)
+    add(claims, "W2", repo="workers", files=["src/app.py"], priority=80)
 
     data = batch(claims)
     assert chosen_ids(data) == {"W1"}
@@ -86,10 +86,10 @@ def test_a_container_spanning_two_repositories_locks_each_descendants_files_unde
     locked = claims.snapshots.lock_set("PLAN", snap)
 
     assert set(locked) == {
-        "workers:pyproject.toml",
-        "workers:uv.lock",
-        "scheduler:pyproject.toml",
-        "scheduler:uv.lock",
+        "workers:src/app.py",
+        "workers:src/db.py",
+        "scheduler:src/app.py",
+        "scheduler:src/db.py",
     }
 
 
@@ -100,4 +100,14 @@ def test_run_list_shows_the_qualified_keys_a_claim_wrote(tmp_path: Path) -> None
     claims.start("W1", "agent-w", "s1")
 
     locked_paths = {lock.file_path for lock in claims.runtime.list_locks()}
-    assert locked_paths == {"workers:pyproject.toml", "workers:uv.lock"}
+    assert locked_paths == {"workers:src/app.py", "workers:src/db.py"}
+
+
+def test_a_manifest_or_lockfile_never_holds_back_a_second_claim(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path, repos=("workers",))
+    add(claims, "W1", repo="workers", files=["pyproject.toml", "uv.lock", "src/a.py"], priority=90)
+    add(claims, "W2", repo="workers", files=["pyproject.toml", "uv.lock", "src/b.py"], priority=80)
+
+    assert chosen_ids(batch(claims)) == {"W1", "W2"}
+    claims.start("W1", "agent-1", "s1")
+    assert claims.start("W2", "agent-2", "s1").action != Action.BLOCKED

@@ -698,6 +698,12 @@ class Operations:
         existing_secs = self.node_repo.get_all_sections(node_id)
         existing = next((s for s in existing_secs if s.section_key == section_key), None)
         ordinal = existing.ordinal if existing else len(existing_secs) + 1
+        # `tm section get` used to print the header above the content on stdout; a caller that
+        # fed that output straight back in folded it into the content. Strip it either way.
+        for leaked_header in {sec_header, existing.header if existing else None}:
+            if leaked_header and content.startswith(f"{leaked_header}\n"):
+                content = content[len(leaked_header) + 1 :]
+                break
         self.node_repo.save_section(
             NodeSection(
                 node_id=node_id,

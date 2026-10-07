@@ -586,6 +586,57 @@ def test_cli_section_remove_deletes_a_section(tmp_path: Path) -> None:
     assert "No section" in res.stdout
 
 
+def test_cli_section_get_then_set_round_trips_content_byte_identical(tmp_path: Path) -> None:
+    """`tm section get` puts its header on stderr so a caller capturing only stdout and
+    feeding it straight into `set -f` never folds the header into the content."""
+    runner.invoke(app, ["init", "--path", str(tmp_path)])
+    runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "--path", str(tmp_path)])
+    runner.invoke(
+        app, ["plan", "add", "P", "--spec", "S1", "--slug", "P1", "--path", str(tmp_path)]
+    )
+    runner.invoke(
+        app, ["task", "add", "T", "--plan", "S1-P1", "--slug", "t1", "--path", str(tmp_path)]
+    )
+    runner.invoke(
+        app,
+        [
+            "section",
+            "set",
+            "S1-P1-t1:report",
+            "--content",
+            "line one\nline two",
+            "--header",
+            "## Report",
+            "--path",
+            str(tmp_path),
+        ],
+    )
+
+    got = runner.invoke(app, ["section", "get", "S1-P1-t1:report", "--path", str(tmp_path)])
+    assert got.exit_code == 0
+    assert got.stdout == "line one\nline two"
+    assert got.stderr == "## Report\n"
+
+    reread_file = tmp_path / "reread.txt"
+    for _ in range(3):
+        reread_file.write_text(got.stdout, encoding="utf-8")
+        runner.invoke(
+            app,
+            [
+                "section",
+                "set",
+                "S1-P1-t1:report",
+                "--file",
+                str(reread_file),
+                "--path",
+                str(tmp_path),
+            ],
+        )
+        got = runner.invoke(app, ["section", "get", "S1-P1-t1:report", "--path", str(tmp_path)])
+        assert got.exit_code == 0
+        assert got.stdout == "line one\nline two"
+
+
 def test_spec_and_plan_list_and_get_show_the_display_beside_the_stored_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

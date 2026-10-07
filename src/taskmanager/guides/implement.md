@@ -34,7 +34,7 @@ tm render <task-id> --view subagent
 That is the whole assignment: the task's frontmatter, its parent's context, its sections and its verifications. Then, only as needed:
 
 - `tm task get <task-id> --yaml` — status, `next_action`, flags, `target_repo`, `depends_on`, `declared_files`, verifications, conditions, lease.
-- `tm section get <task-id>:<key>` — one section; `tm section get <task-id>` prints them all.
+- `tm section get <task-id>:<key>` — one section; `tm section get <task-id>` prints them all. Content only goes to stdout, the header to stderr, so `tm section get id:key > f` then `tm section set id:key -f f` round-trips without folding the header back into the content.
 
 A task that was reopened carries a `:reopen` note and the earlier `:review`, and its branch still holds the earlier work: read both, and decide what to keep.
 
