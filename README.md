@@ -20,8 +20,9 @@ A node goes `READY`, `IMPLEMENTING`, `IMPLEMENTED`, then through review, fix and
   branch; with `review` off that completes it, and with `review` on it reads `LANDED`: its code
   is on the target and its one review is owed.
 - One review, on the landed target. It reads the container's whole landing, so its children
-  take `review: false` and `fix: false` by default; an explicit `review: true` on a child still
-  wins. An approval completes the container.
+  take `review: false`, `fix: false` and `merge: parent` by default, and a sensitive child keeps
+  `review` and `fix` on; an explicit flag on a child still wins, and a child with `review` off
+  that would land on `main` is refused. An approval completes the container.
 - Fixes land without a re-review. A rejection is fixed on a branch cut from the landed target,
   and that fix lands as soon as it is done. A task with `review` on is still reviewed before it
   lands, and its fix lands the same way.
