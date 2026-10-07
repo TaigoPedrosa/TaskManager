@@ -183,7 +183,8 @@ function setViewMode(mode) {
 }
 
 // Back to the view's default: the pane at the top, nothing selected, every group at its
-// default open state. Filters are not part of a view, so they stay.
+// default open state. Filters are not part of a view, so they stay; the sort is part of the two
+// lists it orders.
 function resetView() {
   const view = currentMode;
   if (view === window.VIEW_MODES.DECISIONS) {
@@ -210,7 +211,7 @@ function resetView() {
       }
     }
   }
-  navigate({ view }, { replace: true });
+  navigate({ view, sort: SORTED_VIEWS.includes(view) ? 'progress' : sortOrder }, { replace: true });
   scheduleRender();
 }
 
@@ -549,6 +550,36 @@ function countsForRow(row) {
     return planEntry ? planEntry.counts : {};
   }
   return {};
+}
+
+// Sibling order. Both read only rows and the counts tree, so a static export sorts the same way.
+const RUNNING_DISPLAYS = ['IMPLEMENTING', 'REVIEWING', 'FIXING', 'MERGING', 'WAITING_MERGE_AGENT'];
+
+function planOrder(a, b) {
+  return a.ordinal - b.ordinal || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
+// [rung, completed share]: ongoing 0, incomplete 1, complete 2, set aside 3. A container's own
+// display can be a roll-up of its tasks (Implementing once part of it is done), so only its
+// counts, which hold its own step and its tasks, say whether a step is running.
+function progressRank(row) {
+  const display = displayOf(row);
+  if (SET_ASIDE_DISPLAYS.has(display)) return [3, 0];
+  if (display === 'COMPLETED') return [2, 0];
+  if (row.kind === 'task') return [RUNNING_DISPLAYS.includes(display) ? 0 : 1, 0];
+  const p = progressParts(countsForRow(row));
+  if (RUNNING_DISPLAYS.some(c => p.counts[c])) return [0, 0];
+  return [1, p.total ? p.completed / p.total : 0];
+}
+
+function progressOrder(a, b) {
+  const [rungA, shareA] = progressRank(a);
+  const [rungB, shareB] = progressRank(b);
+  return rungA - rungB || shareA - shareB || planOrder(a, b);
+}
+
+function priorityOrder(a, b) {
+  return (b.priority ?? 50) - (a.priority ?? 50) || planOrder(a, b);
 }
 
 // A section's content is routinely imported straight from a markdown document, so its
