@@ -210,7 +210,7 @@ def test_a_cycle_carries_the_stored_lifecycle_fields() -> None:
         merge_attempts=1,
         step_failures=1,
     )
-    assert cycle_of(node, []) == Cycle(
+    assert cycle_of(node, False) == Cycle(
         status=Status.REVIEWED,
         container=True,
         review=True,
@@ -230,7 +230,7 @@ def test_applying_a_cycle_round_trips_through_storage(estate: Estate) -> None:
     moved = Cycle(status=Status.IMPLEMENTING, claimed_from=Status.READY, step_failures=2)
     estate.nodes.save_node(apply_cycle(node, moved))
     stored = estate.nodes.get_node("T")
-    assert stored is not None and cycle_of(stored, []) == moved
+    assert stored is not None and cycle_of(stored, False) == moved
 
 
 def test_facts_of_an_idle_ready_task_are_all_clear(estate: Estate) -> None:
