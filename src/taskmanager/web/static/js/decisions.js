@@ -18,9 +18,6 @@ let decisionsTab = 'open';
 // /api/decisions' own per-status totals, refreshed on every page fetch -- the only source for
 // the Answered/Withdrawn tab counts, since (unlike Open) nothing pushes those live.
 let decisionsCounts = null;
-// The view mode active right before the toolbar switched into Decisions, so a blocked-node
-// chip sends the owner back to the view they came from.
-let viewModeBeforeDecisions = window.VIEW_MODES.DOCUMENT;
 // Last status this session saw a given decision hold, keyed by id -- a later render of the
 // same decision seeing OPEN turn into anything else is a change made elsewhere.
 const decisionDetailLastStatus = new Map();
@@ -255,16 +252,6 @@ function goToDecision(decisionId) {
   const row = decisionsData.find(d => d.id === decisionId);
   if (row && decisionTabFor(row.status) !== decisionsTab) setDecisionsTab(decisionTabFor(row.status));
   selectDecision(decisionId);
-}
-
-// The reverse trip: a blocked/raising node inside a decision's own detail reopens the view
-// the owner left off in and opens the detail drawer on that node. In the Document view the
-// node is also expanded and scrolled to, under the drawer.
-function openBlockedNodeDetail(nodeId) {
-  const target = viewModeBeforeDecisions;
-  navigate({ view: target });
-  if (target === window.VIEW_MODES.DOCUMENT) selectNode(nodeId);
-  showGraphInspector(nodeId);
 }
 
 
@@ -631,17 +618,16 @@ function optionCardHtml(opt, { selectable = false, tabbable = false, waiting = 0
 
 // One line per node waiting on the decision, or that was: its current status, its kind when it
 // is a container, its id and its title truncating, a chevron, and on an open decision the remove
-// ×. The row button's overlay spans the line; the status icon and × sit above it.
+// ×. The id link spans the line and opens the node in the view the owner came from; the status
+// icon and × sit above it.
 function waitingRowHtml(t, canEditBlocks) {
   return `
     <div class="dec-waiting-row relative flex items-center gap-2 px-2.5 py-2 rounded-lg bg-zinc-900/60 border border-zinc-800 hover:border-zinc-700 active:bg-zinc-900 transition">
       ${statusIcon(t.status || 'STALE')}
       ${kindBadge(t.kind)}
-      <button type="button" class="dec-task-link flex-1 min-w-0 flex items-center gap-2 text-left focus:outline-none after:absolute after:inset-0 after:rounded-lg after:content-[''] focus-visible:after:ring-2 focus-visible:after:ring-emerald-400" data-task-id="${esc(t.id)}">
-        <span class="flex-shrink-0 font-mono font-bold text-xs leading-4 text-emerald-400">${esc(t.id)}</span>
-        <span class="dec-waiting-title flex-1 min-w-0 truncate text-xs leading-4 text-zinc-400" title="${esc(t.title || '')}">${esc(t.title || '')}</span>
-        <span class="flex-shrink-0 text-zinc-400" aria-hidden="true">${renderIcon('chevron-right', 'w-3.5 h-3.5')}</span>
-      </button>
+      ${idLink(t.id, t.kind, 'row')}
+      <span class="dec-waiting-title flex-1 min-w-0 truncate text-xs leading-4 text-zinc-400" title="${esc(t.title || '')}">${esc(t.title || '')}</span>
+      <span class="flex-shrink-0 text-zinc-400" aria-hidden="true">${renderIcon('chevron-right', 'w-3.5 h-3.5')}</span>
       ${canEditBlocks ? `<button type="button" class="dec-block-remove relative z-[1] flex-shrink-0 p-1 rounded-md text-zinc-400 hover:text-red-400 hover:bg-zinc-800 active:bg-zinc-700 ${DEC_FOCUS}" data-task-id="${esc(t.id)}" aria-label="Stop ${esc(t.id)} waiting on this decision">${renderIcon('x', 'w-3 h-3')}</button>` : ''}
     </div>`;
 }
@@ -880,9 +866,7 @@ function renderDecisionDetail(id) {
     };
 
     const raisedByHtml = data.raised_by ? `
-      <div class="flex items-center gap-1.5 text-xs leading-4 text-zinc-400">Raised by
-        <button type="button" class="dec-raised-by-link font-mono font-bold text-emerald-400 hover:underline rounded-sm active:text-emerald-200 ${DEC_FOCUS}" data-task-id="${esc(data.raised_by)}">${esc(data.raised_by)}</button>
-      </div>` : '';
+      <div class="dec-raised-by flex items-center gap-1.5 text-xs leading-4 text-zinc-400">Raised by ${idLink(data.raised_by)}</div>` : '';
 
     // §6.4: open decisions offer editing of blocked tasks. A withdrawn/answered decision only
     // ever shows the read-only list -- removing a block from one that already resolved
@@ -961,10 +945,6 @@ function renderDecisionDetail(id) {
     attachCopyHandlers(decisionsDetailEl);
     wireAttachmentControls(decisionsDetailEl, node, attachments, editable, afterAttachmentChange);
 
-    decisionsDetailEl.querySelectorAll('.dec-task-link, .dec-raised-by-link').forEach(btn => {
-      btn.addEventListener('click', () => openBlockedNodeDetail(btn.getAttribute('data-task-id')));
-    });
-
     // Removing a node sends focus to + Add task; adding one sends it to the new row.
     decisionsDetailEl.querySelectorAll('.dec-block-remove').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -994,7 +974,7 @@ function renderDecisionDetail(id) {
             const taskId = match ? match.id : typed;
             await write('POST', `/api/decisions/${node.id}/blocks`, { add: [taskId] });
             close();
-            pendingFocus = { id, to: `.dec-task-link[data-task-id="${CSS.escape(taskId)}"]` };
+            pendingFocus = { id, to: `.dec-waiting-row a.id-link[data-id="${CSS.escape(taskId)}"]` };
             toast(`${taskId} now waits on ${node.id}`, { tone: 'success' });
             refreshDecisionsData();
           }

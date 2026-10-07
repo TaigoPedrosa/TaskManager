@@ -206,10 +206,24 @@ function waveRowHtml(entry, showModel) {
   `;
 }
 
+// What holds a node, as discovery words it: the work or the open decisions it waits on, each a
+// link; any other reason stays as written.
+const HELD_WAIT = /^(?:waits on|awaiting decision) (.+)$/;
+
+function heldReason(reason) {
+  const m = HELD_WAIT.exec(reason);
+  if (!m) return { text: reason, html: esc(reason) };
+  const ids = m[1].split(', ');
+  return {
+    text: `waits on ${ids.join(', ')}`,
+    html: `waits on ${ids.map(id => idLink(id, id.startsWith('decision-') ? 'decision' : null)).join(', ')}`,
+  };
+}
+
 function heldRowHtml(row) {
   const sep = row.indexOf(': ');
   const id = sep === -1 ? '' : row.slice(0, sep);
-  const reason = sep === -1 ? row : row.slice(sep + 2);
+  const reason = heldReason(sep === -1 ? row : row.slice(sep + 2));
   const info = waveNodes[id];
   return `
     <div class="${WAVE_ROW}" data-node-id="${esc(id)}">
@@ -217,7 +231,7 @@ function heldRowHtml(row) {
       ${info ? kindBadge(info.kind) : ''}
       ${id ? idLink(id, info && info.kind) : ''}
       <span class="flex-1 min-w-0 truncate text-xs leading-4 text-zinc-200" title="${esc(info ? info.title : '')}">${esc(info ? info.title : '')}</span>
-      <span class="flex-1 min-w-0 truncate text-right font-mono text-[11px] leading-4 text-zinc-400" title="${esc(reason)}">${esc(reason)}</span>
+      <span class="held-reason flex-1 min-w-0 truncate text-right font-mono text-[11px] leading-4 text-zinc-400" title="${esc(reason.text)}">${reason.html}</span>
     </div>
   `;
 }

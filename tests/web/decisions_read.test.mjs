@@ -482,8 +482,8 @@ test('Attach opens the native picker and writes on choice; focus then goes to th
   type(page.$('#dialog-root .dbk-task'), 'WEBUX-SHIP');
   page.$('#dialog-root .dlg-submit').click();
   await page.settle();
-  assert.equal(page.document.activeElement.getAttribute('data-task-id'), 'WEBUX-SHIP', 'after Add task focus is on its row');
-  assert.ok(page.document.activeElement.classList.contains('dec-task-link'));
+  assert.equal(page.document.activeElement.getAttribute('data-id'), 'WEBUX-SHIP', 'after Add task focus is on its row');
+  assert.ok(page.document.activeElement.closest('.dec-waiting-row'), 'the new row\'s own link');
 
   page.$('.dec-block-remove[data-task-id="WEBUX-SHIP"]').click();
   await page.settle();

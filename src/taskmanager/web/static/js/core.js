@@ -3,6 +3,8 @@ let graphData = { nodes: [], edges: [] };
 let selectedNodeId = null;
 let visNodesDS = null;
 let currentMode = window.VIEW_MODES.DOCUMENT;
+// The view the toolbar left for Decisions. Decisions shows no node, so a node opens there.
+let viewModeBeforeDecisions = window.VIEW_MODES.DOCUMENT;
 let networkInstance = null;
 let isStaticMode = typeof window.STATIC_DATA !== 'undefined';
 // A node's expand/collapse state now lives in the store's open and watch sets (open reveals
@@ -52,8 +54,9 @@ const specFilterEl = document.getElementById('spec-filter');
 const phaseFilterEl = document.getElementById('phase-filter');
 const scoreFilterEl = document.getElementById('score-filter');
 const clearFiltersBtn = document.getElementById('clear-filters-btn');
+const toolbarEl = document.getElementById('toolbar');
 const filtersToggleBtn = document.getElementById('filters-toggle-btn');
-const filterControlsGroup = document.getElementById('filter-controls-group');
+const filtersPanel = document.getElementById('filters-panel');
 const legendBtn = document.getElementById('legend-btn');
 const legendPanel = document.getElementById('legend-panel');
 const legendBody = document.getElementById('legend-body');
@@ -294,13 +297,27 @@ function statusIcon(code, size = 'w-3.5 h-3.5') {
   return `<span class="st-text st-${t.code} relative z-[1] inline-flex flex-shrink-0 rounded-sm ${FOCUS_RING}" role="img" tabindex="0" data-tip title="${esc(t.label)}" aria-label="${esc(t.label)}">${renderIcon(t.icon, size)}</span>`;
 }
 
-// A node opens in the view it is named in; a decision always opens the Decisions pane. An id
-// never truncates; where nothing else on its line can yield (`wrap`), it breaks instead.
-function idLink(id, kind, wrap = false) {
+function nodeView() {
+  return currentMode === window.VIEW_MODES.DECISIONS ? viewModeBeforeDecisions : currentMode;
+}
+
+// How an id link draws: inline (the default) never truncates; `wrap` breaks where nothing else on
+// its line can yield; `row` stretches over its `relative` row, which takes the click and the focus
+// ring while the row's own controls sit above it; `chip` is the awaiting-decision chip.
+const ID_TEXT = 'font-bold text-xs leading-4 text-emerald-400';
+const ID_LOOK = {
+  inline: `relative z-[1] flex-shrink-0 whitespace-nowrap rounded-sm ${ID_TEXT} hover:underline ${FOCUS_RING}`,
+  wrap: `relative z-[1] min-w-0 break-all rounded-sm ${ID_TEXT} hover:underline ${FOCUS_RING}`,
+  row: `flex-shrink-0 whitespace-nowrap ${ID_TEXT} focus:outline-none after:absolute after:inset-0 after:rounded-lg after:content-[''] focus-visible:after:ring-2 focus-visible:after:ring-emerald-400`,
+  chip: `decision-chip relative z-[1] inline-flex items-center gap-1 flex-shrink-0 whitespace-nowrap px-1.5 py-0.5 rounded-full bg-amber-950 border border-amber-400/40 hover:border-amber-400 font-medium text-[10px] leading-[14px] text-amber-400 ${FOCUS_RING}`,
+};
+
+// A node opens in the view it is named in; a decision always opens the Decisions pane.
+function idLink(id, kind, look = 'inline') {
   const isDecision = kind === 'decision';
-  const view = isDecision ? window.VIEW_MODES.DECISIONS : currentMode;
-  const fit = wrap ? 'min-w-0 break-all' : 'flex-shrink-0 whitespace-nowrap';
-  return `<a href="${esc(pathFor(view, id))}" class="id-link relative z-[1] ${fit} rounded-sm font-mono font-bold text-xs leading-4 text-emerald-400 hover:underline ${FOCUS_RING}" data-id="${esc(id)}"${isDecision ? ' data-decision' : ''}>${esc(id)}</a>`;
+  const view = isDecision ? window.VIEW_MODES.DECISIONS : nodeView();
+  const icon = look === 'chip' ? renderIcon('help-circle', 'w-3 h-3 flex-shrink-0') : '';
+  return `<a href="${esc(pathFor(view, id))}" class="id-link font-mono ${ID_LOOK[look]}" data-id="${esc(id)}"${isDecision ? ' data-decision' : ''}>${icon}${esc(id)}</a>`;
 }
 
 function kindBadge(kind) {
@@ -389,8 +406,9 @@ document.addEventListener('click', (e) => {
 // Opening a node is a new history entry naming it in the current view; the location then
 // reveals it (Document) or opens the drawer on it (Graph, Waves).
 function openNode(id) {
+  const view = nodeView();
   const here = readLocation();
-  navigate({ view: currentMode, id }, { replace: here.view === currentMode && here.id === id });
+  navigate({ view, id }, { replace: here.view === view && here.id === id });
 }
 
 // A plain click on an id link opens it in place; a modified one is left to the browser.
@@ -398,6 +416,7 @@ document.addEventListener('click', (e) => {
   const link = e.target.closest && e.target.closest('a.id-link');
   if (!link || e.button > 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
   e.preventDefault();
+  hideTip();
   const id = link.getAttribute('data-id');
   if (!link.hasAttribute('data-decision')) openNode(id);
   else if (typeof goToDecision === 'function') goToDecision(id);
@@ -414,7 +433,8 @@ tipEl.className = 'hidden fixed z-50 max-w-xs px-2 py-1 rounded-md border border
 document.body.appendChild(tipEl);
 let tipAnchor = null;
 
-function showTip(anchor, html) {
+// An `interactive` tooltip (the Graph node's, with its decision links) takes the pointer.
+function showTip(anchor, html, interactive = false) {
   hideTip();
   tipAnchor = anchor;
   const title = anchor.getAttribute('title');
@@ -423,6 +443,7 @@ function showTip(anchor, html) {
     anchor.removeAttribute('title');
   }
   tipEl.innerHTML = html;
+  tipEl.classList.toggle('pointer-events-none', !interactive);
   tipEl.classList.remove('hidden');
   const r = anchor.getBoundingClientRect();
   const w = tipEl.getBoundingClientRect().width;
@@ -460,6 +481,7 @@ document.addEventListener('focusin', (e) => {
 document.addEventListener('focusout', (e) => {
   if (tipAnchor && tipTarget(e) === tipAnchor) hideTip();
 });
+tipEl.addEventListener('mouseleave', hideTip);
 // An open tooltip takes the first Escape, so the dialog or drawer under it stays open.
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || !tipAnchor) return;

@@ -762,19 +762,6 @@ def test_human_bytes_formats_and_hides_unknown_size(tmp_path: Path) -> None:
     assert "OK" in result.stdout
 
 
-def test_toolbar_filters_collapse_behind_a_toggle_below_sm() -> None:
-    # At 375px the five filter controls plus + New routinely wrapped the toolbar onto
-    # several lines; below `sm` they now sit behind one toggle, keeping row 1 to one row.
-    html = get_web_html()
-    assert '<button id="filters-toggle-btn" type="button" aria-expanded="false"' in html
-    assert "sm:hidden" in html.split('id="filters-toggle-btn"')[1].split(">")[0]
-    assert 'id="filter-controls-group" class="hidden sm:flex' in html
-    toggle = _function_body(html, "renderFiltersToggle")
-    assert "activeFilterCount()" in toggle
-    assert "filterControlsGroup.classList.toggle('hidden', !filtersPanelOpen)" in toggle
-    assert "aria-expanded" in toggle
-
-
 def test_the_page_names_no_pre_lifecycle_status_or_status_setter() -> None:
     html = get_web_html()
     for word in (

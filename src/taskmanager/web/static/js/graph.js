@@ -40,14 +40,32 @@ function graphVisNode(row) {
 }
 
 // The status label is spelled out here, so no status icon sits beside it; a container adds
-// its roll-up from the counts tree.
+// its roll-up from the counts tree, and a node held by open decisions links each one.
 function graphTipHtml(id) {
   const row = window.tmStore.rows.get(id);
   if (!row) return esc(id);
   const theme = getTheme(displayOf(row));
   const rollup = row.kind === 'task' ? '' : `<div class="text-zinc-400">${esc(progressText(countsForRow(row)))}</div>`;
-  return `<div class="font-mono font-bold text-emerald-400">${esc(row.id)}</div><div class="text-zinc-200">${esc(row.title)}</div><div class="graph-tip-status st-text st-${theme.code}">${esc(theme.label)}</div>${rollup}`;
+  const decisions = (row.waits_on || []).filter(w => w.startsWith('decision-'));
+  const chips = decisions.length ? `<div class="flex flex-wrap gap-1.5">${decisions.map(d => idLink(d, 'decision', 'chip')).join('')}</div>` : '';
+  return `<div class="graph-tip flex flex-col gap-1.5 px-1 py-1.5 font-normal"><div class="flex items-center gap-2">${idLink(row.id, row.kind)}<span class="graph-tip-status text-zinc-400">${esc(theme.label)}</span></div><div class="text-xs leading-4 text-zinc-300">${esc(row.title)}</div>${rollup}${chips}</div>`;
 }
+
+// Leaving a node waits a moment before the tooltip goes, so the pointer can cross to its links.
+const GRAPH_TIP_LINGER_MS = 200;
+let graphTipLinger = null;
+
+function showGraphTip(anchor, id) {
+  clearTimeout(graphTipLinger);
+  showTip(anchor, graphTipHtml(id), true);
+}
+
+function lingerGraphTip() {
+  clearTimeout(graphTipLinger);
+  graphTipLinger = setTimeout(hideTip, GRAPH_TIP_LINGER_MS);
+}
+
+tipEl.addEventListener('mouseenter', () => clearTimeout(graphTipLinger));
 
 function graphVisEdge([source, target, type]) {
   return {
@@ -93,9 +111,9 @@ function renderGraph() {
   });
   networkInstance.on('hoverNode', (params) => {
     const proxy = graphFocusProxies.get(params.node);
-    if (proxy) showTip(proxy, graphTipHtml(params.node));
+    if (proxy) showGraphTip(proxy, params.node);
   });
-  networkInstance.on('blurNode', hideTip);
+  networkInstance.on('blurNode', lingerGraphTip);
   networkInstance.on('dragStart', hideTip);
   networkInstance.on('zoom', hideTip);
   networkInstance.on('afterDrawing', syncGraphFocusProxies);
@@ -132,7 +150,7 @@ function syncGraphFocusProxies() {
       btn.className = `graph-node-focus absolute rounded-md pointer-events-none ${FOCUS_RING}`;
       btn.setAttribute('tabindex', '0');
       btn.setAttribute('data-node-id', id);
-      btn.addEventListener('focusin', () => showTip(btn, graphTipHtml(id)));
+      btn.addEventListener('focusin', () => showGraphTip(btn, id));
       btn.addEventListener('focusout', hideTip);
       btn.addEventListener('click', () => showGraphInspector(id));
       graphFocusLayer.appendChild(btn);
