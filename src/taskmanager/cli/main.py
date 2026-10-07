@@ -1276,7 +1276,8 @@ def section_set(
         str | None, typer.Option("--content", help="Section content text")
     ] = None,
     file: Annotated[
-        Path | None, typer.Option("--file", "-f", help="Read content from file")
+        typer.FileText | None,
+        typer.Option("--file", "-f", encoding="utf-8", help="Read content from file, - for stdin"),
     ] = None,
     header: Annotated[
         str | None, typer.Option("--header", "-h", help="Section markdown header")
@@ -1294,7 +1295,7 @@ def section_set(
 
     text_content = ""
     if file:
-        text_content = file.read_text(encoding="utf-8")
+        text_content = file.read()
     elif content_opt is not None:
         text_content = content_opt
     elif content is not None:

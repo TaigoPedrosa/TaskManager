@@ -694,13 +694,14 @@ class Operations:
     ) -> None:
         if is_owed_key(section_key):
             raise OperationError(owed_refusal(node_id), 400)
-        sec_header = header or f"## {section_key.capitalize()}"
         existing_secs = self.node_repo.get_all_sections(node_id)
         existing = next((s for s in existing_secs if s.section_key == section_key), None)
+        stored = existing.header if existing else None
+        sec_header = header or stored or f"## {section_key.capitalize()}"
         ordinal = existing.ordinal if existing else len(existing_secs) + 1
         # `tm section get` used to print the header above the content on stdout; a caller that
         # fed that output straight back in folded it into the content. Strip it either way.
-        for leaked_header in {sec_header, existing.header if existing else None}:
+        for leaked_header in {sec_header, stored}:
             if leaked_header and content.startswith(f"{leaked_header}\n"):
                 content = content[len(leaked_header) + 1 :]
                 break
