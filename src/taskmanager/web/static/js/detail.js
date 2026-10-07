@@ -127,18 +127,27 @@ function childRowHtml(child, shared) {
   return `<div class="${RELATION_ROW}">${statusIcon(displayOf(child))}${kindBadge(child.kind)}${idLink(child.id, child.kind)}${relationTitleHtml(child.title)}${progress}${leasePulse(leaseOf(child))}${pills}</div>`;
 }
 
-// A container's own list. On the card each child is its own card; in the drawer each is a row
-// with its progress. A value every child shares moves to the group header, once.
-function renderChildren(node, byParent, surface) {
+// A container's own list, ending with its own step once that has started. On the card each child
+// is its own card; in the drawer each is a row with its progress. A value every child shares
+// moves to the group header, once.
+function renderChildren(node, row, byParent, surface) {
   if (node.kind === 'task') return '';
   const kids = byParent.get(node.id) || [];
+  const stepTitle = ownStepTitle(row);
   const kinds = new Set(kids.map(c => c.kind));
-  const label = kinds.size > 1 ? 'Plans and tasks' : kinds.has('plan') ? 'Plans' : 'Tasks';
+  const label = kinds.size > 1 ? 'Plans and tasks' : kinds.has('plan') || (!kinds.size && node.kind === 'spec') ? 'Plans' : 'Tasks';
   const shared = sharedMeta(kids);
-  const inner = surface === 'card'
-    ? `<div class="space-y-2.5">${kids.map(c => (c.kind === 'plan' ? renderPlanCard(c, byParent, shared) : renderTaskCard(c, shared))).join('')}</div>`
-    : relationTableHtml(kids.map(c => childRowHtml(c, shared)));
-  return detailGroupHtml(node.id, 'children', label, kids.length, true, inner, sharedMetaHtml(shared));
+  let inner;
+  if (surface === 'card') {
+    const cards = kids.map(c => (c.kind === 'plan' ? renderPlanCard(c, byParent, shared) : renderTaskCard(c, shared)));
+    if (stepTitle) cards.push(ownStepCardHtml(row));
+    inner = `<div class="space-y-2.5">${cards.join('')}</div>`;
+  } else {
+    const rows = kids.map(c => childRowHtml(c, shared));
+    if (stepTitle) rows.push(`<div class="own-step ${RELATION_ROW} cursor-pointer" data-step-of="${esc(row.id)}">${ownStepCells(row, relationTitleHtml(stepTitle))}</div>`);
+    inner = relationTableHtml(rows);
+  }
+  return detailGroupHtml(node.id, 'children', label, kids.length + (stepTitle ? 1 : 0), true, inner, sharedMetaHtml(shared));
 }
 
 // The full check, on one line that scrolls sideways inside its own block, with a copy control.
@@ -226,7 +235,7 @@ function nodeDetailHtml(node, body, row, { surface, byParent } = {}) {
   const sections = sectionsListFrom(body);
   const groups = [
     detailGroupHtml(node.id, 'sections', 'Sections', sections.length, false, sectionItemsHtml(sections, node.id, editable)),
-    renderChildren(node, byParent || visibleChildrenByParent(), surface),
+    renderChildren(node, row, byParent || visibleChildrenByParent(), surface),
     renderVerifications(node, body.verifications, editable),
     renderDependencies(node, body.dependency_details, status, editable),
     renderDependents(node, body.dependent_details),
@@ -481,9 +490,10 @@ function openDrawer(id) {
   drawerLoad = null;
   graphInspector.classList.remove('hidden');
   window.tmStore.watch([id]);
-  // A container lists its children, which the store only holds once it is open.
-  const row = window.tmStore.rows.get(id);
-  if (row && row.kind !== 'task') expandId(row);
+  // A container lists its children, which the store only holds once it is open. A deep link's
+  // node is named by its body until the reveal has opened its ancestors.
+  const known = window.tmStore.rows.get(id) || (detailBody(id) || {}).node;
+  if (known && known.kind !== 'task') expandId(known);
   if (!isStaticMode && !detailBody(id)) loadDrawerBody(id);
   renderGraphInspector(id);
   if (opening) inspectorTitle.focus();
