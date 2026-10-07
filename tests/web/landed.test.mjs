@@ -97,10 +97,6 @@ test('a plan header keeps its id whole and lets its bar yield the width', () => 
 });
 
 test('every view names a LANDED node through its theme', () => {
-  const chip = page.statusChip('LANDED');
-  assert.match(chip, /class="st-chip st-LANDED /);
-  assert.match(chip, /<span>Landed<\/span>/);
-  assert.match(chip, /title="Landed, review owed: /);
   assert.match(page.statusIcon('LANDED'), /st-text st-LANDED .*title="Landed" aria-label="Landed"/);
   assert.equal(page.waveDisplay('LANDED'), 'LANDED');
   const graphNode = page.graphVisNode({ id: 'T1', title: 'A task', kind: 'task', display: 'LANDED' });

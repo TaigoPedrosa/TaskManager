@@ -9,22 +9,20 @@ code, pre, .font-mono {
   width: 6px;
   height: 6px;
 }
+/* Tailwind zinc-900 track, zinc-500 thumb (3.67:1, over the 3:1 a UI component needs), zinc-400 on hover. */
 ::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.2);
+  background: #18181b;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(156, 163, 175, 0.25);
+  background: #71717a;
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(156, 163, 175, 0.45);
+  background: #a1a1aa;
 }
 <!--slot:status-css-->
 
 :root { --tone-dim-fg: #71717a; --tone-dim-border: #3f3f46; --tone-zero-border: #27272a; --tone-accent: #10b981; } /* Tailwind zinc-500 / zinc-700 / zinc-800 / emerald-500 */
-.st-chip { color: var(--st-fg); background: var(--st-bg); border: 1px solid color-mix(in srgb, var(--st-fg) 40%, transparent); }
-/* Figma "Status / Landed" draws this one chip's border at full strength. */
-.st-chip.st-LANDED { border-color: var(--st-fg); }
 .st-text { color: var(--st-fg); }
 .st-seg { background: var(--st-fg); height: 100%; }
 .st-dot { background: var(--st-fg); }
