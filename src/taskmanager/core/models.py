@@ -13,7 +13,9 @@ from taskmanager.core.enums import (
     VerificationType,
 )
 from taskmanager.core.status import (
+    BEFORE_LANDING,
     IN_STEP,
+    ON_TARGET,
     Action,
     ConditionStage,
     DecisionStatus,
@@ -52,6 +54,8 @@ class Node(BaseModel):
     review_cycles: int = Field(default=0, ge=0)
     merge_attempts: int = Field(default=0, ge=0)
     step_failures: int = Field(default=0, ge=0)
+    # Its code reached its landing target and nothing has moved it back before landing since.
+    on_target: bool = False
     branch: str | None = None
     requires: list[str] = Field(default_factory=list)
     land_order: list[str] = Field(default_factory=list)
@@ -96,6 +100,17 @@ class Node(BaseModel):
             )
         if self.status == Status.FIXED and self.fix_for not in _FIX_ANSWERS:
             raise ValueError(f"{self.id}: FIXED needs fix_for reject or merge_failed")
+        return self
+
+    @model_validator(mode="after")
+    def _on_target_follows_landing(self) -> Self:
+        # A landing, and a rollup with nothing to land, write LANDED or COMPLETED; a move back
+        # before landing (a rollup over a child back in play, a reopen, a reset) writes READY or
+        # IMPLEMENTED. Every status between keeps what the node held.
+        if self.status in ON_TARGET:
+            self.on_target = True
+        elif self.status in BEFORE_LANDING:
+            self.on_target = False
         return self
 
     def checked(self) -> Node:

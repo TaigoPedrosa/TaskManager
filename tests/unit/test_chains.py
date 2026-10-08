@@ -2,9 +2,8 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from taskmanager.core.status import DecisionStatus, Merge, Status
+from taskmanager.core.status import ON_TARGET, DecisionStatus, Merge, Status
 from taskmanager.engine.chains import (
-    ON_TARGET,
     base_chain,
     landing_chain,
     landing_target,

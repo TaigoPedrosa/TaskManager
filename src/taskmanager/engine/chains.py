@@ -9,8 +9,6 @@ from taskmanager.core.status import DecisionStatus, Merge, Status
 # A chain ends at `TOP:<branch>`, its target. No node id collides with it: git refuses `tm/<id>`
 # with a ':' in it.
 TOP: Final = "TOP:"
-# Code on its landing target: completed, or landed with its one review still owed.
-ON_TARGET: Final = frozenset({Status.LANDED, Status.COMPLETED})
 
 
 class Tree(Protocol):

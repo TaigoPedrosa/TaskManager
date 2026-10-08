@@ -82,7 +82,7 @@ def test_migrated_v1_estate_matches_a_fresh_init(tmp_path: Path) -> None:
     migrated = DatabaseManager(old)
     assert migrated.migrate_state() == 1
     with migrated.get_state_connection() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 4
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 5
         assert conn.execute("SELECT merge FROM nodes").fetchall() == [("spec",)]
 
     fresh = DatabaseManager(tmp_path / "fresh")
@@ -170,19 +170,29 @@ def _raw_rows(state_db: Path) -> dict[str, list[tuple[object, ...]]]:
         conn.close()
 
 
-# `SELECT rowid, * FROM nodes`: rowid, then the twelve columns before `merge`.
+# `SELECT rowid, * FROM nodes` before schema 5: rowid, then its columns, `rev` last.
+_STATUS_AT = 4
+_CLAIMED_FROM_AT = 10
 _MERGE_AT = 13
 
 
-def _merge_as_spec(
+def _as_schema_5(
     rows: dict[str, list[tuple[object, ...]]],
 ) -> dict[str, list[tuple[object, ...]]]:
-    """`rows` as schema 4 stores them: a node's `merge` of `main` reads `spec`."""
-    nodes = [
-        (*r[:_MERGE_AT], "spec" if r[_MERGE_AT] == "main" else r[_MERGE_AT], *r[_MERGE_AT + 1 :])
-        for r in rows["nodes"]
-    ]
-    return {**rows, "nodes": nodes}
+    """`rows` as schema 5 stores them: a node's `merge` of `main` reads `spec`, and the new last
+    column, `on_target`, is set on a node landed, completed or in a review claimed from LANDED,
+    whose `rev` that write moves on by one."""
+
+    def schema_5(r: tuple[object, ...]) -> tuple[object, ...]:
+        landed = r[_STATUS_AT] in ("LANDED", "COMPLETED") or (
+            r[_STATUS_AT] == "REVIEWING" and r[_CLAIMED_FROM_AT] == "LANDED"
+        )
+        merge = "spec" if r[_MERGE_AT] == "main" else r[_MERGE_AT]
+        rev = r[-1]
+        assert isinstance(rev, int)
+        return (*r[:_MERGE_AT], merge, *r[_MERGE_AT + 1 : -1], rev + landed, int(landed))
+
+    return {**rows, "nodes": [schema_5(r) for r in rows["nodes"]]}
 
 
 def _write_landed(state_db: Path, status: str, claimed_from: str | None) -> None:
@@ -216,7 +226,7 @@ def test_migrate_schema_2_estate_keeps_every_row_and_column_but_merge_main_uncha
         assert conn.execute("PRAGMA legacy_alter_table").fetchone()[0] == 0
     db.close()
 
-    assert _raw_rows(old / "state.db") == _merge_as_spec(before)
+    assert _raw_rows(old / "state.db") == _as_schema_5(before)
     assert all(before.values())
 
 
@@ -243,7 +253,7 @@ def test_migrate_schema_2_estate_on_a_foreign_keys_on_build_keeps_every_child_ro
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     db.close()
 
-    assert _raw_rows(old / "state.db") == _merge_as_spec(before)
+    assert _raw_rows(old / "state.db") == _as_schema_5(before)
     assert all(before.values())
 
 
@@ -317,9 +327,9 @@ def _dump(state_db: Path) -> list[str]:
         conn.close()
 
 
-def _dump_as_schema_4(state_db: Path, scratch: Path) -> list[str]:
+def _dump_as_schema_5(state_db: Path, scratch: Path) -> list[str]:
     """`state_db`'s dump with every `main` merge value, and the column's CHECK, read as schema
-    4 holds them; every other line as it is."""
+    4 holds them, then schema 5's `on_target` added; every other line as it is."""
     shutil.copyfile(state_db, scratch)
     conn = sqlite3.connect(scratch)
     try:
@@ -332,6 +342,7 @@ def _dump_as_schema_4(state_db: Path, scratch: Path) -> list[str]:
         conn.execute("UPDATE nodes SET merge = 'spec' WHERE merge = 'main'")
         conn.execute(trigger)
         conn.commit()
+        conn.executescript(STATE_MIGRATIONS[5])
     finally:
         conn.close()
     return sorted(line.replace(_MERGE_COLUMN_V3, _MERGE_COLUMN_V4) for line in _dump(scratch))
@@ -348,7 +359,7 @@ def test_migrate_schema_3_estate_rewrites_main_to_spec_and_changes_nothing_else(
     on_main = sorted(row[1] for row in before["nodes"] if row[_MERGE_AT] == "main")
     assert {"M1", "D-OPEN"} <= set(on_main)
     assert any(row[_MERGE_AT] == "parent" for row in before["nodes"])
-    expected = _dump_as_schema_4(state_db, tmp_path / "expected.db")
+    expected = _dump_as_schema_5(state_db, tmp_path / "expected.db")
     assert expected != before_dump
 
     db = DatabaseManager(old)
@@ -357,18 +368,64 @@ def test_migrate_schema_3_estate_rewrites_main_to_spec_and_changes_nothing_else(
 
     conn = sqlite3.connect(state_db)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 4
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 5
         merges = dict(conn.execute("SELECT id, merge FROM nodes").fetchall())
     finally:
         conn.close()
     assert set(merges.values()) == {"parent", "spec"}
     assert {merges[node_id] for node_id in on_main} == {"spec"}
     assert _dump(state_db) == expected
-    assert _raw_rows(state_db) == _merge_as_spec(before)
+    assert _raw_rows(state_db) == _as_schema_5(before)
 
     backup = old / "state.db.schema3.bak"
     assert _user_version(backup) == 3
     assert _dump(backup) == before_dump
+
+
+# Each node a schema-4 estate holds, by its status and the status its step was claimed from.
+_V4_NODES = {
+    "L": ("LANDED", None, None, None),
+    "C": ("COMPLETED", None, None, None),
+    "RL": ("REVIEWING", "LANDED", None, None),
+    "RF": ("REVIEWING", "FIXED", None, "merge_failed"),
+    "RV": ("REVIEWED", None, "reject", None),
+    "FX": ("FIXED", None, "reject", "reject"),
+    "R": ("READY", None, None, None),
+}
+
+
+def _build_v4_estate(taskmanager_dir: Path) -> None:
+    """A `state.db` at schema 4: no `on_target` column."""
+    _build_v1_estate(taskmanager_dir)
+    conn = sqlite3.connect(taskmanager_dir / "state.db")
+    try:
+        for version in (2, 3, 4):
+            conn.executescript(STATE_MIGRATIONS[version])
+        for node_id, (status, claimed_from, outcome, fix_for) in _V4_NODES.items():
+            conn.execute(
+                "INSERT INTO nodes (id, kind, title, status, claimed_from, outcome, fix_for) "
+                "VALUES (?, 'plan', ?, ?, ?, ?, ?)",
+                (node_id, node_id, status, claimed_from, outcome, fix_for),
+            )
+        conn.execute("PRAGMA user_version = 4")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_migrate_schema_4_estate_puts_on_target_only_what_has_surely_landed(
+    tmp_path: Path,
+) -> None:
+    old = tmp_path / "old"
+    _build_v4_estate(old)
+
+    db = DatabaseManager(old)
+    assert db.migrate_state() == 4
+    with db.get_state_connection() as conn:
+        on_target = dict(conn.execute("SELECT id, on_target FROM nodes").fetchall())
+    db.close()
+
+    assert on_target == {"L": 1, "C": 1, "RL": 1, "RF": 0, "RV": 0, "FX": 0, "R": 0}
 
 
 def test_open_current_schema_estate_leaves_the_file_bytes_untouched(tmp_path: Path) -> None:
@@ -380,7 +437,7 @@ def test_open_current_schema_estate_leaves_the_file_bytes_untouched(tmp_path: Pa
 
     again = DatabaseManager(estate)
     with again.get_state_connection() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 4
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 5
     again.close()
 
     assert (estate / "state.db").read_bytes() == before

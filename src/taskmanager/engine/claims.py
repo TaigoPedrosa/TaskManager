@@ -839,7 +839,10 @@ class Claims:
             nxt = lifecycle.reset(self.snapshots.cycle(node), to, outcome)
         except LifecycleError as exc:
             raise OperationError(str(exc), 400) from exc
-        return self._rewrite(node, nxt, ("reset", note), "task reset")
+        # A reset says where the node is, and only LANDED or COMPLETED, proven above, says its
+        # code is on its target: a reset to REVIEWED or FIXED leaves it off.
+        unlanded = node.model_copy(update={"on_target": False})
+        return self._rewrite(unlanded, nxt, ("reset", note), "task reset")
 
     def defer(self, node_id: str, note: str) -> Status:
         return self._set_aside(node_id, note, lifecycle.defer, "deferral", "task defer")

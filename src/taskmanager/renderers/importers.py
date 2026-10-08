@@ -363,6 +363,9 @@ class BulkImporter:
                 review_cycles=int(pick("review_cycles", 0)),
                 merge_attempts=int(pick("merge_attempts", 0)),
                 step_failures=int(pick("step_failures", 0)),
+                # A stated status says where the node is, as a reset does: on its target only
+                # at LANDED or COMPLETED.
+                on_target=False if "status" in data else pick("on_target", False),
             )
         except ValidationError as exc:
             reasons = "; ".join(str(e["msg"]).removeprefix("Value error, ") for e in exc.errors())

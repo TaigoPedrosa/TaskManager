@@ -1,5 +1,6 @@
-"""A reviewed plan lands before its review: from its first succeeded landing on, its code is on
-its target through every review and fix status after it."""
+"""A reviewed plan lands before its review. From its landing until a write moves it back before
+landing, its code is on its target: its dependents stay claimable and its migration writers
+leave the chain, through every review and fix status in between."""
 
 from pathlib import Path
 
@@ -7,116 +8,238 @@ import pytest
 from lifecycle_estate import add, make_estate, stored
 
 from taskmanager.core.enums import NodeKind
-from taskmanager.core.models import Job
-from taskmanager.core.status import Action, JobKind, JobState, Merge, Outcome, Status
+from taskmanager.core.status import Action, Merge, Outcome, Status
 from taskmanager.engine.claims import Claims
 from taskmanager.engine.stepgraph import migration_writers
+from taskmanager.renderers.importers import BulkImporter
 
-# The plan's stored fields at each status its post-landing review and fix pass through.
-AFTER_LANDING = [
-    pytest.param({"status": Status.LANDED}, id="landed"),
-    pytest.param({"status": Status.REVIEWING, "claimed_from": Status.LANDED}, id="reviewing"),
-    pytest.param({"status": Status.REVIEWED, "outcome": Outcome.REJECT}, id="reviewed"),
-    pytest.param(
-        {"status": Status.FIXING, "claimed_from": Status.REVIEWED, "fix_for": Outcome.REJECT},
-        id="fixing",
-    ),
-    pytest.param({"status": Status.FIXED, "fix_for": Outcome.REJECT}, id="fixed"),
-]
-REVIEWING_AFTER_FAILED_LANDING = {
-    "status": Status.REVIEWING,
-    "claimed_from": Status.FIXED,
-    "fix_for": Outcome.MERGE_FAILED,
-}
-FIXING = {"status": Status.FIXING, "claimed_from": Status.REVIEWED, "fix_for": Outcome.REJECT}
 MIGRATION = ["api/migrations/versions/001_add.py"]
 
 
-def plan_estate(
-    tmp_path: Path,
-    plan: dict[str, object],
-    landings: dict[str, JobState],
-    children: dict[str, tuple[str, Status]] | None = None,
-) -> Claims:
-    """Spec S over plan P (review on), whose children land on P's branch; task X depends on P's
-    child C. P ran one land job per repository in `landings`."""
-    under = children or {"C": ("api", Status.COMPLETED)}
-    claims = make_estate(tmp_path, tuple(sorted({repo for repo, _ in under.values()})))
+def plan_estate(tmp_path: Path) -> Claims:
+    """Spec S over plan P (review on), mid-merge, whose children land on P's branch: C, and W,
+    which writes a migration. Task X depends on C."""
+    claims = make_estate(tmp_path)
     add(claims, "S", NodeKind.SPEC)
-    add(claims, "P", NodeKind.PLAN, parent="S", review=True, **plan)
-    for child, (repo, status) in under.items():
-        files = MIGRATION if child == "W" else None
-        add(claims, child, parent="P", repo=repo, merge=Merge.PARENT, status=status, files=files)
+    add(
+        claims,
+        "P",
+        NodeKind.PLAN,
+        parent="S",
+        review=True,
+        status=Status.MERGING,
+        claimed_from=Status.IMPLEMENTED,
+    )
+    add(claims, "C", parent="P", merge=Merge.PARENT, status=Status.COMPLETED)
+    add(claims, "W", parent="P", merge=Merge.PARENT, status=Status.COMPLETED, files=MIGRATION)
     add(claims, "X", depends=("C",))
-    for repo, state in landings.items():
-        claims.jobs.create(
-            Job(kind=JobKind.LAND, node_id="P", repo=repo, target="main", state=state)
-        )
     return claims
 
 
-def blocked(claims: Claims) -> str | None:
-    return claims.blocked_reason(stored(claims, "X"), claims.snapshots.build(), Action.IMPLEMENT)
+def landed_plan(tmp_path: Path) -> Claims:
+    claims = plan_estate(tmp_path)
+    assert claims.landed("P", "api: landed on main") == Status.LANDED
+    return claims
 
 
-@pytest.mark.parametrize("plan", AFTER_LANDING)
-def test_a_dependent_is_claimable_while_the_landed_plan_is_reviewed_and_fixed(
-    tmp_path: Path, plan: dict[str, object]
-) -> None:
-    claims = plan_estate(tmp_path, plan, {"api": JobState.SUCCEEDED})
-
-    assert blocked(claims) is None
+def rejected(claims: Claims) -> None:
+    """P's review, claimed on its landed target, rejects it."""
+    claims.start("P", "reviewer", "s1")
+    claims.ops.set_section("P", "review", "1. open: a finding")
+    assert claims.review("P", approve=False) == Status.REVIEWED
 
 
-def test_a_dependent_waits_while_the_plan_is_reviewed_after_a_failed_landing(
+def blocked(claims: Claims, node_id: str = "X") -> str | None:
+    snap = claims.snapshots.build()
+    return claims.blocked_reason(stored(claims, node_id), snap, Action.IMPLEMENT)
+
+
+def chain(claims: Claims) -> list[str]:
+    return [n.id for n in migration_writers(claims.snapshots.build(), "api")]
+
+
+def state(claims: Claims) -> tuple[Status, str | None, list[str]]:
+    return Status(stored(claims, "P").status), blocked(claims), chain(claims)
+
+
+def test_the_landed_plan_stays_on_its_target_through_its_review_and_fix(tmp_path: Path) -> None:
+    claims = landed_plan(tmp_path)
+    seen = [state(claims)]
+    claims.start("P", "reviewer", "s1")
+    seen.append(state(claims))
+    claims.ops.set_section("P", "review", "1. open: a finding")
+    claims.review("P", approve=False)
+    seen.append(state(claims))
+    claims.start("P", "fixer", "s1")
+    seen.append(state(claims))
+    claims.complete("P")
+    seen.append(state(claims))
+    # W makes P sensitive, so its fix is reviewed once more before it lands.
+    claims.start("P", "reviewer", "s2")
+    seen.append(state(claims))
+
+    assert seen == [
+        (Status.LANDED, None, []),
+        (Status.REVIEWING, None, []),
+        (Status.REVIEWED, None, []),
+        (Status.FIXING, None, []),
+        (Status.FIXED, None, []),
+        (Status.REVIEWING, None, []),
+    ]
+
+
+def test_a_plan_whose_landing_failed_is_off_its_target_through_its_fix_and_review(
     tmp_path: Path,
 ) -> None:
-    claims = plan_estate(tmp_path, REVIEWING_AFTER_FAILED_LANDING, {"api": JobState.OWN_DEFECT})
+    claims = plan_estate(tmp_path)
+    claims.landing_failed("P", "api: verifications red on main")
+    seen = [state(claims)]
+    claims.start("P", "fixer", "s1")
+    seen.append(state(claims))
+    claims.complete("P")
+    seen.append(state(claims))
+    claims.start("P", "reviewer", "s1")
+    seen.append(state(claims))
 
-    assert blocked(claims) == "waits on C"
+    waits = ("waits on C", ["W"])
+    assert seen == [
+        (Status.REVIEWED, *waits),
+        (Status.FIXING, *waits),
+        (Status.FIXED, *waits),
+        (Status.REVIEWING, *waits),
+    ]
 
 
-def test_a_dependent_waits_while_the_plan_has_landed_in_only_some_of_its_repositories(
+def test_a_child_added_under_the_landed_plan_moves_it_back_before_landing(
     tmp_path: Path,
 ) -> None:
-    children = {"C": ("api", Status.COMPLETED), "D": ("web", Status.COMPLETED)}
-    landings = {"api": JobState.SUCCEEDED, "web": JobState.OWN_DEFECT}
-    claims = plan_estate(tmp_path, FIXING, landings, children)
+    claims = landed_plan(tmp_path)
+    rejected(claims)
 
-    assert blocked(claims) == "waits on C"
+    added = claims.ops.add_task(
+        "C2", plan="P", slug="C2", merge="parent", frontmatter={"declared_files": MIGRATION}
+    )
+    claims.ops.update_node(added, repo="api")
+    add(claims, "X2", depends=(added,))
 
-
-def test_a_set_aside_child_names_no_repository_the_plan_must_land_in(tmp_path: Path) -> None:
-    children = {"C": ("api", Status.COMPLETED), "D": ("web", Status.DEFERRED)}
-    claims = plan_estate(tmp_path, FIXING, {"api": JobState.SUCCEEDED}, children)
-
-    assert blocked(claims) is None
-
-
-@pytest.mark.parametrize("plan", AFTER_LANDING)
-def test_a_migration_writer_leaves_the_chain_once_its_plan_has_landed(
-    tmp_path: Path, plan: dict[str, object]
-) -> None:
-    children = {"C": ("api", Status.COMPLETED), "W": ("api", Status.COMPLETED)}
-    claims = plan_estate(tmp_path, plan, {"api": JobState.SUCCEEDED}, children)
-
-    assert [n.id for n in migration_writers(claims.snapshots.build(), "api")] == []
-
-
-def test_a_migration_writer_holds_the_chain_while_its_plan_has_not_landed(
-    tmp_path: Path,
-) -> None:
-    children = {"C": ("api", Status.COMPLETED), "W": ("api", Status.COMPLETED)}
-    landings = {"api": JobState.OWN_DEFECT}
-    claims = plan_estate(tmp_path, REVIEWING_AFTER_FAILED_LANDING, landings, children)
-
-    assert [n.id for n in migration_writers(claims.snapshots.build(), "api")] == ["W"]
-
-
-def test_a_succeeded_sync_of_the_plan_is_no_landing(tmp_path: Path) -> None:
-    claims = plan_estate(tmp_path, REVIEWING_AFTER_FAILED_LANDING, {"api": JobState.OWN_DEFECT})
-    claims.jobs.create(
-        Job(kind=JobKind.SYNC, node_id="P", repo="api", target="tm/S", state=JobState.SUCCEEDED)
+    assert stored(claims, "P").status == Status.READY
+    assert (blocked(claims, "X2"), blocked(claims), chain(claims)) == (
+        f"waits on {added}",
+        "waits on C",
+        [added, "W"],
     )
 
-    assert blocked(claims) == "waits on C"
+
+def test_a_child_moved_in_under_the_landed_plan_moves_it_back_before_landing(
+    tmp_path: Path,
+) -> None:
+    claims = landed_plan(tmp_path)
+    add(claims, "Q", NodeKind.PLAN, parent="S")
+    add(claims, "M", parent="Q", merge=Merge.PARENT)
+    rejected(claims)
+
+    claims.ops.move_task("M", "P")
+
+    assert state(claims) == (Status.READY, "waits on C", ["W"])
+
+
+def test_a_child_reopened_under_the_landed_plan_moves_it_back_before_landing(
+    tmp_path: Path,
+) -> None:
+    claims = plan_estate(tmp_path)
+    add(claims, "D", parent="P", merge=Merge.PARENT, status=Status.DEFERRED)
+    claims.landed("P", "api: landed on main")
+    rejected(claims)
+
+    claims.reopen("D", "back in scope")
+
+    assert state(claims) == (Status.READY, "waits on C", ["W"])
+
+
+def test_reopening_the_plan_after_it_failed_past_its_landing_moves_it_back_before_landing(
+    tmp_path: Path,
+) -> None:
+    claims = landed_plan(tmp_path)
+    claims.nodes.save_node(
+        stored(claims, "P").model_copy(update={"status": Status.FAILED, "outcome": Outcome.REJECT})
+    )
+    assert blocked(claims) is None
+
+    claims.reopen("P", "land it again")
+
+    assert state(claims) == (Status.IMPLEMENTED, "waits on C", ["W"])
+
+
+@pytest.mark.parametrize(
+    ("to", "outcome"),
+    [
+        (Status.READY, None),
+        (Status.IMPLEMENTED, None),
+        (Status.REVIEWED, Outcome.MERGE_FAILED),
+        (Status.FIXED, Outcome.REJECT),
+    ],
+)
+def test_a_reset_to_before_landed_moves_the_plan_back_before_landing(
+    tmp_path: Path, to: Status, outcome: Outcome | None
+) -> None:
+    claims = landed_plan(tmp_path)
+
+    claims.reset("P", to, "redo it", outcome)
+
+    assert state(claims) == (to, "waits on C", ["W"])
+
+
+def test_a_plan_the_rollup_lands_with_nothing_to_land_stays_on_its_target_through_its_review(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path)
+    add(claims, "S", NodeKind.SPEC)
+    add(claims, "P", NodeKind.PLAN, parent="S", review=True)
+    add(
+        claims,
+        "C",
+        parent="P",
+        merge=Merge.PARENT,
+        status=Status.MERGING,
+        claimed_from=Status.REVIEWED,
+        outcome=Outcome.APPROVE,
+    )
+    add(claims, "X", depends=("C",))
+
+    claims.landed("C", "api: landed on tm/P")
+    assert stored(claims, "P").status == Status.LANDED
+    claims.start("P", "reviewer", "s1")
+
+    assert (stored(claims, "P").status, blocked(claims)) == (Status.REVIEWING, None)
+
+
+def test_a_write_from_a_copy_read_before_the_landing_leaves_the_plan_on_its_target(
+    tmp_path: Path,
+) -> None:
+    claims = plan_estate(tmp_path)
+    before = stored(claims, "P")
+    claims.landed("P", "api: landed on main")
+
+    claims.nodes.save_node(before.model_copy(update={"title": "renamed"}), keep_cycle=True)
+    claims.start("P", "reviewer", "s1")
+
+    assert state(claims) == (Status.REVIEWING, None, [])
+
+
+def test_reimporting_the_landed_plan_keeps_it_on_its_target_unless_it_states_a_status(
+    tmp_path: Path,
+) -> None:
+    claims = landed_plan(tmp_path)
+    rejected(claims)
+    importer = BulkImporter(claims.nodes)
+
+    importer.import_dict({"spec": {"id": "S", "title": "S"}, "plans": [{"id": "P", "title": "P"}]})
+    kept = state(claims)
+    importer.import_dict(
+        {"plans": [{"id": "P", "title": "P", "status": "REVIEWED", "outcome": "reject"}]}
+    )
+
+    assert (kept, state(claims)) == (
+        (Status.REVIEWED, None, []),
+        (Status.REVIEWED, "waits on C", ["W"]),
+    )

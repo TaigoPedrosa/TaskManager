@@ -5,7 +5,7 @@ SCHEMA_VERSION = 1
 
 # state.db: bumped and migrated separately, since it changes far more often than the ledger
 # or the cache.
-STATE_SCHEMA_VERSION = 4
+STATE_SCHEMA_VERSION = 5
 
 # Built from the enums so the vocabulary SQLite enforces and the one the code writes cannot drift.
 _CYCLE_STATUSES = ", ".join(f"'{s.value}'" for s in Status)
@@ -14,6 +14,10 @@ NODE_STATUS_CHECK = (
     f"CHECK ((kind = 'decision' AND status IN ({_DECISION_STATUSES})) "
     f"OR (kind <> 'decision' AND status IN ({_CYCLE_STATUSES})))"
 )
+
+# `ALTER TABLE ... ADD COLUMN` writes a new column's text straight after the last column's, so
+# the fresh `nodes` below carries it there too and both store the same `sqlite_master.sql`.
+_ON_TARGET_COLUMN = "on_target INTEGER NOT NULL DEFAULT 0 CHECK (on_target IN (0, 1))"
 
 _NODES_BODY_SQL = (
     """
@@ -42,7 +46,9 @@ _NODES_BODY_SQL = (
     requires TEXT NOT NULL DEFAULT '[]',
     land_order TEXT NOT NULL DEFAULT '[]',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, rev INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, rev INTEGER NOT NULL DEFAULT 0, """
+    + _ON_TARGET_COLUMN
+    + """,
     CHECK (fix <= review),
     """
     + NODE_STATUS_CHECK
@@ -286,8 +292,12 @@ def _rebuild_nodes(body: str, select: str) -> str:
 
 
 # Schema 3 takes the current `Status` with the merge column it stored then, `parent` or `main`.
-# Schema 4 takes the current one, so every row schema 3 held on `main` reads `spec`.
-_NODES_BODY_SQL_V3 = _NODES_BODY_SQL.replace(
+# Schema 4 takes the current merge column, so every row schema 3 held on `main` reads `spec`.
+# Schema 5 adds `on_target`. The column is set for a node landed or completed, or one whose
+# review was claimed from LANDED; every other review or fix status can come before a landing as
+# well as after one, so it starts unset and the node's next landing sets it.
+_NODES_BODY_SQL_V4 = _NODES_BODY_SQL.replace(f" {_ON_TARGET_COLUMN},", "")
+_NODES_BODY_SQL_V3 = _NODES_BODY_SQL_V4.replace(
     "DEFAULT 'spec' CHECK (merge IN ('parent', 'spec'))",
     "DEFAULT 'main' CHECK (merge IN ('parent', 'main'))",
 )
@@ -295,9 +305,12 @@ STATE_MIGRATIONS: dict[int, str] = {
     2: "ALTER TABLE nodes ADD COLUMN rev INTEGER NOT NULL DEFAULT 0;\n" + NODE_REV_TRIGGERS_SQL,
     3: _rebuild_nodes(_NODES_BODY_SQL_V3, _NODE_COLUMNS_V2),
     4: _rebuild_nodes(
-        _NODES_BODY_SQL,
+        _NODES_BODY_SQL_V4,
         _NODE_COLUMNS_V2.replace(", merge, ", ", IIF(merge = 'parent', 'parent', 'spec'), "),
     ),
+    5: f"ALTER TABLE nodes ADD COLUMN {_ON_TARGET_COLUMN};\n"
+    + "UPDATE nodes SET on_target = 1 WHERE status IN ('LANDED', 'COMPLETED') "
+    + "OR (status = 'REVIEWING' AND claimed_from = 'LANDED');\n",
 }
 
 # Derived results only: dropping this database loses time, never state.

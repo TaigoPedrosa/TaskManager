@@ -10,7 +10,7 @@ from taskmanager.core.models import (
     Node,
     NodeVerification,
 )
-from taskmanager.core.status import ConditionStage, JobKind, JobState
+from taskmanager.core.status import ConditionStage, JobState
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import _COLUMNS as _JOB_COLUMNS
 from taskmanager.db.job_repo import _row_to_job
@@ -22,9 +22,9 @@ _LIVE_JOB_STATES = (JobState.RUNNING.value, JobState.NEEDS_AGENT.value)
 
 @dataclass(frozen=True)
 class GraphData:
-    """Every node, relation, verification, condition, lease, file lock, live job and landing --
-    one read of `state.db`, grouped the way every reader already asks for it, so
-    `SnapshotBuilder` and its callers need no query per node."""
+    """Every node, relation, verification, condition, lease, file lock and live job -- one read
+    of `state.db`, grouped the way every reader already asks for it, so `SnapshotBuilder` and
+    its callers need no query per node."""
 
     nodes: dict[str, Node]
     # SQLite's own count of changes to a node or to a section, verification, condition or
@@ -36,8 +36,6 @@ class GraphData:
     leases: dict[str, Lease]
     file_locks: list[FileLock]
     jobs: dict[str, list[Job]]
-    # Each node's repositories a `land` job succeeded in, from every job it ever ran.
-    landed: dict[str, frozenset[str]]
     # One instant for the whole snapshot: every lease's liveness is judged against it, not
     # against the time each reader happens to ask.
     built_at: datetime = field(default_factory=lambda: datetime.now(tz=UTC))
@@ -47,7 +45,7 @@ def read_graph(db: DatabaseManager) -> GraphData:
     built_at = datetime.now(tz=UTC)
     with db.get_state_connection() as conn:
         # A caller already inside a transaction (`validated_write`) shares its consistent view;
-        # otherwise this read opens its own, so the nine selects below see one snapshot.
+        # otherwise this read opens its own, so the eight selects below see one snapshot.
         opened = not db.in_transaction and not conn.in_transaction
         if opened:
             conn.execute("BEGIN")
@@ -121,13 +119,6 @@ def read_graph(db: DatabaseManager) -> GraphData:
             ).fetchall():
                 job = _row_to_job(r)
                 jobs.setdefault(job.node_id, []).append(job)
-
-            landed_rows: dict[str, set[str]] = {}
-            for node_id, repo in conn.execute(
-                "SELECT DISTINCT node_id, repo FROM jobs WHERE kind = ? AND state = ?",
-                (JobKind.LAND.value, JobState.SUCCEEDED.value),
-            ).fetchall():
-                landed_rows.setdefault(node_id, set()).add(repo)
         finally:
             if opened:
                 conn.execute("COMMIT")
@@ -140,6 +131,5 @@ def read_graph(db: DatabaseManager) -> GraphData:
         leases=leases,
         file_locks=file_locks,
         jobs=jobs,
-        landed={node_id: frozenset(repos) for node_id, repos in landed_rows.items()},
         built_at=built_at,
     )

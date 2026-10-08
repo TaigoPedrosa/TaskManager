@@ -6,9 +6,9 @@ from dataclasses import dataclass, field
 from graphlib import CycleError, TopologicalSorter
 
 from taskmanager.core.enums import CONTAINERS, NodeKind
-from taskmanager.core.status import EXITS, SET_ASIDE, DecisionStatus, Merge, Status
+from taskmanager.core.status import EXITS, ON_TARGET, SET_ASIDE, DecisionStatus, Merge, Status
 from taskmanager.db.graph_reader import GraphData
-from taskmanager.engine.chains import ON_TARGET, base_chain, landing_chain, meet, meeting, satisfied
+from taskmanager.engine.chains import base_chain, landing_chain, meet, meeting, satisfied
 from taskmanager.engine.config import DEFAULT_BRANCH
 
 Graph = dict[str, set[str]]
@@ -36,9 +36,9 @@ class SnapNode:
     # The branch its chain lands on at the top: its spec's `land_on`, else its repository's
     # `default_branch`.
     top: str = DEFAULT_BRANCH
-    # Every repository a `land` job of this node succeeded in. A reviewed container lands before
-    # its review, and the review and fix statuses after that cannot tell its code is landed.
-    landed_in: frozenset[str] = frozenset()
+    # Its code reached its landing target and nothing has moved it back before landing since. A
+    # reviewed container lands before its review, and its status after that cannot tell.
+    on_target: bool = False
 
 
 @dataclass
@@ -79,15 +79,8 @@ class Snapshot:
         return self.nodes[node_id].top
 
     def on_target(self, node_id: str) -> bool:
-        """Its code is on its landing target: its status says so, or a `land` job succeeded in
-        every repository it lands in."""
         n = self.nodes[node_id]
-        if n.status in ON_TARGET:
-            return True
-        if not n.landed_in:
-            return False
-        under = self.counted_descendants(node_id) if n.kind in CONTAINERS else [node_id]
-        return {r for d in under if (r := self.nodes[d].repo)} <= n.landed_in
+        return n.status in ON_TARGET or n.on_target
 
     def children(self, node_id: str) -> list[str]:
         return list(self._children.get(node_id, ()))
