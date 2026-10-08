@@ -53,6 +53,8 @@ const q = s => {
   return s
 }
 const TM = q(A.tm || 'tm')
+// `.` is the one SAFE character an ERE reads as more than itself; `[.]` survives single quotes.
+const literal = s => q(s).replaceAll('.', '[.]')
 
 // tm job status --wait returns inside the runner's 10-minute command limit; a job still running
 // after MAX_POLLS waits keeps running on its own and a later tick picks it up.
@@ -174,9 +176,9 @@ const clip = v => String((typeof v === 'string' ? v : JSON.stringify(v)) ?? '').
 // preferred type is not known to serve goes to the default instead.
 const pickType = (type, requires = []) => (requires.every(x => (CAPS[type] || []).includes(x)) ? type : undefined)
 
-// Only these three: run() and work() read status, next_action and outcome off what this
+// Only these: run() and work() read status, next_action, outcome and merge off what this
 // returns, and nothing else -- a node's sections and job logs are the bulk of the row.
-const READ_FIELDS = 'status,next_action,outcome'
+const READ_FIELDS = 'status,next_action,outcome,merge'
 
 async function read(n) {
   const r = await opJson('read', n.id, `${TM} task get ${q(n.id)} --json --fields ${READ_FIELDS}`)
@@ -277,6 +279,9 @@ Sections: before any tm section set, tm section get the same key and append to i
 async function work(n, c, s, trail) {
   const fam = c.model
   const repos = c.repos || []
+  // A claim's base is a branch name: a parent's branch is local to the shared clones, while a
+  // chain's top target is only read as fetched from origin.
+  const base = s.merge === 'parent' ? c.base : `origin/${c.base}`
   let type = AGENT_TYPE[repos[0]]
   let body
   if (c.action === 'review') {
@@ -285,7 +290,6 @@ async function work(n, c, s, trail) {
     const again = s.status === 'FIXED'
     const container = !again && n.kind !== 'task'
     type = REVIEWER[container ? 'container' : again ? 'rereview' : 'task']
-    const base = !c.base || c.base === 'main' ? 'origin/main' : c.base
     // A landed node's claim names its target as the branch, so base...branch is empty; its code is
     // what landed there: its own landing merge, and that of every node under it that landed on the
     // target itself rather than on the node's branch, which leaves the node no landing merge of
@@ -298,8 +302,8 @@ async function work(n, c, s, trail) {
       return read(n)
     }
     const diff = landed
-      ? `log -p --diff-merges=first-parent -E --grep '^merge[(](${family.join('|')})[)]: land [^ ]+ on ${q(c.base || 'main')}$' ${c.branch} --`
-      : `diff ${base}...${c.branch}`
+      ? `log -p --diff-merges=first-parent -E --grep '^merge[(](${family.map(literal).join('|')})[)]: land [^ ]+ on ${literal(c.base)}$' ${q(c.branch)} --`
+      : `diff ${q(base)}...${q(c.branch)}`
     body = again
       ? `Scope: every finding in tm section ${n.id}:review not yet recorded as closed, against the fix commits on ${c.branch} and the fixer's latest :report entry, and, when the last landing failed, the failure its latest :merge entry names. Establish each closure by mutation.`
       : `Scope: ${landed ? `what ${n.id} and every node under it landed on ${c.branch}` : `the whole diff of ${c.branch} from its base`}, in each repository it touched: ${repos.map(r => `git -C ${ROOT}/${r} ${diff}`).join('; ')}.${landed ? ' A repository where that prints nothing had nothing land.' : ''}${container ? ' This is a container review: read what is true only between its children, and every child tm render lists as rejected by its own review.' : ''}`
@@ -311,8 +315,8 @@ async function work(n, c, s, trail) {
     // A container's step spans repositories, and tm cuts one worktree of its branch in each.
     const trees = Object.entries(c.worktrees || {})
     const where = trees.length > 1
-      ? `Worktrees, one per repository, each on branch ${c.branch}, based on ${c.base}: ${trees.map(([r, p]) => `${r} at ${p}`).join('; ')}. Work only there, and never cd in a Bash command.`
-      : `Worktree: ${c.worktree} — branch ${c.branch}, based on ${c.base}. Work only there, and never cd in a Bash command.`
+      ? `Worktrees, one per repository, each on branch ${c.branch}, based on ${base}: ${trees.map(([r, p]) => `${r} at ${p}`).join('; ')}. Work only there, and never cd in a Bash command.`
+      : `Worktree: ${c.worktree} — branch ${c.branch}, based on ${base}. Work only there, and never cd in a Bash command.`
     body = c.action === 'fix'
       ? `${where}\nFindings: ${s.outcome === 'merge_failed' ? `the landing failure the latest entry of tm section get ${n.id}:merge records` : `every finding in tm section get ${n.id}:review not recorded as closed`}. Fix each one, commit on the branch, and answer each by number in an appended :report entry.`
       : `${where}\nReport: append to tm section ${n.id}:report before your last commit.`
