@@ -42,6 +42,8 @@ A task that was reopened carries a `:reopen` note and the earlier `:review`, and
 
 Every read, edit, command and commit happens under the printed worktree path. Check the prefix of each path you edit, not just its basename: the same file exists in the project's own checkout. Commit on the branch with an explicit pathspec. Do not merge and do not push: tm lands the branch. You may rewrite your own branch until its first review, never after.
 
+Create, modify or delete nothing outside `declared_files`. Before touching another file, read the locks in `tm run list --yaml`. When another live node holds the file, release blocked and name that node (below). Otherwise add the file with `tm task update <task-id> --set declared_files='[...]'` before the edit, and name it in the report.
+
 ## 4. Keep the lease alive
 
 ```
@@ -67,6 +69,8 @@ A table of the task's checks against your branch, exit 1 if any failed. What eac
 The path checks read the ref, never your worktree, so without `--ref` they read `origin/main` and stay red until the task lands. A `test_command` reads the same ref from `TM_VERIFY_REF`; when tm lands the task it sets that to the landing target, so write `"${TM_VERIFY_REF:-origin/main}"` into the command rather than a branch name: a plain `tm verify run` sets no ref. `No verifications to run.` exits 2: a task with no checks has not passed anything, and that is worth a line in your report.
 
 - A generated file (a built stylesheet, a lockfile, a schema dump) is regenerated, never edited or hand-merged: a branch that changes any of its inputs rebuilds it before closing, and a conflict on it is resolved by rebuilding it on the merged tree.
+- A test selects only markup that its own task's declared files render. It reaches another file's control by what that control shows the user (role, accessible name), never by its classes or inner elements.
+- When a task stops reading a payload field, it removes the producer in the same task, or names the task that does.
 
 ## Waiting on something that takes time
 
@@ -100,6 +104,8 @@ tm section set <task-id>:report --file <path> --header "## Report"
 ```
 
 The branch, the commits you made, the `tm verify run` exit code and which rows failed, and anything you could not do. Where the brief contradicts the tree — a file that does not exist, an interface that already differs — record the discrepancy, implement against the tree, and keep going.
+
+A report that fixes a contract its dependents build on (a shape, a name, an id scheme) appends the contract to what `tm section get <plan-id>:overview` prints and writes the whole of it back with `tm section set <plan-id>:overview --file <path>` before the step closes. Only the parent's `context` and `overview` reach a dependent's brief, and no step runs between tasks to copy it there.
 
 ## 7. Close the step
 

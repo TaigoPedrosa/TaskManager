@@ -57,6 +57,8 @@ Say in the review that you executed it, and where.
 - **A plan's or spec's review** runs once, on its landed target. It reads the whole landing against the brief, and for what is true only between its children: a producer nobody calls, a column only ever written as null, two halves that do not join.
 - **A re-review** is scoped to the open findings of a sensitive fix: each finding in `:review` not yet recorded as closed, checked against the fix commits and the fixer's latest `:report` entry, and, when the last landing failed, the failure the latest `:merge` entry names. Establish each closure by making it fail. It never widens: no fresh read of the rest of the diff and no new finding outside those; anything else you notice goes in the report.
 
+A diff that edits a file missing from `declared_files`, a test that selects another file's markup by class, and a payload field with no remaining reader are each a finding.
+
 ## 4. Run the checks
 
 ```
