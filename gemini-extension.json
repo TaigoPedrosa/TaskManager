@@ -1,5 +1,6 @@
 {
   "name": "taskmanager",
   "description": "Local agentic task tracker system powered by SQLite, DAG heuristics, worktrees and live visualizer",
-  "version": "0.3.7"
+  "version": "0.3.7",
+  "contextFileName": "GEMINI.md"
 }
