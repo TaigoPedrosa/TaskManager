@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from taskmanager.core.status import DecisionStatus, Merge, Status
+from taskmanager.core.status import ON_TARGET, DecisionStatus, Merge, Status
 from taskmanager.engine.chains import (
     base_chain,
     landing_chain,
@@ -48,6 +48,9 @@ class Tree:
 
     def top(self, node_id: str) -> str:
         return "main"
+
+    def on_target(self, node_id: str) -> bool:
+        return self.status(node_id) in ON_TARGET
 
 
 @pytest.mark.parametrize(

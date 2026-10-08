@@ -9,8 +9,8 @@ from typing import Final, Protocol
 
 from taskmanager.core.enums import NodeKind
 from taskmanager.core.lifecycle import REOPENABLE
-from taskmanager.core.status import EXITS, IN_STEP, Merge, Status
-from taskmanager.engine.chains import ON_TARGET, TOP, landing_target, target
+from taskmanager.core.status import EXITS, IN_STEP, ON_TARGET, Merge, Status
+from taskmanager.engine.chains import TOP, landing_target, target
 from taskmanager.engine.git import valid_branch
 from taskmanager.engine.snapshot import ORIGIN_MAIN
 from taskmanager.engine.stepgraph import (

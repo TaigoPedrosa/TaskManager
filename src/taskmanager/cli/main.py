@@ -144,13 +144,18 @@ def _emit(data: Any, as_yaml: bool = False) -> None:
 
 # A restore reads only exports carrying one of these markers; an export without one came from a
 # pre-lifecycle tm, whose statuses and gated edges this version does not store. Versions 1 and 2
-# store `merge: main`, which restore reads as `spec`.
-EXPORT_FORMAT: dict[str, Any] = {"format": "tm-lifecycle", "version": 3}
+# store `merge: main`, which restore reads as `spec`. Versions 1 to 3 carry no `on_target`, so a
+# restored node is on its target only at the LANDED or COMPLETED it states.
+EXPORT_FORMAT: dict[str, Any] = {"format": "tm-lifecycle", "version": 4}
 EXPORT_FORMATS_MERGE_MAIN = (
     {"format": "tm-lifecycle", "version": 1},
     {"format": "tm-lifecycle", "version": 2},
 )
-READABLE_EXPORT_FORMATS = (*EXPORT_FORMATS_MERGE_MAIN, EXPORT_FORMAT)
+READABLE_EXPORT_FORMATS = (
+    *EXPORT_FORMATS_MERGE_MAIN,
+    {"format": "tm-lifecycle", "version": 3},
+    EXPORT_FORMAT,
+)
 # Config keys whose value holds only on the machine that set it: an export leaves them out, and
 # a restore keeps the restoring machine's own.
 MACHINE_LOCAL_KEYS = frozenset({"worktree_dir"})
@@ -2090,6 +2095,7 @@ def _export_node(node_repo: NodeRepository, node: Node, supersedes: list[str]) -
         "review_cycles": node.review_cycles,
         "merge_attempts": node.merge_attempts,
         "step_failures": node.step_failures,
+        "on_target": node.on_target,
         "depends_on": sorted(node_repo.get_dependencies(node.id)),
         "supersedes": supersedes,
         "conditions": [

@@ -24,7 +24,7 @@ _NODE_COLUMNS = (
     "id, kind, title, status, priority, ordinal, target_repo, acceptable_models, "
     "frontmatter_json, claimed_from, review, fix, merge, outcome, verdict, fix_for, "
     "review_cycles, merge_attempts, step_failures, branch, requires, land_order, "
-    "created_at, updated_at"
+    "created_at, updated_at, on_target"
 )
 
 
@@ -52,6 +52,7 @@ _UPDATED_COLUMNS = (
     "requires",
     "land_order",
     "updated_at",
+    "on_target",
 )
 # The node's position in the dispatch cycle, which only the lifecycle's writers move.
 _CYCLE_COLUMNS = frozenset(
@@ -64,6 +65,7 @@ _CYCLE_COLUMNS = frozenset(
         "review_cycles",
         "merge_attempts",
         "step_failures",
+        "on_target",
     }
 )
 # A `test_command` or `codegraph_query` puts a label or a query in `target_path`, not a path, so
@@ -132,14 +134,15 @@ class NodeRepository:
         """Inserts or replaces `node`. With `keep_cycle`, an existing row keeps its stored
         position in the cycle: a writer that edits other fields from a node it read earlier
         cannot put back a status a claim has moved since."""
-        node.checked()
+        # The validated copy is the one stored: `on_target` follows the status written.
+        node = node.checked()
         updated = [c for c in _UPDATED_COLUMNS if not (keep_cycle and c in _CYCLE_COLUMNS)]
         assignments = ",\n".join(f"{c}=excluded.{c}" for c in updated)
         with self.db.get_state_connection() as conn:
             conn.execute(
                 f"""
                 INSERT INTO nodes ({_NODE_COLUMNS})
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET {assignments};
                 """,
                 (
@@ -167,6 +170,7 @@ class NodeRepository:
                     json.dumps(node.land_order),
                     to_db_timestamp(node.created_at),
                     to_db_timestamp(node.updated_at),
+                    int(node.on_target),
                 ),
             )
             cursor = conn.execute(
@@ -607,6 +611,7 @@ class NodeRepository:
                 "land_order": json.loads(row[21]),
                 "created_at": parse_db_datetime(row[22]),
                 "updated_at": parse_db_datetime(row[23]),
+                "on_target": bool(row[24]),
             }
         )
 
