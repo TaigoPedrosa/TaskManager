@@ -305,3 +305,27 @@ def test_reimporting_the_landed_plan_keeps_it_on_its_target_unless_it_states_a_s
         (Status.REVIEWED, None, []),
         (Status.REVIEWED, "waits on C", ["W"]),
     )
+
+
+def test_a_plan_imported_with_its_children_keeps_the_on_target_it_states(tmp_path: Path) -> None:
+    claims = plan_estate(tmp_path)
+
+    BulkImporter(claims.nodes).import_dict(
+        {
+            "spec": {"id": "S", "title": "S"},
+            "plans": [
+                {
+                    "id": "P2",
+                    "title": "P2",
+                    "status": "REVIEWED",
+                    "outcome": "reject",
+                    "on_target": True,
+                    "tasks": [
+                        {"id": "N", "title": "N", "status": "COMPLETED", "merge": "parent"},
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert stored(claims, "P2").on_target

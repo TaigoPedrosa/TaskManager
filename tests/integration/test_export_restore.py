@@ -40,7 +40,7 @@ def test_export_writes_the_format_marker_flags_conditions_and_bare_dependencies(
     assert runner.invoke(app, ["export", str(out), "-C", str(tmp_path)]).exit_code == 0
     assert json.loads((out / "_format.json").read_text()) == {
         "format": "tm-lifecycle",
-        "version": 3,
+        "version": 4,
     }
     plan = json.loads((out / "S1-P1.json").read_text())["plans"][0]
     a, b = plan["tasks"]

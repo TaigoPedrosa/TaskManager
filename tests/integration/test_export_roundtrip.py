@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -7,7 +8,7 @@ from taskmanager.cli.main import app
 from taskmanager.core.enums import NodeKind, RelationType
 from taskmanager.core.lifecycle import claim, next_action
 from taskmanager.core.models import Lease
-from taskmanager.core.status import Status
+from taskmanager.core.status import Outcome, Status
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.di.container import create_container
@@ -151,3 +152,61 @@ def test_restore_of_an_export_holding_only_machine_local_config_clears_the_targe
 
     assert ConfigStore(target).document() == {"worktree_dir": str(target / "worktrees")}
     assert json.loads((export / "_config.json").read_text(encoding="utf-8")) == {}
+
+
+def landed_and_rejected(root: Path) -> None:
+    """Plan P landed on its target and its review rejected it: on its target at REVIEWED, which
+    its status alone cannot tell."""
+    tm("init", "-C", str(root))
+    ops = create_container(root).get(Operations)
+    plan = ops.add_plan("P", ops.add_spec("S", slug="S"), slug="P", review=True, fix=True)
+    child = ops.add_task("C", plan, slug="C", merge="parent")
+    node_repo = repo(root)
+    for node_id, update in (
+        (child, {"status": Status.COMPLETED}),
+        (plan, {"status": Status.REVIEWED, "outcome": Outcome.REJECT, "on_target": True}),
+    ):
+        node = node_repo.get_node(node_id)
+        assert node is not None
+        node_repo.save_node(node.model_copy(update=update))
+
+
+def on_target(root: Path) -> dict[str, bool]:
+    return {n.id: n.on_target for n in repo(root).list_nodes()}
+
+
+def test_export_restore_export_round_trips_a_rejected_plan_on_its_target(tmp_path: Path) -> None:
+    source, fresh = tmp_path / "source", tmp_path / "fresh"
+    source.mkdir()
+    fresh.mkdir()
+    landed_and_rejected(source)
+
+    e1, e2 = tmp_path / "e1", tmp_path / "e2"
+    tm("export", str(e1), "-C", str(source))
+    tm("restore", str(e1), "-C", str(fresh))
+    tm("export", str(e2), "-C", str(fresh))
+
+    assert on_target(fresh) == on_target(source) == {"S": False, "S-P": True, "S-P-C": True}
+    for f in sorted(e1.glob("*.json")):
+        assert f.read_bytes() == (e2 / f.name).read_bytes(), f.name
+
+
+def test_restore_of_a_version_3_export_puts_on_target_only_what_it_states_landed_or_completed(
+    tmp_path: Path,
+) -> None:
+    source, fresh = tmp_path / "source", tmp_path / "fresh"
+    source.mkdir()
+    fresh.mkdir()
+    landed_and_rejected(source)
+    export = tmp_path / "e"
+    tm("export", str(export), "-C", str(source))
+    (export / "_format.json").write_text(
+        json.dumps({"format": "tm-lifecycle", "version": 3}), encoding="utf-8"
+    )
+    for f in export.glob("*.json"):
+        f.write_text(re.sub(r'\n *"on_target": (true|false),', "", f.read_text(encoding="utf-8")))
+    assert '"on_target"' not in "".join(f.read_text() for f in export.glob("*.json"))
+
+    tm("restore", str(export), "-C", str(fresh))
+
+    assert on_target(fresh) == {"S": False, "S-P": False, "S-P-C": True}
