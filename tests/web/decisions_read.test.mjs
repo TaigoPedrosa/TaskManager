@@ -338,6 +338,16 @@ test('an answered decision offers Reopen and a withdrawn one does not', async ()
   assert.equal(page.$$('#decisions-detail .dec-reopen-btn').length, 0);
 });
 
+test('Custom answer, Rationale and the withdraw Reason set typed text in Inter, never mono', async () => {
+  const page = await openPage(fakeServer(frameDecisions()), { url: '/decisions/decision-D43' });
+  page.$('.dec-withdraw-btn').click();
+  const fields = [page.$('.dec-custom-text'), page.$('.dec-rationale'), page.$('#dialog-root .wd-reason')];
+  for (const field of fields) {
+    assert.equal(field.localName, 'textarea');
+    assert.equal(field.classList.contains('font-mono'), false, `${field.getAttribute('class').split(' ')[0]} is not mono`);
+  }
+});
+
 const EXPLANATIONS = [
   'Select a decision to view it.', 'Write a custom answer instead of picking an option', '(optional)', '(optional, markdown)',
   'Which auth flow?', 'task-id', 'Pick an option or write a custom answer', 'Nothing picked yet — pick an option or write a custom answer',

@@ -258,6 +258,9 @@ function goToDecision(decisionId) {
 // barely shows on zinc-950, and nothing else marked a pressed control.
 const DEC_FOCUS = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950';
 const DEC_MUTED = 'text-zinc-400'; // zinc-500 on zinc-950 is 4.1:1, under AA for 12-14px text
+// An answer's text and a withdrawal's reason are prose, set in Inter; edit.js's textarea is for
+// markdown source, set in mono.
+const PROSE_TEXTAREA_CLS = TEXTAREA_CLS.replace(' font-mono', '');
 
 
 // List -----------------------------------------------------------------------------------------
@@ -739,9 +742,9 @@ function answerFormHtml(data, waitingCount) {
       ${data.allow_custom !== false ? `
         <label class="dec-custom-card block p-3 rounded-lg border border-zinc-800 bg-zinc-900/60 space-y-1.5">
           <span class="block text-xs font-medium text-zinc-300">Custom answer</span>
-          <textarea class="dec-custom-text ${TEXTAREA_CLS}" rows="2"></textarea>
+          <textarea class="dec-custom-text ${PROSE_TEXTAREA_CLS}" rows="2"></textarea>
         </label>` : ''}
-      ${fieldRow('Rationale', `<textarea class="dec-rationale ${TEXTAREA_CLS}" rows="2"></textarea>`)}
+      ${fieldRow('Rationale', `<textarea class="dec-rationale ${PROSE_TEXTAREA_CLS}" rows="2"></textarea>`)}
       <div class="dec-answer-actions fixed inset-x-0 bottom-0 z-10 flex flex-col gap-2 px-4 pt-2.5 pb-3.5 bg-zinc-900 border-t border-zinc-800 sm:static sm:z-auto sm:p-0 sm:pt-1 sm:bg-transparent sm:border-0">
         <div class="dec-answer-pick-line hidden items-center gap-1.5 min-w-0">
           <span class="flex-shrink-0 text-[11px] leading-4 ${DEC_MUTED}">Answer</span>
@@ -1129,7 +1132,7 @@ function openWithdrawDialog(decisionId, waitingCount) {
     destructive: true,
     bodyHtml: `
       <div class="flex">${effectPillHtml('drop_edge', waitingCount)}</div>
-      ${fieldRow('Reason', `<textarea class="wd-reason ${TEXTAREA_CLS}" rows="2"></textarea>`)}
+      ${fieldRow('Reason', `<textarea class="wd-reason ${PROSE_TEXTAREA_CLS}" rows="2"></textarea>`)}
     `,
     onSubmit: async (panel, close, write) => {
       const reason = panel.querySelector('.wd-reason').value.trim();
