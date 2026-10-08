@@ -3,11 +3,12 @@
 import asyncio
 import base64
 import hashlib
+import ipaddress
 import json
 import mimetypes
 import subprocess
 import tempfile
-from collections.abc import AsyncGenerator, Iterator, Mapping
+from collections.abc import AsyncGenerator, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import asdict
 from datetime import datetime
@@ -17,8 +18,11 @@ from urllib.parse import urlsplit
 
 from dishka import make_container
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.datastructures import Headers
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from taskmanager.core.enums import NodeKind, TransferMode, VerificationType
 from taskmanager.core.models import Node
@@ -52,6 +56,9 @@ from taskmanager.web.visibility import parse_filters, visible_ids
 
 # The page's own paths (filters.js's router): /<view> and /<view>/<id>.
 PAGE_VIEWS = frozenset({"document", "graph", "waves", "decisions"})
+
+# The page's third-party scripts, pinned copies served at /vendor and embedded in an export.
+VENDOR_DIR = Path(__file__).with_name("static") / "vendor"
 
 
 class SpecCreate(BaseModel):
@@ -198,18 +205,62 @@ class AttachmentCreate(BaseModel):
     source: str | None = None
 
 
-def _bound_hosts(host: str, port: int) -> frozenset[str]:
-    """Every `Host` header a write may legitimately arrive with, for the address `uvicorn` is
-    actually bound to. Under DNS rebinding, an attacker's page navigates to a hostname that
-    resolves to 127.0.0.1 but is still spelled with the attacker's own domain -- the browser then
-    sends that domain in *both* `Host` and `Origin`, so comparing them to each other (as this
-    guard used to) never catches it. Pinning `Host` to the bound loopback name/IP does, because
-    the attacker's domain is never a member of this set regardless of what it puts in `Origin`."""
-    hosts = {f"{host}:{port}"}
-    if host in ("127.0.0.1", "localhost", "0.0.0.0"):
-        hosts.add(f"127.0.0.1:{port}")
-        hosts.add(f"localhost:{port}")
-    return frozenset(hosts)
+def _is_ip_address(name: str) -> bool:
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    return True
+
+
+def _host_pin(host: str, port: int) -> Callable[[str], bool]:
+    """Admits a `Host` header that names the bound port and either an IP address or the name the
+    server is bound to (`localhost` included). Under DNS rebinding, an attacker's page navigates
+    to a hostname that resolves to this machine but is still spelled with the attacker's own
+    domain -- the browser then sends that domain in *both* `Host` and `Origin`, so comparing the
+    two never catches it. No rebinding can spell an IP address, so every address is admitted: a
+    wildcard `--expose` bind serves a client that reaches the machine by any of its addresses,
+    IPv6 ones in brackets included."""
+    names = {host.lower(), "localhost"}
+
+    def admits(header: str) -> bool:
+        try:
+            url = urlsplit(f"//{header}")
+            port_matches = url.port == port
+        except ValueError:
+            return False
+        name = url.hostname or ""
+        return port_matches and (name in names or _is_ip_address(name))
+
+    return admits
+
+
+class _SameOriginOnly:
+    """Wraps every route, `/ws` included: a read leaks the estate as surely as a write changes
+    it. A refused socket is closed before it is accepted, so it never receives a frame."""
+
+    def __init__(self, app: ASGIApp, admits_host: Callable[[str], bool] | None) -> None:
+        self._app = app
+        self._admits_host = admits_host
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        checked = scope["type"] in ("http", "websocket")
+        refusal = self._refusal(Headers(scope=scope)) if checked else None
+        if refusal is None:
+            await self._app(scope, receive, send)
+        elif scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 1008, "reason": refusal})
+        else:
+            await JSONResponse({"detail": refusal}, status_code=403)(scope, receive, send)
+
+    def _refusal(self, headers: Headers) -> str | None:
+        host = headers.get("host", "")
+        if self._admits_host is not None and not self._admits_host(host):
+            return "unrecognized Host"
+        origin = headers.get("origin")
+        if origin is not None and urlsplit(origin).netloc != host:
+            return "cross-origin request refused"
+        return None
 
 
 def _git_user_name(project_root: Path) -> str:
@@ -225,20 +276,13 @@ def _git_user_name(project_root: Path) -> str:
     return res.stdout.strip() if res.returncode == 0 else ""
 
 
-def _write_guard(allowed_hosts: frozenset[str] | None, default_actor: str) -> Any:
+def _write_guard(default_actor: str) -> Any:
     def guard(request: Request) -> str:
         """Every mutating route depends on this: a JSON body forces a CORS preflight a foreign
-        page cannot pass, and Host pinning plus the Origin check catch what preflight alone would
-        miss, DNS rebinding included."""
+        page cannot pass, on top of the Host and Origin checks `_SameOriginOnly` runs first."""
         content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
         if content_type != "application/json":
             raise HTTPException(403, "write requires Content-Type: application/json")
-        host = request.headers.get("host", "")
-        if allowed_hosts is not None and host not in allowed_hosts:
-            raise HTTPException(403, "unrecognized Host")
-        origin = request.headers.get("origin")
-        if origin is not None and urlsplit(origin).netloc != host:
-            raise HTTPException(403, "cross-origin write refused")
         return request.headers.get("x-tm-actor") or default_actor
 
     return guard
@@ -460,13 +504,10 @@ _NOT_ADDABLE = frozenset({Status.COMPLETED, Status.ABANDONED, Status.SUPERSEDED}
 
 
 def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = None) -> FastAPI:
-    # `port=None` (tests, the static exporter's in-process TestClient) skips Host pinning and
-    # keeps the old Origin-must-equal-Host check; the real server always passes its bound port,
-    # so it is the only caller `_bound_hosts` needs to protect (see `_write_guard`'s docstring).
-    allowed_hosts = _bound_hosts(host, port) if port is not None else None
-    Actor = Annotated[
-        str, Depends(_write_guard(allowed_hosts, _git_user_name(project_root) or "web"))
-    ]
+    # `port=None` (in-process tests) skips Host pinning and keeps only the Origin-must-equal-Host
+    # check; `tm web` always passes the port it bound.
+    admits_host = _host_pin(host, port) if port is not None else None
+    Actor = Annotated[str, Depends(_write_guard(_git_user_name(project_root) or "web"))]
     db_dir = project_root / ".taskmanager"
     assets_dir = db_dir / "assets"
     container = make_container(TaskManagerProvider(project_root))
@@ -520,7 +561,9 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             except asyncio.CancelledError:
                 pass
 
-    app = FastAPI(title="TaskManager Visualizer", lifespan=lifespan)
+    # No /docs or /redoc: both pages load unpinned scripts from a CDN into this origin.
+    app = FastAPI(title="TaskManager Visualizer", lifespan=lifespan, docs_url=None, redoc_url=None)
+    app.add_middleware(_SameOriginOnly, admits_host=admits_host)
 
     def new_view() -> DisplayView:
         """One snapshot per request, so every display in one response reads the same tree."""
@@ -1069,7 +1112,9 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             raise HTTPException(404, "not found")
         return FileResponse(candidate, headers=_served_headers(mime, candidate.name))
 
-    # Registered last, so a view path never shadows /api, /assets or /ws.
+    app.mount("/vendor", StaticFiles(directory=VENDOR_DIR), name="vendor")
+
+    # Registered last, so a view path never shadows /api, /assets, /vendor or /ws.
     @app.get("/", response_class=HTMLResponse)
     @app.get("/{view}", response_class=HTMLResponse)
     @app.get("/{view}/{node_id}", response_class=HTMLResponse)

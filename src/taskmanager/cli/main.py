@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import logging
 import os
@@ -20,18 +21,21 @@ from taskmanager.core.enums import (
     LedgerCommand,
     NodeKind,
     RecommendationStrategy,
+    RelationType,
     RenderView,
     SearchMode,
     TransferMode,
     VerificationType,
 )
-from taskmanager.core.lifecycle import next_action
+from taskmanager.core.lifecycle import advance, next_action
 from taskmanager.core.models import Condition, LedgerEvent, Node
 from taskmanager.core.naming import QualifiedPath
 from taskmanager.core.status import (
+    IN_STEP,
     Action,
     ConditionStage,
     DecisionStatus,
+    Event,
     JobKind,
     JobState,
     Merge,
@@ -63,6 +67,8 @@ from taskmanager.engine.search import SearchEngine, SearchError
 from taskmanager.engine.snapshot import (
     DisplayView,
     SnapshotBuilder,
+    apply_cycle,
+    cycle_of,
     phase_of,
     stored_status,
     waits_on,
@@ -83,7 +89,6 @@ wave_app = typer.Typer(name="wave", help="Batch-choosing for a dispatch wave")
 verify_app = typer.Typer(name="verify", help="Static and AST verifications")
 audit_app = typer.Typer(name="audit", help="Audit ledger event logs")
 web_app = typer.Typer(name="web", help="Interactive web visualizer and exporter")
-plugin_app = typer.Typer(name="plugin", help="Install and manage harness plugins")
 config_app = typer.Typer(name="config", help="Project configuration (.taskmanager/config.yaml)")
 decision_app = typer.Typer(name="decision", help="Raise and answer decisions")
 job_app = typer.Typer(name="job", help="Landing and sync jobs")
@@ -100,7 +105,6 @@ app.add_typer(wave_app)
 app.add_typer(verify_app)
 app.add_typer(audit_app)
 app.add_typer(web_app)
-app.add_typer(plugin_app)
 app.add_typer(config_app)
 app.add_typer(decision_app)
 app.add_typer(job_app)
@@ -138,11 +142,18 @@ def _emit(data: Any, as_yaml: bool = False) -> None:
     sys.stdout.write(json.dumps(data, indent=2, ensure_ascii=False, default=str) + "\n")
 
 
-# A restore reads only exports carrying this marker; an export without it came from a
-# pre-lifecycle tm, whose statuses and gated edges this version does not store.
-EXPORT_FORMAT: dict[str, Any] = {"format": "tm-lifecycle", "version": 2}
-# Version 1 stored `merge: main`; restore reads it as `spec`, the rewrite state migration 4 makes.
-EXPORT_FORMAT_MERGE_MAIN: dict[str, Any] = {"format": "tm-lifecycle", "version": 1}
+# A restore reads only exports carrying one of these markers; an export without one came from a
+# pre-lifecycle tm, whose statuses and gated edges this version does not store. Versions 1 and 2
+# store `merge: main`, which restore reads as `spec`.
+EXPORT_FORMAT: dict[str, Any] = {"format": "tm-lifecycle", "version": 3}
+EXPORT_FORMATS_MERGE_MAIN = (
+    {"format": "tm-lifecycle", "version": 1},
+    {"format": "tm-lifecycle", "version": 2},
+)
+READABLE_EXPORT_FORMATS = (*EXPORT_FORMATS_MERGE_MAIN, EXPORT_FORMAT)
+# Config keys whose value holds only on the machine that set it: an export leaves them out, and
+# a restore keeps the restoring machine's own.
+MACHINE_LOCAL_KEYS = frozenset({"worktree_dir"})
 
 
 def _task_spec_id(node_repo: NodeRepository, task_id: str) -> str | None:
@@ -2055,13 +2066,14 @@ def guide(
     sys.stdout.write("\n\n---\n\n".join(p.rstrip("\n") for p in parts) + "\n")
 
 
-def _export_node(node_repo: NodeRepository, node: Any) -> dict[str, Any]:
+def _export_node(node_repo: NodeRepository, node: Node, supersedes: list[str]) -> dict[str, Any]:
     return {
         "id": node.id,
         "kind": node.kind.value,
         "title": node.title,
         "status": node.status.value,
         "priority": node.priority,
+        "ordinal": node.ordinal,
         "target_repo": node.target_repo,
         "acceptable_models": node.acceptable_models,
         "frontmatter": node.frontmatter,
@@ -2074,11 +2086,11 @@ def _export_node(node_repo: NodeRepository, node: Any) -> dict[str, Any]:
         "outcome": node.outcome.value if node.outcome else None,
         "verdict": node.verdict,
         "fix_for": node.fix_for.value if node.fix_for else None,
-        "claimed_from": node.claimed_from.value if node.claimed_from else None,
         "review_cycles": node.review_cycles,
         "merge_attempts": node.merge_attempts,
         "step_failures": node.step_failures,
         "depends_on": sorted(node_repo.get_dependencies(node.id)),
+        "supersedes": supersedes,
         "conditions": [
             {"needs": c.needs, "command": c.command, "stage": c.stage.value}
             for c in node_repo.get_conditions(node.id)
@@ -2117,6 +2129,22 @@ def export_cmd(
             json.dumps(doc, indent=1, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8"
         )
 
+    with _user_errors():
+        caps = Claims.open(root).caps
+        settings = ConfigStore(root).document()
+    superseded: dict[str, list[str]] = {}
+    for new, old in node_repo.relations(RelationType.SUPERSEDES):
+        superseded.setdefault(new, []).append(old)
+
+    def entry(node: Node) -> dict[str, Any]:
+        if node.status in IN_STEP:
+            # An export holds only stable states and a lease never leaves its machine, so the
+            # node is written as a blocked release would leave it; sensitivity only picks a
+            # next step, never where a release returns.
+            released = advance(cycle_of(node, sensitive=False), Event.RELEASE_BLOCKED, caps)
+            node = apply_cycle(node, released)
+        return _export_node(node_repo, node, sorted(superseded.get(node.id, [])))
+
     directory.mkdir(parents=True, exist_ok=True)
     dump("_format.json", EXPORT_FORMAT)
     specs = {n.id: n for n in node_repo.list_nodes(kind=NodeKind.SPEC)}
@@ -2124,7 +2152,7 @@ def export_cmd(
     plans = node_repo.list_nodes(kind=NodeKind.PLAN)
     decisions = sorted(node_repo.list_nodes(kind=NodeKind.DECISION), key=lambda n: n.id)
     if decisions:
-        dump("_decisions.json", {"decisions": [_export_node(node_repo, d) for d in decisions]})
+        dump("_decisions.json", {"decisions": [entry(d) for d in decisions]})
     assets_src = root / ".taskmanager" / "assets"
     if assets_src.is_dir():
         assets_dst = directory / "assets"
@@ -2134,8 +2162,8 @@ def export_cmd(
                 (assets_dst / f.name).write_bytes(f.read_bytes())
     for plan in plans:
         children = set(node_repo.get_children(plan.id))
-        plan_doc = _export_node(node_repo, plan)
-        plan_doc["tasks"] = [_export_node(node_repo, t) for t in tasks if t.id in children]
+        plan_doc = entry(plan)
+        plan_doc["tasks"] = [entry(t) for t in tasks if t.id in children]
         owner = next((sid for sid in sorted(specs) if plan.id in node_repo.get_children(sid)), None)
         dump(
             f"{plan.id}.json",
@@ -2145,19 +2173,17 @@ def export_cmd(
             },
         )
     for spec_id in sorted(specs):
-        spec_doc: dict[str, Any] = {"spec": _export_node(node_repo, specs[spec_id])}
+        spec_doc: dict[str, Any] = {"spec": entry(specs[spec_id])}
         children = set(node_repo.get_children(spec_id))
         # Import accepts tasks straight under a spec, or under nothing; the archive keeps both.
-        if spec_tasks := [_export_node(node_repo, t) for t in tasks if t.id in children]:
+        if spec_tasks := [entry(t) for t in tasks if t.id in children]:
             spec_doc["tasks"] = spec_tasks
         dump(f"_spec-{spec_id}.json", spec_doc)
     parented = {c for n in [*specs.values(), *plans] for c in node_repo.get_children(n.id)}
-    if lone := [_export_node(node_repo, t) for t in tasks if t.id not in parented]:
+    if lone := [entry(t) for t in tasks if t.id not in parented]:
         dump("_tasks.json", {"tasks": lone})
-    with _user_errors():
-        settings = ConfigStore(root).document()
     if settings is not None:
-        dump("_config.json", settings)
+        dump("_config.json", {k: v for k, v in settings.items() if k not in MACHINE_LOCAL_KEYS})
     print(f"[green]Exported {len(plans)} plans and {len(specs)} specs to {directory}[/green]")
 
 
@@ -2172,7 +2198,7 @@ def restore_cmd(
     root = _get_root(path, must_exist=False)
     marker = directory / "_format.json"
     export_format = json.loads(marker.read_text(encoding="utf-8")) if marker.is_file() else None
-    if export_format not in (EXPORT_FORMAT, EXPORT_FORMAT_MERGE_MAIN):
+    if export_format not in READABLE_EXPORT_FORMATS:
         print(
             f"[red]{escape(str(directory))} is a pre-lifecycle export: tm v0.2.0 is the last "
             "release that restores it. Re-import the ongoing work into this version with "
@@ -2213,7 +2239,7 @@ def restore_cmd(
             *doc.get("tasks", []),
         ]
 
-    if export_format == EXPORT_FORMAT_MERGE_MAIN:
+    if export_format in EXPORT_FORMATS_MERGE_MAIN:
         decisions = decisions_doc["decisions"] if decisions_doc else []
         for node in [*(n for d in docs for n in nodes_of(d)), *decisions]:
             if node.get("merge") == "main":
@@ -2229,7 +2255,8 @@ def restore_cmd(
         first = copy.deepcopy(doc)
         own = {n["id"] for n in nodes_of(first)}
         for n in nodes_of(first):
-            n["depends_on"] = [d for d in n.get("depends_on", []) if d in own]
+            for edges in ("depends_on", "supersedes"):
+                n[edges] = [d for d in n.get(edges, []) if d in own]
         importer.import_dict(first)
     if decisions_doc is not None:
         importer.import_dict(decisions_doc)
@@ -2237,9 +2264,13 @@ def restore_cmd(
         importer.import_dict(doc)
     settings_file = directory / "_config.json"
     if settings_file.exists():
-        # Unchecked: the archive's branches were cut under its own config, never this root's.
+        exported = json.loads(settings_file.read_text(encoding="utf-8"))
         with _user_errors():
-            ConfigStore(root).replace(json.loads(settings_file.read_text(encoding="utf-8")))
+            store = ConfigStore(root)
+            local = {k: v for k, v in (store.document() or {}).items() if k in MACHINE_LOCAL_KEYS}
+            store.replace(
+                {k: v for k, v in exported.items() if k not in MACHINE_LOCAL_KEYS} | local
+            )
     specs = sum(1 for d in spec_docs if d.get("spec"))
     print(f"[green]Restored {len(plan_docs)} plans and {specs} specs into {root}[/green]")
 
@@ -2473,8 +2504,10 @@ def audit_list(
 def _find_available_port(host: str, starting_port: int, max_attempts: int = 20) -> int:
     import socket
 
+    # The family uvicorn binds `host` with, so the probe opens the socket uvicorn will.
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
     for p in range(starting_port, starting_port + max_attempts):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        with socket.socket(family, socket.SOCK_STREAM) as s:
             try:
                 s.bind((host, p))
                 return p
@@ -2485,7 +2518,18 @@ def _find_available_port(host: str, starting_port: int, max_attempts: int = 20) 
     )
 
 
-def _run_web_server(host: str, port: int, open_browser: bool, path: Path | None) -> None:
+def _is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _run_web_server(
+    host: str, port: int, open_browser: bool, path: Path | None, expose: bool
+) -> None:
     import threading
     import time
     import webbrowser
@@ -2493,6 +2537,16 @@ def _run_web_server(host: str, port: int, open_browser: bool, path: Path | None)
     import uvicorn
 
     from taskmanager.web.app import create_app
+
+    # The Host pin stops a browser, not a script: any client that reaches the port can send
+    # `Host: localhost` and then add and run a verification command.
+    if not expose and not _is_loopback(host):
+        print(
+            f"[red]--host {escape(host)} serves the estate with no authentication: any machine "
+            "that reaches it can read every node and run commands through its verifications. "
+            "Pass --expose to serve it anyway.[/red]"
+        )
+        raise typer.Exit(code=1)
 
     root = _get_root(path)
     _refuse_pre_lifecycle(root)
@@ -2505,11 +2559,13 @@ def _run_web_server(host: str, port: int, open_browser: bool, path: Path | None)
     if actual_port != port:
         print(f"[yellow]Port {port} in use, auto-switched to port {actual_port}[/yellow]")
 
-    server_url = f"http://{host}:{actual_port}"
+    netloc = f"[{host}]:{actual_port}" if ":" in host else f"{host}:{actual_port}"
+    server_url = f"http://{netloc}"
     print(
-        f"[green]Starting TaskManager Web Visualizer at[/green] [bold cyan]{server_url}[/bold cyan]"
+        "[green]Starting TaskManager Web Visualizer at[/green] "
+        f"[bold cyan]{escape(server_url)}[/bold cyan]"
     )
-    print(f"[dim]Live WebSocket connected at ws://{host}:{actual_port}/ws[/dim]")
+    print(f"[dim]Live WebSocket connected at ws://{escape(netloc)}/ws[/dim]")
 
     if open_browser:
 
@@ -2534,10 +2590,13 @@ def web_callback(
     path: Annotated[
         Path | None, typer.Option("--path", "-C", help="Project root directory")
     ] = None,
+    expose: Annotated[
+        bool, typer.Option("--expose", help="Allow a --host other than loopback")
+    ] = False,
 ) -> None:
     """Interactive web visualizer and dashboard."""
     if ctx.invoked_subcommand is None:
-        _run_web_server(host=host, port=port, open_browser=open_browser, path=path)
+        _run_web_server(host=host, port=port, open_browser=open_browser, path=path, expose=expose)
 
 
 @web_app.command("run")
@@ -2550,9 +2609,12 @@ def web_run(
     path: Annotated[
         Path | None, typer.Option("--path", "-C", help="Project root directory")
     ] = None,
+    expose: Annotated[
+        bool, typer.Option("--expose", help="Allow a --host other than loopback")
+    ] = False,
 ) -> None:
     """Run interactive web server with real-time updates."""
-    _run_web_server(host=host, port=port, open_browser=open_browser, path=path)
+    _run_web_server(host=host, port=port, open_browser=open_browser, path=path, expose=expose)
 
 
 @web_app.command("export")
@@ -2578,61 +2640,6 @@ def web_export(
     print(
         f"[green]Exported static HTML visualizer to[/green] [bold cyan]{exported.resolve()}[/bold cyan]"
     )
-
-
-@app.command("install")
-def cli_install(
-    status: Annotated[
-        bool, typer.Option("--status", "-s", help="Check installation status")
-    ] = False,
-    tool_only: Annotated[
-        bool, typer.Option("--tool-only", help="Install CLI executable only")
-    ] = False,
-    claude_only: Annotated[
-        bool, typer.Option("--claude-only", help="Register Claude Code plugin only")
-    ] = False,
-    path: Annotated[
-        Path | None, typer.Option("--path", "-C", help="TaskManager repository directory")
-    ] = None,
-) -> None:
-    """Install TaskManager globally as an executable CLI and harness plugin."""
-    import shutil
-    import subprocess
-
-    root = _get_root(path, must_exist=False)
-    install_script = root / "install.sh"
-    if not install_script.exists():
-        pkg_root = Path(__file__).resolve().parents[3]
-        if (pkg_root / "install.sh").exists():
-            install_script = pkg_root / "install.sh"
-            root = pkg_root
-
-    if status:
-        if install_script.exists():
-            subprocess.run([str(install_script), "status"], check=False)
-        else:
-            is_installed = shutil.which("tm") is not None
-            print(f"tm in PATH: {is_installed}")
-        return
-
-    if tool_only:
-        subprocess.run(["uv", "tool", "install", "--editable", str(root), "--force"], check=False)
-        print("[green]Installed TaskManager executable tool[/green]")
-        return
-
-    if claude_only:
-        subprocess.run(["claude", "plugin", "marketplace", "add", str(root)], check=False)
-        subprocess.run(["claude", "plugin", "install", "taskmanager@taskmanager"], check=False)
-        print("[green]Registered TaskManager plugin in Claude Code[/green]")
-        return
-
-    if install_script.exists():
-        subprocess.run([str(install_script), "install"], check=False)
-    else:
-        subprocess.run(["uv", "tool", "install", "--editable", str(root), "--force"], check=False)
-        subprocess.run(["claude", "plugin", "marketplace", "add", str(root)], check=False)
-        subprocess.run(["claude", "plugin", "install", "taskmanager@taskmanager"], check=False)
-        print("[green]TaskManager installed successfully[/green]")
 
 
 @db_app.command("migrate")

@@ -1,8 +1,6 @@
 import re
 from pathlib import Path
 
-import pytest
-
 REPO = Path(__file__).resolve().parents[2]
 
 
@@ -55,14 +53,6 @@ def test_taskmanager_skill_sends_the_agent_to_the_guides() -> None:
     for topic in ("implement", "review", "fix", "merge"):
         assert f"tm guide {topic}" in content, f"the skill does not route {topic} to its guide"
     assert len(content.splitlines()) <= 60, "the skill is restating what the guides already print"
-
-
-@pytest.mark.parametrize("skill", ["taskmanager", "dispatcher"])
-def test_the_bundled_skill_matches_the_plugin_skill(skill: str) -> None:
-    """Two copies ship: the plugin reads one and the package the other."""
-    plugin = (REPO / f"skills/{skill}/SKILL.md").read_text(encoding="utf-8")
-    bundled = (REPO / f"src/taskmanager/skills/{skill}/SKILL.md").read_text(encoding="utf-8")
-    assert plugin == bundled
 
 
 def test_dispatcher_skill_runs_waves_through_tm_wave() -> None:

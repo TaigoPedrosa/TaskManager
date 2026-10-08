@@ -568,7 +568,7 @@ _ESTATE_COMMANDS: dict[str, list[str]] = {
 def test_every_registered_group_is_covered_by_the_too_new_schema_check() -> None:
     covered = {argv[0] for argv in _ESTATE_COMMANDS.values()}
     groups = {g.typer_instance.info.name for g in app.registered_groups if g.typer_instance}
-    assert groups - covered <= {"plugin", "config"}
+    assert groups - covered <= {"config"}
 
 
 @pytest.mark.parametrize("argv", _ESTATE_COMMANDS.values(), ids=_ESTATE_COMMANDS.keys())

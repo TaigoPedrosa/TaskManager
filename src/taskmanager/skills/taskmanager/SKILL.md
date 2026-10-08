@@ -7,6 +7,8 @@ description: Use when about to claim, build, review, fix, merge or hand off a ta
 
 `tm` is a local CLI over a SQLite task graph: it holds the specs, plans and tasks, claims each step of one with a lease and tells you which step it is, cuts the worktree the work happens in, lands the branch on its parent's branch or on the branch its spec targets, and verifies it there. It is the only record of what is planned, claimed, built and finished, and the only thing that writes it.
 
+`tm` installs separately from this plugin: `uv tool install git+https://github.com/TaigoPedrosa/TaskManager@v<this plugin's version>`. When `tm` is not on PATH, say so and stop; run nothing in its place.
+
 The instructions ship with the tool and are printed on demand, so nothing here repeats them.
 
 ## Read your role's guide first

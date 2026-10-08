@@ -19,7 +19,7 @@ from taskmanager.di.container import create_container
 from taskmanager.engine.assets import ASSET_NAME_RE
 from taskmanager.engine.config import ConfigStore
 from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder
-from taskmanager.web.app import _decision_item
+from taskmanager.web.app import VENDOR_DIR, _decision_item
 from taskmanager.web.bodies import BodyRepos, build_bodies
 from taskmanager.web.rows import build_rows, statuses, statuses_hash
 from taskmanager.web.ui import get_web_html
@@ -33,6 +33,15 @@ _MAX_INLINE_ASSET_BYTES = 2 * 1024 * 1024
 # is no server-side rewrite step to skip in static mode -- the path is either embedded here,
 # at export time, or it is a broken image with no project tree beneath it to resolve against.
 _MD_IMAGE_RE = re.compile(r"(!\[[^\]]*\]\()([^)\s]+)(\))")
+
+# A `data:` src rather than an inline body: the script's bytes never pass through the HTML
+# parser, so no `</script>` or `<!--` inside a library can end or swallow the element.
+_VENDOR_SCRIPT_RE = re.compile(r'<script src="/vendor/([\w-]+\.min\.js)"></script>')
+
+
+def _embed_vendor_script(match: re.Match[str]) -> str:
+    data = base64.b64encode((VENDOR_DIR / match.group(1)).read_bytes()).decode("ascii")
+    return f'<script src="data:text/javascript;base64,{data}"></script>'
 
 
 def _embed_attachments(bodies: dict[str, Any], project_root: Path) -> None:
@@ -121,7 +130,9 @@ def export_static_html(project_root: Path, output_file: Path) -> Path:
         "decisions": decisions,
     }
 
-    html_content = get_web_html(initial_data=initial_data)
+    html_content = _VENDOR_SCRIPT_RE.sub(
+        _embed_vendor_script, get_web_html(initial_data=initial_data)
+    )
     output_file.parent.mkdir(parents=True, exist_ok=True)
     output_file.write_text(html_content, encoding="utf-8")
     return output_file

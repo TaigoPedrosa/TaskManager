@@ -16,8 +16,8 @@ function node(id, title, status, kind = 'task') {
 const CODE_LINE = `$ git -C /Users/owner/Documents/TaskManager config user.name && tm decision answer decision-D43 --option a --rationale "same"`;
 
 const CONTEXT = 'context of decision-D43';
-// What marked emits for the frames' context specimen. The page loads marked from a CDN, which
-// node does not, so this stands in for it on that one input.
+// What marked emits for the frames' context specimen. The page loads marked from /vendor, which
+// the harness does not run, so this stands in for it on that one input.
 const CONTEXT_HTML = [
   '<h2>Who answered</h2>',
   '<p>An answer given from the page is stored with <code>answered_by: web</code>, so its history cannot tell who.</p>',

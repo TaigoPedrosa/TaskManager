@@ -3,9 +3,10 @@
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
-from taskmanager.cli.main import EXPORT_FORMAT, EXPORT_FORMAT_MERGE_MAIN, app
+from taskmanager.cli.main import EXPORT_FORMAT, EXPORT_FORMATS_MERGE_MAIN, app
 from taskmanager.core.status import ConditionStage, Merge
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
@@ -39,7 +40,7 @@ def test_export_writes_the_format_marker_flags_conditions_and_bare_dependencies(
     assert runner.invoke(app, ["export", str(out), "-C", str(tmp_path)]).exit_code == 0
     assert json.loads((out / "_format.json").read_text()) == {
         "format": "tm-lifecycle",
-        "version": 2,
+        "version": 3,
     }
     plan = json.loads((out / "S1-P1.json").read_text())["plans"][0]
     a, b = plan["tasks"]
@@ -87,7 +88,9 @@ def test_restore_refuses_a_pre_lifecycle_export_and_writes_nothing(tmp_path: Pat
     fresh.mkdir()
     res = runner.invoke(app, ["restore", str(old), "-C", str(fresh)])
     assert res.exit_code == 1
-    assert "v0.2.0" in res.output and "tm import" in res.output
+    # rich wraps at the console width, and the temp path's length decides where.
+    message = " ".join(res.output.split())
+    assert "v0.2.0" in message and "tm import" in message
     assert not (fresh / ".taskmanager").exists()
 
 
@@ -148,8 +151,11 @@ def merge_main_export(tmp_path: Path, marker: dict[str, object]) -> tuple[Path, 
     return current, old
 
 
-def test_restore_reads_merge_main_in_a_version_1_export_as_spec(tmp_path: Path) -> None:
-    current, old = merge_main_export(tmp_path, EXPORT_FORMAT_MERGE_MAIN)
+@pytest.mark.parametrize("marker", EXPORT_FORMATS_MERGE_MAIN, ids=["version-1", "version-2"])
+def test_restore_reads_merge_main_in_an_older_export_as_spec(
+    tmp_path: Path, marker: dict[str, object]
+) -> None:
+    current, old = merge_main_export(tmp_path, marker)
     fresh = tmp_path / "fresh"
     fresh.mkdir()
 
