@@ -1,15 +1,17 @@
 """Hermetic terminal and estate for the suite.
 
-`rich` reads the colour variables when its console is first built, so they are settled here, before
-anything imports it: a caller's `FORCE_COLOR` would otherwise split `Imported Plan 1` with escape
-codes and turn every plain-text assertion on rich output red.
+`rich` and Typer read the colour variables when they are first imported or their console is
+first built, so they are settled here, before anything imports them: a caller's `FORCE_COLOR`, or
+the `GITHUB_ACTIONS` every CI run sets, would otherwise split `Imported Plan 1` and every usage
+line with escape codes and turn every plain-text assertion on rich output red.
 """
 
 import os
 
 import pytest
 
-os.environ.pop("FORCE_COLOR", None)
+for name in ("FORCE_COLOR", "GITHUB_ACTIONS", "PY_COLORS"):
+    os.environ.pop(name, None)
 os.environ["NO_COLOR"] = "1"
 os.environ["COLUMNS"] = "200"
 

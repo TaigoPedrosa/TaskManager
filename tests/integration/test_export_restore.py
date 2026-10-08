@@ -85,7 +85,9 @@ def test_restore_refuses_a_pre_lifecycle_export_and_writes_nothing(tmp_path: Pat
     fresh.mkdir()
     res = runner.invoke(app, ["restore", str(old), "-C", str(fresh)])
     assert res.exit_code == 1
-    assert "v0.2.0" in res.output and "tm import" in res.output
+    # rich wraps at the console width, and the temp path's length decides where.
+    message = " ".join(res.output.split())
+    assert "v0.2.0" in message and "tm import" in message
     assert not (fresh / ".taskmanager").exists()
 
 

@@ -1,6 +1,8 @@
+import os
 import re
 import shutil
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -77,6 +79,30 @@ def test_ci_runs_every_gate() -> None:
     workflow = yaml.safe_load((REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
     runs = [step.get("run", "") for job in workflow["jobs"].values() for step in job["steps"]]
     assert [gate for gate in GATES if not any(gate in run for run in runs)] == []
+
+
+@pytest.mark.parametrize("variable", ["GITHUB_ACTIONS", "PY_COLORS"])
+def test_the_suite_reads_plain_usage_text_under_a_variable_that_forces_a_terminal(
+    variable: str,
+) -> None:
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "tests/unit/test_db_migrate_command.py::test_migrate_help_names_the_backup_path",
+            "tests/integration/test_cli_lifecycle.py::test_review_needs_exactly_one_of_approve_and_reject",
+        ],
+        cwd=REPO,
+        env={**os.environ, variable: "true"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert run.returncode == 0, run.stdout
 
 
 def test_local_tool_output_is_git_ignored_and_docs_images_are_not(tmp_path: Path) -> None:
