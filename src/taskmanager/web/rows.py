@@ -49,6 +49,7 @@ def build_rows(view: DisplayView) -> dict[str, dict[str, Any]]:
             "requires": node.requires,
             "lease": _lease_row(snapshot, node_id),
             "waits_on": [*work, *decisions],
+            "superseded_by": view.superseded_by(node_id),
             "child_count": len(snapshot.children(node_id)),
             "rev": data.revs.get(node_id, 0),
         }
@@ -95,6 +96,14 @@ def _nearest_ancestor(rows: dict[str, dict[str, Any]], node_id: str, kind: str) 
     return None
 
 
+def _counted_display(row: Mapping[str, Any]) -> str:
+    """A superseded node is done once its replacement is, and set aside until then."""
+    by = row.get("superseded_by")
+    return (
+        Status.COMPLETED.value if by and by["status"] == Status.COMPLETED.value else row["display"]
+    )
+
+
 def statuses(rows: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     groups: dict[str | None, dict[str | None, Counter[str]]] = {}
     for row in rows.values():
@@ -106,7 +115,8 @@ def statuses(rows: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
         elif row["kind"] == NodeKind.TASK.value:
             spec_id = _nearest_ancestor(rows, row["id"], NodeKind.SPEC.value)
             plan_id = _nearest_ancestor(rows, row["id"], NodeKind.PLAN.value)
-            groups.setdefault(spec_id, {}).setdefault(plan_id, Counter())[row["display"]] += 1
+            counts = groups.setdefault(spec_id, {}).setdefault(plan_id, Counter())
+            counts[_counted_display(row)] += 1
 
     # A container's own step counts in the same (spec, plan) group its children roll up into,
     # under its own display.
