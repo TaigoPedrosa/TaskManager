@@ -67,9 +67,9 @@ A table of the task's checks against your branch, exit 1 if any failed. What eac
 - `symbol_signature` — a `def`, `async def` or `class` of that name parses in that file.
 - `ast_export` — that name is in the file's `__all__`, or is a public top-level `def`/`class`.
 - `test_command` — the command runs in a shell from the project root; exit 0 passes.
-- `codegraph_query` — passes with `codegraph CLI not installed; skipped` where that tool is absent.
+- `codegraph_query` — `codegraph query --json` for the search in `target_path`, run over the ref's tree, matches the regex in `expected_pattern`.
 
-The path checks read the ref, never your worktree, so without `--ref` they read `origin/<the branch the task's spec lands on>` and stay red until the task's code reaches it. A `test_command` reads the same ref from `TM_VERIFY_REF`, which every run exports: the `--ref` given, that landing branch without one, and the landing target when tm lands the task. So write `"${TM_VERIFY_REF:-origin/main}"` into the command rather than a branch name. `No verifications to run.` exits 2: a task with no checks has not passed anything, and that is worth a line in your report.
+The path checks and codegraph queries read the ref, never your worktree, so without `--ref` they read `origin/<the branch the task's spec lands on>` and stay red until the task's code reaches it. A `test_command` reads the same ref from `TM_VERIFY_REF`, which every run exports: the `--ref` given, that landing branch without one, and the landing target when tm lands the task. So write `"${TM_VERIFY_REF:-origin/main}"` into the command rather than a branch name. `No verifications to run.` exits 2: a task with no checks has not passed anything, and that is worth a line in your report.
 
 - A generated file (a built stylesheet, a lockfile, a schema dump) is regenerated, never edited or hand-merged: a branch that changes any of its inputs rebuilds it before closing, and a conflict on it is resolved by rebuilding it on the merged tree.
 - A test selects only markup that its own task's declared files render. It reaches another file's control by what that control shows the user (role, accessible name), never by its classes or inner elements.
