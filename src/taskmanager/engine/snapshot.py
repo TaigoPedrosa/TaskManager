@@ -362,6 +362,7 @@ class SnapshotBuilder:
             busy=self._busy(node.id, data),
             literal_origin_main=any(names_origin_main(c) for c in commands),
             land_on=None if (land_on := node.frontmatter.get("land_on")) is None else str(land_on),
+            landed_in=data.landed.get(node.id, frozenset()),
         )
 
 

@@ -1,5 +1,6 @@
-"""Where a node lands and what it builds on, decided from stored statuses and the tree alone:
-no git call and no repository comparison, so satisfaction is the same in every repository."""
+"""Where a node lands and what it builds on, decided from stored statuses, recorded landings and
+the tree alone: no git call and no repository comparison, so satisfaction is the same in every
+repository."""
 
 from typing import Final, Protocol
 
@@ -17,6 +18,7 @@ class Tree(Protocol):
     def merge(self, node_id: str) -> Merge: ...
     def status(self, node_id: str) -> Status | DecisionStatus: ...
     def top(self, node_id: str) -> str: ...
+    def on_target(self, node_id: str) -> bool: ...
 
 
 def landing_target(t: Tree, node_id: str) -> str:
@@ -66,7 +68,7 @@ def satisfied(t: Tree, x: str, y: str) -> bool:
     status = t.status(y)
     if isinstance(status, DecisionStatus):
         return status != DecisionStatus.OPEN
-    return status == Status.SUPERSEDED or t.status(meeting(t, x, y)) in ON_TARGET
+    return status == Status.SUPERSEDED or t.on_target(meeting(t, x, y))
 
 
 def sync_pairs(t: Tree, x: str, y: str) -> list[tuple[str, str]]:

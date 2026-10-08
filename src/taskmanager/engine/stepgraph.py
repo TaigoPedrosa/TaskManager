@@ -36,6 +36,9 @@ class SnapNode:
     # The branch its chain lands on at the top: its spec's `land_on`, else its repository's
     # `default_branch`.
     top: str = DEFAULT_BRANCH
+    # Every repository a `land` job of this node succeeded in. A reviewed container lands before
+    # its review, and the review and fix statuses after that cannot tell its code is landed.
+    landed_in: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -74,6 +77,17 @@ class Snapshot:
 
     def top(self, node_id: str) -> str:
         return self.nodes[node_id].top
+
+    def on_target(self, node_id: str) -> bool:
+        """Its code is on its landing target: its status says so, or a `land` job succeeded in
+        every repository it lands in."""
+        n = self.nodes[node_id]
+        if n.status in ON_TARGET:
+            return True
+        if not n.landed_in:
+            return False
+        under = self.counted_descendants(node_id) if n.kind in CONTAINERS else [node_id]
+        return {r for d in under if (r := self.nodes[d].repo)} <= n.landed_in
 
     def children(self, node_id: str) -> list[str]:
         return list(self._children.get(node_id, ()))
@@ -189,7 +203,7 @@ def migration_writers(s: Snapshot, repo: str) -> list[SnapNode]:
         and n.kind not in CONTAINERS
         # Code parked on a branch that was set aside never reaches its target, so it holds nothing.
         and not any(s.status(x) in EXITS for x in landing_chain(s, n.id))
-        and s.status(_reaches_target(s, n.id)) not in ON_TARGET
+        and not s.on_target(_reaches_target(s, n.id))
     ]
 
 
