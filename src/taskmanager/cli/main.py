@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import logging
 import os
@@ -2448,7 +2449,18 @@ def _find_available_port(host: str, starting_port: int, max_attempts: int = 20) 
     )
 
 
-def _run_web_server(host: str, port: int, open_browser: bool, path: Path | None) -> None:
+def _is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _run_web_server(
+    host: str, port: int, open_browser: bool, path: Path | None, expose: bool
+) -> None:
     import threading
     import time
     import webbrowser
@@ -2456,6 +2468,16 @@ def _run_web_server(host: str, port: int, open_browser: bool, path: Path | None)
     import uvicorn
 
     from taskmanager.web.app import create_app
+
+    # The Host pin stops a browser, not a script: any client that reaches the port can send
+    # `Host: localhost` and then add and run a verification command.
+    if not expose and not _is_loopback(host):
+        print(
+            f"[red]--host {escape(host)} serves the estate with no authentication: any machine "
+            "that reaches it can read every node and run commands through its verifications. "
+            "Pass --expose to serve it anyway.[/red]"
+        )
+        raise typer.Exit(code=1)
 
     root = _get_root(path)
     _refuse_pre_lifecycle(root)
@@ -2497,10 +2519,13 @@ def web_callback(
     path: Annotated[
         Path | None, typer.Option("--path", "-C", help="Project root directory")
     ] = None,
+    expose: Annotated[
+        bool, typer.Option("--expose", help="Allow a --host other than loopback")
+    ] = False,
 ) -> None:
     """Interactive web visualizer and dashboard."""
     if ctx.invoked_subcommand is None:
-        _run_web_server(host=host, port=port, open_browser=open_browser, path=path)
+        _run_web_server(host=host, port=port, open_browser=open_browser, path=path, expose=expose)
 
 
 @web_app.command("run")
@@ -2513,9 +2538,12 @@ def web_run(
     path: Annotated[
         Path | None, typer.Option("--path", "-C", help="Project root directory")
     ] = None,
+    expose: Annotated[
+        bool, typer.Option("--expose", help="Allow a --host other than loopback")
+    ] = False,
 ) -> None:
     """Run interactive web server with real-time updates."""
-    _run_web_server(host=host, port=port, open_browser=open_browser, path=path)
+    _run_web_server(host=host, port=port, open_browser=open_browser, path=path, expose=expose)
 
 
 @web_app.command("export")

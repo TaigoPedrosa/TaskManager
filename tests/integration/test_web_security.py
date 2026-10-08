@@ -1,17 +1,22 @@
 """`tm web` answers only its own origin: every HTTP route and `/ws` refuse a foreign Host or
-Origin, and neither the served page nor its export loads a script from another origin."""
+Origin, neither the served page nor its export loads a script from another origin, and it binds
+a non-loopback host only when told to with `--expose`."""
 
 import base64
 import re
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
+import uvicorn
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.routing import Mount, Route
 from starlette.websockets import WebSocketDisconnect
+from typer.testing import CliRunner
 
+from taskmanager.cli.main import app as cli
 from taskmanager.core.enums import NodeKind
 from taskmanager.core.models import Node
 from taskmanager.db.connection import DatabaseManager
@@ -43,6 +48,13 @@ def client(root: Path) -> Iterator[TestClient]:
     app = create_app(root, host="127.0.0.1", port=6701)
     with TestClient(app, base_url=f"http://{BOUND}") as test_client:
         yield test_client
+
+
+@pytest.fixture
+def served(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(uvicorn, "run", lambda _app, **kwargs: calls.append(kwargs))
+    return calls
 
 
 def _every_http_request(app: FastAPI) -> list[tuple[str, str]]:
@@ -132,3 +144,33 @@ def test_the_export_embeds_every_script_and_fetches_none(root: Path, tmp_path: P
     assert sorted(base64.b64decode(data) for _prefix, data in embedded) == sorted(
         path.read_bytes() for path in VENDOR_DIR.glob("*.js")
     )
+
+
+@pytest.mark.parametrize("command", [["web"], ["web", "run"]], ids=["web", "web-run"])
+@pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.20", "myhost.lan"])
+def test_web_on_a_non_loopback_host_without_expose_exits_1_before_serving(
+    root: Path, served: list[dict[str, Any]], command: list[str], host: str
+) -> None:
+    res = CliRunner().invoke(cli, [*command, "--host", host, "--no-open", "-C", str(root)])
+
+    assert res.exit_code == 1
+    message = " ".join(res.output.split())
+    assert f"--host {host} serves the estate with no authentication" in message
+    assert "Pass --expose to serve it anyway." in message
+    assert served == []
+
+
+@pytest.mark.parametrize("command", [["web"], ["web", "run"]], ids=["web", "web-run"])
+@pytest.mark.parametrize(
+    ("host", "flags"),
+    [("127.0.0.1", []), ("localhost", []), ("0.0.0.0", ["--expose"])],
+    ids=["loopback", "localhost", "exposed"],
+)
+def test_web_on_loopback_or_with_expose_serves_on_that_host(
+    root: Path, served: list[dict[str, Any]], command: list[str], host: str, flags: list[str]
+) -> None:
+    argv = [*command, "--host", host, *flags, "--no-open", "-C", str(root)]
+    res = CliRunner().invoke(cli, argv)
+
+    assert res.exit_code == 0, res.output
+    assert [call["host"] for call in served] == [host]
