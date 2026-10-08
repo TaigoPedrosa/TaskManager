@@ -128,6 +128,9 @@ class ClaimResult:
     worktrees: dict[str, str] = field(default_factory=dict)
     # The claim's own name, which closes its step; absent when nothing was claimed.
     token: str | None = None
+    # Repository name to its `base`: the repositories of a container can land on different
+    # default branches. `base` is the first repository's.
+    bases: dict[str, str] = field(default_factory=dict)
 
 
 class LandingJobs(Protocol):
@@ -356,6 +359,7 @@ class Claims:
             job.worktree,
             {job.repo: job.worktree} if job.worktree else {},
             token,
+            {job.repo: base},
         )
 
     def _claim(
@@ -399,9 +403,9 @@ class Claims:
 
     def _step_branch(self, node: Node, action: Action) -> str:
         """The branch a step works on: the node's own, or for a review of landed code, the
-        target it landed on."""
+        target it landed on in its first repository."""
         if action == Action.REVIEW and node.claimed_from == Status.LANDED:
-            return self.target_ref(node.id)
+            return self.target_ref(node.id, next(iter(self.repos_of(node.id)), None))
         return self.branch_of(node.id)
 
     @staticmethod
@@ -424,6 +428,7 @@ class Claims:
         if action in (Action.IMPLEMENT, Action.FIX):
             worktree, worktrees = self._cut(node, repos, worktree_dir, fix=action == Action.FIX)
         job = self._landing().start_land(node.id) if action == Action.MERGE else None
+        bases = {repo: self.base_of(node.id, repo) for repo in repos}
         return ClaimResult(
             action,
             None,
@@ -431,9 +436,10 @@ class Claims:
             job,
             repos,
             branch,
-            self.target_of(node.id),
+            bases[repos[0]] if repos else self.target_of(node.id),
             worktree,
             worktrees,
+            bases=bases,
         )
 
     def _landing(self) -> LandingJobs:
@@ -486,6 +492,13 @@ class Claims:
         if not gitops.rev_parse(repo_dir, f"refs/heads/{parent_branch}"):
             gitops.ensure_branch(repo_dir, parent_branch, self._base_ref(parent, repo))
         return parent_branch
+
+    def base_of(self, node_id: str, repo: str) -> str:
+        """The branch `node_id`'s branch is read against in `repo`: the container branch it
+        lands on, else its top as `fetched_top` reads it, which is the default branch the
+        branch was cut from until the first landing creates the top on origin."""
+        parent = self.ops.landing_parent(node_id)
+        return self.branch_of(parent) if parent else self.fetched_top(node_id, repo)
 
     def fetched_top(self, node_id: str, repo: str) -> str:
         """The branch `node_id`'s chain lands on at the top in `repo`, fetched. One not on origin

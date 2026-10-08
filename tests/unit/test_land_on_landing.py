@@ -1,6 +1,7 @@
 """A landing at the top of its chain merges, gates, pushes, parks, proves and syncs against its
 chain's target branch on origin, wherever that is; `tm verify run` reads it by default."""
 
+import json
 import subprocess
 import time
 from pathlib import Path
@@ -17,7 +18,9 @@ from lifecycle_estate import (
     push_main,
     stored,
 )
+from typer.testing import CliRunner
 
+from taskmanager.cli.main import app as cli_app
 from taskmanager.core.enums import NodeKind, VerificationType
 from taskmanager.core.models import Job, NodeVerification
 from taskmanager.core.status import Action, JobKind, JobState, Merge, Outcome, Status
@@ -345,6 +348,7 @@ def test_a_review_of_a_plan_landed_on_its_target_reads_that_target_on_origin(
     tmp_path: Path,
 ) -> None:
     claims, _ = released(tmp_path)
+    push_branch(claims.root / "api", RELEASE, "landed.txt", "landed\n")
     add(claims, "P", NodeKind.PLAN, parent="S", review=True, status=Status.LANDED)
     add(claims, "A", parent="P", review=False, fix=False, status=Status.COMPLETED)
 
@@ -355,6 +359,31 @@ def test_a_review_of_a_plan_landed_on_its_target_reads_that_target_on_origin(
         f"origin/{RELEASE}",
         RELEASE,
     )
+
+
+def test_a_review_of_a_container_landed_across_targets_names_each_repository_s_own(
+    tmp_path: Path,
+) -> None:
+    """Plan P landed on api's trunk and web's main, web landing first."""
+    config = ProjectConfig(
+        repo_order=["web", "api"], repos={"api": RepoConfig(default_branch="trunk")}
+    )
+    claims = make_estate(tmp_path, repos=("api", "web"), config=config)
+    push_branch(claims.root / "api", "trunk", "trunk.txt", "t\n")
+    add(claims, "P", NodeKind.PLAN, review=True, fix=True, status=Status.LANDED)
+    add(claims, "A", parent="P", repo="api", merge=Merge.PARENT, status=Status.COMPLETED)
+    add(claims, "W", parent="P", repo="web", merge=Merge.PARENT, status=Status.COMPLETED)
+
+    res = CliRunner().invoke(
+        cli_app,
+        ["task", "start", "P", "--agent", "r", "--session", "s1", "--json", "-C", str(claims.root)],
+    )
+
+    assert res.exit_code == 0, res.output
+    claim = json.loads(res.output)
+    assert (claim["action"], claim["repos"]) == ("review", ["web", "api"])
+    assert (claim["branch"], claim["base"]) == ("origin/main", "main")
+    assert claim["bases"] == {"web": "main", "api": "trunk"}
 
 
 def test_verify_run_with_no_ref_fetches_and_reads_each_task_s_target_on_origin(

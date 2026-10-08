@@ -934,6 +934,7 @@ def task_start(
             "repos": list(result.repos),
             "branch": result.branch,
             "base": result.base,
+            "bases": result.bases,
             "worktree": result.worktree,
             "worktrees": result.worktrees,
             "token": result.token,

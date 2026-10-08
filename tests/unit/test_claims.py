@@ -593,6 +593,7 @@ def test_a_landing_waiting_for_an_agent_is_handed_to_the_next_claimant(tmp_path:
         "/tmp/landing-worktree",
         {"api": "/tmp/landing-worktree"},
     )
+    assert (handed.base, handed.bases) == ("main", {"api": "main"})
     lease = claims.runtime.get_lease("T1")
     assert lease is not None
     assert (lease.agent_id, lease.ttl_seconds, lease.model) == (

@@ -588,13 +588,22 @@ def test_review_guide_reads_a_spec_s_target_on_origin_and_a_container_branch_loc
     while the diffs read the target where it lives: on origin, or in the shared clone."""
     text = rendered("review")
     assert (
-        "`<base>` is the claim's `base` as printed: the branch the node's spec lands on, or the "
-        "container branch the node lands on. `<base-ref>` is where it is read: `origin/<base>` for "
-        "the spec's target, and `<base>` itself for a container branch, which is local to the "
-        "clone:"
+        "`<base>` is that repository's entry in the claim's `bases`, since a container's "
+        "repositories can land on different default branches (`base` is the first repository's): "
+        "the branch the node's spec lands on, or the container branch the node lands on. A spec's "
+        "target that origin does not have yet reads as the repository's default branch, which the "
+        "branch was cut from. `<base-ref>` is where it is read: `origin/<base>` for the spec's "
+        "target, and `<base>` itself for a container branch, which is local to the clone:"
     ) in text
     assert "git -C <repo> diff <base-ref>...<branch>" in text
-    assert "For a review claimed from `LANDED`, `<base-ref>...<branch>` is empty" in text
+    assert (
+        "For a review claimed from `LANDED`, `<branch>` in each repository is that repository's "
+        "`<base-ref>`, so `<base-ref>...<branch>` is empty"
+    ) in text
+    assert (
+        "For a review claimed from `LANDED`, run it with no `--ref`: each task is then read at its "
+        "own target on origin, fetched first, which every repository it touched holds."
+    ) in text
 
 
 def test_plan_guide_sets_a_spec_s_target_with_land_on_once(rendered: Callable[[str], str]) -> None:

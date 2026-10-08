@@ -8,7 +8,7 @@ from typer.testing import CliRunner
 
 from taskmanager.cli.main import app as cli_app
 from taskmanager.core.enums import NodeKind
-from taskmanager.core.status import Merge, Status
+from taskmanager.core.status import Action, Merge, Status
 from taskmanager.engine.claims import Claims
 from taskmanager.engine.config import ProjectConfig, RepoConfig
 from taskmanager.engine.operations import OperationError
@@ -78,7 +78,7 @@ def test_landing_branch_of_a_node_with_no_spec_is_its_repository_s_default_branc
 
 
 @pytest.mark.parametrize("default", [None, "develop"])
-def test_a_claim_cuts_from_the_default_branch_while_the_target_is_not_on_origin(
+def test_a_claim_cuts_from_and_names_the_default_branch_while_the_target_is_not_on_origin(
     tmp_path: Path, default: str | None
 ) -> None:
     claims = estate(tmp_path, default)
@@ -89,10 +89,23 @@ def test_a_claim_cuts_from_the_default_branch_while_the_target_is_not_on_origin(
 
     result = claims.start("T", "agent-1", "s1")
 
-    assert result.base == "release/2"
+    assert (result.base, result.bases) == (default or "main", {"api": default or "main"})
     assert result.worktree is not None
     expected = git(api, "rev-parse", f"origin/{default or 'main'}")
     assert git(Path(result.worktree), "rev-parse", "HEAD") == expected
+
+
+def test_a_review_claimed_before_the_target_is_on_origin_names_the_default_branch_as_base(
+    tmp_path: Path,
+) -> None:
+    claims = estate(tmp_path)
+    claims.ops.update_node("S", frontmatter_set={"land_on": "release/2"})
+    add(claims, "R", parent="P", status=Status.IMPLEMENTED)
+    branch_at(claims.root / "api", "tm/R")
+
+    result = claims.start("R", "reviewer", "s1")
+
+    assert (result.action, result.branch, result.base) == (Action.REVIEW, "tm/R", "main")
 
 
 @pytest.mark.parametrize(("node", "base"), [("T", "release/2"), ("C", "tm/P")])
