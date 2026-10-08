@@ -407,6 +407,38 @@ class DisplayView:
         )
         return display_status(cycle_in(self.snapshot, node), facts).value
 
+    def superseded_by(self, node_id: str) -> dict[str, str] | None:
+        """The node now carrying `node_id`'s work and its display, or None when it is not
+        superseded."""
+        data = self.snapshot.graph_data()
+        end = replacement(data, node_id)
+        return None if end is None else {"id": end, "status": self.display(data.nodes[end])}
+
+
+def display_view(node_repo: NodeRepository) -> DisplayView:
+    """What `tm` shows a reader: conditions read from the cache within `condition_ttl`."""
+    db = node_repo.db
+    return DisplayView(
+        SnapshotBuilder(node_repo, RuntimeRepository(db), JobRepository(db)),
+        CacheRepository(db),
+        ConfigStore(db.taskmanager_dir.parent).project().condition_ttl,
+    )
+
+
+def replacement(data: GraphData, node_id: str) -> str | None:
+    """The end of `node_id`'s `supersedes` chain, followed while each node on it is SUPERSEDED,
+    so A superseded by B superseded by C names C. `seen` stops a cycle an import can store."""
+    successor = {old: new for new, old in data.relations[RelationType.SUPERSEDES]}
+    end, seen = node_id, {node_id}
+    while (
+        data.nodes[end].status == Status.SUPERSEDED
+        and (new := successor.get(end)) is not None
+        and new not in seen
+    ):
+        seen.add(new)
+        end = new
+    return None if end == node_id else end
+
 
 def chain_holder(snapshot: Snapshot, node: Node) -> str | None:
     """The migration writer an implement of `node` waits behind in its repository's chain.
