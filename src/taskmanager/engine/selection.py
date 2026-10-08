@@ -264,6 +264,17 @@ def candidates(
     return sorted(found, key=lambda c: (_STAGE[c.action], -c.node.priority, c.node.id)), held
 
 
+def _wave_files(cand: Candidate, snap: Snapshot) -> list[str]:
+    if cand.action not in (Action.IMPLEMENT, Action.FIX):
+        return []
+    node = cand.node
+    return [
+        locked_key(node.target_repo, f)
+        for f in declared_files_of(node, snap.graph_data().verifications.get(node.id, []))
+        if is_locked_path(f)
+    ]
+
+
 def select(
     candidates: list[Candidate],
     snap: Snapshot,
@@ -274,12 +285,13 @@ def select(
 ) -> Selection:
     """The wave `candidates` fills `size` slots with, `max_strong` of them opus/fable, skipping
     `exclude` and holding `hold_merge`'s merges back."""
-    data = snap.graph_data()
     excluded = set(exclude)
     merge_held = set(hold_merge)
     held: list[str] = []
     chosen: list[dict[str, object]] = []
-    taken: set[str] = set()
+    # An excluded node is one a concurrent run of the same tick is about to claim, so its files
+    # are taken before any candidate is weighed, wherever it sits in the order.
+    taken = {f for cand in candidates if cand.node.id in excluded for f in _wave_files(cand, snap)}
     chain_holders: dict[str, dict[str, str]] = {}
     strong_free = max_strong
     waiting = 0
@@ -293,15 +305,7 @@ def select(
             continue
         repo = node.target_repo or ""
         migration = snap.nodes[node.id].writes_migration
-        files = (
-            [
-                locked_key(node.target_repo, f)
-                for f in declared_files_of(node, data.verifications.get(node.id, []))
-                if is_locked_path(f)
-            ]
-            if cand.action in (Action.IMPLEMENT, Action.FIX)
-            else []
-        )
+        files = _wave_files(cand, snap)
         why: list[str] = []
         if cand.action == Action.IMPLEMENT and migration:
             if repo not in chain_holders:
