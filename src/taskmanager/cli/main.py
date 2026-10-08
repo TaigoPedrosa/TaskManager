@@ -3,6 +3,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -2045,11 +2046,25 @@ def _guide_topics() -> dict[str, str]:
 
     topics: dict[str, str] = {}
     for entry in sorted(files("taskmanager").joinpath("guides").iterdir(), key=lambda e: e.name):
-        if entry.name.endswith(".md"):
+        if entry.name.endswith(".md") and entry.name != "codegraph.md":
             lines = [ln.strip() for ln in entry.read_text(encoding="utf-8").splitlines()]
             body = next((ln for ln in lines[1:] if ln), "")
             topics[entry.name[: -len(".md")]] = body.split(". ")[0].rstrip(".")
     return topics
+
+
+def _codegraph_blocks() -> dict[str, str]:
+    """Role -> the codegraph block `tm guide <role>` appends, one `## <role>` section each."""
+    from importlib.resources import files
+
+    text = files("taskmanager").joinpath("guides/codegraph.md").read_text(encoding="utf-8")
+    parts = re.split(r"^## (\w+)\n", text, flags=re.MULTILINE)[1:]
+    return {role: body.strip() for role, body in zip(parts[::2], parts[1::2], strict=True)}
+
+
+def _codegraph_ready(root: Path) -> bool:
+    ok = {fact.name for fact in _doctor_facts(root) if fact.ok}
+    return "codegraph" in ok and any(name.startswith("codegraph index") for name in ok)
 
 
 @app.command("guide")
@@ -2067,7 +2082,8 @@ def guide(
 
     The addendum is the section named after the topic on the node `guide`
     (`tm section set guide:<topic> --file ...`), so a project's conventions live and version with
-    its tasks.
+    its tasks. With the codegraph CLI on PATH and the repository indexed, implement, fix, review
+    and plan also carry how to use codegraph, between the two.
     """
     from importlib.resources import files
 
@@ -2097,6 +2113,9 @@ def guide(
         if topic == "dispatch":
             text = _dispatch_targets(text, _get_root(path, must_exist=False))
         parts.append(text)
+        block = _codegraph_blocks().get(topic)
+        if block is not None and _codegraph_ready(_get_root(path, must_exist=False)):
+            parts.append(block)
     if overlay is not None and not builtin_only:
         parts.append(overlay.content)
     sys.stdout.write("\n\n---\n\n".join(p.rstrip("\n") for p in parts) + "\n")
