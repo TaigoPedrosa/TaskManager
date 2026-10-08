@@ -3,7 +3,7 @@
   "name": "taskmanager",
   "description": "Local agentic task tracker system powered by SQLite, DAG heuristics, worktrees and live visualizer",
   "owner": {
-    "name": "Taigo Pedrosa"
+    "name": "Taígo Pedrosa"
   },
   "plugins": [
     {
@@ -12,8 +12,10 @@
       "version": "0.3.7",
       "source": "./plugin",
       "author": {
-        "name": "Taigo Pedrosa"
+        "name": "Taígo Pedrosa"
       },
+      "homepage": "https://github.com/TaigoPedrosa/TaskManager",
+      "repository": "https://github.com/TaigoPedrosa/TaskManager",
       "license": "MIT",
       "keywords": [
         "taskmanager",
