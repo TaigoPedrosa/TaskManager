@@ -33,8 +33,8 @@ A node goes `READY`, `IMPLEMENTING`, `IMPLEMENTED`, then through review, fix and
 
 ## Web
 
-`tm web` serves the visualizer over one FastAPI app: `GET /` and static assets, the `/ws`
-subscribe protocol, and a handful of paginated HTTP reads.
+`tm web` serves the visualizer over one FastAPI app: the page at `/` and each view path, static
+assets, the `/ws` subscribe protocol, and a handful of paginated HTTP reads.
 
 - `/ws` takes `{"type": "subscribe", "id", "filters", "open", "watch", "reset"}` and answers
   `snapshot` (full state, on `reset: true` or a hash mismatch) or `update` (a diff since the
@@ -49,10 +49,19 @@ subscribe protocol, and a handful of paginated HTTP reads.
   not a doc here: `src/taskmanager/web/live.py`, `rows.py`, `visibility.py` and `bodies.py` are
   its implementation, and `tests/fixtures/statuses_hash.json` /
   `tests/fixtures/visibility_cases.json` are its golden vectors.
-- The page opens on one of three views (`WebViewMode`, `src/taskmanager/web/enums.py`): `waves`
-  (the default for `tm web` and for a live connection), `graph`, the node graph and inspector,
-  and `document`, one card per spec/plan/task walked from the roots down — the view a static
-  export (`tm web export`) opens on, since it renders straight from the embedded data.
+- The toolbar holds four views, in order: Document, one card per spec/plan/task walked from the
+  roots down; Graph, the node graph and inspector; Waves; and Decisions. Document opens first,
+  for `tm web` and for a static export (`tm web export`) alike.
+- The URL is the page's state. `/document`, `/graph`, `/waves` and `/decisions` name the view,
+  and `/` opens Document. `/<view>/<id>` also selects a node, or in Decisions a decision:
+  `/graph/API-AUTH`. Filters ride in the query string — `status`, `phase`, `repo`, `model`
+  and `spec`, each with an `x`-prefixed exclude form (`xstatus`), plus `smin`, `smax`, `q` and
+  `sort=priority` — so `/document?status=REVIEWING,FIXING&xrepo=web` is a link to share. An
+  older link with its filters in the hash, `/#status=REVIEWING`, opens with them moved to the
+  query string.
+- A static export, opened from a file, has no paths of its own, so it carries the same path and
+  query after `#/`: `spec-dashboard.html#/graph/API-AUTH?status=REVIEWING`. It has no server to
+  simulate waves against, so it drops Waves and `#/waves` opens Document.
 - Waves shows what `tm wave discover` would claim next, simulated forward from live state
   without claiming anything: a wave-size input, the same spec include filter as the graph view,
   a "Compute next wave" button that adds one wave on top of the last, and "Reset" back to wave
@@ -62,13 +71,14 @@ subscribe protocol, and a handful of paginated HTTP reads.
   server-side over one snapshot of `state.db` and the cached conditions, and returns
   `{"waves": [...], "max_depth": n}`; `depth` and `size` are bounds-checked server-side
   regardless of what the client sends, and the page stops "Compute next wave" at `max_depth`.
-- The fourth view, Decisions (`web/static/js/decisions.js`), pages `GET /api/decisions`
+- Decisions (`web/static/js/decisions.js`) pages `GET /api/decisions`
   (`status=open|answered|withdrawn`, cursor-paginated) into three tabs; the Open badge tracks
-  the live `decisions_open` count from every snapshot/update. Opening a decision shows its
-  question, context and options in the same drawer the Waves and Graph views use
-  (`showGraphInspector`, `detail.js`). An open decision answers with a picked option or a
-  custom answer, plus an optional rationale, over `POST /api/decisions/{id}/answer`; withdrawing
-  takes a reason over `POST /api/decisions/{id}/withdraw`, and either can be reopened.
+  the live `decisions_open` count from every snapshot/update. Opening a decision
+  (`/decisions/<id>`) shows its question, context and options beside the list; below 640px the
+  decision is the page and the list opens as a drawer over it. An open decision answers with a
+  picked option or a custom answer, plus an optional rationale, over
+  `POST /api/decisions/{id}/answer`; withdrawing takes a reason over
+  `POST /api/decisions/{id}/withdraw`, and either can be reopened.
 
 ## Upgrading from 0.2
 
