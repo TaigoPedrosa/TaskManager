@@ -8,7 +8,7 @@ A local task tracker for agents: a SQLite graph of specs, plans and tasks that c
 
 ## Requirements
 
-macOS or Linux; Python 3.14 (uv fetches it); git; every repository tm lands into needs an `origin` remote with a `main` branch. The plugin runs in Claude Code.
+macOS or Linux; Python 3.14 (uv fetches it); git; every repository tm lands into needs an `origin` remote with its default branch (`repos.<repo>.default_branch`, `main` unless set). The plugin runs in Claude Code.
 
 ## Install
 
@@ -23,7 +23,7 @@ The plugin carries the skills, the `/taskmanager:tm`, `:task` and `:board` comma
 ## Quickstart
 
 ```bash
-cd my-repo                      # a clone with origin/main
+cd my-repo                      # a clone with its default branch on origin
 tm init
 tm config set repos '{".": {gates: {main: {command: "<your test command>"}}}}'
 tm guide plan                   # how to write plan.yaml

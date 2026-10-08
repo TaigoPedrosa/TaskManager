@@ -683,6 +683,8 @@ RETIRED_TARGET_WORDING = (
     "`main` means that repository's",
     "unset when none was",
     "sets no ref",
+    "with a `main` branch",
+    "a clone with origin/main",
 )
 
 
