@@ -384,8 +384,8 @@ document.addEventListener('click', (e) => {
 });
 
 // The one tooltip: hover and keyboard focus open it on any [data-tip] (its text is the
-// element's aria-label), leaving, blur and Escape close it. The native title is held aside
-// while it shows, so the two never stack.
+// element's aria-label, else its own text), leaving, blur and Escape close it. The native title
+// is held aside while it shows, so the two never stack.
 const tipEl = document.createElement('div');
 tipEl.id = 'tm-tooltip';
 tipEl.setAttribute('role', 'tooltip');
@@ -406,9 +406,10 @@ function showTip(anchor, html, interactive = false) {
   tipEl.classList.toggle('pointer-events-none', !interactive);
   tipEl.classList.remove('hidden');
   const r = anchor.getBoundingClientRect();
-  const w = tipEl.getBoundingClientRect().width;
+  const { width: w, height: h } = tipEl.getBoundingClientRect();
   tipEl.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - w - 8))}px`;
-  tipEl.style.top = `${r.bottom + 6}px`;
+  // An anchor near the bottom edge (a toast) gets its tooltip above it.
+  tipEl.style.top = `${r.bottom + 6 + h > window.innerHeight ? r.top - h - 6 : r.bottom + 6}px`;
 }
 
 function hideTip() {
@@ -426,9 +427,13 @@ function tipTarget(e) {
   return e.target && e.target.closest ? e.target.closest('[data-tip]') : null;
 }
 
+function tipHtml(anchor) {
+  return esc(anchor.getAttribute('aria-label') ?? anchor.textContent);
+}
+
 document.addEventListener('mouseover', (e) => {
   const a = tipTarget(e);
-  if (a && a !== tipAnchor) showTip(a, esc(a.getAttribute('aria-label')));
+  if (a && a !== tipAnchor) showTip(a, tipHtml(a));
 });
 document.addEventListener('mouseout', (e) => {
   const a = tipTarget(e);
@@ -441,7 +446,7 @@ document.addEventListener('keydown', () => { focusFromKeyboard = true; }, true);
 document.addEventListener('pointerdown', () => { focusFromKeyboard = false; }, true);
 document.addEventListener('focusin', (e) => {
   const a = tipTarget(e);
-  if (a && focusFromKeyboard) showTip(a, esc(a.getAttribute('aria-label')));
+  if (a && focusFromKeyboard) showTip(a, tipHtml(a));
 });
 document.addEventListener('focusout', (e) => {
   if (tipAnchor && tipTarget(e) === tipAnchor) hideTip();
@@ -618,10 +623,16 @@ function toast(message, opts = {}) {
   el.className = `toast pointer-events-auto flex items-center gap-2 px-3 py-2 rounded-lg border text-xs shadow-2xl max-w-sm ${TOAST_TONE[tone] || TOAST_TONE.info}`;
   el.setAttribute('data-tone', tone);
   el.innerHTML = (TOAST_ICON[tone] ? renderIcon(TOAST_ICON[tone], 'w-3.5 h-3.5 flex-shrink-0') : '')
-    + `<span class="flex-1 min-w-0 break-words">${esc(message)}</span>`
+    + `<span class="toast-message flex-1 min-w-0 break-words line-clamp-3 rounded-sm ${FOCUS_RING}">${esc(message)}</span>`
     + (action ? `<button type="button" class="toast-action${retry ? ' toast-retry' : ''} h-7 px-2.5 rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-[11px] font-medium text-zinc-200 flex-shrink-0 ${FOCUS_RING}">${esc(action.label)}</button>` : '')
     + `<button type="button" class="toast-close p-1 rounded-md hover:bg-black/20 flex-shrink-0 ${FOCUS_RING}" aria-label="Close">${renderIcon('x', 'w-3.5 h-3.5')}</button>`;
   toastRoot.appendChild(el);
+  // A message past three lines is cut there; its full text is the tooltip, on hover and on focus.
+  const text = el.querySelector('.toast-message');
+  if (text.scrollHeight > text.clientHeight) {
+    text.setAttribute('tabindex', '0');
+    text.setAttribute('data-tip', '');
+  }
   el.querySelector('.toast-close').addEventListener('click', dismissToast);
   const act = el.querySelector('.toast-action');
   if (act) act.addEventListener('click', () => { dismissToast(); action.run(); });
@@ -633,9 +644,10 @@ function dismissToast() {
   toastRoot.innerHTML = '';
 }
 
-// Escape closes a toast first; a dialog under it stays open for a second Escape.
+// Escape closes a toast first, after any tooltip open on its text; a dialog under it stays open
+// for a second Escape.
 document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape' || !toastRoot.querySelector('.toast')) return;
+  if (e.key !== 'Escape' || e.defaultPrevented || !toastRoot.querySelector('.toast')) return;
   e.preventDefault();
   dismissToast();
 });

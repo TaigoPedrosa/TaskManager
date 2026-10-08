@@ -790,6 +790,13 @@ video {
   margin-top: 0.5rem;
 }
 
+.line-clamp-3 {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
 .block {
   display: block;
 }
@@ -910,8 +917,8 @@ video {
   max-height: 75vh;
 }
 
-.max-h-\[85vh\] {
-  max-height: 85vh;
+.max-h-\[calc\(100vh-180px\)\] {
+  max-height: calc(100vh - 180px);
 }
 
 .max-h-full {
