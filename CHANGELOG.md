@@ -23,6 +23,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   plugin manifest.
 - `/taskmanager:tm` only runs a `tm` command: invoking it no longer opts the session into the
   Workflow tool, a self-paced loop or any other tool.
+- The plugin lives under `plugin/`, so installing it copies its skills, commands, agent and
+  workflow rather than the whole repository.
+- The dispatch guide and the dispatcher skill run the workflow as `taskmanager:tm-wave`, or by
+  `scriptPath` at the plugin's `workflows/tm-wave.js`.
+- `tm-wave` runs its commands on the plugin's `taskmanager:tm-op` agent, then on `tm-op`, before
+  the generic agent, and maps model families to `claude-haiku-4-5-20251001`,
+  `claude-sonnet-5-5`, `claude-opus-5-5` and `claude-fable-5-1` by default.
+- The shipped dispatch, fix and review guides and the `tm-wave` briefs carry no house style: a
+  dispatcher reports and stops when nothing is claimable or in flight, a question that holds work
+  is a decision, and comment, test-name and review-format rules belong in a project's own guide
+  addendum (`tm section set guide:<topic>`).
 
 ### Removed
 
@@ -30,6 +41,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - The `/docs` and `/redoc` API pages on `tm web`.
 - `tm install`, the empty `tm plugin` group and `install.sh`: the README's install commands
   replace them.
+- The unused copy of the skills under `src/taskmanager/skills`.
 
 ### Fixed
 

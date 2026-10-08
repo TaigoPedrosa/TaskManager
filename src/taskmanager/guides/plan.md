@@ -206,7 +206,7 @@ plans:
         priority: 80
         target_repo: backend
         merge: parent
-        acceptable_models: [claude-sonnet-5]
+        acceptable_models: [claude-sonnet-5-5]
         frontmatter:
           declared_files: [src/notify/email/sender.py, tests/notify/test_sender.py]
         sections:
@@ -230,7 +230,7 @@ plans:
         title: Template rendering
         target_repo: backend
         merge: parent
-        acceptable_models: [claude-sonnet-5]
+        acceptable_models: [claude-sonnet-5-5]
         frontmatter:
           declared_files: [src/notify/email/templates.py, tests/notify/test_templates.py]
           soft_depends_on: [NOTIFY-EMAIL-SENDER]
@@ -251,7 +251,7 @@ plans:
         target_repo: backend
         merge: parent
         depends_on: [NOTIFY-EMAIL-SENDER, NOTIFY-EMAIL-TEMPLATES]
-        acceptable_models: [claude-sonnet-5]
+        acceptable_models: [claude-sonnet-5-5]
         conditions:
           - needs: the provider account is approved for outbound SMTP
             command: test -f /etc/notify/smtp-approved

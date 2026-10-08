@@ -86,7 +86,7 @@ tm section set <node-id>:review --file <path> --header "## Review"
 
 `tm section get` writes the header to stderr and the content alone to stdout, so `> <path>` captures content only and the round trip above never folds the header back in.
 
-One line per defect: the file, the symbol or line, and what breaks. No summary, no praise, no restatement of the task, no severity essay. Number them, because the fix answers them by number, and record each earlier finding as closed or still open. Cite a symbol rather than a line number wherever you can. Nothing to say is a valid review: say it in one line.
+Number the findings, because the fix answers them by number, and record each earlier finding as closed or still open. Each one names where it is and what breaks; cite a symbol rather than a line number wherever you can. With nothing open, write that: tm refuses a verdict over an unchanged `:review`.
 
 ## 6. Close the step
 

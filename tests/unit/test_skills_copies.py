@@ -1,27 +1,35 @@
+import json
+from importlib.resources import files
 from pathlib import Path
 
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
-PLUGIN = REPO / "skills"
-BUNDLED = REPO / "src/taskmanager/skills"
 INSTALL = "uv tool install git+https://github.com/TaigoPedrosa/TaskManager@v"
+PLUGIN_PARTS = {".claude-plugin", "agents", "commands", "skills", "workflows"}
 
 
-def _files(root: Path) -> list[str]:
-    return sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file())
+def _plugin_root() -> Path:
+    marketplace = json.loads((REPO / ".claude-plugin/marketplace.json").read_text(encoding="utf-8"))
+    (entry,) = marketplace["plugins"]
+    return (REPO / entry["source"]).resolve()
 
 
-def test_every_plugin_skill_file_has_a_byte_identical_bundled_copy() -> None:
-    assert _files(PLUGIN) == _files(BUNDLED)
-    assert [
-        f for f in _files(PLUGIN) if (PLUGIN / f).read_bytes() != (BUNDLED / f).read_bytes()
-    ] == []
+def test_the_marketplace_installs_only_the_plugin_s_own_parts() -> None:
+    root = _plugin_root()
+    assert root != REPO
+    assert {p.name for p in root.iterdir()} == PLUGIN_PARTS
+    manifest = json.loads((root / ".claude-plugin/plugin.json").read_text(encoding="utf-8"))
+    assert manifest["name"] == "taskmanager"
+
+
+def test_the_package_carries_no_second_copy_of_the_skills() -> None:
+    assert not files("taskmanager").joinpath("skills").is_dir()
 
 
 @pytest.mark.parametrize("skill", ["taskmanager", "dispatcher"])
 def test_skill_says_how_to_install_tm_before_its_first_guide_line(skill: str) -> None:
-    text = (PLUGIN / skill / "SKILL.md").read_text(encoding="utf-8")
+    text = (_plugin_root() / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
     body = text.split("\n---\n", 1)[1]
     assert INSTALL in body
     assert body.index(INSTALL) < body.index("tm guide")

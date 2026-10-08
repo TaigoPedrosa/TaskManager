@@ -33,7 +33,7 @@ const HOLD_MERGE = new Set(A.holdMerge || [])
 // and every op runs from wherever the dispatching session already sits.
 const ROOT = A.root || '.'
 // tm names a family on every claim; this maps it to the id a brief's Model: line carries.
-const MODEL_ID = { haiku: 'claude-haiku-4-5', sonnet: 'claude-sonnet-5', opus: 'claude-opus-5', fable: 'claude-fable-5-1', ...A.models }
+const MODEL_ID = { haiku: 'claude-haiku-4-5-20251001', sonnet: 'claude-sonnet-5-5', opus: 'claude-opus-5-5', fable: 'claude-fable-5-1', ...A.models }
 // repo -> agent type for implement and fix; a repo missing here gets the harness default.
 const AGENT_TYPE = A.agentTypes || {}
 // {task, rereview, container} -> agent type for a first task review, a review after a fix, and a
@@ -66,15 +66,19 @@ const ACTIONS = ['implement', 'review', 'fix', 'merge', 'sync']
 const PHASE = { discover: 'Discover', read: 'Claim', start: 'Claim', release: 'Claim', job: 'Land' }
 const WORK_PHASE = { implement: 'Implement', review: 'Review', fix: 'Fix' }
 
-// A session started before .claude/agents/tm-op.md existed does not know the type, so the first
-// failure hands this and every later command to the generic runner.
-let opType = 'tm-op'
+// The plugin registers the runner as taskmanager:tm-op, and a copy under a project's or user's own
+// agents as tm-op. A type the session does not know fails, so the first failure of each hands
+// this and every later command to the next, and the last to the generic runner.
+let opTypes = ['taskmanager:tm-op', 'tm-op']
 async function runner(prompt, opts) {
-  if (opType) {
-    const r = await agent(prompt, { ...opts, agentType: opType }).catch(() => null)
+  while (opTypes.length) {
+    const type = opTypes[0]
+    const r = await agent(prompt, { ...opts, agentType: type }).catch(() => null)
     if (r) return r
-    if (opType) log(`${opts.label}: the tm-op runner returned nothing; the generic runner takes the rest of this run`)
-    opType = undefined
+    // A concurrent command may already have moved past this type.
+    if (opTypes[0] !== type) continue
+    opTypes = opTypes.slice(1)
+    log(`${opts.label}: the ${type} runner returned nothing; ${opTypes[0] ?? 'the generic runner'} takes the rest of this run`)
   }
   return agent(prompt, opts)
 }
@@ -273,7 +277,7 @@ const head = (n, c, fam, role) => {
 Model: ${MODEL_ID[fam]}
 The tm-wave workflow claimed this ${c.action} step for you: never run tm task start, and never claim or release any other node. Read tm guide ${role} and follow it from the step after its claim. Close the step with ${close(n, c)}${blocked}.
 Brief: tm render ${n.id} --view subagent${rules}${gate}${needs}
-Sections: before any tm section set, tm section get the same key and append to it. Code, comments, test names, log lines and fixtures never name a ruling, task, review or round.`
+Sections: before any tm section set, tm section get the same key and append to it.`
 }
 
 async function work(n, c, s, trail) {
@@ -311,7 +315,7 @@ async function work(n, c, s, trail) {
     body = again
       ? `Scope: every finding in tm section ${n.id}:review not yet recorded as closed, against the fix commits on ${c.branch} and the fixer's latest :report entry, and, when the last landing failed, the failure its latest :merge entry names. Establish each closure by mutation.`
       : `Scope: ${landed ? `what ${n.id} and every node under it landed on ${targets}` : `the whole diff of ${c.branch} from its base`}, in each repository it touched: ${repos.map(r => `git -C ${ROOT}/${r} ${diff(r)}`).join('; ')}.${landed ? ' A repository where that prints nothing had nothing land.' : ''}${container ? ' This is a container review: read what is true only between its children, and every child tm render lists as rejected by its own review.' : ''}`
-    body += `\nFindings: append numbered findings to tm section ${n.id}:review, one line each; write it even when nothing is open, saying so.`
+    body += `\nFindings: append numbered findings to tm section ${n.id}:review; write it even when nothing is open, saying so.`
     // One scratch path per repository: a container review may execute code in several.
     const scratch = repos.map(r => `${WT}/${r}-${n.id}-review`).join(' or ') || `${WT}/<repo>-${n.id}-review`
     body += `\nScratch: a worktree you cut to execute the code goes at ${scratch}, the one named for its repository, detached, and you remove it with git worktree remove before you close the step.`

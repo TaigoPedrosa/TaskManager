@@ -27,7 +27,7 @@ One commit per finding, or one commit naming them all — either way on the node
 
 - A finding you can close, close.
 - A finding you judge wrong is answered in the report with the evidence that refutes it, and the code is left alone. It is never silently skipped.
-- A finding you close lands with a test for each branch the fix adds (each stage a fold adds, each guard, each argument threaded through a call), and each test fails when its branch alone is reverted: revert each branch on its own, watch the suite go red, then restore it. Reverting the whole fix at once proves nothing about its parts. A comment, test name or docstring the fix touches states what holds now, never what it replaced or how the code came to need it.
+- A finding you close lands with a test for each branch the fix adds (each stage a fold adds, each guard, each argument threaded through a call), and each test fails when its branch alone is reverted: revert each branch on its own, watch the suite go red, then restore it. Reverting the whole fix at once proves nothing about its parts.
 - Anything else you notice goes in the report, not in the diff. Widening the scope is what spends the next round.
 - A landing failure whose red lies in files this node does not declare belongs to the node that caused it: find or file that node, then `tm task release <node-id> --agent <name> --token <token> --blocked --depends <that-node>`, and say so in the report.
 - A finding whose fix needs a call only the owner can make: `tm task release <node-id> --agent <name> --token <token> --blocked --decision "<question>" --option "a|Do X|why" --recommend a`, and answer it in the report as raised, not closed. A finding that turns on "the brief doesn't say" or "which of these is correct" is exactly that call, raised at once rather than guessed at.
@@ -72,5 +72,5 @@ On every path that finished the round, including one where a finding was contest
 - Never edit outside your worktree, and never merge or push anything.
 - Never force-push, rebase or squash the node's branch.
 - Never change a test so a finding stops firing; close the finding the test names.
-- Never close a finding with a branch that nothing fails on when that branch alone is reverted, and never leave a comment, test name or docstring that narrates history.
+- Never close a finding with a branch that nothing fails on when that branch alone is reverted.
 - Never end your turn with the step open: close it, or release it naming why.
