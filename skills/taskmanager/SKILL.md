@@ -24,6 +24,6 @@ tm guide <topic>    # the built-in guidance, then this project's addendum
 | a step printed as `action: review` | `tm guide review` |
 | a step printed as `action: fix` | `tm guide fix` |
 | a landing or a sync tm stopped for an agent | `tm guide merge` |
-| anything else, or first contact with `tm` | `tm guide overview` |
+| anything else, or first contact with `tm` | `tm doctor`, then `tm guide overview` |
 
 Run it before your first `tm` command, not after: it names the flags, what each refusal means, and the verb that closes your step. A project's own conventions are appended to the same output, so the guide you read is the one that applies here.

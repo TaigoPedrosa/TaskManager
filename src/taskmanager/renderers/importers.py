@@ -34,7 +34,7 @@ from taskmanager.engine.operations import (
     validated_write,
 )
 from taskmanager.engine.snapshot import roll_up_ancestors
-from taskmanager.engine.verification import VerificationEngine
+from taskmanager.engine.verification import VerificationEngine, codegraph_flags
 
 REFUSED = "import refused, nothing written: "
 
@@ -268,13 +268,20 @@ class BulkImporter:
     @staticmethod
     def _parse_verification(node_id: str, raw: dict[str, Any]) -> NodeVerification:
         v_type = cast("str", raw.get("verification_type") or raw.get("type"))
-        return NodeVerification(
+        ver = NodeVerification(
             node_id=node_id,
             verification_type=VerificationType(v_type),
             target_path=raw["target_path"],
             expected_pattern=raw.get("expected_pattern"),
             codegraph_query_json=raw.get("codegraph_query_json"),
         )
+        try:
+            codegraph_flags(ver.codegraph_query_json)
+        except ValueError as e:
+            raise ValueError(
+                f"{REFUSED}{node_id}: codegraph_query {ver.target_path!r} {e}"
+            ) from None
+        return ver
 
     @staticmethod
     def _parse_condition(node_id: str, raw: dict[str, Any]) -> Condition:
