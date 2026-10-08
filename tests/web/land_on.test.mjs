@@ -143,6 +143,16 @@ test('a refused branch keeps the dialog open with the text as typed and shows th
   assert.equal(toastEl.getAttribute('data-tone'), 'error');
   assert.match(text(toastEl), /land_on 'release\.\.0\.4' is not a branch name git accepts/);
   assert.ok(toastEl.querySelector('.toast-retry'));
+  assert.equal(page.document.activeElement, dialog.querySelector('.fl-land-on'), 'focus is on the branch to correct');
+});
+
+test("a refused merge puts focus on a task's Merge choice", async () => {
+  const detail = 'Nothing changed: T: its branch exists and was not cut from release/0.4';
+  const page = await openAt('/document/T', server({ patch: () => jsonResponse(409, { detail }) }).fetch);
+  const dialog = await openFlags(page, 'T');
+  dialog.querySelector('.fl-merge').value = 'spec';
+  await save(page);
+  assert.equal(page.document.activeElement, dialog.querySelector('.fl-merge'));
 });
 
 test('below sm a toast keeps 16px off both edges, on every view', async () => {

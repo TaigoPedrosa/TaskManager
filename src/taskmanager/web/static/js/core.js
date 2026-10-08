@@ -644,9 +644,10 @@ const SPINNER = '<span class="inline-block w-3.5 h-3.5 rounded-full border-2 bor
 
 // Every write: the control that fired it is disabled and shows the spinner until the
 // response; on success it resolves with the server's answer. On failure the control comes
-// back, every field stays as typed, and the error toast's Retry sends `request` again, so the
-// promise resolves on whichever attempt succeeds.
-function submitWrite(control, request) {
+// back, every field stays as typed, `onRefused` runs, and the error toast's Retry sends
+// `request` again, so the promise resolves on whichever attempt succeeds. Disabling the control
+// dropped focus, so `onRefused` is where a caller puts it back.
+function submitWrite(control, request, onRefused = null) {
   return new Promise((resolve) => {
     const send = () => {
       const label = control.innerHTML;
@@ -666,6 +667,7 @@ function submitWrite(control, request) {
       }, (err) => {
         restore();
         toast(err.message, { tone: 'error', retry: send });
+        if (onRefused) onRefused();
       });
     };
     send();

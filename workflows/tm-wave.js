@@ -279,9 +279,11 @@ Sections: before any tm section set, tm section get the same key and append to i
 async function work(n, c, s, trail) {
   const fam = c.model
   const repos = c.repos || []
-  // A claim's base is a branch name: a parent's branch is local to the shared clones, while a
-  // chain's top target is only read as fetched from origin.
-  const base = s.merge === 'parent' ? c.base : `origin/${c.base}`
+  // A claim's base is a branch name, one per repository in `bases`, since a container's
+  // repositories can land on different default branches. A parent's branch is local to the
+  // shared clones, while a chain's top target is only read as fetched from origin.
+  const baseOf = r => (c.bases && c.bases[r]) || c.base
+  const refOf = r => s.merge === 'parent' ? baseOf(r) : `origin/${baseOf(r)}`
   let type = AGENT_TYPE[repos[0]]
   let body
   if (c.action === 'review') {
@@ -301,12 +303,14 @@ async function work(n, c, s, trail) {
       await release(n, trail, 'the nodes under it could not be read', c.token)
       return read(n)
     }
-    const diff = landed
-      ? `log -p --diff-merges=first-parent -E --grep '^merge[(](${family.map(literal).join('|')})[)]: land [^ ]+ on ${literal(c.base)}$' ${q(c.branch)} --`
-      : `diff ${q(base)}...${q(c.branch)}`
+    // Landed code is read on each repository's own target, the claim's branch being only the first's.
+    const diff = r => landed
+      ? `log -p --diff-merges=first-parent -E --grep '^merge[(](${family.map(literal).join('|')})[)]: land [^ ]+ on ${literal(baseOf(r))}$' ${q(refOf(r))} --`
+      : `diff ${q(refOf(r))}...${q(c.branch)}`
+    const targets = [...new Set(repos.map(refOf))].join(' and ')
     body = again
       ? `Scope: every finding in tm section ${n.id}:review not yet recorded as closed, against the fix commits on ${c.branch} and the fixer's latest :report entry, and, when the last landing failed, the failure its latest :merge entry names. Establish each closure by mutation.`
-      : `Scope: ${landed ? `what ${n.id} and every node under it landed on ${c.branch}` : `the whole diff of ${c.branch} from its base`}, in each repository it touched: ${repos.map(r => `git -C ${ROOT}/${r} ${diff}`).join('; ')}.${landed ? ' A repository where that prints nothing had nothing land.' : ''}${container ? ' This is a container review: read what is true only between its children, and every child tm render lists as rejected by its own review.' : ''}`
+      : `Scope: ${landed ? `what ${n.id} and every node under it landed on ${targets}` : `the whole diff of ${c.branch} from its base`}, in each repository it touched: ${repos.map(r => `git -C ${ROOT}/${r} ${diff(r)}`).join('; ')}.${landed ? ' A repository where that prints nothing had nothing land.' : ''}${container ? ' This is a container review: read what is true only between its children, and every child tm render lists as rejected by its own review.' : ''}`
     body += `\nFindings: append numbered findings to tm section ${n.id}:review, one line each; write it even when nothing is open, saying so.`
     // One scratch path per repository: a container review may execute code in several.
     const scratch = repos.map(r => `${WT}/${r}-${n.id}-review`).join(' or ') || `${WT}/<repo>-${n.id}-review`
@@ -315,8 +319,8 @@ async function work(n, c, s, trail) {
     // A container's step spans repositories, and tm cuts one worktree of its branch in each.
     const trees = Object.entries(c.worktrees || {})
     const where = trees.length > 1
-      ? `Worktrees, one per repository, each on branch ${c.branch}, based on ${base}: ${trees.map(([r, p]) => `${r} at ${p}`).join('; ')}. Work only there, and never cd in a Bash command.`
-      : `Worktree: ${c.worktree} — branch ${c.branch}, based on ${base}. Work only there, and never cd in a Bash command.`
+      ? `Worktrees, one per repository, each on branch ${c.branch}: ${trees.map(([r, p]) => `${r} at ${p}, based on ${refOf(r)}`).join('; ')}. Work only there, and never cd in a Bash command.`
+      : `Worktree: ${c.worktree} — branch ${c.branch}, based on ${refOf(repos[0])}. Work only there, and never cd in a Bash command.`
     body = c.action === 'fix'
       ? `${where}\nFindings: ${s.outcome === 'merge_failed' ? `the landing failure the latest entry of tm section get ${n.id}:merge records` : `every finding in tm section get ${n.id}:review not recorded as closed`}. Fix each one, commit on the branch, and answer each by number in an appended :report entry.`
       : `${where}\nReport: append to tm section ${n.id}:report before your last commit.`
