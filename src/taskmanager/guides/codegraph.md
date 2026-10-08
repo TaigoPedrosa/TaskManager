@@ -1,10 +1,20 @@
 # codegraph
 
-`tm guide` appends a role's block below to that role's guide only when the `codegraph` CLI is on PATH and the repository has a `.codegraph/` index.
+`tm guide` appends a role's block below to that role's guide only when the `codegraph` CLI is on PATH and the repository has a codegraph index.
 
 ## implement
 
-The repository has a codegraph index, and the claim gave your worktree its own. Ask it before a grep-and-read loop:
+The repository has a codegraph index, and the claim gave your worktree its own. The claim prints a `codegraph` list:
+
+```yaml
+codegraph:
+- ready <dir>/backend-<task-id>
+- <symbol> reaches <file> held by <other-id>
+```
+
+`ready` says your worktree holds its own copy of the index, and `<symbol> reaches <file> held by <other-id>` says a symbol in one of your declared files has direct dependents in a file the live lease of `<other-id>` holds, so changing what that symbol takes or returns changes code that node is working on. A failure prints `unavailable (<reason>)` instead, and no line ever blocks the claim. When the workflow claimed for you, its prompt carries the same lines, each as `codegraph: <line>`, under its `Brief:` line.
+
+Ask the index before a grep-and-read loop:
 
 - `codegraph explore -p <worktree> --max-files 5 "<what the task changes>"` — the relevant symbols' source and the call paths between them, in one call.
 - `codegraph node -p <worktree> <symbol>` — one symbol's source with its callers and callees; `codegraph node -p <worktree> -f <file> --symbols-only` lists a file's symbols and the files that depend on it.

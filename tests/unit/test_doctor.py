@@ -60,6 +60,7 @@ def test_facts_with_codegraph_and_an_index_report_both_found(repo: Path, bin_dir
     _git(bin_dir)
     _codegraph(bin_dir)
     (repo / ".codegraph").mkdir()
+    (repo / ".codegraph" / "codegraph.db").touch()
 
     found = doctor.facts(repo)
 
@@ -82,6 +83,19 @@ def test_facts_with_codegraph_and_no_index_recommend_codegraph_init(
     assert (index.ok, index.required, index.fix) == (False, False, f"codegraph init {repo}")
     assert index.line() == f"codegraph index (.): missing (recommended) -> codegraph init {repo}"
     assert doctor.exit_code(found) == 0
+
+
+def test_facts_with_a_codegraph_directory_holding_no_database_recommend_codegraph_init(
+    repo: Path, bin_dir: Path
+) -> None:
+    _git(bin_dir)
+    _codegraph(bin_dir)
+    (repo / ".codegraph").mkdir()
+    (repo / ".codegraph" / ".gitignore").write_text("*\n!.gitignore\n", encoding="utf-8")
+
+    index = _by_name(doctor.facts(repo))["codegraph index (.)"]
+
+    assert (index.ok, index.fix) == (False, f"codegraph init {repo}")
 
 
 def test_facts_without_codegraph_recommend_its_install_and_exit_zero(

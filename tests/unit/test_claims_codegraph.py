@@ -52,7 +52,12 @@ elif cmd == "query":
     print(json.dumps([{"node": {"name": rest[0], "projectPath": str(root)}}]))
 elif cmd == "node":
     path = option("-f")
-    print(f"**{path}**\\n\\n**Symbols**")
+    users = answers.get("users", {}).get(path)
+    if users is None:
+        users = "no other indexed file depends on it"
+    elif isinstance(users, list):
+        users = f"used by {len(users)} files: {', '.join(users)}"
+    print(f"**{path}** — 1 symbol, {users}\\n\\n**Symbols**")
     for name, kind in answers.get("symbols", {}).get(path, []):
         print(f"- `{name}` ({kind}) () — :1")
 elif cmd == "impact":
@@ -157,13 +162,13 @@ def test_a_claim_names_each_declared_symbol_whose_dependents_sit_in_a_file_anoth
             ],
             "src/lone.py": [["alone", "function"]],
         },
+        users={"src/a.py": ["src/b.py", "src/c.py"], "src/lone.py": ["src/c.py"]},
         impact={
-            "src/a.py": ["src/a.py", "src/b.py"],
+            "src/a.py": ["src/a.py"],
             "run": ["src/b.py"],
             "helper": ["src/a.py", "src/b.py"],
             "Box": ["src/a.py"],
             "Box.open": ["src/a.py", "src/b.py", "src/c.py"],
-            "src/lone.py": ["src/lone.py", "src/c.py"],
             "alone": ["src/b.py"],
         },
     )
@@ -176,7 +181,50 @@ def test_a_claim_names_each_declared_symbol_whose_dependents_sit_in_a_file_anoth
         "helper reaches src/b.py held by T2",
         "Box.open reaches src/b.py held by T2",
     ]
-    assert f"node -f src/lone.py --symbols-only -p {worktree}" not in calls(log)
+    assert f"impact alone --depth 1 --json -p {worktree}" not in calls(log)
+    assert not [c for c in calls(log) if c.startswith("impact src/")]
+
+
+def test_a_claim_skips_a_declared_file_no_other_indexed_file_depends_on(
+    tmp_path: Path, log: Path, answer: Answer
+) -> None:
+    claims = make_estate(tmp_path)
+    indexed(claims.root / "api")
+    add(claims, "T2", files=["src/b.py"])
+    add(claims, "T1", files=["src/a.py"])
+    claim(claims, "T2")
+    answer(symbols={"src/a.py": [["run", "function"]]}, impact={"run": ["src/b.py"]})
+
+    lines, worktree = claim(claims, "T1")
+
+    assert lines == [f"ready {worktree}"]
+    assert not [c for c in calls(log) if c.startswith("impact")]
+
+
+@pytest.mark.parametrize(
+    "users",
+    [
+        f"used by 9 files: {', '.join(f'src/c{i}.py' for i in range(1, 9))}, +1 more",
+        "imported by src/b.py",
+    ],
+)
+def test_a_claim_asks_impact_of_each_symbol_when_the_listing_names_only_some_dependents(
+    tmp_path: Path, log: Path, answer: Answer, users: str
+) -> None:
+    claims = make_estate(tmp_path)
+    indexed(claims.root / "api")
+    add(claims, "T2", files=["src/b.py"])
+    add(claims, "T1", files=["src/a.py"])
+    claim(claims, "T2")
+    answer(
+        symbols={"src/a.py": [["run", "function"]]},
+        users={"src/a.py": users},
+        impact={"run": ["src/b.py"]},
+    )
+
+    lines, worktree = claim(claims, "T1")
+
+    assert lines == [f"ready {worktree}", "run reaches src/b.py held by T2"]
 
 
 def test_a_container_claim_reads_each_repository_s_declared_files_in_that_repository_s_worktree(
@@ -203,9 +251,9 @@ def test_a_container_claim_reads_each_repository_s_declared_files_in_that_reposi
     assert result.action == Action.FIX
     api, web = result.worktrees["api"], result.worktrees["web"]
     assert result.codegraph == [f"ready {api}", f"ready {web}"]
-    assert [c for c in calls(log) if c.startswith("impact")] == [
-        f"impact src/a.py --depth 1 --json -p {api}",
-        f"impact src/w.py --depth 1 --json -p {web}",
+    assert [c for c in calls(log) if c.startswith("node")] == [
+        f"node -f src/a.py --symbols-only -p {api}",
+        f"node -f src/w.py --symbols-only -p {web}",
     ]
 
 
@@ -240,19 +288,18 @@ def test_a_claim_without_the_codegraph_cli_stands_with_one_unavailable_line(
     assert lines == [f"unavailable (codegraph is not on PATH; install it: `{CODEGRAPH_INSTALL}`)"]
 
 
-def test_a_claim_whose_checkout_has_no_index_stands_with_one_unavailable_line(
+def test_a_claim_whose_codegraph_directory_holds_no_database_prints_no_codegraph_line(
     tmp_path: Path, log: Path
 ) -> None:
     claims = make_estate(tmp_path)
     checkout = claims.root / "api"
     (checkout / ".codegraph").mkdir()
+    (checkout / ".codegraph" / ".gitignore").write_text("*\n!.gitignore\n", encoding="utf-8")
     add(claims, "T1", files=["src/a.py"])
 
     lines, _ = claim(claims, "T1")
 
-    assert lines == [
-        f"unavailable ({checkout} has no codegraph index; run `codegraph init {checkout}`)"
-    ]
+    assert lines == []
     assert calls(log) == []
 
 
@@ -304,14 +351,20 @@ def test_an_advisory_that_cannot_read_impact_keeps_the_ready_line_and_adds_one_u
 ) -> None:
     claims = make_estate(tmp_path)
     indexed(claims.root / "api")
+    add(claims, "T2", files=["src/b.py"])
     add(claims, "T1", files=["src/a.py"])
-    answer(impact={"src/a.py": {"symbol": "src/a.py"}})
+    claim(claims, "T2")
+    answer(
+        symbols={"src/a.py": [["run", "function"]]},
+        users={"src/a.py": ["src/b.py"]},
+        impact={"run": {"symbol": "run"}},
+    )
 
     lines, worktree = claim(claims, "T1")
 
     assert lines == [
         f"ready {worktree}",
-        "unavailable (codegraph impact src/a.py printed no affected files)",
+        "unavailable (codegraph impact run printed no affected files)",
     ]
 
 
@@ -347,7 +400,8 @@ def test_task_start_prints_the_codegraph_lines_in_its_yaml_document(
     claim(claims, "T2")
     answer(
         symbols={"src/a.py": [["run", "function"]]},
-        impact={"src/a.py": ["src/b.py"], "run": ["src/b.py"]},
+        users={"src/a.py": ["src/b.py"]},
+        impact={"run": ["src/b.py"]},
     )
 
     claimed = yaml.safe_load(start(claims, "T1").output)

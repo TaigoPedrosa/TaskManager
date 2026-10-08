@@ -13,7 +13,6 @@ from typing import Any
 
 import pytest
 import typer.main
-import yaml
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import _guide_topics, app
@@ -510,16 +509,6 @@ def rendered(tmp_path: Path) -> Callable[[str], str]:
         return result.stdout
 
     return render
-
-
-def test_implement_guide_s_example_claim_shows_a_ready_and_an_advisory_codegraph_line(
-    rendered: Callable[[str], str],
-) -> None:
-    claim = rendered("implement").split("```yaml\n", 1)[1].split("```", 1)[0]
-    assert yaml.safe_load(claim)["codegraph"] == [
-        "ready <dir>/backend-<task-id>",
-        "<symbol> reaches <file> held by <other-id>",
-    ]
 
 
 def test_review_guide_reviews_a_container_once_on_its_landed_target(

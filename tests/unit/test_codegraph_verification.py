@@ -71,6 +71,9 @@ def _make_repo(repo: Path) -> Path:
     _commit(repo, "src/app.py", "def on_main():\n    pass\n")
     _git(repo, "push", "-q", "-u", "origin", "main")
     (repo / ".codegraph").mkdir()
+    (repo / ".codegraph" / "codegraph.db").touch()
+    with (repo / ".git" / "info" / "exclude").open("a", encoding="utf-8") as exclude:
+        exclude.write(".codegraph/\n")
     return repo
 
 
@@ -192,7 +195,8 @@ def test_codegraph_query_without_the_cli_fails_naming_the_install_command(
 def test_codegraph_query_in_a_repo_without_an_index_fails_naming_codegraph_init(
     root: Path, log: Path
 ) -> None:
-    (root / "app" / ".codegraph").rmdir()
+    (root / "app" / ".codegraph" / "codegraph.db").unlink()
+    (root / "app" / ".codegraph" / ".gitignore").write_text("*\n!.gitignore\n", encoding="utf-8")
     result = VerificationEngine(root).verify_assertion(_check(), target_repo="app")
     assert result.passed is False
     assert "`codegraph init`" in result.message

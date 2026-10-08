@@ -64,7 +64,7 @@ from taskmanager.engine.decisions import (
     open_stranded_decision,
     stranded_dependents,
 )
-from taskmanager.engine.doctor import CODEGRAPH_INSTALL
+from taskmanager.engine.doctor import CODEGRAPH_INSTALL, codegraph_index
 from taskmanager.engine.gates import RED_TARGET, clear_red_targets
 from taskmanager.engine.git import GitManager
 from taskmanager.engine.operations import OperationError, Operations
@@ -90,6 +90,10 @@ _FAILED_BECAUSE: dict[Event, str] = {
 CODEGRAPH_TIMEOUT: Final = 120
 # `codegraph node --symbols-only` lists one symbol per line as "- `name` (kind) ...".
 _SYMBOL_LINE = re.compile(r"^- `([^`]+)` \((\w+)\)", re.MULTILINE)
+# Its first line ends "used by N files: a.py, b.py", with "+N more" past the eighth, or with
+# _NO_USERS.
+_USED_BY = re.compile(r"used by \d+ files?: (.+)$")
+_NO_USERS: Final = "no other indexed file depends on it"
 
 
 class CodegraphUnavailable(Exception):
@@ -121,38 +125,43 @@ def _seed_index(checkout: Path, worktree: Path) -> None:
     paths, so a copy synced in the worktree answers for it, in a fraction of a fresh init."""
     if shutil.which("codegraph") is None:
         raise CodegraphUnavailable(f"codegraph is not on PATH; install it: `{CODEGRAPH_INSTALL}`")
-    # codegraph counts a project as initialized only once this database exists.
-    index = checkout / ".codegraph" / "codegraph.db"
-    if not index.is_file():
-        raise CodegraphUnavailable(
-            f"{checkout} has no codegraph index; run `codegraph init {checkout}`"
-        )
+    index, seeded = codegraph_index(checkout), codegraph_index(worktree)
     try:
-        (worktree / ".codegraph").mkdir(exist_ok=True)
+        seeded.parent.mkdir(exist_ok=True)
         # SQLite's backup copies one consistent state even while a codegraph daemon writes.
-        with (
-            closing(sqlite3.connect(index)) as source,
-            closing(sqlite3.connect(worktree / ".codegraph" / "codegraph.db")) as copy,
-        ):
+        with closing(sqlite3.connect(index)) as source, closing(sqlite3.connect(seeded)) as copy:
             source.backup(copy)
     except (OSError, sqlite3.Error) as exc:
         raise CodegraphUnavailable(f"copying {index}: {exc}") from exc
     _codegraph("sync", "--quiet", str(worktree))
 
 
-def _symbols(worktree: Path, path: str) -> list[str]:
-    """The symbols `path` defines, a method under its class's name as `impact` resolves it."""
+def _symbols(listing: str) -> list[str]:
+    """The symbols a `node --symbols-only` listing names, a method under its class's name as
+    `impact` resolves it."""
     names: list[str] = []
     owner = ""
-    listing = _codegraph("node", "-f", path, "--symbols-only", "-p", str(worktree))
     for name, kind in _SYMBOL_LINE.findall(listing):
         owner = name if kind == "class" else owner
         names.append(f"{owner}.{name}" if kind == "method" and owner else name)
     return list(dict.fromkeys(names))
 
 
+def _users(listing: str) -> set[str] | None:
+    """The files a `node --symbols-only` listing says depend on its file, or None when it names
+    only some of them or none in a form this reads."""
+    header = listing.partition("\n")[0]
+    if header.endswith(_NO_USERS):
+        return set()
+    found = _USED_BY.search(header)
+    if found is None:
+        return None
+    files = found.group(1).split(", ")
+    return None if files[-1].startswith("+") else set(files)
+
+
 def _dependents(worktree: Path, name: str) -> set[str]:
-    """The files holding what uses `name` directly."""
+    """The files holding what uses the symbol `name` directly."""
     out = _codegraph("impact", name, "--depth", "1", "--json", "-p", str(worktree))
     try:
         found = json.loads(out)
@@ -169,10 +178,13 @@ def _reaches(worktree: Path, declared: list[str], held: dict[str, str]) -> list[
     lines: list[str] = []
     with ThreadPoolExecutor() as pool:
         for path in declared:
-            # A file's own dependents hold its symbols': one reaching no held file is skipped.
-            if not held.keys() & _dependents(worktree, path):
+            # `impact` on a file path answers with that file alone, so the file's dependents
+            # come from its `node` listing: a file none of whose dependents is held is skipped.
+            listing = _codegraph("node", "-f", path, "--symbols-only", "-p", str(worktree))
+            users = _users(listing)
+            if users is not None and not held.keys() & users:
                 continue
-            names = _symbols(worktree, path)
+            names = _symbols(listing)
             found = pool.map(partial(_dependents, worktree), names)
             for name, files in zip(names, found, strict=True):
                 lines += [
@@ -185,9 +197,9 @@ def codegraph_lines(
     checkout: Path, worktree: Path, declared: list[str], held: dict[str, str]
 ) -> list[str]:
     """What a claim prints after `codegraph: ` for a worktree of `checkout`: nothing when the
-    checkout has no `.codegraph/`, and one `unavailable` line for any failure, never a raise.
+    checkout has no codegraph index, and one `unavailable` line for any failure, never a raise.
     `declared` and `held` are repository-relative; `held` maps a file to the node holding it."""
-    if not (checkout / ".codegraph").is_dir():
+    if not codegraph_index(checkout).is_file():
         return []
     lines: list[str] = []
     try:

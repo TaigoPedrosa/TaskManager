@@ -51,6 +51,7 @@ def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     _git(repo, "config", "user.email", "test@example.com")
     _git(repo, "config", "user.name", "Test")
     (repo / ".codegraph").mkdir()
+    (repo / ".codegraph" / "codegraph.db").touch()
     return tmp_path / "root"
 
 
