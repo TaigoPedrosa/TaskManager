@@ -21,7 +21,7 @@ uv run ruff check .
 uv run ruff format --check .
 uv run mypy
 uv run pytest
-node --test tests/
+node --test 'tests/**/*.test.mjs'
 ```
 
 A behaviour change comes with a test that fails without it.

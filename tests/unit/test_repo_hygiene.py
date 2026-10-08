@@ -20,7 +20,7 @@ GATES = [
     "uv run ruff format --check .",
     "uv run mypy",
     "uv run pytest",
-    "node --test tests/",
+    "node --test 'tests/**/*.test.mjs'",
 ]
 
 
@@ -89,6 +89,16 @@ def test_ci_runs_every_gate() -> None:
     workflow = yaml.safe_load((REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
     runs = [step.get("run", "") for job in workflow["jobs"].values() for step in job["steps"]]
     assert [gate for gate in GATES if not any(gate in run for run in runs)] == []
+
+
+def test_the_docs_run_the_script_tests_with_the_ci_command() -> None:
+    stale = [
+        f"{name}: {line.strip()}"
+        for name in ("CONTRIBUTING.md", "README.md")
+        for line in (REPO / name).read_text(encoding="utf-8").splitlines()
+        if "node --test" in line and GATES[-1] not in line
+    ]
+    assert stale == []
 
 
 @pytest.mark.parametrize("variable", ["GITHUB_ACTIONS", "PY_COLORS"])

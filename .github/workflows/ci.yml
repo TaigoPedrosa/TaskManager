@@ -34,4 +34,6 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run mypy
       - run: uv run pytest
-      - run: node --test tests/
+      # Node 22 reads a directory argument to --test as a module path; the quoted glob runs the
+      # same files on every Node version.
+      - run: node --test 'tests/**/*.test.mjs'
