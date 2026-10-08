@@ -36,6 +36,7 @@ KEYS: Final = (
     "dispatch.tick_max",
     "dispatch.wave_size",
     "dispatch.tick_budget",
+    "codegraph.cache_commits",
 )
 
 # The dispatch loop's typical target, printed by `tm guide dispatch`: a wakeup every tick_min-
@@ -131,6 +132,13 @@ class DispatchConfig(BaseModel):
     tick_budget: int = Field(default=DISPATCH_DEFAULTS["tick_budget"], gt=0)
 
 
+class CodegraphConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Each commit a codegraph_query verified keeps an exported tree and its index on disk.
+    cache_commits: int = Field(default=3, ge=1)
+
+
 class ProjectConfig(BaseModel):
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
     worktree_dir: str = Field(default=".worktrees", min_length=1)
@@ -144,6 +152,7 @@ class ProjectConfig(BaseModel):
     repo_order: list[str] = Field(default_factory=list)
     repos: dict[str, RepoConfig] = Field(default_factory=dict)
     dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
+    codegraph: CodegraphConfig = Field(default_factory=CodegraphConfig)
 
     @field_validator("lease_ttl")
     @classmethod

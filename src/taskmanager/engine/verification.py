@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,7 +16,7 @@ from typing import Final
 
 from taskmanager.core.enums import VerificationType
 from taskmanager.core.models import NodeVerification
-from taskmanager.engine.config import DEFAULT_BRANCH
+from taskmanager.engine.config import DEFAULT_BRANCH, ConfigStore
 
 CODEGRAPH_INSTALL: Final = "npm install -g @colbymchenry/codegraph"
 
@@ -210,7 +211,9 @@ def codegraph_regex(pattern: str | None) -> re.Pattern[str]:
         raise ValueError(f"has an expected_pattern that is not a regex: {e}") from None
 
 
-def _codegraph_flags(query_json: str | None) -> list[str]:
+def codegraph_flags(query_json: str | None) -> list[str]:
+    """A codegraph_query's `codegraph_query_json` as command-line flags; a ValueError says why
+    it is not a JSON object of them."""
     try:
         flags = json.loads(query_json or "{}")
         return [arg for key, value in flags.items() for arg in (f"--{key}", str(value))]
@@ -246,6 +249,19 @@ def _index_tree(repo_root: Path, sha: str, tree: Path) -> str | None:
         return None
     finally:
         shutil.rmtree(build, ignore_errors=True)
+
+
+def _evict(cache: Path, keep: int) -> None:
+    """Deletes every tree but the `keep` most recently queried."""
+    # ponytail: no lock, so a run can evict a tree another run is about to query; a lock file
+    # in the cache when parallel verifications at many commits trip on it.
+    trees = sorted(
+        (p for p in cache.iterdir() if p.is_dir() and not p.name.startswith(".")),
+        key=lambda p: p.stat().st_mtime_ns,
+        reverse=True,
+    )
+    for stale in trees[keep:]:
+        shutil.rmtree(stale, ignore_errors=True)
 
 
 class VerificationEngine:
@@ -388,7 +404,7 @@ class VerificationEngine:
 
         try:
             regex = codegraph_regex(ver.expected_pattern)
-            flags = _codegraph_flags(ver.codegraph_query_json)
+            flags = codegraph_flags(ver.codegraph_query_json)
         except ValueError as e:
             return result(False, f"codegraph_query {ver.target_path!r} {e}")
         if shutil.which("codegraph") is None:
@@ -419,11 +435,14 @@ class VerificationEngine:
             cache.mkdir(parents=True, exist_ok=True)
             # Keeps the exported trees out of git and out of the repository's own index.
             (cache / ".gitignore").write_text("*\n", encoding="utf-8")
-            # ponytail: one tree and index per verified sha, never evicted; prune the oldest
-            # when the cache's size matters.
             failure = _index_tree(repo_root, sha, tree)
             if failure is not None:
                 return result(False, failure + mode_suffix)
+        # A tree's mtime is when its commit was last queried, the order eviction reads. The
+        # clock is read here because a filesystem's own touch can give two trees one tick.
+        now = time.time_ns()
+        os.utime(tree, ns=(now, now))
+        _evict(cache, ConfigStore(self.root).resolve("codegraph.cache_commits").value)
 
         query = subprocess.run(
             ["codegraph", "query", *flags, "--json", "-p", str(tree), "--", ver.target_path],
