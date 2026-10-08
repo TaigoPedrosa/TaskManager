@@ -266,13 +266,15 @@ const head = (n, c, fam, role) => {
   const gate = lane ? `\nGate lane: ${lane}` : ''
   const requires = n.requires || []
   const needs = requires.length ? `\nRequires: ${requires.join(', ')}; load the tools that provide it with ToolSearch before the first step that needs them.` : ''
+  // Only a claim that cut a worktree, implement or fix, prints these; tm's own wording reaches the agent.
+  const codegraph = (c.codegraph || []).map(line => `\ncodegraph: ${line}`).join('')
   const blocked = c.action in CLAIMED
     ? `, or, when something outside this step must happen first, with ${TM} task release ${n.id} ${owner(n, c.token)} --blocked naming the edge, decision or condition it waits on`
     : ''
   return `${preamble ? preamble + '\n' : ''}tm-task: ${n.id}
 Model: ${MODEL_ID[fam]}
 The tm-wave workflow claimed this ${c.action} step for you: never run tm task start, and never claim or release any other node. Read tm guide ${role} and follow it from the step after its claim. Close the step with ${close(n, c)}${blocked}.
-Brief: tm render ${n.id} --view subagent${rules}${gate}${needs}
+Brief: tm render ${n.id} --view subagent${codegraph}${rules}${gate}${needs}
 Sections: before any tm section set, tm section get the same key and append to it. Code, comments, test names, log lines and fixtures never name a ruling, task, review or round.`
 }
 

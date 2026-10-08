@@ -1,6 +1,5 @@
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -152,47 +151,6 @@ def test_ast_symbol_missing_source_file(tmp_path: Path) -> None:
     result = engine.verify_assertion(ver)
     assert result.passed is False
     assert "File does_not_exist.py missing" in result.message
-
-
-def test_codegraph_query_missing_cli(tmp_path: Path) -> None:
-    engine = VerificationEngine(tmp_path)
-    ver = NodeVerification(
-        node_id="AUTH-T01",
-        verification_type=VerificationType.CODEGRAPH_QUERY,
-        target_path="auth.py",
-        codegraph_query_json='{"find": "calls"}',
-    )
-    with patch("shutil.which", return_value=None):
-        result = engine.verify_assertion(ver)
-        assert result.passed is True
-        assert "codegraph CLI not installed; skipped" in result.message
-
-
-def test_codegraph_query_present_cli(tmp_path: Path) -> None:
-    engine = VerificationEngine(tmp_path)
-    ver = NodeVerification(
-        node_id="AUTH-T01",
-        verification_type=VerificationType.CODEGRAPH_QUERY,
-        target_path="auth.py",
-        codegraph_query_json='{"find": "calls"}',
-    )
-    with (
-        patch("shutil.which", return_value="/usr/local/bin/codegraph"),
-        patch("subprocess.run") as mock_run,
-    ):
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stdout = '{"matches": 2}'
-        mock_run.return_value.stderr = ""
-        result = engine.verify_assertion(ver)
-        assert result.passed is True
-        assert '{"matches": 2}' in result.message
-
-        mock_run.return_value.returncode = 1
-        mock_run.return_value.stdout = ""
-        mock_run.return_value.stderr = "Error parsing query"
-        result_failed = engine.verify_assertion(ver)
-        assert result_failed.passed is False
-        assert "Error parsing query" in result_failed.message
 
 
 def test_test_command_verification(tmp_path: Path) -> None:

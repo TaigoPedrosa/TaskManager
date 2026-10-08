@@ -7,7 +7,7 @@ through the lifecycle, and does not come here: rule 7 guards a busy node against
 from dataclasses import dataclass
 from typing import Final, Protocol
 
-from taskmanager.core.enums import NodeKind
+from taskmanager.core.enums import NodeKind, VerificationType
 from taskmanager.core.lifecycle import REOPENABLE
 from taskmanager.core.status import EXITS, IN_STEP, ON_TARGET, Merge, Status
 from taskmanager.engine.chains import TOP, landing_target, target
@@ -20,6 +20,7 @@ from taskmanager.engine.stepgraph import (
     format_cycle,
     migration_writers,
 )
+from taskmanager.engine.verification import codegraph_regex
 
 _SET_ASIDE_OR_FAILED = EXITS | {Status.FAILED}
 # Work whose code never lands again, so nothing reads where it would.
@@ -290,6 +291,25 @@ def _busy(before: Snapshot, after: Snapshot, n: SnapNode) -> list[Refusal]:
     ]
 
 
+def _codegraph_patterns(before: Snapshot, after: Snapshot, node_id: str) -> list[Refusal]:
+    if before.data is None or after.data is None:
+        return []
+    # Only the write that stores the check is refused, so one already stored never blocks a
+    # write around it.
+    stored = {v.id for v in before.data.verifications.get(node_id, ())}
+    refusals: list[Refusal] = []
+    for v in after.data.verifications.get(node_id, ()):
+        if v.verification_type != VerificationType.CODEGRAPH_QUERY or v.id in stored:
+            continue
+        try:
+            codegraph_regex(v.expected_pattern)
+        except ValueError as e:
+            refusals.append(
+                Refusal(node_id, 14, f"{node_id}: codegraph_query {v.target_path!r} {e}")
+            )
+    return refusals
+
+
 def _crossings(s: Snapshot) -> dict[tuple[str, ...], Refusal]:
     """Every wait the step graph draws between two targets, which no meeting node can satisfy:
     a dependency edge, once per node it gates, and a migration chain's link. Work that lands no
@@ -357,6 +377,7 @@ def validate(
         refusals += _retarget(before, after, n, branches)
         refusals += _placement(before, after, n)
         refusals += _busy(before, after, n)
+        refusals += _codegraph_patterns(before, after, node_id)
     # Only the write that draws a wait across targets is refused, never one around it.
     crossed = _crossings(after)
     refusals += [crossed[k] for k in sorted(crossed.keys() - _crossings(before).keys())]
