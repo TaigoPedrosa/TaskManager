@@ -4,7 +4,9 @@ The task database is the only record of what is planned, claimed, built, landed 
 
 Run `tm guide` for the topics and `tm guide <topic>` for the one that matches your role. Each prints the built-in guidance, then this project's own addendum when it has one.
 
-After `tm init`, set `repos.<repo>.gates.main` for every target repo before the first dispatch: it gates every landing on a spec's target branch, whatever that branch is named. Without it, every such landing is refused with `no gate`.
+After `tm init`, give every repository a task names in `target_repo` a `main` gate, the command tm runs on the merged tip before it pushes: `tm config set repos.<repo>.gates.main.command "<command>"`. It gates every landing on a spec's target branch, whatever that branch is named; without one, every such landing stops with `no gate`. A repository is a directory under the tm root with an `origin` remote holding its default branch (`repos.<repo>.default_branch`, `main` unless set). When the tm root is the repository itself, its name is `.`. The command runs in tm's merge worktree and may use `{worktree}`, `{node}`, `{repo}` and `{target}`, each replaced shell-quoted; every other brace reaches the shell as written.
+
+"The owner" in these guides is whoever runs the project: the person who answers its decisions, configures its gates and keeps its guide addendum. The addendum is a section per topic on a spec with the id `guide`, created once with `tm spec add 'Project guide' --slug guide`, then written with `tm section set guide:<topic> --file <path>`; `tm guide <topic>` prints it after the built-in text.
 
 ## The cycle
 
@@ -122,7 +124,7 @@ A question nobody in the loop can answer is not a reason to stop and ask: releas
 | Message | Exit | What to do |
 |:--|:--|:--|
 | `Invalid value: no .taskmanager at <dir>: pass -C, set TM_ROOT, or run tm init there` | 2 | you are outside the project; pass `-C <project root>` |
-| `this directory holds a pre-lifecycle estate: run tm init --archive ...` | 1 | the owner's cutover has not run here; stop and report, never run `tm init` yourself |
+| `this directory holds a pre-lifecycle estate: run tm init --archive ...` | 1 | the estate predates this version and the move below has not run; stop and report, never run `tm init` yourself |
 | `action: blocked` with a `reason` | 3 | nothing was claimed; the reason names the edge, decision, condition, sync or lease |
 | `import refused, nothing written: unknown ids [...]` | 1 | the document depends on ids that do not exist yet |
 | a refusal naming a field and a fix | 1 | a flag rule or the cycle check refused the write; nothing was written |
@@ -136,8 +138,8 @@ An estate written by 0.2 or earlier is not migrated. It is archived, and only th
 2. With the old version still installed, `tm export <export dir>` and commit the export: that snapshot is the archive of record.
 3. Author the re-import: `tm import` documents holding only the specs, plans, tasks and open decisions still in flight, each with its sections, verifications, edges, flags, conditions and `requires` in this version's shape. Completed work is not re-imported, and edges to it are dropped, because it has landed on its target. A task whose branch `tm/<id>` already exists resumes on it at its next implement.
 4. Install this version of the plugin and of `tm`, and replace any copy of the old `tm-wave` script a session keeps.
-5. `tm init --archive` moves the old files to `.taskmanager/archive-<timestamp>/` and creates the new estate. Configure the landing gates as one YAML value, `tm config set repos '{<repo>: {gates: {main: {command: <template>, junit: <glob>, timeout: <seconds>}}}}'`, and the landing order with `tm config set repo_order '[<repo>, ...]'`.
+5. `tm init --archive` moves the old files to `.taskmanager/archive-<timestamp>/` and creates the new estate. Configure each repository's landing gate, `tm config set repos.<repo>.gates.main '{command: <template>, junit: <glob>, timeout: <seconds>}'`, and the landing order with `tm config set repo_order '[<repo>, ...]'`.
 6. `tm import --format yaml -f <document>` for each document; `tm wave discover --session <id> --slots <n> --max-strong <n>` shows what is claimable, for the owner to check.
-7. Apply the project's prepared guide addendum and rules.
+7. Write the project's own conventions back into its guide addendum: `tm spec add 'Project guide' --slug guide` once, then `tm section set guide:<topic> --file <path>` for each topic the old estate carried one for.
 8. `tm export <export dir>` and commit.
 9. Resume dispatching with the new `tm-wave`.
