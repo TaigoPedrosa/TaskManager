@@ -1517,13 +1517,19 @@ def verify_add(
     pattern: Annotated[
         str | None, typer.Option("--pattern", help="Expected pattern or test command")
     ] = None,
+    query_json: Annotated[
+        str | None,
+        typer.Option(
+            "--query-json", help='A codegraph_query\'s flags as a JSON object: {"kind": "function"}'
+        ),
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
     container = _get_container(root)
     ops = container.get(Operations)
     with _refusing():
-        ops.add_verification(task_id, type, target, pattern)
+        ops.add_verification(task_id, type, target, pattern, query_json)
     print(f"[green]Added {type.value} verification to task {task_id}[/green]")
 
 
@@ -1548,6 +1554,7 @@ def verify_list(
             "type": v.verification_type.value,
             "target_path": v.target_path,
             "expected_pattern": v.expected_pattern,
+            "codegraph_query_json": v.codegraph_query_json,
         }
         for v in node_repo.get_verifications(task_id)
     ]
@@ -2133,6 +2140,7 @@ def _export_node(node_repo: NodeRepository, node: Node, supersedes: list[str]) -
                 "type": v.verification_type.value,
                 "target_path": v.target_path,
                 "expected_pattern": v.expected_pattern,
+                "codegraph_query_json": v.codegraph_query_json,
             }
             for v in node_repo.get_verifications(node.id)
         ],
