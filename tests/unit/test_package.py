@@ -10,6 +10,7 @@ from pathlib import Path
 import taskmanager
 
 RELEASE = "0.3.7"
+HOMEPAGE = "https://github.com/TaigoPedrosa/TaskManager"
 REPO = Path(__file__).resolve().parents[2]
 
 
@@ -82,6 +83,74 @@ def test_every_plugin_manifest_declares_mit() -> None:
         "marketplace": [plugin["license"] for plugin in marketplace],
     }
     assert licenses == {"plugin": "MIT", "marketplace": ["MIT"]}
+
+
+def test_installed_metadata_links_the_homepage_issues_and_changelog() -> None:
+    assert importlib.metadata.metadata("taskmanager").get_all("Project-URL") == [
+        f"Homepage, {HOMEPAGE}",
+        f"Issues, {HOMEPAGE}/issues",
+        f"Changelog, {HOMEPAGE}/blob/main/CHANGELOG.md",
+    ]
+    assert (REPO / "CHANGELOG.md").is_file()
+
+
+def test_installed_metadata_classifies_a_posix_console_tool_on_python_3_14() -> None:
+    assert importlib.metadata.metadata("taskmanager").get_all("Classifier") == [
+        "Environment :: Console",
+        "Operating System :: POSIX",
+        "Programming Language :: Python :: 3.14",
+    ]
+
+
+def test_installed_metadata_carries_the_plugin_keywords() -> None:
+    keywords = read_json("plugin/.claude-plugin/plugin.json")["keywords"]
+    assert isinstance(keywords, list)
+    assert importlib.metadata.metadata("taskmanager")["Keywords"].split(",") == sorted(keywords)
+
+
+def test_installed_metadata_offers_only_the_local_embeddings_extra() -> None:
+    extras = importlib.metadata.metadata("taskmanager").get_all("Provides-Extra")
+    assert extras == ["local-embeddings"]
+
+
+def test_every_plugin_manifest_names_the_homepage_and_repository() -> None:
+    marketplace = read_json(".claude-plugin/marketplace.json")["plugins"]
+    assert isinstance(marketplace, list)
+    plugin = read_json("plugin/.claude-plugin/plugin.json")
+    links = {
+        "plugin": [plugin["homepage"], plugin["repository"]],
+        "marketplace": [[entry["homepage"], entry["repository"]] for entry in marketplace],
+    }
+    assert links == {"plugin": [HOMEPAGE, HOMEPAGE], "marketplace": [[HOMEPAGE, HOMEPAGE]]}
+
+
+def test_every_manifest_names_the_license_holder_as_author() -> None:
+    holder = re.search(
+        r"^Copyright \(c\) \d{4} (.+)$",
+        (REPO / "LICENSE").read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    assert holder is not None
+    marketplace = read_json(".claude-plugin/marketplace.json")
+    entries = marketplace["plugins"]
+    owner = marketplace["owner"]
+    plugin_author = read_json("plugin/.claude-plugin/plugin.json")["author"]
+    assert isinstance(entries, list)
+    assert isinstance(owner, dict)
+    assert isinstance(plugin_author, dict)
+    authors = {
+        "package": importlib.metadata.metadata("taskmanager")["Author"],
+        "plugin": plugin_author["name"],
+        "marketplace owner": owner["name"],
+        "marketplace": [entry["author"]["name"] for entry in entries],
+    }
+    name = holder.group(1)
+    assert authors == {
+        "package": name,
+        "plugin": name,
+        "marketplace owner": name,
+        "marketplace": [name],
+    }
 
 
 def test_wheel_ships_the_license(tmp_path: Path) -> None:
