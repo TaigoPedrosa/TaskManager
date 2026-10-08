@@ -1,6 +1,44 @@
 # TaskManager
 
+[![CI](https://github.com/TaigoPedrosa/TaskManager/actions/workflows/ci.yml/badge.svg)](https://github.com/TaigoPedrosa/TaskManager/actions/workflows/ci.yml)
+
 A local task tracker for agents: a SQLite graph of specs, plans and tasks that claims each step of a node, lands finished work on its parent's branch or on `main`, and verifies it there.
+
+![tm web, the Document view of a new project](docs/tm-web.png)
+
+## Requirements
+
+macOS or Linux; Python 3.14 (uv fetches it); git; every repository tm lands into needs an `origin` remote with a `main` branch. The plugin runs in Claude Code.
+
+## Install
+
+```bash
+uv tool install git+https://github.com/TaigoPedrosa/TaskManager@v0.3.7
+claude plugin marketplace add TaigoPedrosa/TaskManager
+claude plugin install taskmanager@taskmanager
+```
+
+The plugin carries the skills, the `/taskmanager:tm`, `:task` and `:board` commands, the `tm-op` agent and the `tm-wave` workflow. It does not install `tm`: install both, at the same version.
+
+## Quickstart
+
+```bash
+cd my-repo                      # a clone with origin/main
+tm init
+tm config set repos '{".": {gates: {main: {command: "<your test command>"}}}}'
+tm guide plan                   # how to write plan.yaml
+tm import --format yaml -f plan.yaml
+tm wave discover --session me --slots 2 --max-strong 1
+tm web
+```
+
+- `.` names the repository when the tm root is the repository itself; every task in `plan.yaml`
+  names it in `target_repo`.
+- `<your test command>` is the gate tm runs on the merged tip before a landing pushes.
+- A spec lands on its own branch, the one its `land_on` names, and on `main` without one.
+- `tm wave discover` prints what is claimable without claiming it, and `tm web` opens the board.
+- To dispatch, ask Claude Code for a wave: the plugin's dispatcher skill reads
+  `tm guide dispatch` and runs the `tm-wave` workflow.
 
 ## Features
 
