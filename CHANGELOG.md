@@ -10,6 +10,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - CI on GitHub Actions runs the lint, format, type and test gates on every push and on pull
   requests to `main`.
 - `CONTRIBUTING.md`, `SECURITY.md`, this changelog, issue templates and a pull request template.
+- The Gemini CLI extension loads `GEMINI.md`, which tells an agent how to get `tm` and which
+  `tm guide` topic to read.
 
 ### Changed
 
@@ -19,6 +21,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Removed
 
 - The design notes and implementation plans under `docs/superpowers/`.
+- `tm install`, the empty `tm plugin` group and `install.sh`: the README's install commands
+  replace them.
 
 ## [0.3.7] - 2026-10-08
 
