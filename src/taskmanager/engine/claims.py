@@ -5,17 +5,24 @@ with its lease change and the parents' rollup in one state.db transaction.
 """
 
 import hashlib
+import json
 import logging
 import os
+import re
+import shutil
 import signal
+import sqlite3
 import subprocess
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from subprocess import CalledProcessError
-from typing import Any, Protocol, cast
+from typing import Any, Final, Protocol, cast
 
 from taskmanager.core import lifecycle
 from taskmanager.core.enums import CONTAINERS, NodeKind, RelationType
@@ -57,6 +64,7 @@ from taskmanager.engine.decisions import (
     open_stranded_decision,
     stranded_dependents,
 )
+from taskmanager.engine.doctor import CODEGRAPH_INSTALL
 from taskmanager.engine.gates import RED_TARGET, clear_red_targets
 from taskmanager.engine.git import GitManager
 from taskmanager.engine.operations import OperationError, Operations
@@ -77,6 +85,118 @@ _FAILED_BECAUSE: dict[Event, str] = {
     Event.RELEASE: _STALLED,
     Event.EXPIRED: _STALLED,
 }
+
+# Seconds a claim waits on one codegraph call before it reports codegraph unavailable.
+CODEGRAPH_TIMEOUT: Final = 120
+# `codegraph node --symbols-only` lists one symbol per line as "- `name` (kind) ...".
+_SYMBOL_LINE = re.compile(r"^- `([^`]+)` \((\w+)\)", re.MULTILINE)
+
+
+class CodegraphUnavailable(Exception):
+    pass
+
+
+def _codegraph(*args: str) -> str:
+    try:
+        run = subprocess.run(
+            ["codegraph", *args],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=CODEGRAPH_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise CodegraphUnavailable(f"codegraph {args[0]}: {exc}") from exc
+    if run.returncode != 0:
+        detail = run.stderr.strip() or run.stdout.strip()
+        raise CodegraphUnavailable(
+            f"codegraph {args[0]} failed with exit code {run.returncode}: {detail}"
+        )
+    return run.stdout
+
+
+def _seed_index(checkout: Path, worktree: Path) -> None:
+    """codegraph answers a path from the nearest `.codegraph/` above it, so a worktree cut inside
+    its checkout would answer from the checkout's tree. The index stores repository-relative
+    paths, so a copy synced in the worktree answers for it, in a fraction of a fresh init."""
+    if shutil.which("codegraph") is None:
+        raise CodegraphUnavailable(f"codegraph is not on PATH; install it: `{CODEGRAPH_INSTALL}`")
+    # codegraph counts a project as initialized only once this database exists.
+    index = checkout / ".codegraph" / "codegraph.db"
+    if not index.is_file():
+        raise CodegraphUnavailable(
+            f"{checkout} has no codegraph index; run `codegraph init {checkout}`"
+        )
+    try:
+        (worktree / ".codegraph").mkdir(exist_ok=True)
+        # SQLite's backup copies one consistent state even while a codegraph daemon writes.
+        with (
+            closing(sqlite3.connect(index)) as source,
+            closing(sqlite3.connect(worktree / ".codegraph" / "codegraph.db")) as copy,
+        ):
+            source.backup(copy)
+    except (OSError, sqlite3.Error) as exc:
+        raise CodegraphUnavailable(f"copying {index}: {exc}") from exc
+    _codegraph("sync", "--quiet", str(worktree))
+
+
+def _symbols(worktree: Path, path: str) -> list[str]:
+    """The symbols `path` defines, a method under its class's name as `impact` resolves it."""
+    names: list[str] = []
+    owner = ""
+    listing = _codegraph("node", "-f", path, "--symbols-only", "-p", str(worktree))
+    for name, kind in _SYMBOL_LINE.findall(listing):
+        owner = name if kind == "class" else owner
+        names.append(f"{owner}.{name}" if kind == "method" and owner else name)
+    return list(dict.fromkeys(names))
+
+
+def _dependents(worktree: Path, name: str) -> set[str]:
+    """The files holding what uses `name` directly."""
+    out = _codegraph("impact", name, "--depth", "1", "--json", "-p", str(worktree))
+    try:
+        found = json.loads(out)
+    except ValueError:
+        # A name codegraph has not indexed is answered with a line of text and exit code 0.
+        return set()
+    try:
+        return {str(item["filePath"]) for item in found["affected"]}
+    except (KeyError, TypeError) as exc:
+        raise CodegraphUnavailable(f"codegraph impact {name} printed no affected files") from exc
+
+
+def _reaches(worktree: Path, declared: list[str], held: dict[str, str]) -> list[str]:
+    lines: list[str] = []
+    with ThreadPoolExecutor() as pool:
+        for path in declared:
+            # A file's own dependents hold its symbols': one reaching no held file is skipped.
+            if not held.keys() & _dependents(worktree, path):
+                continue
+            names = _symbols(worktree, path)
+            found = pool.map(partial(_dependents, worktree), names)
+            for name, files in zip(names, found, strict=True):
+                lines += [
+                    f"{name} reaches {f} held by {held[f]}" for f in sorted(files & held.keys())
+                ]
+    return lines
+
+
+def codegraph_lines(
+    checkout: Path, worktree: Path, declared: list[str], held: dict[str, str]
+) -> list[str]:
+    """What a claim prints after `codegraph: ` for a worktree of `checkout`: nothing when the
+    checkout has no `.codegraph/`, and one `unavailable` line for any failure, never a raise.
+    `declared` and `held` are repository-relative; `held` maps a file to the node holding it."""
+    if not (checkout / ".codegraph").is_dir():
+        return []
+    lines: list[str] = []
+    try:
+        _seed_index(checkout, worktree)
+        lines.append(f"ready {worktree}")
+        lines += _reaches(worktree, declared, held)
+    except CodegraphUnavailable as exc:
+        lines.append(f"unavailable ({exc})")
+    return lines
 
 
 def _stop_process(job: Job) -> None:
@@ -131,6 +251,8 @@ class ClaimResult:
     # Repository name to its `base`: the repositories of a container can land on different
     # default branches. `base` is the first repository's.
     bases: dict[str, str] = field(default_factory=dict)
+    # `codegraph_lines` for each worktree the claim cut: advice only, the claim stands either way.
+    codegraph: list[str] = field(default_factory=list)
 
 
 class LandingJobs(Protocol):
@@ -395,11 +517,31 @@ class Claims:
             "task start", node.id, {"action": action.value, "agent": agent, "from": node.status}
         )
         try:
-            return replace(self._begin(after, action, model, worktree_dir), token=lease.token)
+            begun = self._begin(after, action, model, worktree_dir)
         except (OperationError, CalledProcessError, OSError, ValueError) as exc:
             self._unclaim(node)
             detail = getattr(exc, "stderr", None) or str(exc)
             raise OperationError(f"claim of {node.id} undone: {detail}".strip(), 409) from exc
+        own = [lock.file_path for lock in locks]
+        lines = self._codegraph(own, begun.worktrees, snap)
+        return replace(begun, token=lease.token, codegraph=lines)
+
+    def _codegraph(self, own: list[str], worktrees: dict[str, str], snap: Snapshot) -> list[str]:
+        # `start` swept expired leases before building `snap`, so every lock in it is live.
+        locks = snap.graph_data().file_locks
+        lines: list[str] = []
+        for repo, worktree in worktrees.items():
+            prefix = f"{repo}:"
+            # Another repository's key keeps its prefix, so it never equals a path codegraph
+            # prints for this one.
+            held = {lock.file_path.removeprefix(prefix): lock.task_id for lock in locks}
+            lines += codegraph_lines(
+                self.root / repo,
+                Path(worktree),
+                [key.removeprefix(prefix) for key in own if key.startswith(prefix)],
+                held,
+            )
+        return lines
 
     def _step_branch(self, node: Node, action: Action) -> str:
         """The branch a step works on: the node's own, or for a review of landed code, the
