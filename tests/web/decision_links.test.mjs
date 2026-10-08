@@ -323,3 +323,68 @@ test('the Graph tooltip opens on keyboard focus of a node as well as on hover, a
   page.$('#tm-tooltip').dispatchEvent(new page.window.Event('mouseleave', { bubbles: false }));
   assert.equal(tooltip(page), null);
 });
+
+test('Tab from a focused Graph node enters its tooltip\'s links, and Shift+Tab, Tab past the last link and Escape leave it', async () => {
+  const page = await openAt('/graph');
+  const node = graphNode(page, 'T');
+  const next = graphNode(page, 'R');
+  const press = (el, keyName, mods = {}) => {
+    const event = new page.window.Event('keydown', { key: keyName, ...mods });
+    el.dispatchEvent(event);
+    return event;
+  };
+  const focusOut = (el, to) => el.dispatchEvent(new page.window.Event('focusout', { relatedTarget: to }));
+  const active = () => page.document.activeElement;
+
+  // Each focus on the node draws its tooltip afresh, so its links are read again each time.
+  const links = () => tooltip(page).querySelectorAll('a.id-link');
+  focusIn(page, node);
+  assert.ok(links()[1].classList.contains('decision-chip'));
+  assert.equal(press(node, 'Tab').defaultPrevented, true, 'Tab from the node goes into its tooltip');
+  assert.ok(active() === links()[0], 'focus is on the tooltip\'s first link');
+  focusOut(node, links()[0]);
+  assert.ok(tooltip(page), 'focus moving into the tooltip keeps it open');
+
+  links()[1].focus();
+  assert.equal(press(links()[1], 'Tab').defaultPrevented, true);
+  assert.ok(active() === next, 'Tab past the last link goes on to the node after T');
+
+  focusIn(page, node);
+  links()[0].focus();
+  assert.equal(press(links()[0], 'Tab', { shiftKey: true }).defaultPrevented, true);
+  assert.ok(active() === node, 'Shift+Tab before the first link returns to the node');
+
+  focusIn(page, node);
+  links()[1].focus();
+  press(links()[1], 'Escape');
+  assert.ok(active() === node, 'Escape returns focus to the node');
+  assert.equal(tooltip(page), null, 'and closes the tooltip');
+
+  focusIn(page, node);
+  press(node, 'Escape');
+  assert.equal(press(node, 'Tab').defaultPrevented, false, 'with its tooltip closed, Tab leaves the node as usual');
+
+  next.disabled = true;
+  focusIn(page, node);
+  links()[1].focus();
+  press(links()[1], 'Tab');
+  assert.ok(active() === graphNode(page, 'U'), 'Tab skips a disabled control, as the browser does');
+  next.disabled = false;
+
+  const last = graphNode(page, 'U');
+  focusIn(page, last);
+  links()[0].focus();
+  assert.equal(press(links()[0], 'Tab').defaultPrevented, false, 'after the last node nothing visible follows, so Tab is the browser\'s');
+
+  focusIn(page, node);
+  const held = links()[1];
+  held.focus();
+  page.$('#tm-tooltip').dispatchEvent(new page.window.Event('mouseleave', { bubbles: false }));
+  assert.equal(press(held, 'Escape').defaultPrevented, false, 'a key in a tooltip the pointer already closed does nothing');
+
+  focusIn(page, node);
+  const chip = links()[1];
+  chip.focus();
+  focusOut(chip, page.document.body);
+  assert.equal(tooltip(page), null, 'focus leaving the tooltip for elsewhere closes it');
+});

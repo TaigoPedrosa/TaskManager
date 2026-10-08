@@ -67,6 +67,36 @@ function lingerGraphTip() {
 
 tipEl.addEventListener('mouseenter', () => clearTimeout(graphTipLinger));
 
+// The tooltip sits at the end of the page, so a focused node hands Tab to its links by hand:
+// Tab from the node enters them, Shift+Tab before the first returns to the node, Tab past the
+// last goes on to whatever follows the node, and Escape closes it with focus on the node.
+function focusAfter(el) {
+  const order = [...document.querySelectorAll(FOCUSABLE)]
+    .filter(f => !tipEl.contains(f) && !f.disabled && !f.closest('.hidden, [hidden]'));
+  const next = order[order.indexOf(el) + 1];
+  if (next) next.focus();
+  return Boolean(next);
+}
+
+tipEl.addEventListener('keydown', (e) => {
+  const proxy = tipAnchor;
+  if (!proxy) return;
+  const links = [...tipEl.querySelectorAll('a')];
+  const at = links.indexOf(document.activeElement);
+  if (e.key === 'Escape') {
+    proxy.focus();
+  } else if (e.key === 'Tab' && e.shiftKey && at === 0) {
+    e.preventDefault();
+    proxy.focus();
+  } else if (e.key === 'Tab' && !e.shiftKey && at === links.length - 1 && focusAfter(proxy)) {
+    e.preventDefault();
+  }
+});
+
+tipEl.addEventListener('focusout', (e) => {
+  if (!tipEl.contains(e.relatedTarget)) hideTip();
+});
+
 function graphVisEdge([source, target, type]) {
   return {
     id: graphEdgeId(source, target, type),
@@ -151,7 +181,15 @@ function syncGraphFocusProxies() {
       btn.setAttribute('tabindex', '0');
       btn.setAttribute('data-node-id', id);
       btn.addEventListener('focusin', () => showGraphTip(btn, id));
-      btn.addEventListener('focusout', hideTip);
+      btn.addEventListener('focusout', (e) => {
+        if (!tipEl.contains(e.relatedTarget)) hideTip();
+      });
+      btn.addEventListener('keydown', (e) => {
+        const first = tipAnchor === btn && tipEl.querySelector('a');
+        if (e.key !== 'Tab' || e.shiftKey || !first) return;
+        e.preventDefault();
+        first.focus();
+      });
       btn.addEventListener('click', () => showGraphInspector(id));
       graphFocusLayer.appendChild(btn);
       graphFocusProxies.set(id, btn);
