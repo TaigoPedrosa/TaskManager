@@ -357,19 +357,21 @@ function decisionsListStateHtml() {
 }
 
 // One line, as the Decision row draws it: the id, the title truncating with the whole question
-// as its tooltip, the priority when it is not 50, a closed row's "Was blocking n", the age. The
-// tab is the status, so no row repeats it. The title is the row's own target and its overlay
-// spans the line; the id link sits above it, so no link nests in another.
+// as its tooltip, the priority when it is not 50, a closed row's "Was blocking n", the age (an
+// open row's since it was raised, a closed one's since it closed). The tab is the status, so no
+// row repeats it. The title is the row's own target and its overlay spans the line; the id link
+// sits above it, so no link nests in another.
 function decisionRowHtml(d) {
   const active = d.id === selectedDecisionId;
   const priority = d.priority ?? 50;
+  const at = d.closed_at ?? d.created_at;
   return `
     <div class="dec-row-line relative flex items-center gap-2 h-9 px-2.5 rounded-lg border transition ${active ? 'bg-zinc-800 border-zinc-700' : 'bg-zinc-900/60 border-zinc-800 hover:bg-zinc-900 hover:border-zinc-700 active:bg-zinc-800'}">
       ${idLink(d.id, 'decision')}
       <button type="button" class="dec-row flex-1 min-w-0 truncate text-left text-xs leading-4 font-medium text-zinc-100 focus:outline-none after:absolute after:inset-0 after:rounded-lg after:content-[''] focus-visible:after:ring-2 focus-visible:after:ring-emerald-400" data-decision-id="${esc(d.id)}" title="${esc(d.title)}"${active ? ' aria-current="page"' : ''}>${esc(d.title)}</button>
       ${priority !== 50 ? priorityPill(priority) : ''}
       ${d.status !== 'OPEN' ? `<span class="dec-was-blocking flex-shrink-0 text-[10px] leading-[14px] text-zinc-400">Was blocking ${esc(d.was_blocking ?? 0)}</span>` : ''}
-      <time class="dec-age flex-shrink-0 font-mono text-[11px] leading-4 text-zinc-400" datetime="${esc(d.created_at)}">${esc(heartbeatAge(d.created_at))}</time>
+      <time class="dec-age flex-shrink-0 font-mono text-[11px] leading-4 text-zinc-400" datetime="${esc(at)}">${esc(heartbeatAge(at))}</time>
     </div>`;
 }
 

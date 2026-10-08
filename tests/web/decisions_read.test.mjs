@@ -100,7 +100,7 @@ function fakeServer(decisions) {
   });
   const listItem = (d) => ({
     id: d.id, title: d.title, status: d.status, priority: d.priority, created_at: d.created_at,
-    [d.status === 'OPEN' ? 'waiting_count' : 'was_blocking']: d.dependents.length,
+    ...(d.status === 'OPEN' ? {} : { closed_at: d.answer ? d.answer.answered_at : d.withdrawn_at, was_blocking: d.dependents.length }),
   });
   async function answer(kind, respond) {
     if (gates[kind]) await gates[kind];
@@ -242,6 +242,15 @@ test('answered and withdrawn rows and details say "Was blocking n" from was_bloc
   const plan = withdrawn.querySelector('.dec-waiting-row');
   assert.equal(plan.querySelector('[role="img"]').getAttribute('aria-label'), 'Blocked by Task');
   assert.equal(plan.querySelector('.kind-badge').textContent, 'PLAN');
+});
+
+test('a closed row ages from when it closed, an open row from when it was raised', async () => {
+  const page = await openPage(fakeServer(frameDecisions()));
+  assert.equal(rowLine(page, 'decision-D43').querySelector('.dec-age').textContent, '2m');
+  await showTab(page, 'answered');
+  assert.equal(rowLine(page, 'decision-D39').querySelector('.dec-age').textContent, '15m', 'answered 15m ago, raised 20m ago');
+  await showTab(page, 'withdrawn');
+  assert.equal(rowLine(page, 'decision-D41').querySelector('.dec-age').textContent, '7m', 'withdrawn 7m ago, raised 8m ago');
 });
 
 test('the effect pill hugs its text and words each effect: none, drop_edge, defer, abandon, with "node" singular at one', async () => {

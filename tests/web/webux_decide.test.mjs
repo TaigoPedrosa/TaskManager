@@ -67,7 +67,7 @@ function server() {
       decisions.forEach((d) => { counts[d.status.toLowerCase()] += 1; });
       const items = [...decisions].filter(([, d]) => d.status === status)
         .sort((a, b) => b[1].created_at.localeCompare(a[1].created_at))
-        .map(([id, d]) => ({ id, title: d.title, status: d.status, priority: 50, created_at: d.created_at, waiting_count: d.blocks.length }));
+        .map(([id, d]) => ({ id, title: d.title, status: d.status, priority: 50, created_at: d.created_at }));
       return jsonResponse(200, { items, next: null, counts });
     }
     const answer = u.pathname.match(/^\/api\/decisions\/([^/]+)\/answer$/);

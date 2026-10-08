@@ -93,7 +93,7 @@ function fakeServer(decisions) {
       const status = new URLSearchParams(url.split('?')[1]).get('status');
       const items = [...byId.values()].filter((d) => d.status === status)
         .sort((a, b) => b.created_at.localeCompare(a.created_at))
-        .map((d) => ({ id: d.id, title: d.title, status: d.status, priority: 50, created_at: d.created_at, waiting_count: d.dependents.length }));
+        .map((d) => ({ id: d.id, title: d.title, status: d.status, priority: 50, created_at: d.created_at }));
       return jsonResponse(200, { items, next: null, counts: counts() });
     }
     const write = url.match(/^\/api\/decisions\/([^/]+)\/(answer|withdraw|reopen|blocks)$/);

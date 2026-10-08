@@ -80,7 +80,7 @@ async function server(url) {
   }
   if (u.pathname === '/api/decisions') {
     const open = u.searchParams.get('status') === 'OPEN';
-    const items = open ? [{ id: 'decision-D1', title: 'Pick one', status: 'OPEN', priority: 50, created_at: '2026-10-06T10:00:00+00:00', waiting_count: 1 }] : [];
+    const items = open ? [{ id: 'decision-D1', title: 'Pick one', status: 'OPEN', priority: 50, created_at: '2026-10-06T10:00:00+00:00' }] : [];
     return jsonResponse(200, { items, next: null, counts: { open: 1, answered: 0, withdrawn: 0 } });
   }
   if (u.pathname === '/api/waves') return jsonResponse(200, WAVES);
