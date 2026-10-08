@@ -12,11 +12,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - `CONTRIBUTING.md`, `SECURITY.md`, this changelog, issue templates and a pull request template.
 - The Gemini CLI extension loads `GEMINI.md`, which tells an agent how to get `tm` and which
   `tm guide` topic to read.
+- The README opens with Requirements, Install and Quickstart sections, a CI badge and a screenshot
+  of `tm web`.
+- The plugin's skills give the command that installs `tm`, and tell an agent to stop when `tm` is
+  not on PATH.
 
 ### Changed
 
 - TaskManager is released under the MIT license, declared in the wheel metadata and in every
   plugin manifest.
+- `/taskmanager:tm` only runs a `tm` command: invoking it no longer opts the session into the
+  Workflow tool, a self-paced loop or any other tool.
 
 ### Removed
 
@@ -24,6 +30,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - The `/docs` and `/redoc` API pages on `tm web`.
 - `tm install`, the empty `tm plugin` group and `install.sh`: the README's install commands
   replace them.
+
+### Fixed
+
+- `tm web --host` takes an IPv6 address: it found no free port for one, and printed its URL
+  without brackets.
 
 ### Security
 
@@ -33,6 +44,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   that ship with tm, not from unpinned CDN URLs, and the export opens offline.
 - `tm web` refuses a `--host` other than loopback unless `--expose` is passed: it has no
   authentication, and any client that reaches the port can run commands through a verification.
+  An exposed server answers a client that reaches it by any of the machine's addresses, or by the
+  name `--host` gives.
 
 ## [0.3.7] - 2026-10-08
 
