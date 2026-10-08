@@ -4,7 +4,6 @@ import pytest
 
 from taskmanager.core.status import DecisionStatus, Merge, Status
 from taskmanager.engine.chains import (
-    MAIN,
     base_chain,
     landing_chain,
     landing_target,
@@ -14,6 +13,7 @@ from taskmanager.engine.chains import (
 )
 
 PARENT = Merge.PARENT
+TOP_MAIN = "TOP:main"
 
 
 @dataclass
@@ -46,10 +46,21 @@ class Tree:
     def status(self, node_id: str) -> Status | DecisionStatus:
         return self.statuses.get(node_id, Status.READY)
 
+    def top(self, node_id: str) -> str:
+        return "main"
+
 
 @pytest.mark.parametrize(
     ("node", "target"),
-    [("S", MAIN), ("P", "S"), ("Q", MAIN), ("T1", "P"), ("G", MAIN), ("U", "Q"), ("ORPHAN", MAIN)],
+    [
+        ("S", TOP_MAIN),
+        ("P", "S"),
+        ("Q", TOP_MAIN),
+        ("T1", "P"),
+        ("G", TOP_MAIN),
+        ("U", "Q"),
+        ("ORPHAN", TOP_MAIN),
+    ],
 )
 def test_landing_target_is_the_parent_only_for_merge_parent(node: str, target: str) -> None:
     assert landing_target(Tree(), node) == target
@@ -58,12 +69,12 @@ def test_landing_target_is_the_parent_only_for_merge_parent(node: str, target: s
 @pytest.mark.parametrize(
     ("node", "chain"),
     [
-        ("S", [MAIN]),
-        ("P", ["S", MAIN]),
-        ("T1", ["P", "S", MAIN]),
-        ("G", [MAIN]),
-        ("U", ["Q", MAIN]),
-        ("M", [MAIN]),
+        ("S", [TOP_MAIN]),
+        ("P", ["S", TOP_MAIN]),
+        ("T1", ["P", "S", TOP_MAIN]),
+        ("G", [TOP_MAIN]),
+        ("U", ["Q", TOP_MAIN]),
+        ("M", [TOP_MAIN]),
     ],
 )
 def test_base_chain_lists_the_branches_a_node_builds_on_nearest_first(
@@ -83,7 +94,7 @@ def test_base_chain_lists_the_branches_a_node_builds_on_nearest_first(
         ("M", ["M"]),
     ],
 )
-def test_landing_chain_follows_the_code_up_to_the_node_that_lands_on_main(
+def test_landing_chain_follows_the_code_up_to_the_node_that_lands_on_its_target(
     node: str, chain: list[str]
 ) -> None:
     assert landing_chain(Tree(), node) == chain
@@ -93,13 +104,13 @@ def test_landing_chain_follows_the_code_up_to_the_node_that_lands_on_main(
     ("x", "y", "z", "pairs"),
     [
         ("T2", "T1", "T1", []),
-        ("T1", "M", "M", [(MAIN, "S"), ("S", "P")]),
-        ("P", "M", "M", [(MAIN, "S")]),
+        ("T1", "M", "M", [(TOP_MAIN, "S"), ("S", "P")]),
+        ("P", "M", "M", [(TOP_MAIN, "S")]),
         ("M", "T1", "S", []),
         ("G", "T1", "S", []),
-        ("U", "T1", "S", [(MAIN, "Q")]),
-        ("T1", "G", "G", [(MAIN, "S"), ("S", "P")]),
-        ("T1", "U", "Q", [(MAIN, "S"), ("S", "P")]),
+        ("U", "T1", "S", [(TOP_MAIN, "Q")]),
+        ("T1", "G", "G", [(TOP_MAIN, "S"), ("S", "P")]),
+        ("T1", "U", "Q", [(TOP_MAIN, "S"), ("S", "P")]),
         ("Q", "P", "S", []),
     ],
 )

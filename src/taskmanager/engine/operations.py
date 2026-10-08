@@ -42,7 +42,7 @@ from taskmanager.engine.assets import (
     is_project_relative,
     store_asset,
 )
-from taskmanager.engine.chains import MAIN, landing_target
+from taskmanager.engine.chains import TOP, landing_target
 from taskmanager.engine.conditions import is_executable
 from taskmanager.engine.config import ConfigStore, ProjectConfig
 from taskmanager.engine.decisions import (
@@ -132,7 +132,7 @@ def child_defaults(
 
 
 # Refusals that conflict with the tree's current state rather than with the request itself.
-_CONFLICT_RULES = frozenset({4, 6, 7, 8})
+_CONFLICT_RULES = frozenset({4, 6, 7, 8, 13})
 
 
 class GitBranchFacts:
@@ -174,7 +174,7 @@ class GitBranchFacts:
     def _ref(self, name: str | None, repo: Path, target: str, top: str) -> str:
         # A container branch not yet cut in this repository would be cut from its own base, and
         # a top branch not yet on origin from its repository's default branch.
-        while target != MAIN:
+        while not target.startswith(TOP):
             branch = self._branch(target)
             if self._has(repo, f"refs/heads/{branch}"):
                 return branch

@@ -4,7 +4,7 @@ import pytest
 
 from taskmanager.core.enums import NodeKind
 from taskmanager.core.status import DecisionStatus, Merge, Status
-from taskmanager.engine.chains import MAIN
+from taskmanager.engine.chains import TOP
 from taskmanager.engine.stepgraph import SnapNode, Snapshot
 from taskmanager.engine.validation import Refusal, validate
 
@@ -21,7 +21,7 @@ class Branches:
         return node_id in self.existing
 
     def base_matches(self, node_id: str, new_target: str, new_top: str) -> bool:
-        return self.cut_from.get(node_id) == (new_top if new_target == MAIN else new_target)
+        return self.cut_from.get(node_id) == new_target.removeprefix(TOP)
 
 
 def snap(*nodes: SnapNode, edges: list[tuple[str, str]] | None = None) -> Snapshot:
@@ -95,7 +95,7 @@ def test_merge_parent_on_a_spec_or_a_parentless_node_is_refused(node: SnapNode) 
     ("branches", "refused"),
     [
         (Branches(), False),
-        (Branches(existing={"T"}, cut_from={"T": MAIN}), True),
+        (Branches(existing={"T"}, cut_from={"T": "main"}), True),
         (Branches(existing={"T"}, cut_from={"T": "P"}), False),
     ],
 )
@@ -124,7 +124,7 @@ def test_a_refused_retarget_names_the_steps_that_set_the_branch_aside_from_its_s
 ) -> None:
     before = snap(PLAN_P, SnapNode("T", TASK, parent="P", status=status))
     after = with_node(before, SnapNode("T", TASK, parent="P", merge=PARENT, status=status))
-    branches = Branches(existing={"T"}, cut_from={"T": MAIN})
+    branches = Branches(existing={"T"}, cut_from={"T": "main"})
     [refusal] = validate(before, after, {"T"}, branches)
     assert f"{steps} before changing where it lands" in refusal.message
     assert refusal.message.count("defer") == steps.count("defer")
@@ -142,7 +142,7 @@ def test_a_refused_retarget_of_a_node_that_cannot_be_set_aside_names_no_defer(
 ) -> None:
     before = snap(PLAN_P, SnapNode("T", TASK, parent="P", status=status))
     after = with_node(before, SnapNode("T", TASK, parent="P", merge=PARENT, status=status))
-    branches = Branches(existing={"T"}, cut_from={"T": MAIN})
+    branches = Branches(existing={"T"}, cut_from={"T": "main"})
     [refusal] = validate(before, after, {"T"}, branches)
     assert advice in refusal.message
     assert "defer" not in refusal.message
