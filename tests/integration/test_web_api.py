@@ -647,6 +647,37 @@ def test_a_withdrawal_stored_without_its_time_closes_at_the_nodes_last_write(
     assert datetime.fromisoformat(item["closed_at"]) == last_write
 
 
+def test_the_add_task_candidates_are_every_task_not_waiting_and_not_finished_in_id_order(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, node_repo, _ledger_repo = api
+    _seed_decision(node_repo)
+    for task_id, status, priority in (
+        ("SPEC-P1-T0", Status.READY, 50),
+        ("SPEC-P1-T3", Status.COMPLETED, 50),
+        ("SPEC-P1-T4", Status.ABANDONED, 50),
+        ("SPEC-P1-T5", Status.SUPERSEDED, 50),
+        ("SPEC-P1-T6", Status.DEFERRED, 90),
+    ):
+        node_repo.save_node(
+            Node(id=task_id, kind=NodeKind.TASK, title=task_id, status=status, priority=priority)
+        )
+    node_repo.add_relation(
+        NodeRelation(
+            source_id="SPEC-P1-T1", target_id="decision-D1", relation_type=RelationType.DEPENDS_ON
+        )
+    )
+
+    res = client.get("/api/decisions/decision-D1/candidates")
+
+    assert res.status_code == 200
+    items = res.json()["items"]
+    assert [t["id"] for t in items] == ["SPEC-P1-T0", "SPEC-P1-T2", "SPEC-P1-T6"]
+    assert items[1] == {"id": "SPEC-P1-T2", "title": "Second", "display": "READY"}
+    assert client.get("/api/decisions/SPEC-P1-T2/candidates").status_code == 404
+    assert client.get("/api/decisions/decision-D9/candidates").status_code == 404
+
+
 def test_answer_and_withdraw_from_the_page_are_attributed_to_the_git_user_name(
     tmp_path: Path, no_git_user: None
 ) -> None:

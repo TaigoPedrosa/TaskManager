@@ -448,6 +448,10 @@ def _decision_item(node: Node, node_repo: NodeRepository, assets_dir: Path) -> d
     return item
 
 
+# The tasks a decision cannot be made to block: finished, or set aside for good.
+_NOT_ADDABLE = frozenset({Status.COMPLETED, Status.ABANDONED, Status.SUPERSEDED})
+
+
 def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = None) -> FastAPI:
     # `port=None` (tests, the static exporter's in-process TestClient) skips Host pinning and
     # keeps the old Origin-must-equal-Host check; the real server always passes its bound port,
@@ -934,6 +938,27 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         with _refusals():
             operations.with_actor(actor).withdraw_decision(decision_id, body.reason)
         return {"id": decision_id}
+
+    @app.get("/api/decisions/{decision_id}/candidates")
+    def get_decision_candidates(decision_id: str) -> dict[str, Any]:
+        """The tasks `+ Add task` offers: every task not already waiting on the decision and not
+        finished or set aside, in id order."""
+        decision = node_repo.get_node(decision_id)
+        if decision is None or decision.kind != NodeKind.DECISION:
+            raise HTTPException(404, f"no decision '{decision_id}'")
+        waiting = set(node_repo.get_blocked_by(decision_id))
+        tasks = [
+            t
+            for t in node_repo.list_nodes(kind=NodeKind.TASK)
+            if t.id not in waiting and t.status not in _NOT_ADDABLE
+        ]
+        view = new_view()
+        return {
+            "items": [
+                {"id": t.id, "title": t.title, "display": view.display(t)}
+                for t in sorted(tasks, key=lambda t: t.id)
+            ]
+        }
 
     @app.post("/api/decisions/{decision_id}/blocks")
     def post_decision_blocks(

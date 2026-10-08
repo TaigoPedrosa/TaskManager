@@ -550,9 +550,7 @@ let renderedDecisionId = null;
 // that brings back the same decision unchanged leaves the screen, its focus and caret alone.
 let renderedDetailKey = null;
 
-// Every task row the store currently holds -- the same "on the store" candidate source
-// edit.js's own dependency picker uses, since a task picker here has nothing else to draw
-// on without a whole-tree fetch the store no longer keeps around.
+// Every task row the store currently holds, for the New decision dialog's Blocks field.
 function visibleTaskRows() {
   return [...window.tmStore.rows.values()].filter(r => r.kind === 'task');
 }
@@ -959,30 +957,7 @@ function renderDecisionDetail(id) {
       });
     });
     const addBlockBtn = decisionsDetailEl.querySelector('.dec-block-add');
-    if (addBlockBtn) {
-      addBlockBtn.addEventListener('click', () => {
-        const taskOptions = visibleTaskRows();
-        const listId = 'dec-block-picker-list';
-        formDialog({
-          title: `Add task to ${node.id}`,
-          submitLabel: 'Add',
-          bodyHtml: `
-            ${fieldRow('Task', `<input type="text" required list="${listId}" class="dbk-task ${INPUT_CLS} font-mono"><datalist id="${listId}">${taskOptions.map(t => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join('')}</datalist>`)}
-          `,
-          onSubmit: async (panel, close, write) => {
-            const typed = panel.querySelector('.dbk-task').value.trim();
-            if (!typed) throw new Error('Task id is required.');
-            const match = taskOptions.find(t => t.id === typed || t.title === typed);
-            const taskId = match ? match.id : typed;
-            await write('POST', `/api/decisions/${node.id}/blocks`, { add: [taskId] });
-            close();
-            pendingFocus = { id, to: `.dec-waiting-row a.id-link[data-id="${CSS.escape(taskId)}"]` };
-            toast(`${taskId} now waits on ${node.id}`, { tone: 'success' });
-            refreshDecisionsData();
-          }
-        });
-      });
-    }
+    if (addBlockBtn) addBlockBtn.addEventListener('click', () => openTaskPicker(node.id));
 
     wireDecisionAnswerForm(decisionsDetailEl, node.id, data, waiting, held);
     if (!decisionsDetailEl.querySelector('.dec-answer-form')) liftToasts(null);
@@ -1165,6 +1140,136 @@ function openWithdrawDialog(decisionId, waitingCount) {
       await afterDecisionClosed(decisionId, `${decisionId} withdrawn`, at);
     }
   });
+}
+
+// + Add task's picker lists the tasks the server says can wait on the decision, read afresh on
+// every open and filtered by id or title as typed. ↓ from the field enters the list, ↑/↓ move
+// through it with the selection following focus, a click selects a row, and Enter or Add adds
+// the selected one. The query is the dialog's draft, so Cancel keeps it.
+const taskPickerLoads = new WeakMap();
+// The open picker's read, which its error state's Retry runs again; one picker shows at a time.
+let taskPickerLoad = null;
+function retryTaskCandidates() {
+  if (taskPickerLoad) taskPickerLoad();
+}
+
+// An option is one focus stop, so its status icon is named with the row instead of taking
+// focus of its own.
+function taskPickerRowHtml(t) {
+  return `<div role="option" tabindex="-1" aria-selected="false" data-task-id="${esc(t.id)}" class="dbk-option group flex items-center gap-2 px-2.5 py-2 rounded-lg border cursor-pointer transition bg-zinc-900/60 border-zinc-800 hover:bg-zinc-900 hover:border-zinc-700 aria-selected:bg-zinc-800 aria-selected:border-zinc-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-400">${statusIcon(t.display).replace(' tabindex="0"', '')}<span class="flex-shrink-0 whitespace-nowrap font-mono ${ID_TEXT}">${esc(t.id)}</span><span class="flex-1 min-w-0 truncate text-xs leading-4 text-zinc-400 group-aria-selected:text-zinc-200">${esc(t.title)}</span></div>`;
+}
+
+function wireTaskPicker(panel, decisionId) {
+  const query = panel.querySelector('.dbk-query');
+  const list = panel.querySelector('.dbk-results');
+  const add = panel.querySelector('.dlg-submit');
+  const rows = () => Array.from(list.querySelectorAll('.dbk-option'));
+  let candidates = null;
+  let failure = null;
+  let slow = false;
+  let selected = null;
+  let loadTimer = null;
+
+  // The selected row is the list's one tab stop, the first row while none is; Add needs one.
+  function select(taskId) {
+    selected = taskId;
+    rows().forEach((row, i) => {
+      const on = row.getAttribute('data-task-id') === taskId;
+      row.setAttribute('aria-selected', String(on));
+      row.setAttribute('tabindex', on || (!taskId && i === 0) ? '0' : '-1');
+    });
+    add.disabled = !taskId;
+  }
+  function draw() {
+    const typed = query.value.trim();
+    const needle = typed.toLowerCase();
+    if (failure) list.innerHTML = paneState('error', failure, retryTaskCandidates);
+    else if (!candidates) list.innerHTML = slow ? paneState('loading') : '';
+    else {
+      const shown = candidates.filter(t => t.id.toLowerCase().includes(needle) || t.title.toLowerCase().includes(needle));
+      list.innerHTML = shown.length ? shown.map(taskPickerRowHtml).join('')
+        : paneState('empty', typed ? `No tasks match “${typed}”.` : 'No tasks to add.');
+    }
+    select(rows().some(r => r.getAttribute('data-task-id') === selected) ? selected : null);
+  }
+  function moveTo(row) {
+    select(row.getAttribute('data-task-id'));
+    row.focus();
+  }
+  function load() {
+    candidates = null;
+    failure = null;
+    slow = false;
+    draw();
+    clearTimeout(loadTimer);
+    loadTimer = setTimeout(() => {
+      slow = true;
+      draw();
+    }, LOADING_DELAY_MS);
+    api('GET', `/api/decisions/${decisionId}/candidates`).then((res) => {
+      candidates = res.items;
+    }, (e) => {
+      failure = e.message;
+    }).finally(() => {
+      clearTimeout(loadTimer);
+      draw();
+    });
+  }
+
+  query.addEventListener('input', draw);
+  query.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowDown' || !rows().length) return;
+    e.preventDefault();
+    moveTo(rows()[0]);
+  });
+  list.addEventListener('click', (e) => {
+    const row = e.target.closest && e.target.closest('.dbk-option');
+    if (row) moveTo(row);
+  });
+  // Tab into the list lands on its tab stop, which the selection follows.
+  list.addEventListener('focusin', (e) => {
+    if (e.target.classList.contains('dbk-option')) select(e.target.getAttribute('data-task-id'));
+  });
+  list.addEventListener('keydown', (e) => {
+    const row = e.target.closest && e.target.closest('.dbk-option');
+    if (!row) return;
+    const all = rows();
+    const at = all.indexOf(row);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const next = all[at + (e.key === 'ArrowDown' ? 1 : -1)];
+      if (next) moveTo(next);
+      else if (e.key === 'ArrowUp') query.focus();
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      moveTo(row);
+      if (e.key === 'Enter') add.click();
+    }
+  });
+  return load;
+}
+
+function openTaskPicker(decisionId) {
+  const { panel } = formDialog({
+    title: `Add task to ${decisionId}`,
+    submitLabel: 'Add',
+    bodyHtml: `
+      ${fieldRow('Task', `<span class="relative block"><span class="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none ${DEC_MUTED}">${renderIcon('search', 'w-3.5 h-3.5')}</span><input type="text" autocomplete="off" aria-controls="dbk-results" class="dbk-query ${INPUT_CLS} pl-8"></span>`)}
+      <div id="dbk-results" role="listbox" aria-label="Tasks" class="dbk-results flex flex-col gap-1 max-h-56 overflow-y-auto pr-1"></div>
+    `,
+    onMount: (dialogPanel) => taskPickerLoads.set(dialogPanel, wireTaskPicker(dialogPanel, decisionId)),
+    onSubmit: async (dialogPanel, close, write) => {
+      const taskId = dialogPanel.querySelector('.dbk-option[aria-selected="true"]').getAttribute('data-task-id');
+      await write('POST', `/api/decisions/${decisionId}/blocks`, { add: [taskId] });
+      close();
+      pendingFocus = { id: decisionId, to: `.dec-waiting-row a.id-link[data-id="${CSS.escape(taskId)}"]` };
+      toast(`${taskId} now waits on ${decisionId}`, { tone: 'success' });
+      refreshDecisionsData();
+    },
+  });
+  taskPickerLoad = taskPickerLoads.get(panel);
+  taskPickerLoad();
+  panel.querySelector('.dbk-query').focus();
 }
 
 // The closed decision's place in its list, read when the write is sent: a push can take its row

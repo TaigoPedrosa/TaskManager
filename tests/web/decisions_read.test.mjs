@@ -116,6 +116,13 @@ function fakeServer(decisions) {
         return d ? jsonResponse(200, body(d)) : jsonResponse(404, { detail: 'Node not found' });
       });
     }
+    const candidates = url.match(/^\/api\/decisions\/([^/]+)\/candidates$/);
+    if (candidates) {
+      const waiting = new Set(byId.get(candidates[1]).dependents.map((n) => n.id));
+      const items = ['WEBUX-DECIDE-API', 'WEBUX-DECIDE-READ', 'WEBUX-SHIP'].filter((id) => !waiting.has(id))
+        .map((id) => ({ id, title: `${id} title`, display: 'READY' }));
+      return jsonResponse(200, { items });
+    }
     if (url.startsWith('/api/decisions?')) {
       return answer('list', () => {
         const status = new URLSearchParams(url.split('?')[1]).get('status');
@@ -351,9 +358,11 @@ test('no surface of the pane explains itself, and each field keeps the label nam
   key(page.$('#dialog-root .wd-reason'), 'Escape');
 
   page.$('.dec-block-add').click();
+  await page.settle();
   seen.push(surfaceText(page.$('#dialog-root')));
-  assert.equal(labelOf(page.$('#dialog-root .dbk-task')), 'Task');
-  key(page.$('#dialog-root .dbk-task'), 'Escape');
+  assert.equal(labelOf(page.$('#dialog-root .dbk-query')), 'Task');
+  assert.equal(page.$('#dialog-root .dbk-query').getAttribute('placeholder'), null);
+  key(page.$('#dialog-root .dbk-query'), 'Escape');
 
   page.run('openNewDecisionDialog()');
   seen.push(surfaceText(page.$('#dialog-root')));
@@ -488,7 +497,9 @@ test('Attach opens the native picker and writes on choice; focus then goes to th
   assert.ok(page.document.activeElement.classList.contains('att-add-btn'), 'after Detach focus is on Attach');
 
   page.$('.dec-block-add').click();
-  type(page.$('#dialog-root .dbk-task'), 'WEBUX-SHIP');
+  await page.settle();
+  type(page.$('#dialog-root .dbk-query'), 'WEBUX-SHIP');
+  key(page.$('#dialog-root .dbk-query'), 'ArrowDown');
   page.$('#dialog-root .dlg-submit').click();
   await page.settle();
   assert.equal(page.document.activeElement.getAttribute('data-id'), 'WEBUX-SHIP', 'after Add task focus is on its row');
