@@ -264,6 +264,35 @@ def candidates(
     return sorted(found, key=lambda c: (_STAGE[c.action], -c.node.priority, c.node.id)), held
 
 
+def _wave_files(node: Node, action: Action | None, snap: Snapshot) -> list[str]:
+    if action not in (Action.IMPLEMENT, Action.FIX):
+        return []
+    return [
+        locked_key(node.target_repo, f)
+        for f in declared_files_of(node, snap.graph_data().verifications.get(node.id, []))
+        if is_locked_path(f)
+    ]
+
+
+def _reserved(exclude: Sequence[str], snap: Snapshot) -> set[str]:
+    """The files the excluded nodes' next claims lock. An excluded node is one a concurrent run of
+    the same tick is about to claim, and that run may be scoped to another spec, so each is read
+    from `snap` whether or not it is a candidate here."""
+    nodes = snap.graph_data().nodes
+    taken: set[str] = set()
+    for node_id in exclude:
+        node = nodes.get(node_id)
+        if node is None:
+            continue
+        try:
+            action, _ = next_step(node, snap)
+        except LifecycleError:
+            # A node the lifecycle cannot read cannot be claimed either, so it locks nothing.
+            continue
+        taken.update(_wave_files(node, action, snap))
+    return taken
+
+
 def select(
     candidates: list[Candidate],
     snap: Snapshot,
@@ -274,12 +303,11 @@ def select(
 ) -> Selection:
     """The wave `candidates` fills `size` slots with, `max_strong` of them opus/fable, skipping
     `exclude` and holding `hold_merge`'s merges back."""
-    data = snap.graph_data()
     excluded = set(exclude)
     merge_held = set(hold_merge)
     held: list[str] = []
     chosen: list[dict[str, object]] = []
-    taken: set[str] = set()
+    taken = _reserved(exclude, snap)
     chain_holders: dict[str, dict[str, str]] = {}
     strong_free = max_strong
     waiting = 0
@@ -293,15 +321,7 @@ def select(
             continue
         repo = node.target_repo or ""
         migration = snap.nodes[node.id].writes_migration
-        files = (
-            [
-                locked_key(node.target_repo, f)
-                for f in declared_files_of(node, data.verifications.get(node.id, []))
-                if is_locked_path(f)
-            ]
-            if cand.action in (Action.IMPLEMENT, Action.FIX)
-            else []
-        )
+        files = _wave_files(node, cand.action, snap)
         why: list[str] = []
         if cand.action == Action.IMPLEMENT and migration:
             if repo not in chain_holders:
