@@ -141,3 +141,7 @@ TAILWINDCSS_BIN="$HOME/.local/share/tm-tools/tailwindcss" node --test tests/
 
 Run the build from the repository root: the `content` globs resolve against the working
 directory, and from anywhere else the CLI finds no classes and writes a sheet without utilities.
+
+## License
+
+TaskManager is released under the [MIT License](LICENSE).

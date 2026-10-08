@@ -4,6 +4,8 @@ version = "0.3.7"
 description = "Local agentic task tracker system powered by SQLite and DAG heuristics"
 authors = [{ name = "Taigo Pedrosa" }]
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.14"
 dependencies = [
     "typer>=0.15.0",
@@ -41,7 +43,7 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.ruff]

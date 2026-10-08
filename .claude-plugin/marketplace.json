@@ -14,6 +14,7 @@
       "author": {
         "name": "Taigo Pedrosa"
       },
+      "license": "MIT",
       "keywords": [
         "taskmanager",
         "tm",
