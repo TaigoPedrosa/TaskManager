@@ -605,7 +605,7 @@ for (const target of ['origin/main', 'tm/S1']) {
       for (const repo of repos) landedRepo(join(root, repo), { id, landings, inner, onto })
       const tm = makeTm({
         chosen: [{ id, kind, action: 'review', model: 'opus', repos, requires: [], job: null, migration: false }],
-        nodes: { [id]: { ...node('LANDED', 'review'), id, kind } },
+        nodes: { [id]: { ...node('LANDED', 'review', { merge: target === 'tm/S1' ? 'parent' : 'spec' }), id, kind } },
         lists,
         start: { [id]: [() => (tm.set(id, { status: 'REVIEWING', next_action: null }), claim('review', { model: 'opus', repos, branch: target, base: onto }))] },
       })
@@ -647,6 +647,49 @@ test("a landed plan's review on origin/release/1.0 reads only the landings that 
   assert.ok(command, scope)
   const patch = execFileSync('sh', ['-c', command], { encoding: 'utf8' })
   assert.deepEqual([...patch.matchAll(/^diff --git a\/(\S+)/gm)].map(m => m[1]).sort(), ['C1.txt', 'P1.txt'], command)
+})
+
+test("a landed plan's review reads each repository's landings on that repository's own target", async t => {
+  const root = mkdtempSync(join(tmpdir(), 'wave-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  landedRepo(join(root, 'core'), { id: 'P1', landings: ['P1'], onto: 'trunk' })
+  landedRepo(join(root, 'web'), { id: 'P1', landings: ['P1'], inner: ['C1'] })
+  const tm = makeTm({
+    chosen: [{ id: 'P1', kind: 'plan', action: 'review', model: 'opus', repos: ['core', 'web'], requires: [], job: null, migration: false }],
+    nodes: { P1: { ...node('LANDED', 'review'), id: 'P1', kind: 'plan' } },
+    lists: { 'task list --plan P1': ['C1'] },
+    start: { P1: [() => (tm.set('P1', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'opus', repos: ['core', 'web'], branch: 'origin/trunk', base: 'trunk', bases: { core: 'trunk', web: 'main' } }))] },
+  })
+  const agents = () => (tm.set('P1', { status: 'COMPLETED', next_action: null }), 'done')
+  const { work, errors } = await runWave({ args: { ...ARGS, root, reviewerTypes: REVIEWERS }, tm, agents })
+  assert.deepEqual(errors, [])
+  const scope = scopeOf(work[0])
+  assert.ok(scope.startsWith('Scope: what P1 and every node under it landed on origin/trunk and origin/main, '), scope)
+  const commands = scope.match(/git -C \S+ log [^']*'[^']*' \S+ --/g) || []
+  assert.equal(commands.length, 2, scope)
+  const files = commands.map(command => [...execFileSync('sh', ['-c', command], { encoding: 'utf8' }).matchAll(/^diff --git a\/(\S+)/gm)].map(m => m[1]).sort())
+  assert.deepEqual(files, [['P1.txt'], ['C1.txt', 'P1.txt']], scope)
+})
+
+test("a container's review and fix read each repository against that repository's own base", async () => {
+  const P1 = { id: 'P1', kind: 'plan', model: 'opus', repos: ['core', 'web'], requires: [], job: null, migration: false }
+  const bases = { core: 'trunk', web: 'main' }
+  const review = makeTm({
+    chosen: [{ ...P1, action: 'review' }],
+    nodes: { P1: { ...node('IMPLEMENTED', 'review'), id: 'P1', kind: 'plan' } },
+    start: { P1: [() => (review.set('P1', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'opus', repos: ['core', 'web'], branch: 'tm/P1', base: 'trunk', bases }))] },
+  })
+  const reviewed = await runWave({ args: { ...ARGS, reviewerTypes: REVIEWERS }, tm: review, agents: () => (review.set('P1', { status: 'REVIEWED', next_action: null }), 'done') })
+  const scope = scopeOf(reviewed.work[0])
+  assert.ok(scope.includes('git -C /est/core diff origin/trunk...tm/P1') && scope.includes('git -C /est/web diff origin/main...tm/P1'), scope)
+  const worktrees = { core: '/wt/P1/core', web: '/wt/P1/web' }
+  const fix = makeTm({
+    chosen: [{ ...P1, action: 'fix' }],
+    nodes: { P1: { ...node('REVIEWED', 'fix', { outcome: 'reject' }), id: 'P1', kind: 'plan' } },
+    start: { P1: [() => (fix.set('P1', { status: 'FIXING', next_action: null }), claim('fix', { model: 'opus', repos: ['core', 'web'], branch: 'tm/P1', base: 'trunk', bases, worktree: '/wt/P1', worktrees }))] },
+  })
+  const fixed = await runWave({ args: ARGS, tm: fix, agents: () => (fix.set('P1', { status: 'FIXED', next_action: null }), 'done') })
+  assert.ok(fixed.work[0].prompt.includes('core at /wt/P1/core, based on origin/trunk; web at /wt/P1/web, based on origin/main.'), fixed.work[0].prompt)
 })
 
 test('a landed container whose children cannot be read is released, never reviewed on a partial scope', async () => {

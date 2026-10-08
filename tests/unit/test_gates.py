@@ -1,3 +1,4 @@
+import shlex
 from pathlib import Path
 
 import pytest
@@ -131,3 +132,49 @@ def test_the_red_target_entry_point_exits_zero_only_once_cleared(
     assert gates.main(args) == 1
     push_main(api, "next.txt", "n\n")
     assert gates.main(args) == 0
+
+
+def red_target_args(tmp_path: Path, sha: str, *where: str) -> list[str]:
+    args = ["red-target", "--root", str(tmp_path / "estate"), "--repo", "api", "--sha", sha]
+    return [*args, "--template-hash", "h", *where]
+
+
+@pytest.mark.parametrize("where", [("--target", "main"), ()], ids=["target-main", "no-target"])
+def test_a_red_target_condition_naming_no_read_reads_main_on_origin(
+    red: tuple[CacheRepository, Path, str], tmp_path: Path, where: tuple[str, ...]
+) -> None:
+    cache, api, sha = red
+    cache.put_baseline("api", sha, "h", PARKED)
+    args = red_target_args(tmp_path, sha, *where)
+    assert gates.main(args) == 1
+    push_main(api, "next.txt", "n\n")
+    assert gates.main(args) == 0
+
+
+@pytest.mark.parametrize(
+    ("target", "where"),
+    [("main", ("--local",)), ("tm/P", ()), ("tm/P", ("--local",))],
+    ids=["local-main", "container-naming-no-read", "local-container"],
+)
+def test_a_red_target_read_in_the_clone_clears_only_once_its_local_branch_moves(
+    red: tuple[CacheRepository, Path, str], tmp_path: Path, target: str, where: tuple[str, ...]
+) -> None:
+    cache, api, sha = red
+    cache.put_baseline("api", sha, "h", PARKED)
+    git(api, "update-ref", f"refs/heads/{target}", sha)
+    args = red_target_args(tmp_path, sha, "--target", target, *where)
+    moved = push_main(api, "next.txt", "n\n")
+    assert gates.main(args) == 1
+    git(api, "update-ref", f"refs/heads/{target}", moved)
+    assert gates.main(args) == 0
+
+
+@pytest.mark.parametrize(("remote", "cleared"), [(True, 0), (False, 1)])
+def test_a_stored_red_target_command_reads_its_target_where_it_was_parked(
+    red: tuple[CacheRepository, Path, str], tmp_path: Path, remote: bool, cleared: int
+) -> None:
+    cache, api, sha = red
+    cache.put_baseline("api", sha, "h", PARKED)
+    command = gates.red_target_command(tmp_path / "estate", "api", sha, "h", "main", remote=remote)
+    push_main(api, "next.txt", "n\n")
+    assert gates.main(shlex.split(command)[3:]) == cleared

@@ -28,7 +28,7 @@ That is the brief the implementer was given, and the only standard you review ag
 
 ## 3. Read the branch
 
-In each repository the claim's `repos` names, `<base>` is the claim's `base` as printed: the branch the node's spec lands on, or the container branch the node lands on. `<base-ref>` is where it is read: `origin/<base>` for the spec's target, and `<base>` itself for a container branch, which is local to the clone:
+In each repository the claim's `repos` names, `<base>` is that repository's entry in the claim's `bases`, since a container's repositories can land on different default branches (`base` is the first repository's): the branch the node's spec lands on, or the container branch the node lands on. A spec's target that origin does not have yet reads as the repository's default branch, which the branch was cut from. `<base-ref>` is where it is read: `origin/<base>` for the spec's target, and `<base>` itself for a container branch, which is local to the clone:
 
 ```
 git -C <repo> log --oneline <base-ref>..<branch>
@@ -36,7 +36,7 @@ git -C <repo> diff <base-ref>...<branch>
 git -C <repo> show <branch>:<path>
 ```
 
-For a review claimed from `LANDED`, `<base-ref>...<branch>` is empty: the node's code is what landed on its target, `<base>`. That is its own landing merge, and the landing merge of every node under it that landed on that target itself rather than on the node's branch; a node whose children all landed that way has no landing merge of its own. List the nodes under it, a plan's with `tm task list --plan <node-id> --json`, a spec's with `tm plan list --spec <node-id> --json` and `tm task list --spec <node-id> --json`. Then read every one of those merges against its first parent, the target as it stood before it landed:
+For a review claimed from `LANDED`, `<branch>` in each repository is that repository's `<base-ref>`, so `<base-ref>...<branch>` is empty: the node's code is what landed on its target, `<base>`. That is its own landing merge, and the landing merge of every node under it that landed on that target itself rather than on the node's branch; a node whose children all landed that way has no landing merge of its own. List the nodes under it, a plan's with `tm task list --plan <node-id> --json`, a spec's with `tm plan list --spec <node-id> --json` and `tm task list --spec <node-id> --json`. Then read every one of those merges against its first parent, the target as it stood before it landed:
 
 ```
 git -C <repo> log -p --diff-merges=first-parent -E --grep '^merge[(](<node-id>|<id under it>|...)[)]: land [^ ]+ on <base>$' <branch> --
@@ -64,6 +64,8 @@ A diff that edits a file missing from `declared_files`, a test that selects anot
 ```
 tm verify run <node-id> --ref <branch>
 ```
+
+For a review claimed from `LANDED`, run it with no `--ref`: each task is then read at its own target on origin, fetched first, which every repository it touched holds.
 
 The path checks read that ref directly, with no fetch, so a check against the unmerged branch is real evidence. Each `test_command` sees the same ref as `TM_VERIFY_REF`. Exit 1 names each failing row; `No verifications to run.` exits 2 and proves nothing — a task with no checks is itself a finding.
 

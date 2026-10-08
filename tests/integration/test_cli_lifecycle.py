@@ -82,15 +82,17 @@ def test_start_claims_implement_then_complete_and_a_review_that_approves(tmp_pat
         "repos",
         "branch",
         "base",
+        "bases",
         "worktree",
         "worktrees",
         "token",
     }
-    assert (step["action"], step["repos"], step["branch"], step["base"]) == (
+    assert (step["action"], step["repos"], step["branch"], step["base"], step["bases"]) == (
         "implement",
         ["core"],
         "tm/S1-P1-a",
         "main",
+        {"core": "main"},
     )
     assert step["worktree"] and Path(step["worktree"]).is_dir()
     assert tm(tmp_path, "task", "heartbeat", "S1-P1-a").exit_code == 0

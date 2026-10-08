@@ -489,6 +489,23 @@ test('a dialog opens on Cancel, keeps Tab inside, and Escape returns focus to it
   assert.equal(page.document.activeElement, opener);
 });
 
+for (const [refusal, onSubmit] of [
+  ['the server refuses the write', "async (panel, close, write) => { await write('POST', '/api/x', {}); }"],
+  ['the form throws before writing', "async () => { throw new Error('Name is required.'); }"],
+]) {
+  for (const [named, focused] of [['a field it names', 'dlg-name'], ['no field', 'dlg-submit']]) {
+    test(`when ${refusal}, focus goes back to ${named === 'no field' ? 'the submit button' : 'the field'} of a dialog naming ${named}`, async () => {
+      const page = loadPage({ fetch: async (u, o) => (o && o.method === 'POST' ? jsonResponse(409, { detail: 'Nothing changed' }) : undefined) });
+      const refusedFocus = focused === 'dlg-name' ? ", refusedFocus: '.dlg-name'" : '';
+      page.run(`formDialog({ title: 'Name it', bodyHtml: '<label>Name <input class="dlg-name"></label>'${refusedFocus}, onSubmit: ${onSubmit} })`);
+      page.$('#dialog-root .dlg-submit').click();
+      await page.settle();
+      assert.ok(page.$('#dialog-root [role="dialog"]'), 'the dialog stays open');
+      assert.ok(page.document.activeElement.classList.contains(focused), page.document.activeElement.outerHTML);
+    });
+  }
+}
+
 test('a confirm leaves once its write succeeds, before the re-read after it', async () => {
   const page = loadPage({ fetch: async (u, o) => (o && o.method === 'DELETE' ? jsonResponse(200, {}) : undefined) });
   page.run("confirmDialog({ title: 'Remove it?', confirmLabel: 'Remove', onConfirm: async (write) => { await write('DELETE', '/api/x'); await new Promise(() => {}); } })");

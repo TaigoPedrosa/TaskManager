@@ -143,7 +143,7 @@ def red_target_command(
     """The condition command tm stores for a parked landing: tm itself evaluating the rule."""
     parts = [sys.executable, "-m", "taskmanager.engine.gates", RED_TARGET, "--root", str(root)]
     parts += ["--repo", repo, "--sha", sha, "--template-hash", template_hash, "--target", target]
-    parts += ["--remote"] if remote else []
+    parts += ["--remote" if remote else "--local"]
     return " ".join(shlex.quote(part) for part in parts)
 
 
@@ -155,9 +155,13 @@ def main(argv: list[str] | None = None) -> int:
     red.add_argument("--repo", required=True)
     red.add_argument("--sha", required=True)
     red.add_argument("--template-hash", required=True)
-    red.add_argument("--target", required=True)
-    red.add_argument("--remote", action="store_true", help="read the target on origin")
+    red.add_argument("--target", default="main")
+    read = red.add_mutually_exclusive_group()
+    read.add_argument("--remote", action="store_true", help="read the target on origin")
+    read.add_argument("--local", action="store_true", help="read the target in the clone")
     args = parser.parse_args(argv)
+    # A condition stored by a tm that named neither flag read only `main`, and read it on origin.
+    remote = args.remote or (not args.local and args.target == "main")
     cache = CacheRepository(DatabaseManager(args.root / ".taskmanager"))
     cleared = red_target_cleared(
         cache,
@@ -166,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         args.sha,
         args.template_hash,
         args.target,
-        remote=args.remote,
+        remote=remote,
     )
     return 0 if cleared else 1
 

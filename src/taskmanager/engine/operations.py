@@ -65,7 +65,7 @@ from taskmanager.engine.snapshot import (
     writes_migration,
 )
 from taskmanager.engine.stepgraph import Snapshot
-from taskmanager.engine.validation import retargets, validate
+from taskmanager.engine.validation import moved_tops, retargets, validate
 from taskmanager.engine.verification import VerificationEngine, VerificationResult
 
 # The section a project bootstraps once and every `tm guide` overlay hangs off; `section set`
@@ -314,14 +314,17 @@ class Operations:
         return ConfigStore(self._project_root()).branches().default_branch(repo)
 
     def check_default_branches(self, before: ProjectConfig, after: ProjectConfig) -> None:
-        """Refuses moving a repository's default branch from `before` to `after` while a branch
-        cut there would land on the new one from another base: rule 4, read per repository."""
+        """Refuses moving a repository's default branch from `before` to `after` where the same
+        move through a spec's `land_on` is refused: a branch cut there that would land on the new
+        one from another base (rule 4, read per repository), a check naming `origin/main` moved
+        off it (rule 5), or a wait drawn across targets (rule 13)."""
         root, tree = self._project_root(), self.snapshots.build()
         refusals = []
         for repo in moved_defaults(before, after):
             old = with_tops(tree, before, repo)
             facts = GitBranchFacts(root, self.node_repo, old, only=repo)
             refusals += retargets(old, with_tops(tree, after, repo), facts)
+        refusals += moved_tops(with_tops(tree, before), with_tops(tree, after))
         if refusals:
             raise OperationError("Nothing changed: " + "; ".join(r.message for r in refusals), 409)
 
