@@ -67,7 +67,8 @@ const toolbarActions = document.getElementById('toolbar-actions');
 const loadIndicator = document.getElementById('load-indicator');
 const dialogRoot = document.getElementById('dialog-root');
 const toastRoot = document.getElementById('toast-root');
-toastRoot.className = 'fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2 pointer-events-none';
+// Below sm a toast wider than the viewport allows keeps 16px off both edges, not only the right.
+toastRoot.className = 'fixed bottom-4 right-4 max-sm:left-4 z-50 flex flex-col items-end gap-2 pointer-events-none';
 toastRoot.setAttribute('aria-live', 'polite');
 
 // Sidebar width: Graph view only, drag-resizable, remembered per browser.

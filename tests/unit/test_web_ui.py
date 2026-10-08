@@ -815,9 +815,9 @@ def test_lands_text_reads_the_base_chain(tmp_path: Path) -> None:
     script.write_text(
         f"function landsText(node) {{{fn}\n}}\n"
         "const assert = require('node:assert');\n"
-        "assert.strictEqual(landsText({base_chain: ['MAIN']}), 'main');\n"
-        "assert.strictEqual(landsText({base_chain: ['P', 'MAIN']}), 'tm/P → main');\n"
-        "assert.strictEqual(landsText({base_chain: ['T', 'P', 'MAIN']}), 'tm/T → tm/P → main');\n"
+        "assert.strictEqual(landsText({base_chain: ['main']}), 'main');\n"
+        "assert.strictEqual(landsText({base_chain: ['P', 'release/0.4']}), 'tm/P → release/0.4');\n"
+        "assert.strictEqual(landsText({base_chain: ['T', 'P', 'main']}), 'tm/T → tm/P → main');\n"
         "assert.strictEqual(landsText({base_chain: []}), '');\n"
         "console.log('OK');\n",
         encoding="utf-8",

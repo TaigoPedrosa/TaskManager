@@ -390,12 +390,22 @@ def spec_add(
     fix: Annotated[
         bool, typer.Option("--fix/--no-fix", help="A rejection is fixed on this node")
     ] = False,
+    land_on: Annotated[
+        str | None,
+        typer.Option(
+            "--land-on",
+            metavar="<branch>",
+            help="The branch the spec lands on (default: repos.<repo>.default_branch)",
+        ),
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
     ops = _get_container(root).get(Operations)
     with _refusing():
-        spec_id = ops.add_spec(title, slug, priority, order, review=review, fix=fix)
+        spec_id = ops.add_spec(
+            title, slug, priority, order, review=review, fix=fix, land_on=land_on
+        )
     print(f"[green]Added spec {spec_id}[/green]")
 
 
@@ -458,7 +468,7 @@ def spec_get(
 _MERGE_OPTION = typer.Option(
     "--merge",
     metavar="|".join(Merge),
-    help="parent lands on the parent's branch; spec lands where its spec lands",
+    help="Land on the parent's branch, or where the spec lands",
 )
 
 
@@ -831,6 +841,7 @@ def task_get(
                 "requires": task.requires,
                 "land_order": task.land_order,
                 "landing_chain": [] if is_decision else landing_chain(snapshot, task_id),
+                "lands_on": None if is_decision else snapshot.nodes[task_id].top,
                 "depends_on": [
                     {"id": d, "status": n.status.value} if n else {"id": d} for d, n in deps.items()
                 ],

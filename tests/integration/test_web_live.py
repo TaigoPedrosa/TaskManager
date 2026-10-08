@@ -517,7 +517,7 @@ async def test_an_ancestors_merge_change_refreshes_a_watched_nodes_stale_chains(
     await hub.refresh()
     session = hub.open_session(FakeSocket())
     snapshot = await subscribe(hub, session, 1, watch=["T"], reset=True)
-    assert snapshot["bodies"]["T"]["node"]["base_chain"] == ["P", "MAIN"]
+    assert snapshot["bodies"]["T"]["node"]["base_chain"] == ["P", "main"]
 
     p = estate.node_repo.get_node("P")
     assert p is not None
@@ -528,7 +528,7 @@ async def test_an_ancestors_merge_change_refreshes_a_watched_nodes_stale_chains(
     node_item = next(
         i for i in msg["items"] if i["op"] == "body" and i["id"] == "T" and i["part"] == "node"
     )
-    assert node_item["value"]["base_chain"] == ["P", "S", "MAIN"]
+    assert node_item["value"]["base_chain"] == ["P", "S", "main"]
     assert node_item["value"]["landing_chain"] == ["T", "P", "S"]
 
 

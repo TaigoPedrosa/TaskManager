@@ -95,6 +95,11 @@ class OperationError(ValueError):
 MERGE_REFUSAL = "merge is parent or spec; main is now spec"
 
 
+def _land_on(land_on: str | None) -> dict[str, Any]:
+    # land_on lives in frontmatter, where the write's own check reads it and refuses it off a spec.
+    return {} if land_on is None else {"land_on": land_on}
+
+
 def parse_merge(value: str) -> Merge:
     """Every merge value a user writes, through import, the CLI or the web, is read here."""
     try:
@@ -399,6 +404,7 @@ class Operations:
         order: int = 0,
         review: bool = False,
         fix: bool = False,
+        land_on: str | None = None,
     ) -> str:
         self._validate_priority(priority)
         if slug:
@@ -422,6 +428,7 @@ class Operations:
             review=review,
             fix=fix,
             merge=Merge.SPEC,
+            frontmatter=_land_on(land_on),
         )
         self._refuse_fix_without_review(node)
         with self._checked({spec_id}):
@@ -435,6 +442,7 @@ class Operations:
                 "ordinal": order,
                 "review": review,
                 "fix": fix,
+                **_land_on(land_on),
             },
         )
         return spec_id
@@ -449,6 +457,7 @@ class Operations:
         review: bool | None = None,
         fix: bool | None = None,
         merge: str | None = None,
+        land_on: str | None = None,
     ) -> str:
         self._validate_priority(priority)
         parent = self.node_repo.get_node(spec)
@@ -473,6 +482,7 @@ class Operations:
                 priority=priority,
                 ordinal=order,
                 status=Status.READY,
+                frontmatter=_land_on(land_on),
             ),
             parent,
             review=review,
