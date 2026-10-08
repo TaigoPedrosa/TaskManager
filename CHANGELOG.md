@@ -50,6 +50,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 
+- A plan or spec reviewed after its landing keeps its dependents claimable, and its migration
+  writers out of the chain, from its landing until a write moves it back before landing.
+  `state.db` moves to schema 5: run `tm db migrate`. `tm export` writes format 4, which carries
+  that fact through `tm restore`; an older tm does not restore it.
 - `tm web --host` takes an IPv6 address: it found no free port for one, and printed its URL
   without brackets.
 - A gate command may hold braces of its own (`${HOME}`, `awk '{print $1}'`, `find -exec {} +`):

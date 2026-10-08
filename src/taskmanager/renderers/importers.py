@@ -34,7 +34,7 @@ from taskmanager.engine.operations import (
     validated_write,
 )
 from taskmanager.engine.snapshot import roll_up_ancestors
-from taskmanager.engine.verification import VerificationEngine
+from taskmanager.engine.verification import VerificationEngine, codegraph_flags
 
 REFUSED = "import refused, nothing written: "
 
@@ -86,6 +86,7 @@ class BulkImporter:
             "review_cycles",
             "merge_attempts",
             "step_failures",
+            "on_target",
         }
     )
     DOCUMENT_KEYS = frozenset({"spec", "plans", "tasks", "decisions"})
@@ -223,6 +224,16 @@ class BulkImporter:
         if owed_ids:
             raise ValueError(f"{REFUSED}{'; '.join(owed_refusal(i) for i in owed_ids)}")
 
+        # A container the document creates is stated whole, its children with it; only a child
+        # placed under one already stored arrives under it.
+        arrived = {
+            r.target_id
+            for r in relations
+            if r.relation_type == RelationType.CONTAINS
+            and self.node_repo.get_node(r.source_id) is not None
+            and r.source_id not in self.node_repo.get_parent_ids(r.target_id)
+        }
+
         with validated_write(self.node_repo, self.snapshots, known, prefix=REFUSED):
             for node in nodes:
                 self.node_repo.save_node(node)
@@ -241,7 +252,7 @@ class BulkImporter:
                 for cond in conds:
                     self.node_repo.add_condition(cond)
             for node in nodes:
-                roll_up_ancestors(self.ops, node.id)
+                roll_up_ancestors(self.ops, node.id, arrived=node.id in arrived)
 
     @staticmethod
     def _parse_dep(dep: Any) -> str:
@@ -257,13 +268,20 @@ class BulkImporter:
     @staticmethod
     def _parse_verification(node_id: str, raw: dict[str, Any]) -> NodeVerification:
         v_type = cast("str", raw.get("verification_type") or raw.get("type"))
-        return NodeVerification(
+        ver = NodeVerification(
             node_id=node_id,
             verification_type=VerificationType(v_type),
             target_path=raw["target_path"],
             expected_pattern=raw.get("expected_pattern"),
             codegraph_query_json=raw.get("codegraph_query_json"),
         )
+        try:
+            codegraph_flags(ver.codegraph_query_json)
+        except ValueError as e:
+            raise ValueError(
+                f"{REFUSED}{node_id}: codegraph_query {ver.target_path!r} {e}"
+            ) from None
+        return ver
 
     @staticmethod
     def _parse_condition(node_id: str, raw: dict[str, Any]) -> Condition:
@@ -363,6 +381,11 @@ class BulkImporter:
                 review_cycles=int(pick("review_cycles", 0)),
                 merge_attempts=int(pick("merge_attempts", 0)),
                 step_failures=int(pick("step_failures", 0)),
+                # A stated status says where the node is, as a reset does: on its target only
+                # at LANDED or COMPLETED, unless the document states `on_target` beside it.
+                on_target=data.get("on_target", False)
+                if "status" in data
+                else pick("on_target", False),
             )
         except ValidationError as exc:
             reasons = "; ".join(str(e["msg"]).removeprefix("Value error, ") for e in exc.errors())

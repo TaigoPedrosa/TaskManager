@@ -15,9 +15,18 @@ const REPO_ROOT = path.join(here, '../..');
 // of the sources passes on a page whose scripts throw before ever reaching the checked call.
 function exportedPage() {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-static-export-'));
+  // tm runs with uv and git alone on its PATH, so a codegraph installed on this machine is
+  // never run by `tm init`.
+  const bin = path.join(project, 'bin');
+  fs.mkdirSync(bin);
+  for (const tool of ['uv', 'git']) {
+    const found = process.env.PATH.split(path.delimiter).map((dir) => path.join(dir, tool)).find((p) => fs.existsSync(p));
+    fs.symlinkSync(found, path.join(bin, tool));
+  }
   try {
     const tm = (...args) => execFileSync('uv', ['run', '--project', REPO_ROOT, '--quiet', 'tm', ...args], {
       stdio: ['ignore', 'ignore', 'inherit'],
+      env: { ...process.env, PATH: bin },
     });
     execFileSync('git', ['-C', project, 'init', '-q']);
     tm('init', '-C', project);

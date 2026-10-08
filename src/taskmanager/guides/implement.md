@@ -20,9 +20,14 @@ bases: {backend: main}
 worktree: <dir>/backend-<task-id>
 worktrees: {backend: <dir>/backend-<task-id>}
 token: <token>
+codegraph:
+- ready <dir>/backend-<task-id>
+- <symbol> reaches <file> held by <other-id>
 ```
 
 `model` is the family the step runs on; `<name>` is the agent the lease is held under and `<token>` names this one claim, and every verb that closes or releases the step passes them back with `--agent <name> --token <token>`. The token matters because an agent name can repeat: a later claim of the same node under the same name gets a new token, and tm refuses the old one. When the workflow claimed for you, its prompt carries both flags. The claim locks every path the task declares until the step closes. The branch is cut from `base` in the task's own `target_repo`, with no upstream: `base` is the branch the task's spec lands on, read as `origin/<base>`, or for a task with `merge: parent` the container branch it lands on; a spec's target that origin does not have yet reads as the repository's default branch, which the branch is cut from, until the first landing on it creates it. `bases` names the same branch by repository. A task with no `target_repo` is refused. Any other `action` is another role's step: read that role's guide instead.
+
+`codegraph` is there only when the repository's checkout has a codegraph index: `ready` says your worktree holds its own copy, and `<symbol> reaches <file> held by <other-id>` says a symbol in one of your declared files has direct dependents in a file the live lease of `<other-id>` holds, so changing what that symbol takes or returns changes code that node is working on. A failure prints `unavailable (<reason>)` instead, and no line ever blocks the claim. When the workflow claimed for you, its prompt carries the same lines, each as `codegraph: <line>`, under its `Brief:` line.
 
 `action: blocked` exits 3 and writes nothing. Its `reason` names what the task waits on — an edge, a decision, a condition, a sync, or a lease holding one of its files. Report it and start nothing.
 
@@ -67,9 +72,9 @@ A table of the task's checks against your branch, exit 1 if any failed. What eac
 - `symbol_signature` — a `def`, `async def` or `class` of that name parses in that file.
 - `ast_export` — that name is in the file's `__all__`, or is a public top-level `def`/`class`.
 - `test_command` — the command runs in a shell from the project root; exit 0 passes.
-- `codegraph_query` — passes with `codegraph CLI not installed; skipped` where that tool is absent.
+- `codegraph_query` — `codegraph query --json` for the search in `target_path`, run over the ref's tree, matches the regex in `expected_pattern`.
 
-The path checks read the ref, never your worktree, so without `--ref` they read `origin/<the branch the task's spec lands on>` and stay red until the task's code reaches it. A `test_command` reads the same ref from `TM_VERIFY_REF`, which every run exports: the `--ref` given, that landing branch without one, and the landing target when tm lands the task. So write `"${TM_VERIFY_REF:-origin/main}"` into the command rather than a branch name. `No verifications to run.` exits 2: a task with no checks has not passed anything, and that is worth a line in your report.
+The path checks and codegraph queries read the ref, never your worktree, so without `--ref` they read `origin/<the branch the task's spec lands on>` and stay red until the task's code reaches it. A `test_command` reads the same ref from `TM_VERIFY_REF`, which every run exports: the `--ref` given, that landing branch without one, and the landing target when tm lands the task. So write `"${TM_VERIFY_REF:-origin/main}"` into the command rather than a branch name. `No verifications to run.` exits 2: a task with no checks has not passed anything, and that is worth a line in your report.
 
 - A generated file (a built stylesheet, a lockfile, a schema dump) is regenerated, never edited or hand-merged: a branch that changes any of its inputs rebuilds it before closing, and a conflict on it is resolved by rebuilding it on the merged tree.
 - A test selects only markup that its own task's declared files render. It reaches another file's control by what that control shows the user (role, accessible name), never by its classes or inner elements.

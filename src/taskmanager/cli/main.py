@@ -1,7 +1,9 @@
+import dataclasses
 import ipaddress
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -54,6 +56,7 @@ from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.db.schema import STATE_SCHEMA_VERSION
 from taskmanager.di.container import TaskManagerProvider
+from taskmanager.engine import doctor
 from taskmanager.engine.chains import landing_chain
 from taskmanager.engine.claims import Blocker, Claims, DecisionSpec
 from taskmanager.engine.config import ConfigError, ConfigStore
@@ -144,13 +147,18 @@ def _emit(data: Any, as_yaml: bool = False) -> None:
 
 # A restore reads only exports carrying one of these markers; an export without one came from a
 # pre-lifecycle tm, whose statuses and gated edges this version does not store. Versions 1 and 2
-# store `merge: main`, which restore reads as `spec`.
-EXPORT_FORMAT: dict[str, Any] = {"format": "tm-lifecycle", "version": 3}
+# store `merge: main`, which restore reads as `spec`. Versions 1 to 3 carry no `on_target`, so a
+# restored node is on its target only at the LANDED or COMPLETED it states.
+EXPORT_FORMAT: dict[str, Any] = {"format": "tm-lifecycle", "version": 4}
 EXPORT_FORMATS_MERGE_MAIN = (
     {"format": "tm-lifecycle", "version": 1},
     {"format": "tm-lifecycle", "version": 2},
 )
-READABLE_EXPORT_FORMATS = (*EXPORT_FORMATS_MERGE_MAIN, EXPORT_FORMAT)
+READABLE_EXPORT_FORMATS = (
+    *EXPORT_FORMATS_MERGE_MAIN,
+    {"format": "tm-lifecycle", "version": 3},
+    EXPORT_FORMAT,
+)
 # Config keys whose value holds only on the machine that set it: an export leaves them out, and
 # a restore keeps the restoring machine's own.
 MACHINE_LOCAL_KEYS = frozenset({"worktree_dir"})
@@ -271,15 +279,20 @@ def _get_root(path: Path | None, *, must_exist: bool = True) -> Path:
         cwd = Path.cwd().resolve()
         found = _find_root(cwd)
         if found is None:
-            res = subprocess.run(
-                ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                cwd=cwd,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if res.returncode == 0 and res.stdout.strip():
-                found = _find_root(Path(res.stdout.strip()).resolve().parent)
+            try:
+                res = subprocess.run(
+                    ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                    cwd=cwd,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                common = res.stdout.strip() if res.returncode == 0 else ""
+            except OSError:
+                # No git on PATH: `tm doctor` still runs to say so.
+                common = ""
+            if common:
+                found = _find_root(Path(common).resolve().parent)
         root = found if found is not None else cwd
     if must_exist and not (root / ".taskmanager").is_dir():
         raise typer.BadParameter(
@@ -382,6 +395,27 @@ def init(
     db.init_all()
     _record_ledger(container, command=LedgerCommand.INIT, target_id=str(root))
     print(f"[green]Initialized .taskmanager in {root}[/green]")
+    sys.stdout.writelines(f"{fact.line()}\n" for fact in _doctor_facts(root))
+
+
+def _doctor_facts(root: Path) -> list[doctor.Fact]:
+    with _user_errors():
+        return doctor.facts(root)
+
+
+@app.command("doctor")
+def doctor_cmd(
+    yaml_output: Annotated[bool, typer.Option("--yaml", help="Output as YAML")] = False,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """What tm needs and what helps it, each missing piece with the command that fixes it;
+    exit 1 only when a required piece is missing."""
+    found = _doctor_facts(_get_root(path, must_exist=False))
+    if yaml_output:
+        _emit([dataclasses.asdict(f) for f in found], as_yaml=True)
+    else:
+        sys.stdout.writelines(f"{fact.line()}\n" for fact in found)
+    raise typer.Exit(code=doctor.exit_code(found))
 
 
 @spec_app.command("add")
@@ -937,6 +971,8 @@ def task_start(
             "worktree": result.worktree,
             "worktrees": result.worktrees,
             "token": result.token,
+            # On stdout, never stderr: a dispatcher reads `--json 2>&1` as one document.
+            **({"codegraph": result.codegraph} if result.codegraph else {}),
         },
         as_yaml=yaml_output or not json_output,
     )
@@ -1488,13 +1524,19 @@ def verify_add(
     pattern: Annotated[
         str | None, typer.Option("--pattern", help="Expected pattern or test command")
     ] = None,
+    query_json: Annotated[
+        str | None,
+        typer.Option(
+            "--query-json", help='A codegraph_query\'s flags as a JSON object: {"kind": "function"}'
+        ),
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
     container = _get_container(root)
     ops = container.get(Operations)
     with _refusing():
-        ops.add_verification(task_id, type, target, pattern)
+        ops.add_verification(task_id, type, target, pattern, query_json)
     print(f"[green]Added {type.value} verification to task {task_id}[/green]")
 
 
@@ -1519,6 +1561,7 @@ def verify_list(
             "type": v.verification_type.value,
             "target_path": v.target_path,
             "expected_pattern": v.expected_pattern,
+            "codegraph_query_json": v.codegraph_query_json,
         }
         for v in node_repo.get_verifications(task_id)
     ]
@@ -2009,11 +2052,25 @@ def _guide_topics() -> dict[str, str]:
 
     topics: dict[str, str] = {}
     for entry in sorted(files("taskmanager").joinpath("guides").iterdir(), key=lambda e: e.name):
-        if entry.name.endswith(".md"):
+        if entry.name.endswith(".md") and entry.name != "codegraph.md":
             lines = [ln.strip() for ln in entry.read_text(encoding="utf-8").splitlines()]
             body = next((ln for ln in lines[1:] if ln), "")
             topics[entry.name[: -len(".md")]] = body.split(". ")[0].rstrip(".")
     return topics
+
+
+def _codegraph_blocks() -> dict[str, str]:
+    """Role -> the codegraph block `tm guide <role>` appends, one `## <role>` section each."""
+    from importlib.resources import files
+
+    text = files("taskmanager").joinpath("guides/codegraph.md").read_text(encoding="utf-8")
+    parts = re.split(r"^## (\w+)\n", text, flags=re.MULTILINE)[1:]
+    return {role: body.strip() for role, body in zip(parts[::2], parts[1::2], strict=True)}
+
+
+def _codegraph_ready(root: Path) -> bool:
+    ok = {fact.name for fact in _doctor_facts(root) if fact.ok}
+    return "codegraph" in ok and any(name.startswith("codegraph index") for name in ok)
 
 
 @app.command("guide")
@@ -2031,7 +2088,8 @@ def guide(
 
     The addendum is the section named after the topic on the node `guide`
     (`tm section set guide:<topic> --file ...`), so a project's conventions live and version with
-    its tasks.
+    its tasks. With the codegraph CLI on PATH and the repository indexed, implement, fix, review
+    and plan also carry how to use codegraph, between the two.
     """
     from importlib.resources import files
 
@@ -2061,6 +2119,9 @@ def guide(
         if topic == "dispatch":
             text = _dispatch_targets(text, _get_root(path, must_exist=False))
         parts.append(text)
+        block = _codegraph_blocks().get(topic)
+        if block is not None and _codegraph_ready(_get_root(path, must_exist=False)):
+            parts.append(block)
     if overlay is not None and not builtin_only:
         parts.append(overlay.content)
     sys.stdout.write("\n\n---\n\n".join(p.rstrip("\n") for p in parts) + "\n")
@@ -2089,6 +2150,7 @@ def _export_node(node_repo: NodeRepository, node: Node, supersedes: list[str]) -
         "review_cycles": node.review_cycles,
         "merge_attempts": node.merge_attempts,
         "step_failures": node.step_failures,
+        "on_target": node.on_target,
         "depends_on": sorted(node_repo.get_dependencies(node.id)),
         "supersedes": supersedes,
         "conditions": [
@@ -2104,6 +2166,7 @@ def _export_node(node_repo: NodeRepository, node: Node, supersedes: list[str]) -
                 "type": v.verification_type.value,
                 "target_path": v.target_path,
                 "expected_pattern": v.expected_pattern,
+                "codegraph_query_json": v.codegraph_query_json,
             }
             for v in node_repo.get_verifications(node.id)
         ],

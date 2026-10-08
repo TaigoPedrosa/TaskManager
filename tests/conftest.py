@@ -7,6 +7,8 @@ line with escape codes and turn every plain-text assertion on rich output red.
 """
 
 import os
+import shutil
+from pathlib import Path
 
 import pytest
 
@@ -31,3 +33,24 @@ def _no_estate_outside_the_test(
     for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.chdir(empty)
+
+
+@pytest.fixture(autouse=True)
+def _no_codegraph_but_the_tests_own(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """tm runs codegraph only once `shutil.which` finds it, so a codegraph installed on the
+    machine would make a test slower, and its output, depend on that machine. Each test sees
+    `codegraph` on PATH only where the test put one itself, under its temp tree."""
+    own = tmp_path_factory.getbasetemp().resolve()
+    which = shutil.which
+
+    def tests_own_codegraph(
+        cmd: str, mode: int = os.F_OK | os.X_OK, path: str | None = None
+    ) -> str | None:
+        found = which(cmd, mode, path)
+        if found is None or os.path.basename(cmd) != "codegraph":
+            return found
+        return found if Path(found).resolve().is_relative_to(own) else None
+
+    monkeypatch.setattr(shutil, "which", tests_own_codegraph)

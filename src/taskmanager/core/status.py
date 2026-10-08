@@ -35,6 +35,13 @@ STABLE: frozenset[Status] = frozenset(
 )
 # A set-aside child can never complete, so a container's rollup counts it on neither side.
 SET_ASIDE = EXITS
+# Code on its landing target: completed, or landed with its one review still owed.
+ON_TARGET: frozenset[Status] = frozenset({Status.LANDED, Status.COMPLETED})
+# Held only before a node's code lands. A container lands before its review, so the review and
+# fix statuses can come either side of its landing.
+BEFORE_LANDING: frozenset[Status] = frozenset(
+    {Status.READY, Status.IMPLEMENTING, Status.IMPLEMENTED}
+)
 
 
 class DecisionStatus(StrEnum):

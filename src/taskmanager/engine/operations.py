@@ -68,7 +68,11 @@ from taskmanager.engine.snapshot import (
 )
 from taskmanager.engine.stepgraph import Snapshot
 from taskmanager.engine.validation import moved_tops, retargets, validate
-from taskmanager.engine.verification import VerificationEngine, VerificationResult
+from taskmanager.engine.verification import (
+    VerificationEngine,
+    VerificationResult,
+    codegraph_flags,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -794,7 +798,7 @@ class Operations:
                     source_id=plan_id, target_id=task_id, relation_type=RelationType.CONTAINS
                 )
             )
-            roll_up_ancestors(self, task_id)
+            roll_up_ancestors(self, task_id, arrived=old_plan != plan_id)
             if old_plan is not None:
                 roll_up_ancestors(self, old_plan, include_self=True)
         self._ledger(
@@ -862,14 +866,20 @@ class Operations:
         verification_type: VerificationType,
         target: str,
         pattern: str | None = None,
+        query_json: str | None = None,
     ) -> NodeVerification:
         if self.node_repo.get_node(task_id) is None:
             raise OperationError(f"task '{task_id}' not found", 404)
+        try:
+            codegraph_flags(query_json)
+        except ValueError as e:
+            raise OperationError(f"{task_id}: codegraph_query {target!r} {e}", 400) from None
         ver = NodeVerification(
             node_id=task_id,
             verification_type=verification_type,
             target_path=target,
             expected_pattern=pattern,
+            codegraph_query_json=query_json,
         )
         with self._checked({task_id}):
             self.node_repo.add_verification(ver)

@@ -6,9 +6,9 @@ from dataclasses import dataclass, field
 from graphlib import CycleError, TopologicalSorter
 
 from taskmanager.core.enums import CONTAINERS, NodeKind
-from taskmanager.core.status import EXITS, SET_ASIDE, DecisionStatus, Merge, Status
+from taskmanager.core.status import EXITS, ON_TARGET, SET_ASIDE, DecisionStatus, Merge, Status
 from taskmanager.db.graph_reader import GraphData
-from taskmanager.engine.chains import ON_TARGET, base_chain, landing_chain, meet, meeting, satisfied
+from taskmanager.engine.chains import base_chain, landing_chain, meet, meeting, satisfied
 from taskmanager.engine.config import DEFAULT_BRANCH
 
 Graph = dict[str, set[str]]
@@ -36,6 +36,9 @@ class SnapNode:
     # The branch its chain lands on at the top: its spec's `land_on`, else its repository's
     # `default_branch`.
     top: str = DEFAULT_BRANCH
+    # Its code reached its landing target and nothing has moved it back before landing since. A
+    # reviewed container lands before its review, and its status after that cannot tell.
+    on_target: bool = False
 
 
 @dataclass
@@ -43,7 +46,7 @@ class Snapshot:
     nodes: dict[str, SnapNode]
     edges: list[tuple[str, str]]
     # The bulk read `SnapshotBuilder.build()` made this snapshot from: None only for a snapshot a
-    # test builds by hand for the validation rules, which never read it.
+    # test builds by hand for the validation rules, where a rule reading it refuses nothing.
     data: GraphData | None = None
     _children: dict[str, list[str]] = field(
         init=False, repr=False, compare=False, default_factory=dict
@@ -74,6 +77,10 @@ class Snapshot:
 
     def top(self, node_id: str) -> str:
         return self.nodes[node_id].top
+
+    def on_target(self, node_id: str) -> bool:
+        n = self.nodes[node_id]
+        return n.status in ON_TARGET or n.on_target
 
     def children(self, node_id: str) -> list[str]:
         return list(self._children.get(node_id, ()))
@@ -189,7 +196,7 @@ def migration_writers(s: Snapshot, repo: str) -> list[SnapNode]:
         and n.kind not in CONTAINERS
         # Code parked on a branch that was set aside never reaches its target, so it holds nothing.
         and not any(s.status(x) in EXITS for x in landing_chain(s, n.id))
-        and s.status(_reaches_target(s, n.id)) not in ON_TARGET
+        and not s.on_target(_reaches_target(s, n.id))
     ]
 
 

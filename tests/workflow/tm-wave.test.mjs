@@ -224,6 +224,33 @@ test('an implement brief names the worktree, the branch, its base and the verb t
   assert.equal(work[0].opts.agentType, 'python-dev')
 })
 
+const STEPS = {
+  implement: { before: node('READY', 'implement'), during: 'IMPLEMENTING', after: 'IMPLEMENTED' },
+  fix: { before: node('REVIEWED', 'fix', { outcome: 'reject' }), during: 'FIXING', after: 'FIXED' },
+}
+for (const [action, { before, during, after }] of Object.entries(STEPS)) {
+  test(`the ${action} brief carries the claim's codegraph lines verbatim under its Brief line, and a claim without them changes nothing`, async () => {
+    const lines = ['ready /wt/core-T1', 'Store.save reaches api/routes.py held by T2']
+    const brief = async extra => {
+      const tm = makeTm({
+        chosen: [{ ...T1, action }],
+        nodes: { T1: before },
+        start: { T1: [() => (tm.set('T1', { status: during, next_action: null }), claim(action, { worktree: '/wt/core-T1', ...extra }))] },
+      })
+      const agents = () => (tm.set('T1', { status: after, next_action: null }), 'done')
+      const { work, errors } = await runWave({ args: ARGS, tm, agents })
+      assert.deepEqual(errors, [])
+      return work[0].prompt.split('\n')
+    }
+    const plain = await brief({})
+    const carried = await brief({ codegraph: lines })
+    const at = plain.findIndex(l => l.startsWith('Brief: tm render T1'))
+    assert.ok(at > 0)
+    assert.ok(!plain.some(l => l.includes('codegraph')))
+    assert.deepEqual(carried, [...plain.slice(0, at + 1), ...lines.map(l => `codegraph: ${l}`), ...plain.slice(at + 1)])
+  })
+}
+
 test('a step the agent leaves open is released as a counted failure', async () => {
   const tm = makeTm({
     chosen: [T1],
