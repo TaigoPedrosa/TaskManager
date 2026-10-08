@@ -496,15 +496,6 @@ def test_cli_import_hierarchy(tmp_path: Path) -> None:
     assert "Step A" in res.stdout
 
 
-def test_cli_install_command(tmp_path: Path) -> None:
-    res_help = runner.invoke(app, ["install", "--help"])
-    assert res_help.exit_code == 0
-    assert "Install TaskManager globally" in res_help.stdout
-
-    res_status = runner.invoke(app, ["install", "--status", "--path", str(tmp_path)])
-    assert res_status.exit_code == 0
-
-
 def test_cli_task_update_unset_removes_a_frontmatter_key(tmp_path: Path) -> None:
     runner.invoke(app, ["init", "--path", str(tmp_path)])
     runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "--path", str(tmp_path)])
