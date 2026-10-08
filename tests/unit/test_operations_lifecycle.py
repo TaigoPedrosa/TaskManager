@@ -634,7 +634,7 @@ UNREVIEWED_ON_MAIN = (
         ({"review": True}, (True, False, Merge.PARENT)),
         ({"review": True, "fix": True, "merge": Merge.SPEC}, (True, True, Merge.SPEC)),
     ],
-    ids=["plain", "sensitive-key", "writes-a-migration", "explicit-review", "explicit-main"],
+    ids=["plain", "sensitive-key", "writes-a-migration", "explicit-review", "explicit-spec"],
 )
 def test_add_task_under_a_reviewed_plan_lands_on_its_branch_and_reviews_only_if_sensitive(
     env: Env, given: dict[str, object], expected: tuple[bool, bool, Merge]

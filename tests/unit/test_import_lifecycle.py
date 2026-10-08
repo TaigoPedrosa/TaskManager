@@ -380,7 +380,7 @@ def test_an_imported_fix_is_reviewed_before_it_lands_only_when_the_node_is_sensi
         "declared-migration",
         "verified-migration",
         "explicit-fix-wins",
-        "explicit-main-with-review",
+        "explicit-spec-with-review",
     ],
 )
 def test_a_child_imported_under_a_reviewed_plan_lands_on_its_branch_and_reviews_only_if_sensitive(
