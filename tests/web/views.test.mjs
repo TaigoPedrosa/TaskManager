@@ -198,8 +198,8 @@ test('clicking the current view segment scrolls its pane to the top, collapses i
 
 function twoDecisions() {
   const items = [
-    { id: 'decision-D2', title: 'Pick another', status: 'OPEN', priority: 50, created_at: '2026-10-02T10:00:00+00:00', waiting_count: 0 },
-    { id: 'decision-D1', title: 'Pick one', status: 'OPEN', priority: 50, created_at: '2026-10-01T10:00:00+00:00', waiting_count: 0 },
+    { id: 'decision-D2', title: 'Pick another', status: 'OPEN', priority: 50, created_at: '2026-10-02T10:00:00+00:00' },
+    { id: 'decision-D1', title: 'Pick one', status: 'OPEN', priority: 50, created_at: '2026-10-01T10:00:00+00:00' },
   ];
   return async (u) => (u.startsWith('/api/decisions?')
     ? jsonResponse(200, { items, next: null, counts: { open: 2, answered: 0, withdrawn: 0 } })

@@ -53,15 +53,26 @@ function frameDecisions() {
   ];
 }
 
+// The tasks + Add task can offer, in id order as the server sends them.
+const TASKS = [
+  { id: 'WEBUX-DECIDE-API', title: 'The decisions API says was blocking', display: 'AWAITING_DECISION' },
+  { id: 'WEBUX-DECIDE-FLOW', title: 'Answering stays on Open and moves to the next decision', display: 'AWAITING_DECISION' },
+  { id: 'WEBUX-DECIDE-LINKS', title: 'Every node waiting on a decision links to it', display: 'AWAITING_DECISION' },
+  { id: 'WEBUX-DECIDE-READ', title: 'Decision rows read at a glance', display: 'AWAITING_DECISION' },
+  { id: 'WEBUX-NODES-KIT', title: 'Shared renderers carry the design rules', display: 'DEFERRED' },
+  { id: 'WEBUX-SHIP', title: 'Ship 0.3.5', display: 'BLOCKED_BY_TASK' },
+];
+
 // An in-memory /api for the pane. Writes apply to the decisions and are recorded; `hold()`
-// keeps every write in flight until its release runs, and `failNext` answers the next write
-// with an error instead.
+// keeps every write in flight until its release runs, `holdCandidates()` the same for the Add
+// task picker's read, and `failNext` answers the next write with an error instead.
 function fakeServer(decisions) {
   const byId = new Map(decisions.map((d) => [d.id, { custom_effect: 'none', ...d }]));
   const writes = [];
   const replies = [];
   const nodeFailures = new Map();
   let gate = null;
+  let candidatesGate = null;
   const counts = () => {
     const c = { open: 0, answered: 0, withdrawn: 0 };
     byId.forEach((d) => { c[d.status.toLowerCase()] += 1; });
@@ -88,12 +99,19 @@ function fakeServer(decisions) {
       const d = byId.get(node[1]);
       return d ? jsonResponse(200, body(d)) : jsonResponse(404, { detail: 'Node not found' });
     }
+    const candidates = url.match(/^\/api\/decisions\/([^/]+)\/candidates$/);
+    if (candidates) {
+      if (candidatesGate) await candidatesGate;
+      if (nodeFailures.get('candidates')) return jsonResponse(nodeFailures.get('candidates'), { detail: 'Bad Gateway' });
+      const waiting = new Set(byId.get(candidates[1]).dependents.map((n) => n.id));
+      return jsonResponse(200, { items: TASKS.filter((t) => !waiting.has(t.id)) });
+    }
     if (url.startsWith('/api/decisions?')) {
       if (nodeFailures.get('list')) return jsonResponse(nodeFailures.get('list'), { detail: 'Bad Gateway' });
       const status = new URLSearchParams(url.split('?')[1]).get('status');
       const items = [...byId.values()].filter((d) => d.status === status)
         .sort((a, b) => b.created_at.localeCompare(a.created_at))
-        .map((d) => ({ id: d.id, title: d.title, status: d.status, priority: 50, created_at: d.created_at, waiting_count: d.dependents.length }));
+        .map((d) => ({ id: d.id, title: d.title, status: d.status, priority: 50, created_at: d.created_at }));
       return jsonResponse(200, { items, next: null, counts: counts() });
     }
     const write = url.match(/^\/api\/decisions\/([^/]+)\/(answer|withdraw|reopen|blocks)$/);
@@ -121,6 +139,11 @@ function fakeServer(decisions) {
       let release;
       gate = new Promise((resolve) => { release = resolve; });
       return () => { gate = null; release(); };
+    },
+    holdCandidates() {
+      let release;
+      candidatesGate = new Promise((resolve) => { release = resolve; });
+      return () => { candidatesGate = null; release(); };
     },
     failNext(status, detail) { replies.push({ status, detail }); },
   };
@@ -496,7 +519,9 @@ test('a write disables the control that fired it with a spinner until the respon
     ['Reopen', '/decisions/decision-D39', async (page) => { page.$('.dec-reopen-btn').click(); return page.$('.dec-reopen-btn'); }],
     ['Add task', '/decisions/decision-D43', async (page) => {
       page.$('.dec-block-add').click();
-      type(page.$('#dialog-root .dbk-task'), 'T-9');
+      await page.settle();
+      type(page.$('#dialog-root .dbk-query'), 'SHIP');
+      press(page, page.$('#dialog-root .dbk-query'), 'ArrowDown');
       page.$('#dialog-root .dlg-submit').click();
       return page.$('#dialog-root .dlg-submit');
     }],
@@ -701,11 +726,11 @@ test('Cancel, Close and Escape on the confirm, Withdraw… and Add task dialogs 
   const addBtn = page.$('.dec-block-add');
   addBtn.focus();
   addBtn.click();
-  type(page.$('#dialog-root .dbk-task'), 'WEBUX');
-  key(page.$('#dialog-root .dbk-task'), 'Escape');
+  type(page.$('#dialog-root .dbk-query'), 'WEBUX');
+  key(page.$('#dialog-root .dbk-query'), 'Escape');
   assertFocus(page, addBtn);
   addBtn.click();
-  assert.equal(page.$('#dialog-root .dbk-task').value, 'WEBUX', 'the query is kept');
+  assert.equal(page.$('#dialog-root .dbk-query').value, 'WEBUX', 'the query is kept');
   page.$('#dialog-root .dlg-close').click();
   assertFocus(page, addBtn);
 
@@ -719,6 +744,143 @@ test('Cancel, Close and Escape on the confirm, Withdraw… and Add task dialogs 
     assert.deepEqual(checked(page), ['abandon']);
   }
   assert.deepEqual(server.writes, []);
+});
+
+const pickerRows = (page) => page.$$('#dialog-root .dbk-option').map((r) => r.getAttribute('data-task-id'));
+const pickedRow = (page) => {
+  const row = page.$('#dialog-root .dbk-option[aria-selected="true"]');
+  return row && row.getAttribute('data-task-id');
+};
+const addControl = (page) => page.$('#dialog-root .dlg-submit');
+
+test('+ Add task opens its picker in the field, listing the tasks the server offers in its order as one-line options', async () => {
+  const server = fakeServer(frameDecisions());
+  const page = await openPage(server, { url: '/decisions/decision-D43' });
+  page.$('.dec-block-add').click();
+  assertFocus(page, page.$('#dialog-root .dbk-query'), 'the dialog opens in the field');
+  await page.settle();
+  assert.equal(page.$('#dialog-root h2').textContent, 'Add task to decision-D43');
+  assert.ok(page.$('#dialog-root .dbk-query').closest('label').querySelector('use[href="#icon-search"]'), 'the field carries the search icon');
+  assert.equal(page.$('#dialog-root [role="listbox"]').getAttribute('id'), page.$('#dialog-root .dbk-query').getAttribute('aria-controls'));
+  assert.deepEqual(pickerRows(page), ['WEBUX-DECIDE-FLOW', 'WEBUX-DECIDE-LINKS', 'WEBUX-NODES-KIT', 'WEBUX-SHIP'], 'every task the server offers for D43, in its order');
+  const kit = page.$('#dialog-root .dbk-option[data-task-id="WEBUX-NODES-KIT"]');
+  assert.equal(kit.getAttribute('role'), 'option');
+  assert.equal(kit.querySelector('[role="img"]').getAttribute('aria-label'), 'Deferred', 'its status icon');
+  assert.equal(kit.children[1].textContent, 'WEBUX-NODES-KIT');
+  assert.equal(kit.children[2].textContent, 'Shared renderers carry the design rules');
+  assert.ok(kit.children[2].classList.contains('truncate'));
+  assert.equal(kit.querySelectorAll('[tabindex]').length, 0, 'an option is one focus stop');
+  assert.equal(pickedRow(page), null, 'nothing is selected on open');
+  assert.equal(addControl(page).disabled, true, 'Add waits for a selection');
+  assert.deepEqual(page.$$('#dialog-root .dbk-option').map((r) => r.getAttribute('tabindex')), ['0', '-1', '-1', '-1'], 'Tab enters the list at its first row');
+});
+
+test('typing filters the picker by id or title; ↓ enters the list and ↑/↓ move the selection with focus; ↑ from the top returns to the field', async () => {
+  const server = fakeServer(frameDecisions());
+  const page = await openPage(server, { url: '/decisions/decision-D43' });
+  page.$('.dec-block-add').click();
+  await page.settle();
+  const field = page.$('#dialog-root .dbk-query');
+  type(field, 'webux-decide');
+  assert.deepEqual(pickerRows(page), ['WEBUX-DECIDE-FLOW', 'WEBUX-DECIDE-LINKS'], 'by id, in any case');
+  type(field, 'design RULES');
+  assert.deepEqual(pickerRows(page), ['WEBUX-NODES-KIT'], 'by title');
+  type(field, 'WEBUX');
+
+  assert.equal(press(page, field, 'ArrowDown').defaultPrevented, true);
+  assertFocus(page, page.$('#dialog-root .dbk-option[data-task-id="WEBUX-DECIDE-FLOW"]'), '↓ from the field');
+  assert.equal(pickedRow(page), 'WEBUX-DECIDE-FLOW');
+  press(page, page.document.activeElement, 'ArrowDown');
+  assertFocus(page, page.$('#dialog-root .dbk-option[data-task-id="WEBUX-DECIDE-LINKS"]'), '↓ again');
+  assert.equal(pickedRow(page), 'WEBUX-DECIDE-LINKS', 'the selection follows focus');
+  assert.equal(addControl(page).disabled, false, 'Add is enabled with a row selected');
+  assert.deepEqual(page.$$('#dialog-root .dbk-option').map((r) => r.getAttribute('tabindex')), ['-1', '0', '-1', '-1'], 'the selected row is the tab stop');
+  press(page, page.document.activeElement, 'ArrowUp');
+  assert.equal(pickedRow(page), 'WEBUX-DECIDE-FLOW', '↑ moves back');
+  press(page, page.document.activeElement, 'ArrowUp');
+  assertFocus(page, field, '↑ from the top row returns to the field');
+
+  type(field, 'webux-decide-l');
+  assert.equal(pickedRow(page), null, 'a filter that hides the selected row clears it');
+  assert.equal(addControl(page).disabled, true);
+  page.$('#dialog-root .dbk-option').dispatchEvent(new page.window.Event('focusin'));
+  assert.equal(pickedRow(page), 'WEBUX-DECIDE-LINKS', 'Tab into the list selects the row it lands on');
+  assert.deepEqual(server.writes, [], 'moving through the list adds nothing');
+});
+
+test('a click selects a picker row without adding it; Enter on a row or Add adds the selected one', async () => {
+  const server = fakeServer(frameDecisions());
+  const page = await openPage(server, { url: '/decisions/decision-D43' });
+  page.$('.dec-block-add').click();
+  await page.settle();
+  page.$('#dialog-root .dbk-option[data-task-id="WEBUX-SHIP"]').click();
+  assert.equal(pickedRow(page), 'WEBUX-SHIP');
+  assertFocus(page, page.$('#dialog-root .dbk-option[data-task-id="WEBUX-SHIP"]'));
+  assert.deepEqual(server.writes, [], 'a click only selects');
+  press(page, page.$('#dialog-root .dbk-option[data-task-id="WEBUX-NODES-KIT"]'), ' ');
+  assert.equal(pickedRow(page), 'WEBUX-NODES-KIT', 'Space selects');
+  assert.deepEqual(server.writes, []);
+  addControl(page).click();
+  await page.settle();
+  assert.deepEqual(server.writes.map((w) => [w.verb, w.body]), [['blocks', { add: ['WEBUX-NODES-KIT'] }]], 'Add adds the selected row');
+  assert.equal(dialog(page), null);
+
+  page.$('.dec-block-add').click();
+  await page.settle();
+  assert.equal(pickerRows(page).includes('WEBUX-NODES-KIT'), false, 'the picker reads afresh: a task now waiting is not offered');
+  const ship = page.$('#dialog-root .dbk-option[data-task-id="WEBUX-SHIP"]');
+  assert.equal(press(page, ship, 'Enter').defaultPrevented, true);
+  await page.settle();
+  assert.deepEqual(server.writes.at(-1).body, { add: ['WEBUX-SHIP'] }, 'Enter on a row adds it');
+});
+
+test('a query that matches nothing reads "No tasks match “…”." in place of the list, with Add disabled and focus in the field', async () => {
+  const server = fakeServer(frameDecisions());
+  const page = await openPage(server, { url: '/decisions/decision-D43' });
+  page.$('.dec-block-add').click();
+  await page.settle();
+  const field = page.$('#dialog-root .dbk-query');
+  press(page, field, 'ArrowDown');
+  field.focus();
+  type(field, 'SHIP-0.4');
+  const state = page.$('#dialog-root .dbk-results [data-pane-state]');
+  assert.equal(state.getAttribute('data-pane-state'), 'empty');
+  assert.equal(state.textContent, 'No tasks match “SHIP-0.4”.');
+  assert.equal(state.querySelector('button'), null, 'no control on an empty state');
+  assert.equal(addControl(page).disabled, true);
+  assert.equal(press(page, field, 'ArrowDown').defaultPrevented, false, '↓ has nowhere to go');
+  assertFocus(page, field);
+
+  const none = fakeServer(frameDecisions().map((d) => (d.id === 'decision-D43' ? { ...d, dependents: TASKS.map((t) => waitingNode(t.id, t.title)) } : d)));
+  const full = await openPage(none, { url: '/decisions/decision-D43' });
+  full.$('.dec-block-add').click();
+  await full.settle();
+  assert.equal(full.$('#dialog-root .dbk-results [data-pane-state]').textContent, 'No tasks to add.', 'with nothing typed and nothing to offer');
+});
+
+test('the picker\'s read shows loading only once in flight 300 ms, and a failure reads its message with a Retry that reads again', async () => {
+  const server = fakeServer(frameDecisions());
+  const page = await openPage(server, { url: '/decisions/decision-D43' });
+  const release = server.holdCandidates();
+  page.$('.dec-block-add').click();
+  await page.settle();
+  assert.equal(page.$('#dialog-root .dbk-results').children.length, 0, 'a read under 300 ms flashes nothing');
+  await new Promise((r) => setTimeout(r, 320));
+  assert.equal(page.$('#dialog-root .dbk-results [data-pane-state]').getAttribute('data-pane-state'), 'loading');
+  release();
+  await page.settle();
+  assert.equal(pickerRows(page).length, 4);
+  key(page.$('#dialog-root .dbk-query'), 'Escape');
+
+  server.nodeFailures.set('candidates', 502);
+  page.$('.dec-block-add').click();
+  await page.settle();
+  const error = page.$('#dialog-root .dbk-results [data-pane-state="error"]');
+  assert.equal(error.querySelector('p').textContent, 'Bad Gateway');
+  server.nodeFailures.delete('candidates');
+  error.querySelector('.pane-retry').click();
+  await page.settle();
+  assert.equal(pickerRows(page).length, 4, 'Retry reads the list again');
 });
 
 test('the confirm is the only gate before an abandon: it opens on Cancel, a plain button Enter activates, and no undo follows', async () => {
@@ -776,7 +938,9 @@ test('every pointer action is a focusable button or link: rows, options, ids, ×
   page.document.createElement = create;
   assert.equal(picked, 2, 'Enter and Space open the file picker');
 
-  await closeElsewhere(page, server, 'decision-D43', { status: 'WITHDRAWN', withdrawn_by: 'Ana' });
+  await closeElsewhere(page, server, 'decision-D43', {
+    status: 'ANSWERED', answer: { option: 'a', text: '', rationale: '', answered_by: 'Ana', answered_at: at(52) },
+  });
   page.$$('#toast-root button').forEach((b) => reachable(b, 'a toast control'));
   page.$('#toast-root .toast-action').click();
   await page.settle();
@@ -961,6 +1125,13 @@ test('below sm Answer and Withdraw move the page to the next decision in place, 
   const state = alone.$('#decisions-detail [data-pane-state]');
   assert.equal(state.textContent.trim(), 'No open decisions.');
   assert.equal(state.querySelector('button'), null);
+
+  pushOpenCount(alone, single);
+  await alone.settle();
+  assertFocus(alone, alone.$('.dec-drawer-btn'), 'the live push that follows the write keeps focus on the Drawer button');
+  alone.run('refreshDecisionsData()');
+  await alone.settle();
+  assertFocus(alone, alone.$('.dec-drawer-btn'), 'so does a Refresh');
 });
 
 test('below sm a failed or empty list shows in the page and in the drawer, the error with Retry', async () => {

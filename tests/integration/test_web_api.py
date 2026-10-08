@@ -585,7 +585,7 @@ def test_decision_blocks_add_and_remove(
     assert node_repo.get_blocked_by("decision-D1") == ["SPEC-P1-T2"]
 
 
-def test_list_decisions_counts_waiting_nodes_when_open_and_was_blocking_when_closed(
+def test_a_closed_decision_item_reads_was_blocking_and_its_closing_time_and_an_open_one_neither(
     api: tuple[TestClient, NodeRepository, LedgerRepository],
 ) -> None:
     client, node_repo, _ledger_repo = api
@@ -608,16 +608,74 @@ def test_list_decisions_counts_waiting_nodes_when_open_and_was_blocking_when_clo
 
     items = {d["id"]: d for d in client.get("/api/decisions").json()["items"]}
 
-    assert items["decision-open"]["waiting_count"] == 1
-    assert "was_blocking" not in items["decision-open"]
+    assert {"was_blocking", "closed_at", "waiting_count", "blocks"}.isdisjoint(
+        items["decision-open"]
+    )
     for closed in ("decision-answered", "decision-withdrawn"):
         assert items[closed]["was_blocking"] == 1
-        assert "waiting_count" not in items[closed]
-    assert items["decision-open"]["blocks"][0]["display"] == "AWAITING_DECISION"
-    for item in items.values():
-        for row in item["blocks"]:
-            assert row["display"] == client.get(f"/api/nodes/{row['id']}").json()["display"]
-    assert items["decision-answered"]["blocks"][0]["display"] != "AWAITING_DECISION"
+        assert {"waiting_count", "blocks"}.isdisjoint(items[closed])
+    answered = node_repo.get_node("decision-answered")
+    withdrawn = node_repo.get_node("decision-withdrawn")
+    assert answered is not None and withdrawn is not None
+    assert datetime.fromisoformat(
+        items["decision-answered"]["closed_at"]
+    ) == datetime.fromisoformat(answered.frontmatter["decision"]["answer"]["answered_at"])
+    assert datetime.fromisoformat(
+        items["decision-withdrawn"]["closed_at"]
+    ) == datetime.fromisoformat(withdrawn.frontmatter["decision"]["withdrawn_at"])
+
+
+def test_a_withdrawal_stored_without_its_time_closes_at_the_nodes_last_write(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, node_repo, _ledger_repo = api
+    last_write = datetime(2026, 10, 1, 9, 30, tzinfo=UTC)
+    node_repo.save_node(
+        Node(
+            id="decision-old",
+            kind=NodeKind.DECISION,
+            title="Withdrawn before its time was kept",
+            status=DecisionStatus.WITHDRAWN,
+            created_at=datetime(2026, 9, 1, tzinfo=UTC),
+            updated_at=last_write,
+            frontmatter={"decision": {"options": [], "withdrawn_reason": "gone"}},
+        )
+    )
+
+    (item,) = client.get("/api/decisions", params={"status": "withdrawn"}).json()["items"]
+
+    assert datetime.fromisoformat(item["closed_at"]) == last_write
+
+
+def test_the_add_task_candidates_are_every_task_not_waiting_and_not_finished_in_id_order(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, node_repo, _ledger_repo = api
+    _seed_decision(node_repo)
+    for task_id, status, priority in (
+        ("SPEC-P1-T0", Status.READY, 50),
+        ("SPEC-P1-T3", Status.COMPLETED, 50),
+        ("SPEC-P1-T4", Status.ABANDONED, 50),
+        ("SPEC-P1-T5", Status.SUPERSEDED, 50),
+        ("SPEC-P1-T6", Status.DEFERRED, 90),
+    ):
+        node_repo.save_node(
+            Node(id=task_id, kind=NodeKind.TASK, title=task_id, status=status, priority=priority)
+        )
+    node_repo.add_relation(
+        NodeRelation(
+            source_id="SPEC-P1-T1", target_id="decision-D1", relation_type=RelationType.DEPENDS_ON
+        )
+    )
+
+    res = client.get("/api/decisions/decision-D1/candidates")
+
+    assert res.status_code == 200
+    items = res.json()["items"]
+    assert [t["id"] for t in items] == ["SPEC-P1-T0", "SPEC-P1-T2", "SPEC-P1-T6"]
+    assert items[1] == {"id": "SPEC-P1-T2", "title": "Second", "display": "READY"}
+    assert client.get("/api/decisions/SPEC-P1-T2/candidates").status_code == 404
+    assert client.get("/api/decisions/decision-D9/candidates").status_code == 404
 
 
 def test_answer_and_withdraw_from_the_page_are_attributed_to_the_git_user_name(

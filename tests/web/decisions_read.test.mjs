@@ -100,7 +100,7 @@ function fakeServer(decisions) {
   });
   const listItem = (d) => ({
     id: d.id, title: d.title, status: d.status, priority: d.priority, created_at: d.created_at,
-    [d.status === 'OPEN' ? 'waiting_count' : 'was_blocking']: d.dependents.length,
+    ...(d.status === 'OPEN' ? {} : { closed_at: d.answer ? d.answer.answered_at : d.withdrawn_at, was_blocking: d.dependents.length }),
   });
   async function answer(kind, respond) {
     if (gates[kind]) await gates[kind];
@@ -115,6 +115,13 @@ function fakeServer(decisions) {
         const d = byId.get(nodeGet[1]);
         return d ? jsonResponse(200, body(d)) : jsonResponse(404, { detail: 'Node not found' });
       });
+    }
+    const candidates = url.match(/^\/api\/decisions\/([^/]+)\/candidates$/);
+    if (candidates) {
+      const waiting = new Set(byId.get(candidates[1]).dependents.map((n) => n.id));
+      const items = ['WEBUX-DECIDE-API', 'WEBUX-DECIDE-READ', 'WEBUX-SHIP'].filter((id) => !waiting.has(id))
+        .map((id) => ({ id, title: `${id} title`, display: 'READY' }));
+      return jsonResponse(200, { items });
     }
     if (url.startsWith('/api/decisions?')) {
       return answer('list', () => {
@@ -244,6 +251,15 @@ test('answered and withdrawn rows and details say "Was blocking n" from was_bloc
   assert.equal(plan.querySelector('.kind-badge').textContent, 'PLAN');
 });
 
+test('a closed row ages from when it closed, an open row from when it was raised', async () => {
+  const page = await openPage(fakeServer(frameDecisions()));
+  assert.equal(rowLine(page, 'decision-D43').querySelector('.dec-age').textContent, '2m');
+  await showTab(page, 'answered');
+  assert.equal(rowLine(page, 'decision-D39').querySelector('.dec-age').textContent, '15m', 'answered 15m ago, raised 20m ago');
+  await showTab(page, 'withdrawn');
+  assert.equal(rowLine(page, 'decision-D41').querySelector('.dec-age').textContent, '7m', 'withdrawn 7m ago, raised 8m ago');
+});
+
 test('the effect pill hugs its text and words each effect: none, drop_edge, defer, abandon, with "node" singular at one', async () => {
   const page = await openPage(fakeServer(frameDecisions()), { url: '/decisions/decision-D42' });
   const pill = (optionKey) => page.$(`.dec-option-card[data-option-key="${optionKey}"] .dec-effect-pill`);
@@ -314,6 +330,24 @@ test('an answered decision names who answered it from the API, and a withdrawn o
   assert.match(text(withdrawn), /^Withdrawn by Ana · \S/);
 });
 
+test('an answered decision offers Reopen and a withdrawn one does not', async () => {
+  const page = await openPage(fakeServer(frameDecisions()), { url: '/decisions/decision-D39' });
+  assert.equal(page.$$('#decisions-detail .dec-reopen-btn').length, 1);
+  await showTab(page, 'withdrawn');
+  assert.equal(page.$('#decisions-detail .dec-title').textContent, 'Start plan WEBUX-DECIDE before WEBUX-NODES lands?');
+  assert.equal(page.$$('#decisions-detail .dec-reopen-btn').length, 0);
+});
+
+test('Custom answer, Rationale and the withdraw Reason set typed text in Inter, never mono', async () => {
+  const page = await openPage(fakeServer(frameDecisions()), { url: '/decisions/decision-D43' });
+  page.$('.dec-withdraw-btn').click();
+  const fields = [page.$('.dec-custom-text'), page.$('.dec-rationale'), page.$('#dialog-root .wd-reason')];
+  for (const field of fields) {
+    assert.equal(field.localName, 'textarea');
+    assert.equal(field.classList.contains('font-mono'), false, `${field.getAttribute('class').split(' ')[0]} is not mono`);
+  }
+});
+
 const EXPLANATIONS = [
   'Select a decision to view it.', 'Write a custom answer instead of picking an option', '(optional)', '(optional, markdown)',
   'Which auth flow?', 'task-id', 'Pick an option or write a custom answer', 'Nothing picked yet — pick an option or write a custom answer',
@@ -342,9 +376,11 @@ test('no surface of the pane explains itself, and each field keeps the label nam
   key(page.$('#dialog-root .wd-reason'), 'Escape');
 
   page.$('.dec-block-add').click();
+  await page.settle();
   seen.push(surfaceText(page.$('#dialog-root')));
-  assert.equal(labelOf(page.$('#dialog-root .dbk-task')), 'Task');
-  key(page.$('#dialog-root .dbk-task'), 'Escape');
+  assert.equal(labelOf(page.$('#dialog-root .dbk-query')), 'Task');
+  assert.equal(page.$('#dialog-root .dbk-query').getAttribute('placeholder'), null);
+  key(page.$('#dialog-root .dbk-query'), 'Escape');
 
   page.run('openNewDecisionDialog()');
   seen.push(surfaceText(page.$('#dialog-root')));
@@ -416,6 +452,49 @@ test('a read shows its loading pane state only once in flight 300 ms, a fast one
   assert.ok(reopen.disabled && reopen.querySelector('.animate-spin'), 'the write spins from the click');
 });
 
+const tabCounts = (page) => page.$$('#decisions-tabs .dec-tab-btn').map((b) => {
+  const pill = b.querySelector('.dec-tab-count');
+  return pill ? pill.textContent : null;
+});
+
+test('the tabs show no count while the list loads or has failed, and a fast tab switch keeps them', async () => {
+  const server = fakeServer(frameDecisions());
+  const releaseList = server.hold('list');
+  const page = await openPage(server);
+  assert.deepEqual(tabCounts(page), [null, null, null], 'the first load, before the loading state shows');
+  await wait(350);
+  assert.equal(paneStateOf(page.$('#decisions-list')).getAttribute('data-pane-state'), 'loading');
+  assert.deepEqual(tabCounts(page), [null, null, null], 'beside the loading state');
+  releaseList();
+  await page.settle();
+  assert.deepEqual(tabCounts(page), ['3', '1', '1']);
+
+  page.$('#dec-tab-answered').click();
+  assert.deepEqual(tabCounts(page), ['3', '1', '1'], 'a tab switch in flight under 300 ms keeps the counts');
+  await page.settle();
+  const releaseAgain = server.hold('list');
+  page.$('#dec-tab-withdrawn').click();
+  await wait(350);
+  assert.deepEqual(tabCounts(page), [null, null, null], 'a tab switch past 300 ms shows loading without counts');
+  releaseAgain();
+  await page.settle();
+  assert.deepEqual(tabCounts(page), ['3', '1', '1']);
+
+  server.fail('list', 502, 'Bad Gateway');
+  page.run('refreshDecisionsData()');
+  await page.settle();
+  assert.equal(paneStateOf(page.$('#decisions-list')).getAttribute('data-pane-state'), 'error');
+  assert.deepEqual(tabCounts(page), [null, null, null], 'beside the error state');
+});
+
+test('a failed list load is stated once, by its error pane state with Retry, and raises no toast', async () => {
+  const server = fakeServer(frameDecisions());
+  server.fail('list', 502, 'Bad Gateway');
+  const page = await openPage(server);
+  assert.equal(paneStateOf(page.$('#decisions-list')).querySelector('p').textContent, 'Could not load decisions.');
+  assert.equal(page.$$('#toast-root .toast').length, 0);
+});
+
 test('a live re-render keeps the selected decision, both scroll offsets, the focused field and its draft; an arriving decision takes its place and is not selected', async () => {
   const server = fakeServer(frameDecisions());
   const page = await openPage(server, { url: '/decisions/decision-D40' });
@@ -479,7 +558,9 @@ test('Attach opens the native picker and writes on choice; focus then goes to th
   assert.ok(page.document.activeElement.classList.contains('att-add-btn'), 'after Detach focus is on Attach');
 
   page.$('.dec-block-add').click();
-  type(page.$('#dialog-root .dbk-task'), 'WEBUX-SHIP');
+  await page.settle();
+  type(page.$('#dialog-root .dbk-query'), 'WEBUX-SHIP');
+  key(page.$('#dialog-root .dbk-query'), 'ArrowDown');
   page.$('#dialog-root .dlg-submit').click();
   await page.settle();
   assert.equal(page.document.activeElement.getAttribute('data-id'), 'WEBUX-SHIP', 'after Add task focus is on its row');

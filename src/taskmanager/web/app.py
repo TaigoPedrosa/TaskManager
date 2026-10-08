@@ -39,6 +39,7 @@ from taskmanager.db.node_repo import NodeRepository
 from taskmanager.di.container import TaskManagerProvider
 from taskmanager.engine.assets import ASSET_NAME_RE
 from taskmanager.engine.config import ConfigStore, DispatchConfig
+from taskmanager.engine.decisions import read_decision
 from taskmanager.engine.landing import Landing
 from taskmanager.engine.operations import OperationError, Operations
 from taskmanager.engine.simulate import simulate
@@ -420,36 +421,35 @@ def paginate_decisions(
     return page, next_cursor
 
 
-def _decision_item(
-    node: Node, view: DisplayView, node_repo: NodeRepository, assets_dir: Path
-) -> dict[str, Any]:
-    blocked_ids = node_repo.get_blocked_by(node.id)
-    blocks: list[dict[str, Any]] = []
-    for blocked_id in blocked_ids:
-        blocked = node_repo.get_node(blocked_id)
-        if blocked is not None:
-            blocks.append(
-                {
-                    "id": blocked.id,
-                    "title": blocked.title,
-                    "kind": blocked.kind.value,
-                    "display": view.display(blocked),
-                }
-            )
+def _closed_at(node: Node, status: Status | DecisionStatus) -> datetime:
+    """When an answered or withdrawn decision closed; a close recorded without its time reads
+    the node's last write."""
+    data = read_decision(node)
+    if status == DecisionStatus.ANSWERED and data.answer is not None:
+        return data.answer.answered_at
+    return data.withdrawn_at or node.updated_at
+
+
+def _decision_item(node: Node, node_repo: NodeRepository, assets_dir: Path) -> dict[str, Any]:
     status = stored_status(node)
-    # An answered or withdrawn decision keeps its edges, but nothing waits on it any more.
-    count_key = "waiting_count" if status == DecisionStatus.OPEN else "was_blocking"
-    return {
+    item: dict[str, Any] = {
         "id": node.id,
         "title": node.title,
         "status": status.value,
         "priority": node.priority,
         "created_at": node.created_at.isoformat(),
-        count_key: len(blocked_ids),
-        "blocks": blocks,
         "decision": node.frontmatter.get("decision") or {},
         "attachments": attachments_with_size(assets_dir, node.frontmatter.get("attachments") or []),
     }
+    # A closed row reads its closing age and the nodes it was blocking; an open row reads neither.
+    if status != DecisionStatus.OPEN:
+        item["closed_at"] = _closed_at(node, status).isoformat()
+        item["was_blocking"] = len(node_repo.get_blocked_by(node.id))
+    return item
+
+
+# The tasks a decision cannot be made to block: finished, or set aside for good.
+_NOT_ADDABLE = frozenset({Status.COMPLETED, Status.ABANDONED, Status.SUPERSEDED})
 
 
 def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = None) -> FastAPI:
@@ -885,13 +885,12 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         page, next_cursor = paginate_decisions(
             decisions, status=status, cursor=cursor, limit=page_limit
         )
-        view = new_view()
         by_status = node_repo.count_by_status(NodeKind.DECISION)
         counts = {
             tab: by_status.get(wanted.value, 0) for tab, wanted in _DECISION_TAB_STATUS.items()
         }
         return {
-            "items": [_decision_item(d, view, node_repo, assets_dir) for d in page],
+            "items": [_decision_item(d, node_repo, assets_dir) for d in page],
             "next": next_cursor,
             "counts": counts,
         }
@@ -939,6 +938,27 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         with _refusals():
             operations.with_actor(actor).withdraw_decision(decision_id, body.reason)
         return {"id": decision_id}
+
+    @app.get("/api/decisions/{decision_id}/candidates")
+    def get_decision_candidates(decision_id: str) -> dict[str, Any]:
+        """The tasks `+ Add task` offers: every task not already waiting on the decision and not
+        finished or set aside, in id order."""
+        decision = node_repo.get_node(decision_id)
+        if decision is None or decision.kind != NodeKind.DECISION:
+            raise HTTPException(404, f"no decision '{decision_id}'")
+        waiting = set(node_repo.get_blocked_by(decision_id))
+        tasks = [
+            t
+            for t in node_repo.list_nodes(kind=NodeKind.TASK)
+            if t.id not in waiting and t.status not in _NOT_ADDABLE
+        ]
+        view = new_view()
+        return {
+            "items": [
+                {"id": t.id, "title": t.title, "display": view.display(t)}
+                for t in sorted(tasks, key=lambda t: t.id)
+            ]
+        }
 
     @app.post("/api/decisions/{decision_id}/blocks")
     def post_decision_blocks(

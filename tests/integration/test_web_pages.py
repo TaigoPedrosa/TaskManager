@@ -237,8 +237,6 @@ def test_decisions_page_newest_first_and_page_through_with_a_stable_cursor(
         "status",
         "priority",
         "created_at",
-        "waiting_count",
-        "blocks",
         "decision",
         "attachments",
     }

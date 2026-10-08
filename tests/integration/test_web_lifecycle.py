@@ -232,7 +232,9 @@ def test_an_unknown_job_is_404(web: Web) -> None:
     assert client.get("/api/jobs/nope").status_code == 404
 
 
-def test_decision_rows_use_decision_statuses_and_list_the_nodes_they_block(web: Web) -> None:
+def test_decision_rows_use_decision_statuses_and_their_detail_lists_the_nodes_they_block(
+    web: Web,
+) -> None:
     client, _root = web
     res = client.post(
         "/api/decisions",
@@ -247,7 +249,8 @@ def test_decision_rows_use_decision_statuses_and_list_the_nodes_they_block(web: 
     rows = client.get("/api/decisions", params={"status": "open"}).json()["items"]
     assert [r["id"] for r in rows] == ["decision-way"]
     assert rows[0]["status"] == DecisionStatus.OPEN.value
-    assert [(b["id"], b["display"]) for b in rows[0]["blocks"]] == [
+    detail = client.get("/api/nodes/decision-way").json()
+    assert [(b["id"], b["status"]) for b in detail["dependent_details"]] == [
         ("S1-P1-a", "AWAITING_DECISION")
     ]
     assert rows[0]["decision"]["options"][0]["effect"] == "abandon"

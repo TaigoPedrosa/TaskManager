@@ -105,7 +105,7 @@ def export_static_html(project_root: Path, output_file: Path) -> Path:
     # `rows` excludes decisions (rows.py skips them), but the Decisions view opens one by id
     # through the same `bodies` map every other node detail comes from.
     bodies = build_bodies(view, [*rows.keys(), *(d.id for d in decision_nodes)], repos=repos)
-    decisions = [_decision_item(d, view, node_repo, assets_dir) for d in decision_nodes]
+    decisions = [_decision_item(d, node_repo, assets_dir) for d in decision_nodes]
 
     _embed_attachments(bodies, project_root)
     root = project_root.resolve()

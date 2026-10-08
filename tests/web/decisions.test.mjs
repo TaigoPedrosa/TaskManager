@@ -75,7 +75,7 @@ function fakeServer(decisions) {
       const status = new URLSearchParams(url.split('?')[1]).get('status');
       const items = [...byId.values()].filter((d) => d.status === status).map((d) => ({
         id: d.id, title: d.title, status: d.status, priority: 50,
-        created_at: '2026-09-26T10:00:00+00:00', waiting_count: d.dependents.length,
+        created_at: '2026-09-26T10:00:00+00:00',
       }));
       return jsonResponse(200, { items, next: null, counts: counts() });
     }
