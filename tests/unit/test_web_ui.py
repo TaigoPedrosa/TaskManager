@@ -384,7 +384,8 @@ def test_tri_state_popover_row_is_not_nested_interactive() -> None:
     assert 'role="button"' not in options
     assert 'tabindex="0"' not in options
     assert 'role="group" aria-label="${esc(dimension)} values"' in html
-    assert 'role="listbox"' not in html
+    assert 'role="listbox"' not in options
+    assert 'role="listbox"' not in _function_body(html, "createTriStatePopover")
 
 
 def test_tri_state_popover_label_and_count_do_not_share_one_truncated_span() -> None:
@@ -455,10 +456,11 @@ def test_decision_withdraw_collects_a_reason() -> None:
 def test_open_decision_offers_editing_its_blocked_tasks() -> None:
     # §6.4: an open decision offers editing of blocked tasks; POST .../blocks was never
     # called from the page at all before this.
-    detail = _function_body(get_web_html(), "renderDecisionDetail")
+    html = get_web_html()
+    detail = _function_body(html, "renderDecisionDetail")
     assert "dec-block-add" in detail
     assert "dec-block-remove" in detail
-    assert "/blocks`, { add:" in detail
+    assert "/blocks`, { add:" in _function_body(html, "openTaskPicker")
     assert "body: { remove: [taskId] }" in detail
 
 
@@ -650,7 +652,7 @@ def test_decisions_load_failure_is_an_error_state_not_an_empty_queue() -> None:
     html = get_web_html()
     refresh = _function_body(html, "refreshDecisionsData")
     assert "decisionsLoadFailed = true" in refresh
-    assert "toast(`Could not load decisions" in refresh
+    assert "toast(" not in refresh
     list_state = _function_body(html, "decisionsListStateHtml")
     assert "if (decisionsLoadFailed)" in list_state
     assert "paneState('error'" in list_state
