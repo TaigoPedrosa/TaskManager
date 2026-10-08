@@ -509,7 +509,7 @@ const REMOVED = [
 test('no explanatory text renders: the legend, the resize handle, the search box and every dialog', async () => {
   const page = loadPage({
     fetch: async (u) => (u.startsWith('/api/meta')
-      ? jsonResponse(200, { dispatch: { wave_size: 5, tick_budget: 20 }, specs: [{ id: 'S', title: 'S' }], plans: [{ id: 'P', title: 'P' }], models: ['opus'] })
+      ? jsonResponse(200, { dispatch: { wave_size: 5, tick_budget: 20 }, specs: [{ id: 'S', title: 'S' }], plans: [{ id: 'P', title: 'P' }], models: ['opus'], merge_targets: ['parent', 'spec'] })
       : undefined),
   });
   await page.settle();
