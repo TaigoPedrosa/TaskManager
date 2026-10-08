@@ -4,6 +4,8 @@ The task database is the only record of what is planned, claimed, built, landed 
 
 Run `tm guide` for the topics and `tm guide <topic>` for the one that matches your role. Each prints the built-in guidance, then this project's own addendum when it has one.
 
+After `tm init`, set `repos.<repo>.gates.main` for every target repo before the first dispatch. Without it, every landing on `main` is refused with `no gate`.
+
 ## The cycle
 
 Every task, plan and spec stores one status: its position in this cycle. Everything else a reader sees (blocked, waiting, stale) is worked out from the graph, the leases and the jobs, and is never stored.

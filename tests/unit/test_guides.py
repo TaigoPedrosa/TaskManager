@@ -647,3 +647,108 @@ def test_overview_lands_a_fix_without_a_re_review_unless_the_node_is_sensitive(
     assert "FIXED ──claim, sensitive──▶ REVIEWING" in text
     assert "FIXED ──claim──▶ REVIEWING" not in text
     assert "`FIXED` for a sensitive node" in text
+
+
+PLAN_REVIEW = "## 8. Write the review into the node"
+BRIEF_RULES = [
+    pytest.param(
+        "plan",
+        PLAN_REVIEW,
+        "- Tasks that write into one directory each declare their own paths, and none deletes a "
+        "path it did not declare.",
+        id="plan:shared-directory",
+    ),
+    pytest.param(
+        "plan",
+        PLAN_REVIEW,
+        "- A task whose own code runs work concurrently names every file or row two workers write, "
+        "and how those writes serialize. Concurrency across tasks is what `declared_files` and "
+        "discovery already keep disjoint.",
+        id="plan:concurrent-writes",
+    ),
+    pytest.param(
+        "plan",
+        PLAN_REVIEW,
+        "- A task that consumes another task's derived structure (ids, an ordering, a mapping) "
+        "names that task and reads its output. It never re-derives the structure.",
+        id="plan:derived-structure",
+    ),
+    pytest.param(
+        "plan",
+        PLAN_REVIEW,
+        "- A brief that has the implementer step or search over a value names that value's "
+        "allowed range.",
+        id="plan:value-range",
+    ),
+    pytest.param(
+        "plan",
+        PLAN_REVIEW,
+        "Each line has a check that drives it. A panel over lazily loaded data names each of its "
+        "states (loading, partial, empty, error, ready) and the reads each state depends on.",
+        id="plan:lazy-panel-states",
+    ),
+    pytest.param(
+        "implement",
+        "## 3. Work in that worktree and nowhere else",
+        "Create, modify or delete nothing outside `declared_files`. Before touching another file, "
+        "read the locks in `tm run list --yaml`. When another live node holds the file, release "
+        "blocked and name that node (below). Otherwise add the file with `tm task update "
+        "<task-id> --set declared_files='[...]'` before the edit, and name it in the report.",
+        id="implement:declared-files",
+    ),
+    pytest.param(
+        "implement",
+        "## 6. Report",
+        "A report that fixes a contract its dependents build on (a shape, a name, an id scheme) "
+        "writes the contract into the parent plan's `overview` with `tm section set "
+        "<plan-id>:overview --file <path>` before the step closes. Only the parent's `context` "
+        "and `overview` reach a dependent's brief, and no step runs between tasks to copy it "
+        "there.",
+        id="implement:contract-to-overview",
+    ),
+    pytest.param(
+        "implement",
+        "## 5. Verify",
+        "- A test selects only markup that its own task's declared files render. It reaches "
+        "another file's control by what that control shows the user (role, accessible name), "
+        "never by its classes or inner elements.",
+        id="implement:test-markup",
+    ),
+    pytest.param(
+        "implement",
+        "## 5. Verify",
+        "- When a task stops reading a payload field, it removes the producer in the same task, "
+        "or names the task that does.",
+        id="implement:payload-producer",
+    ),
+    pytest.param(
+        "review",
+        "## 3. Read the branch",
+        "A diff that edits a file missing from `declared_files`, a test that selects another "
+        "file's markup by class, and a payload field with no remaining reader are each a finding.",
+        id="review:scope-findings",
+    ),
+    pytest.param(
+        "overview",
+        "# How TaskManager works",
+        "After `tm init`, set `repos.<repo>.gates.main` for every target repo before the first "
+        "dispatch. Without it, every landing on `main` is refused with `no gate`.",
+        id="overview:main-gate",
+    ),
+]
+
+_HEADING = re.compile(r"^(?=#{1,2} )", re.MULTILINE)
+
+
+@pytest.mark.parametrize(("topic", "heading", "rule"), BRIEF_RULES)
+def test_tm_guide_prints_each_brief_rule_once_in_its_role_s_section(
+    topic: str, heading: str, rule: str, rendered: Callable[[str], str]
+) -> None:
+    """The skills defer these rules to `tm guide`, so a guide that drops one leaves no copy an agent reads."""
+    holding = [
+        (t, part.splitlines()[0])
+        for t in _topics()
+        for part in _HEADING.split(rendered(t))
+        if rule in part
+    ]
+    assert holding == [(topic, heading)]
