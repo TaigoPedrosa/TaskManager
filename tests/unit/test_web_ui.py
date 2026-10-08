@@ -601,7 +601,7 @@ def test_dialog_refusal_also_shows_a_toast() -> None:
     )
     assert dialog_call_site, "dialog submit handler not found"
     catch_block = dialog_call_site.group(0).split("catch")[1].split("finally")[0]
-    assert "toast(message, { tone: 'error' })" in catch_block
+    assert "toast(message, { tone: 'error', owner: submitBtn })" in catch_block
 
 
 def test_decision_option_row_inputs_are_named_by_aria_label_not_placeholder() -> None:
