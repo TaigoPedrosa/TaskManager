@@ -688,6 +688,32 @@ BRIEF_RULES = [
         id="plan:lazy-panel-states",
     ),
     pytest.param(
+        "plan",
+        PLAN_REVIEW,
+        "A format one task writes and another reads (an id, a URL key, a file or message shape) "
+        "is listed in the plan's `context` with every writer and every reader by file, and each "
+        "reader's acceptance carries its round trip: write it, reload or re-read it, and get back "
+        "the same thing.",
+        id="plan:format-round-trip",
+    ),
+    pytest.param(
+        "plan",
+        PLAN_REVIEW,
+        "- A brief that places work relative to a third-party artifact (a basemap style's layers, "
+        "an API's ordering, a vendor file's structure) states that artifact's actual contents, "
+        "read before the brief is written, never an assumed order.",
+        id="plan:third-party-contents",
+    ),
+    pytest.param(
+        "implement",
+        "## 2. Read the brief",
+        "An instruction about a third-party artifact's structure (which layers a style holds, the "
+        "order an API returns) is checked against the artifact itself before you follow it. When "
+        "the artifact contradicts the brief, release blocked on a decision (below) instead of "
+        "following the brief.",
+        id="implement:check-third-party",
+    ),
+    pytest.param(
         "implement",
         "## 3. Work in that worktree and nowhere else",
         "Create, modify or delete nothing outside `declared_files`. Before touching another file, "
@@ -721,6 +747,16 @@ BRIEF_RULES = [
         "- When a task stops reading a payload field, it removes the producer in the same task, "
         "or names the task that does.",
         id="implement:payload-producer",
+    ),
+    pytest.param(
+        "implement",
+        "## 5. Verify",
+        "- When the task writes or reads a format another task also writes or reads (an id scheme, "
+        "a URL key, a payload), run the round trip across both ends before closing the step: write "
+        "it with one end, read it back with the other, get back the same thing, and put that run "
+        "in the report. A mismatch with the other end is a decision (below), never a local "
+        "reinterpretation.",
+        id="implement:format-round-trip",
     ),
     pytest.param(
         "review",
