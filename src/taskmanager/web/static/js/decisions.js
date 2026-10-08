@@ -1308,12 +1308,16 @@ function openCreatedDecision(decisionId) {
 }
 
 // With nothing selected the detail is empty from sm up; below sm it is the page, which shows
-// what the list shows in place of rows.
+// what the list shows in place of rows. A list refresh redraws it, and the control that had
+// focus (the Drawer button, Retry) has it again.
 function renderNoSelection() {
   renderedDecisionId = null;
   liftToasts(null);
   const state = decisionsListStateHtml();
+  const refocus = focusedDetailSelector();
   decisionsDetailEl.innerHTML = `<div class="max-w-2xl mx-auto">${pageBarHtml()}${state ? `<div class="sm:hidden">${state}</div>` : ''}</div>`;
+  const again = refocus && decisionsDetailEl.querySelector(refocus);
+  if (again) again.focus();
 }
 
 function renderDecisionsView() {

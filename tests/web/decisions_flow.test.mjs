@@ -1123,6 +1123,13 @@ test('below sm Answer and Withdraw move the page to the next decision in place, 
   const state = alone.$('#decisions-detail [data-pane-state]');
   assert.equal(state.textContent.trim(), 'No open decisions.');
   assert.equal(state.querySelector('button'), null);
+
+  pushOpenCount(alone, single);
+  await alone.settle();
+  assertFocus(alone, alone.$('.dec-drawer-btn'), 'the live push that follows the write keeps focus on the Drawer button');
+  alone.run('refreshDecisionsData()');
+  await alone.settle();
+  assertFocus(alone, alone.$('.dec-drawer-btn'), 'so does a Refresh');
 });
 
 test('below sm a failed or empty list shows in the page and in the drawer, the error with Retry', async () => {
