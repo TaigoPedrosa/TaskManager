@@ -53,7 +53,7 @@ def client(root: Path) -> Iterator[TestClient]:
 @pytest.fixture
 def served(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     calls: list[dict[str, Any]] = []
-    monkeypatch.setattr(uvicorn, "run", lambda _app, **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kwargs: calls.append({"app": app, **kwargs}))
     return calls
 
 
@@ -174,3 +174,69 @@ def test_web_on_loopback_or_with_expose_serves_on_that_host(
 
     assert res.exit_code == 0, res.output
     assert [call["host"] for call in served] == [host]
+
+
+@pytest.mark.parametrize(
+    ("bind", "flags", "reached_as"),
+    [
+        ("0.0.0.0", ["--expose"], "192.168.1.20"),
+        ("::", ["--expose"], "[fe80::1]"),
+        ("::", ["--expose"], "localhost"),
+        ("::1", [], "[::1]"),
+    ],
+    ids=[
+        "wildcard-by-lan-address",
+        "ipv6-wildcard-by-address",
+        "ipv6-wildcard-by-localhost",
+        "ipv6-loopback",
+    ],
+)
+def test_web_serves_a_client_that_reaches_its_bind_by_an_address(
+    root: Path, served: list[dict[str, Any]], bind: str, flags: list[str], reached_as: str
+) -> None:
+    res = CliRunner().invoke(cli, ["web", "--host", bind, *flags, "--no-open", "-C", str(root)])
+    assert res.exit_code == 0, res.output
+    (call,) = served
+    netloc = f"{reached_as}:{call['port']}"
+    # Starlette's test transport cannot parse a bracketed address in the URL, so the address
+    # travels in the Host header the way a browser sends it.
+    same_origin = {"host": netloc, "origin": f"http://{netloc}"}
+
+    with TestClient(call["app"]) as client:
+        assert client.get("/", headers=same_origin).status_code == 200
+        assert client.get("/api/statuses", headers=same_origin).status_code == 200
+        with client.websocket_connect("/ws", headers=same_origin) as ws:
+            ws.send_json(SUBSCRIBE)
+            assert ws.receive_json()["type"] == "snapshot"
+
+
+@pytest.mark.parametrize(
+    ("bind", "host", "status"),
+    [
+        ("0.0.0.0", "rebind.evil.example:6701", 403),
+        ("0.0.0.0", "192.168.1.20:6702", 403),
+        ("0.0.0.0", "[192.168.1.20:6701", 403),
+        ("MyHost.lan", "myhost.lan:6701", 200),
+        ("MyHost.lan", "otherhost.lan:6701", 403),
+    ],
+    ids=["foreign-name", "other-port", "malformed", "bound-name", "other-name"],
+)
+def test_the_host_pin_admits_an_address_or_the_bound_name_on_the_bound_port(
+    root: Path, bind: str, host: str, status: int
+) -> None:
+    client = TestClient(create_app(root, host=bind, port=6701))
+
+    assert client.get("/api/statuses", headers={"host": host}).status_code == status
+
+
+def test_web_prints_an_ipv6_bind_as_a_bracketed_url(
+    root: Path, served: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A unique-local address starts with a letter, so unescaped brackets would read as markup.
+    monkeypatch.setattr("taskmanager.cli.main._find_available_port", lambda _host, port: port)
+    argv = ["web", "--host", "fd12::5", "--expose", "--no-open", "-C", str(root)]
+    res = CliRunner().invoke(cli, argv)
+
+    assert res.exit_code == 0, res.output
+    assert "http://[fd12::5]:6701" in res.output
+    assert "ws://[fd12::5]:6701/ws" in res.output

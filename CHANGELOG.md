@@ -25,6 +25,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - `tm install`, the empty `tm plugin` group and `install.sh`: the README's install commands
   replace them.
 
+### Fixed
+
+- `tm web --host` takes an IPv6 address: it found no free port for one, and printed its URL
+  without brackets.
+
 ### Security
 
 - `tm web` refuses a foreign `Host` or `Origin` on every route and on `/ws`, so a page on another
@@ -33,6 +38,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   that ship with tm, not from unpinned CDN URLs, and the export opens offline.
 - `tm web` refuses a `--host` other than loopback unless `--expose` is passed: it has no
   authentication, and any client that reaches the port can run commands through a verification.
+  An exposed server answers a client that reaches it by any of the machine's addresses, or by the
+  name `--host` gives.
 
 ## [0.3.7] - 2026-10-08
 

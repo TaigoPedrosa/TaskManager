@@ -2437,8 +2437,10 @@ def audit_list(
 def _find_available_port(host: str, starting_port: int, max_attempts: int = 20) -> int:
     import socket
 
+    # The family uvicorn binds `host` with, so the probe opens the socket uvicorn will.
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
     for p in range(starting_port, starting_port + max_attempts):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        with socket.socket(family, socket.SOCK_STREAM) as s:
             try:
                 s.bind((host, p))
                 return p
@@ -2490,11 +2492,13 @@ def _run_web_server(
     if actual_port != port:
         print(f"[yellow]Port {port} in use, auto-switched to port {actual_port}[/yellow]")
 
-    server_url = f"http://{host}:{actual_port}"
+    netloc = f"[{host}]:{actual_port}" if ":" in host else f"{host}:{actual_port}"
+    server_url = f"http://{netloc}"
     print(
-        f"[green]Starting TaskManager Web Visualizer at[/green] [bold cyan]{server_url}[/bold cyan]"
+        "[green]Starting TaskManager Web Visualizer at[/green] "
+        f"[bold cyan]{escape(server_url)}[/bold cyan]"
     )
-    print(f"[dim]Live WebSocket connected at ws://{host}:{actual_port}/ws[/dim]")
+    print(f"[dim]Live WebSocket connected at ws://{escape(netloc)}/ws[/dim]")
 
     if open_browser:
 
