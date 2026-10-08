@@ -8,6 +8,7 @@ from pathlib import Path
 
 from taskmanager.core.enums import VerificationType
 from taskmanager.core.models import NodeVerification
+from taskmanager.engine.config import DEFAULT_BRANCH
 
 
 @dataclass
@@ -173,18 +174,19 @@ def _relative_to_repo(target_path: str, target_repo: str) -> str:
     return target_path.removeprefix(prefix)
 
 
-def _resolve_ref(repo_root: Path, ref: str | None) -> tuple[str, str | None]:
+def _resolve_ref(repo_root: Path, ref: str | None, branch: str) -> tuple[str, str | None]:
     """The ref to read, and a fetch-failure message when the default ref could not be refreshed.
 
-    A caller-supplied `ref` is read as-is, with no fetch. Otherwise the default is `origin/main`
-    after fetching it; a failed fetch is reported and never falls back to the working tree.
+    A caller-supplied `ref` is read as-is, with no fetch. Otherwise the default is
+    `origin/<branch>` after fetching it; a failed fetch is reported and never falls back to the
+    working tree.
     """
     if ref is not None:
         return ref, None
-    fetched = _git(repo_root, "fetch", "-q", "origin", "main")
+    fetched = _git(repo_root, "fetch", "-q", "origin", branch)
     if fetched.returncode != 0:
-        return "origin/main", fetched.stderr.strip() or f"exit code {fetched.returncode}"
-    return "origin/main", None
+        return f"origin/{branch}", fetched.stderr.strip() or f"exit code {fetched.returncode}"
+    return f"origin/{branch}", None
 
 
 class VerificationEngine:
@@ -196,16 +198,21 @@ class VerificationEngine:
         ver: NodeVerification,
         target_repo: str | None = None,
         ref: str | None = None,
+        branch: str | None = None,
     ) -> VerificationResult:
+        """With no `ref`, a path check reads `origin/<branch>` (the default branch when none is
+        named), and a test command is handed `origin/<branch>` only when `branch` is named."""
         if target_repo and ver.verification_type in _PATH_VERIFICATION_TYPES:
-            return self._verify_at_ref(ver, target_repo, ref)
+            return self._verify_at_ref(ver, target_repo, ref, branch or DEFAULT_BRANCH)
+        if ref is None and branch is not None:
+            ref = f"origin/{branch}"
         return self._verify_in_tree(ver, ref)
 
     def _verify_at_ref(
-        self, ver: NodeVerification, target_repo: str, ref: str | None
+        self, ver: NodeVerification, target_repo: str, ref: str | None, branch: str
     ) -> VerificationResult:
         repo_root = self.root / target_repo
-        effective_ref, fetch_error = _resolve_ref(repo_root, ref)
+        effective_ref, fetch_error = _resolve_ref(repo_root, ref, branch)
         mode_suffix = f" (git ref {effective_ref} in {target_repo})"
 
         if fetch_error is not None:
@@ -215,8 +222,8 @@ class VerificationEngine:
                 verification_type=ver.verification_type,
                 passed=False,
                 message=(
-                    f"git fetch origin main in {target_repo} failed, refusing to fall back to "
-                    f"the working tree: {fetch_error}"
+                    f"git fetch origin {branch} in {target_repo} failed, refusing to fall back "
+                    f"to the working tree: {fetch_error}"
                 ),
             )
 
@@ -444,7 +451,7 @@ class VerificationEngine:
                     message="No test command specified",
                 )
             # A stored command string has no placeholder to rewrite, so the ref reaches it
-            # through the environment; unset when no ref was asked for.
+            # through the environment; unset when there is none to hand it.
             env = None if ref is None else {**os.environ, "TM_VERIFY_REF": ref}
             res = subprocess.run(
                 command,
@@ -486,9 +493,12 @@ class VerificationEngine:
         verifications: list[NodeVerification],
         repo_for_node: Mapping[str, str | None] | None = None,
         ref: str | None = None,
+        branch_for_node: Mapping[str, str] | None = None,
     ) -> list[VerificationResult]:
-        repos = repo_for_node or {}
+        repos, branches = repo_for_node or {}, branch_for_node or {}
         return [
-            self.verify_assertion(v, target_repo=repos.get(v.node_id), ref=ref)
+            self.verify_assertion(
+                v, target_repo=repos.get(v.node_id), ref=ref, branch=branches.get(v.node_id)
+            )
             for v in verifications
         ]

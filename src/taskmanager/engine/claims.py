@@ -481,16 +481,22 @@ class Claims:
         repo_dir = self.root / repo
         parent = self.ops.landing_parent(self.node(node_id).id)
         if parent is None:
-            top, default = self.ops.landing_branch(node_id, repo), self.ops.default_branch(repo)
-            gitops.fetch(repo_dir, top)
-            if top != default and not gitops.rev_parse(repo_dir, f"origin/{top}"):
-                top = default
-                gitops.fetch(repo_dir, top)
-            return GitManager(repo_dir).default_base_ref(top)
+            return GitManager(repo_dir).default_base_ref(self.fetched_top(node_id, repo))
         parent_branch = self.branch_of(parent)
         if not gitops.rev_parse(repo_dir, f"refs/heads/{parent_branch}"):
             gitops.ensure_branch(repo_dir, parent_branch, self._base_ref(parent, repo))
         return parent_branch
+
+    def fetched_top(self, node_id: str, repo: str) -> str:
+        """The branch `node_id`'s chain lands on at the top in `repo`, fetched. One not on origin
+        yet reads as the repository's default branch, which the first landing on it pushes."""
+        repo_dir = self.root / repo
+        top, default = self.ops.landing_branch(node_id, repo), self.ops.default_branch(repo)
+        gitops.fetch(repo_dir, top)
+        if top != default and not gitops.rev_parse(repo_dir, f"origin/{top}"):
+            gitops.fetch(repo_dir, default)
+            return default
+        return top
 
     def _unclaim(self, original: Node) -> None:
         # A landing job created before the failure would otherwise hold the node forever.
@@ -883,8 +889,7 @@ class Claims:
         return nxt.status
 
     def _prove_landed(self, node_id: str) -> None:
-        branch, target = self.branch_of(node_id), self.target_of(node_id)
-        ref = self.target_ref(node_id)
+        branch = self.branch_of(node_id)
         at_top = self.ops.landing_parent(node_id) is None
         container = self.is_container(self.node(node_id))
         repos = self.repos_of(node_id)
@@ -894,17 +899,20 @@ class Claims:
             )
         for repo in repos:
             repo_dir = self.root / repo
+            target, ref = self.target_of(node_id, repo), self.target_ref(node_id, repo)
             if at_top:
                 gitops.fetch(repo_dir, target)
-            if not gitops.rev_parse(repo_dir, f"refs/heads/{branch}"):
-                if container:
-                    continue
+            if gitops.rev_parse(repo_dir, f"refs/heads/{branch}"):
+                if not gitops.is_ancestor(repo_dir, branch, ref):
+                    raise OperationError(
+                        f"{branch} is not on {target} in {repo}: land it first", 409
+                    )
+            elif not container:
                 raise OperationError(f"{branch} does not exist in {repo}", 409)
-            if not gitops.is_ancestor(repo_dir, branch, ref):
-                raise OperationError(f"{branch} is not on {target} in {repo}: land it first", 409)
-        passed, report = self.verify(node_id, ref)
-        if not passed:
-            raise OperationError(f"verifications red on {target}:\n{report}", 409)
+            # Each repository's checks read the target that repository's code landed on.
+            passed, report = self.verify(node_id, ref, repo)
+            if not passed:
+                raise OperationError(f"verifications red on {target} in {repo}:\n{report}", 409)
 
     def _retire_branch(self, node_id: str) -> None:
         """Keeps the old branch as `<branch>@<n>`, and its worktree beside the old path under the
@@ -991,12 +999,12 @@ class Claims:
         units: list[tuple[str, str, str]] = []
         fetched: set[tuple[str, str]] = set()
         for source, base, carrier in pairs:
-            # `base` lands on `source`, so the source is read where `base`'s landing reads it.
-            source_ref = self.target_ref(base)
-            top = self.target_of(base) if source.startswith(TOP) else None
             base_branch, carried = self.branch_of(base), self.branch_of(carrier)
             for repo in self.known_repos():
                 repo_dir = self.root / repo
+                # `base` lands on `source`, so the source is read where `base`'s landing reads it.
+                source_ref = self.target_ref(base, repo)
+                top = self.target_of(base, repo) if source.startswith(TOP) else None
                 if top is not None and (repo, top) not in fetched:
                     gitops.fetch(repo_dir, top)
                     fetched.add((repo, top))

@@ -360,14 +360,13 @@ class Operations:
         repository its counted tasks name. No repository named, a git error, or a repository
         not cloned here reads as a change: nothing then proves the code is on its target."""
         repos = self.repos_of(container_id)
-        base = self.target_ref(container_id)
         branch = self.branch_of(container_id)
         root = self._project_root()
         return bool(repos) and all(
             (root / repo / ".git").exists()
             and (
                 not gitops.rev_parse(root / repo, f"refs/heads/{branch}")
-                or gitops.diff_quiet(root / repo, base, branch)
+                or gitops.diff_quiet(root / repo, self.target_ref(container_id, repo), branch)
             )
             for repo in repos
         )
@@ -856,7 +855,13 @@ class Operations:
                 400,
             )
 
-        results = self.verification_engine.verify_all(vers, repo_for_node, ref)
+        # With no ref asked for, each task is read where its chain lands at the top.
+        branch_for_node = (
+            None
+            if ref is not None
+            else {n: self.landing_branch(n, repo_for_node[n]) for n in {v.node_id for v in vers}}
+        )
+        results = self.verification_engine.verify_all(vers, repo_for_node, ref, branch_for_node)
         all_passed = all(r.passed for r in results)
         self._ledger(
             LedgerCommand.VERIFICATION_RUN,
