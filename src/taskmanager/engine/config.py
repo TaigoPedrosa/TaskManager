@@ -1,5 +1,5 @@
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, Final, Literal, NamedTuple
 
@@ -169,6 +169,12 @@ class ProjectConfig(BaseModel):
         return found.default_branch if found is not None else DEFAULT_BRANCH
 
 
+def moved_defaults(before: ProjectConfig, after: ProjectConfig) -> list[str]:
+    """Each repository whose default branch differs from `before` to `after`, by name."""
+    repos = {*before.repos, *after.repos}
+    return sorted(r for r in repos if before.default_branch(r) != after.default_branch(r))
+
+
 class Resolved(NamedTuple):
     value: Any
     source: str
@@ -248,8 +254,13 @@ def _check_all_bounds(flat: dict[str, Any]) -> None:
 class ConfigStore:
     """`<root>/.taskmanager/config.yaml`, holding only the keys that were set."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(
+        self, root: Path, guard: Callable[[ProjectConfig, ProjectConfig], None] | None = None
+    ) -> None:
         self.path = root / ".taskmanager" / "config.yaml"
+        # Shown the stored and the written `repos` before a write that moves a default branch;
+        # raising refuses the write.
+        self.guard = guard
 
     def read(self) -> dict[str, Any]:
         if not self.path.exists():
@@ -262,7 +273,15 @@ class ConfigStore:
             raise ConfigError(f"{self.path} is not a mapping")
         return {key: _typed(key, value) for key, value in _flatten(loaded)}
 
+    def _check_branches(self, flat: dict[str, Any]) -> None:
+        if self.guard is None:
+            return
+        before, after = self.branches(), ProjectConfig(repos=flat.get("repos", {}))
+        if moved_defaults(before, after):
+            self.guard(before, after)
+
     def _write(self, flat: dict[str, Any]) -> None:
+        self._check_branches(flat)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(yaml.safe_dump(_nest(flat), sort_keys=True), encoding="utf-8")
 
@@ -279,6 +298,7 @@ class ConfigStore:
         if flat:
             self._write(flat)
         else:
+            self._check_branches(flat)
             self.path.unlink(missing_ok=True)
 
     def resolve(self, key: str, flag: Any = None) -> Resolved:

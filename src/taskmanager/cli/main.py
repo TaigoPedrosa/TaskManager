@@ -2237,10 +2237,22 @@ def restore_cmd(
         importer.import_dict(doc)
     settings_file = directory / "_config.json"
     if settings_file.exists():
+        # Unchecked: the archive's branches were cut under its own config, never this root's.
         with _user_errors():
             ConfigStore(root).replace(json.loads(settings_file.read_text(encoding="utf-8")))
     specs = sum(1 for d in spec_docs if d.get("spec"))
     print(f"[green]Restored {len(plan_docs)} plans and {specs} specs into {root}[/green]")
+
+
+def _config_store(root: Path) -> ConfigStore:
+    """The store `tm config` writes through: moving a default branch is checked against every
+    branch cut from it."""
+    return ConfigStore(
+        root,
+        lambda before, after: (
+            _get_container(root).get(Operations).check_default_branches(before, after)
+        ),
+    )
 
 
 @config_app.command("list")
@@ -2283,8 +2295,8 @@ def config_set(
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
-    with _user_errors():
-        ConfigStore(root).set(key, value)
+    with _user_errors(), _refusing():
+        _config_store(root).set(key, value)
     print(f"[green]Set {escape(key)}[/green]")
 
 
@@ -2294,8 +2306,8 @@ def config_unset(
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
-    with _user_errors():
-        ConfigStore(root).unset(key)
+    with _user_errors(), _refusing():
+        _config_store(root).unset(key)
     print(f"[green]Unset {escape(key)}[/green]")
 
 

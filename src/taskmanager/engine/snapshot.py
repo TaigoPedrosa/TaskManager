@@ -177,8 +177,8 @@ def roll_up_ancestors(
     return moved
 
 
-def _top(snapshot: Snapshot, node_id: str, branches: ProjectConfig) -> str:
-    """`Operations.landing_branch` with no repository named, read from the snapshot."""
+def _top(snapshot: Snapshot, node_id: str, branches: ProjectConfig, repo: str | None = None) -> str:
+    """`Operations.landing_branch`, read from the snapshot."""
     root, seen = node_id, {node_id}
     while (parent := snapshot.nodes[root].parent) in snapshot.nodes and parent not in seen:
         root = parent
@@ -186,11 +186,22 @@ def _top(snapshot: Snapshot, node_id: str, branches: ProjectConfig) -> str:
     land_on = snapshot.nodes[root].land_on
     if land_on:
         return land_on
-    repo = snapshot.nodes[node_id].repo
+    if repo is None:
+        repo = snapshot.nodes[node_id].repo
     if repo is None:
         repos = (snapshot.nodes[d].repo for d in snapshot.counted_descendants(node_id))
         repo = min(filter(None, repos), default=None)
     return branches.default_branch(repo)
+
+
+def with_tops(snapshot: Snapshot, branches: ProjectConfig, repo: str | None = None) -> Snapshot:
+    """`snapshot` with each node's `top` as `Operations.landing_branch(node, repo)` reads it
+    under `branches`."""
+    tops = {
+        node_id: replace(n, top=_top(snapshot, node_id, branches, repo))
+        for node_id, n in snapshot.nodes.items()
+    }
+    return Snapshot(nodes=tops, edges=snapshot.edges, data=snapshot.data)
 
 
 class SnapshotBuilder:
@@ -220,11 +231,7 @@ class SnapshotBuilder:
         edges = data.relations[RelationType.DEPENDS_ON]
         # A container's repository is only known once its descendants are in the tree.
         draft = Snapshot(nodes=nodes, edges=edges, data=data)
-        branches = ConfigStore(self.node_repo.db.taskmanager_dir.parent).branches()
-        tops = {
-            node_id: replace(n, top=_top(draft, node_id, branches)) for node_id, n in nodes.items()
-        }
-        return Snapshot(nodes=tops, edges=edges, data=data)
+        return with_tops(draft, ConfigStore(self.node_repo.db.taskmanager_dir.parent).branches())
 
     def cycle(self, node: Node) -> Cycle:
         return cycle_of(node, self._sensitive(node))

@@ -63,7 +63,7 @@ def test_node_detail_carries_chains_dependencies_conditions_and_jobs(web: Web) -
     detail = client.get("/api/nodes/S1-P1-b").json()
     assert (detail["display"], detail["phase"]) == ("BLOCKED_BY_TASK", "QUEUED")
     assert detail["node"]["landing_chain"] == ["S1-P1-b"]
-    assert detail["node"]["base_chain"] == ["TOP:main"]
+    assert detail["node"]["base_chain"] == ["main"]
     assert [(d["id"], d["status"], d["finished"]) for d in detail["dependency_details"]] == [
         ("S1-P1-a", "READY", False)
     ]

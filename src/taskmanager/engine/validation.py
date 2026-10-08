@@ -22,6 +22,8 @@ from taskmanager.engine.stepgraph import (
 )
 
 _SET_ASIDE_OR_FAILED = EXITS | {Status.FAILED}
+# Work whose code never lands again, so nothing reads where it would.
+_LANDS_NO_MORE: Final = frozenset({Status.COMPLETED, Status.SUPERSEDED})
 # What a `sensitive:` key may name: a fix touching one of these gets one review scoped to its
 # findings before it lands.
 SENSITIVE_AREAS: Final = ("tenant", "rls", "crypto", "migration")
@@ -185,6 +187,13 @@ def _retarget(
             n.id, 4, f"{refused}; {steps}reopen it with --new-branch before changing where it lands"
         )
     ]
+
+
+def retargets(before: Snapshot, after: Snapshot, branches: BranchFacts) -> list[Refusal]:
+    """Rule 4 alone, over every node whose code still lands: for a write that moves where whole
+    chains land rather than any one node."""
+    live = [n for _, n in sorted(after.nodes.items()) if n.status not in _LANDS_NO_MORE]
+    return [refusal for n in live for refusal in _retarget(before, after, n, branches)]
 
 
 def _placement(before: Snapshot, after: Snapshot, n: SnapNode) -> list[Refusal]:

@@ -44,7 +44,7 @@ from taskmanager.engine.assets import (
 )
 from taskmanager.engine.chains import TOP, landing_target
 from taskmanager.engine.conditions import is_executable
-from taskmanager.engine.config import ConfigStore, ProjectConfig
+from taskmanager.engine.config import ConfigStore, ProjectConfig, moved_defaults
 from taskmanager.engine.decisions import (
     DecisionAnswer,
     DecisionData,
@@ -61,10 +61,11 @@ from taskmanager.engine.snapshot import (
     roll_up_ancestors,
     sensitive_areas,
     stored_status,
+    with_tops,
     writes_migration,
 )
 from taskmanager.engine.stepgraph import Snapshot
-from taskmanager.engine.validation import validate
+from taskmanager.engine.validation import retargets, validate
 from taskmanager.engine.verification import VerificationEngine, VerificationResult
 
 # The section a project bootstraps once and every `tm guide` overlay hangs off; `section set`
@@ -147,10 +148,14 @@ class GitBranchFacts:
     target keeps the base exactly when the branch forks from the new target at the same commit.
     """
 
-    def __init__(self, root: Path, node_repo: NodeRepository, tree: Snapshot) -> None:
+    def __init__(
+        self, root: Path, node_repo: NodeRepository, tree: Snapshot, only: str | None = None
+    ) -> None:
         self.root = root
         self.node_repo = node_repo
         self.tree = tree
+        # One repository's clone alone, for a tree whose tops were read in that repository.
+        self.only = only
 
     @cached_property
     def _branches(self) -> ProjectConfig:
@@ -165,8 +170,12 @@ class GitBranchFacts:
         names = sorted(
             {repo for i in ids if (snap := self.tree.nodes.get(i)) and (repo := snap.repo)}
         )
-        dirs: list[tuple[str | None, Path]] = [(name, self.root / name) for name in names]
-        return [(name, d) for name, d in dirs or [(None, self.root)] if (d / ".git").exists()]
+        dirs: list[tuple[str | None, Path]] = [
+            (name, self.root / name) for name in names if self.only in (None, name)
+        ]
+        if not names and self.only is None:
+            dirs = [(None, self.root)]
+        return [(name, d) for name, d in dirs if (d / ".git").exists()]
 
     @staticmethod
     def _git(repo: Path, *args: str) -> str | None:
@@ -303,6 +312,18 @@ class Operations:
 
     def default_branch(self, repo: str | None) -> str:
         return ConfigStore(self._project_root()).branches().default_branch(repo)
+
+    def check_default_branches(self, before: ProjectConfig, after: ProjectConfig) -> None:
+        """Refuses moving a repository's default branch from `before` to `after` while a branch
+        cut there would land on the new one from another base: rule 4, read per repository."""
+        root, tree = self._project_root(), self.snapshots.build()
+        refusals = []
+        for repo in moved_defaults(before, after):
+            old = with_tops(tree, before, repo)
+            facts = GitBranchFacts(root, self.node_repo, old, only=repo)
+            refusals += retargets(old, with_tops(tree, after, repo), facts)
+        if refusals:
+            raise OperationError("Nothing changed: " + "; ".join(r.message for r in refusals), 409)
 
     def landing_parent(self, node_id: str) -> str | None:
         """The parent whose branch `node_id` lands on, or None when it lands at the top."""
