@@ -395,11 +395,14 @@ class Claims:
             "task start", node.id, {"action": action.value, "agent": agent, "from": node.status}
         )
         try:
-            return replace(self._begin(after, action, model, worktree_dir), token=lease.token)
+            begun = self._begin(after, action, model, worktree_dir)
         except (OperationError, CalledProcessError, OSError, ValueError) as exc:
             self._unclaim(node)
             detail = getattr(exc, "stderr", None) or str(exc)
             raise OperationError(f"claim of {node.id} undone: {detail}".strip(), 409) from exc
+        if begun.worktree is not None:
+            self.runtime.set_worktree(node.id, lease.token, begun.worktree)
+        return replace(begun, token=lease.token)
 
     def _step_branch(self, node: Node, action: Action) -> str:
         """The branch a step works on: the node's own, or for a review of landed code, the
@@ -468,7 +471,7 @@ class Claims:
 
         if not self.is_container(node):
             repo = repos[0]
-            path = cut(repo, base_dir / f"{repo}-{node.id}")
+            path = cut(repo, base_dir / (node.id if repo == "." else f"{repo}-{node.id}"))
             return path, {repo: path}
         worktrees = {repo: cut(repo, base_dir / node.id / repo) for repo in repos}
         return str(base_dir / node.id), worktrees
@@ -483,11 +486,19 @@ class Claims:
         """The ref `node_id`'s branch is cut from in `repo`, creating each ancestor container
         branch on the way: a node builds on its landing target, never on the top branch past a
         parent that has not landed. A top branch not on origin yet is cut from the repository's
-        default branch, and the first landing on it creates it."""
+        default branch, and the first landing on it creates it; with that one missing too, the
+        claim is refused, since the landing would have nowhere to push."""
         repo_dir = self.root / repo
         parent = self.ops.landing_parent(self.node(node_id).id)
         if parent is None:
-            return GitManager(repo_dir).default_base_ref(self.fetched_top(node_id, repo))
+            top = self.fetched_top(node_id, repo)
+            if not gitops.rev_parse(repo_dir, f"origin/{top}"):
+                raise OperationError(
+                    f"{repo} has no origin/{top}: tm cuts branches from origin/{top} and lands "
+                    "by pushing to origin",
+                    409,
+                )
+            return f"origin/{top}"
         parent_branch = self.branch_of(parent)
         if not gitops.rev_parse(repo_dir, f"refs/heads/{parent_branch}"):
             gitops.ensure_branch(repo_dir, parent_branch, self._base_ref(parent, repo))
@@ -773,6 +784,8 @@ class Claims:
         self._ledger(
             command, node.id, {"event": event.value, "from": node.status, "to": nxt.status}
         )
+        if nxt.status == Status.COMPLETED:
+            self._drop_worktrees(node.id)
         return nxt.status
 
     def _write_blocker(self, node_id: str, blocker: Blocker) -> None:
@@ -899,7 +912,24 @@ class Claims:
                 self._strand(node.id, nxt.status)
             roll_up_ancestors(self.ops, node.id)
         self._ledger(command, node.id, {"from": node.status, "to": nxt.status})
+        if nxt.status == Status.COMPLETED:
+            self._drop_worktrees(node.id)
         return nxt.status
+
+    def _drop_worktrees(self, node_id: str) -> None:
+        """A completed node's code is on its target, so the worktrees its steps worked in go.
+        Its branch stays: a later sync reads it as the carrier of that code. A worktree git
+        refuses to remove, one holding uncommitted work, stays and is logged."""
+        branch = self.branch_of(node_id)
+        for repo in self.repos_of(node_id):
+            manager = GitManager(self.root / repo)
+            try:
+                worktree = manager.find_worktree(branch)
+                if worktree is not None:
+                    manager.remove_worktree(worktree)
+            except (CalledProcessError, OSError) as exc:
+                detail = getattr(exc, "stderr", None) or exc
+                _log.warning("kept the worktree of %s in %s: %s", node_id, repo, detail)
 
     def _prove_landed(self, node_id: str) -> None:
         branch = self.branch_of(node_id)

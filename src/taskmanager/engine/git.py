@@ -21,17 +21,6 @@ class GitManager:
             return (self.root / common_path).resolve()
         return common_path.resolve()
 
-    def default_base_ref(self, branch: str) -> str:
-        """`origin/<branch>` when the repository has one, else `HEAD`."""
-        res = subprocess.run(
-            ["git", "rev-parse", "--verify", "--quiet", f"origin/{branch}"],
-            cwd=self.root,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return f"origin/{branch}" if res.returncode == 0 else "HEAD"
-
     def create_worktree(
         self, branch_name: str, worktree_path: Path, base_ref: str = "HEAD"
     ) -> Path:

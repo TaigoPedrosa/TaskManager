@@ -16,6 +16,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   of `tm web`.
 - The plugin's skills give the command that installs `tm`, and tell an agent to stop when `tm` is
   not on PATH.
+- `tm config set`, `get` and `unset` take dotted keys under `repos`:
+  `repos.<repo>.gates.<main|parent>[.command|.junit|.timeout]`, `repos.<repo>.gates`,
+  `repos.<repo>.default_branch` and `repos.<repo>`. Each merges into the stored mapping; the
+  repository at the tm root is `.`, as in `repos...gates.main.command`.
+- A lease records the worktree its claim cut, so `tm run list` shows it.
 
 ### Changed
 
@@ -47,6 +52,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - `tm web --host` takes an IPv6 address: it found no free port for one, and printed its URL
   without brackets.
+- A gate command may hold braces of its own (`${HOME}`, `awk '{print $1}'`, `find -exec {} +`):
+  only `{worktree}`, `{node}`, `{repo}` and `{target}` are replaced.
+- A landing job stopped by any error waits for an agent with the error named, instead of staying
+  `running` with no process behind it.
+- `tm config set repos` refuses a value that would drop a repository's stored settings, and names
+  the repository.
+- A claim in a repository with no `origin/<default branch>` is refused, naming it, instead of
+  failing at landing. A landing with no main gate names the command that sets one.
+- An implement or fix worktree is removed once its node is `COMPLETED`, unless it holds
+  uncommitted work. The `tm/<id>` branch stays.
+- A task whose `target_repo` is `.` gets the worktree `<worktree_dir>/<id>`, not `.-<id>`.
 
 ### Security
 
