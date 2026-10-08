@@ -434,6 +434,49 @@ test('a read shows its loading pane state only once in flight 300 ms, a fast one
   assert.ok(reopen.disabled && reopen.querySelector('.animate-spin'), 'the write spins from the click');
 });
 
+const tabCounts = (page) => page.$$('#decisions-tabs .dec-tab-btn').map((b) => {
+  const pill = b.querySelector('.dec-tab-count');
+  return pill ? pill.textContent : null;
+});
+
+test('the tabs show no count while the list loads or has failed, and a fast tab switch keeps them', async () => {
+  const server = fakeServer(frameDecisions());
+  const releaseList = server.hold('list');
+  const page = await openPage(server);
+  assert.deepEqual(tabCounts(page), [null, null, null], 'the first load, before the loading state shows');
+  await wait(350);
+  assert.equal(paneStateOf(page.$('#decisions-list')).getAttribute('data-pane-state'), 'loading');
+  assert.deepEqual(tabCounts(page), [null, null, null], 'beside the loading state');
+  releaseList();
+  await page.settle();
+  assert.deepEqual(tabCounts(page), ['3', '1', '1']);
+
+  page.$('#dec-tab-answered').click();
+  assert.deepEqual(tabCounts(page), ['3', '1', '1'], 'a tab switch in flight under 300 ms keeps the counts');
+  await page.settle();
+  const releaseAgain = server.hold('list');
+  page.$('#dec-tab-withdrawn').click();
+  await wait(350);
+  assert.deepEqual(tabCounts(page), [null, null, null], 'a tab switch past 300 ms shows loading without counts');
+  releaseAgain();
+  await page.settle();
+  assert.deepEqual(tabCounts(page), ['3', '1', '1']);
+
+  server.fail('list', 502, 'Bad Gateway');
+  page.run('refreshDecisionsData()');
+  await page.settle();
+  assert.equal(paneStateOf(page.$('#decisions-list')).getAttribute('data-pane-state'), 'error');
+  assert.deepEqual(tabCounts(page), [null, null, null], 'beside the error state');
+});
+
+test('a failed list load is stated once, by its error pane state with Retry, and raises no toast', async () => {
+  const server = fakeServer(frameDecisions());
+  server.fail('list', 502, 'Bad Gateway');
+  const page = await openPage(server);
+  assert.equal(paneStateOf(page.$('#decisions-list')).querySelector('p').textContent, 'Could not load decisions.');
+  assert.equal(page.$$('#toast-root .toast').length, 0);
+});
+
 test('a live re-render keeps the selected decision, both scroll offsets, the focused field and its draft; an arriving decision takes its place and is not selected', async () => {
   const server = fakeServer(frameDecisions());
   const page = await openPage(server, { url: '/decisions/decision-D40' });

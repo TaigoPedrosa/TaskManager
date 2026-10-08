@@ -114,6 +114,7 @@ async function refreshDecisionsData() {
     decisionsLoadTimer = setTimeout(() => {
       decisionsSlowLoad = true;
       if (currentMode !== window.VIEW_MODES.DECISIONS) return;
+      renderDecisionsTabs();
       renderDecisionsList();
       if (!selectedDecisionId) renderNoSelection();
     }, LOADING_DELAY_MS);
@@ -132,15 +133,13 @@ async function refreshDecisionsData() {
       decisionsLoadFailed = false;
     } catch (e) {
       if (tab !== decisionsTab) return;
-      // A load failure used to read as "No open decisions." -- an empty queue, not a broken
-      // one -- with the badge hiding too, which is the one case that most looks like nothing
-      // is wrong.
+      // A failed load is the list's error pane state with Retry, never an empty queue, and
+      // nothing else on the screen repeats it.
       console.error('Failed to load decisions:', e);
       decisionsData = [];
       decisionsNextCursor = null;
       decisionsCounts = null;
       decisionsLoadFailed = true;
-      toast(`Could not load decisions: ${e.message}`, 'error');
     }
   }
   clearTimeout(decisionsLoadTimer);
@@ -266,9 +265,11 @@ const DEC_MUTED = 'text-zinc-400'; // zinc-500 on zinc-950 is 4.1:1, under AA fo
 // The Open tab's count is the live total (decisions_open), pushed with every snapshot/update
 // with no fetch needed; Answered/Withdrawn have no live push, so they read the snapshot
 // /api/decisions took of every status the last time any tab was fetched. Static mode holds
-// every decision at once, so its tabs count straight off it instead.
+// every decision at once, so its tabs count straight off it instead. While the list has
+// failed, is on its first load, or shows its loading state, no tab shows a count.
 function decisionsTabCount(tab) {
   if (isStaticMode) return decisionsData.filter(d => decisionTabFor(d.status) === tab.key).length;
+  if (decisionsLoadFailed || (!decisionsLoaded && (decisionsSlowLoad || decisionsCounts === null))) return null;
   if (tab.key === 'open') return window.tmStore.decisionsOpen;
   return decisionsCounts ? decisionsCounts[tab.key] : null;
 }
