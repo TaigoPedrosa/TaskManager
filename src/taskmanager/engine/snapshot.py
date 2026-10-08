@@ -129,13 +129,15 @@ def node_busy(
 
 
 def roll_up_ancestors(
-    ops: Operations, node_id: str, *, include_self: bool = False
+    ops: Operations, node_id: str, *, include_self: bool = False, arrived: bool = False
 ) -> list[tuple[str, Status]]:
     """Re-derive each ancestor container's status after a change under it (and `node_id`'s own
     with `include_self`), in the caller's transaction, and return every container that moved
     with its new status. The only rollup: a container reaching IMPLEMENTED with nothing left to
     land is landed already, one reaching DEFERRED or ABANDONED strands its dependents, and each
-    move is ledgered."""
+    move is ledgered. `arrived`: `node_id` has just come under its parent, so no ancestor's
+    landing carried its code, whatever its status, and each is off its target until it lands
+    again."""
     # decisions imports this module, so importing it back at load time would be circular.
     from taskmanager.engine.decisions import open_stranded_decision, stranded_dependents
 
@@ -148,6 +150,9 @@ def roll_up_ancestors(
         if parent is None or parent.kind not in CONTAINERS:
             break
         seen.add(parent.id)
+        if arrived and parent.on_target:
+            parent = parent.model_copy(update={"on_target": False})
+            node_repo.save_node(parent)
         children = [node_repo.get_node(c) for c in node_repo.get_children(parent.id)]
         statuses = [
             s for c in children if c is not None and isinstance(s := stored_status(c), Status)

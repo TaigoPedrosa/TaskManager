@@ -760,7 +760,7 @@ class Operations:
                     source_id=plan_id, target_id=task_id, relation_type=RelationType.CONTAINS
                 )
             )
-            roll_up_ancestors(self, task_id)
+            roll_up_ancestors(self, task_id, arrived=old_plan != plan_id)
             if old_plan is not None:
                 roll_up_ancestors(self, old_plan, include_self=True)
         self._ledger(

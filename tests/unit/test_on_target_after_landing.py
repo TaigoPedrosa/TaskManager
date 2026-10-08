@@ -143,6 +143,68 @@ def test_a_child_moved_in_under_the_landed_plan_moves_it_back_before_landing(
     assert state(claims) == (Status.READY, "waits on C", ["W"])
 
 
+def test_a_completed_child_moved_in_under_the_landed_plan_moves_it_back_before_landing(
+    tmp_path: Path,
+) -> None:
+    claims = landed_plan(tmp_path)
+    add(claims, "Q", NodeKind.PLAN, parent="S")
+    add(claims, "M", parent="Q", merge=Merge.PARENT, status=Status.COMPLETED, files=MIGRATION)
+    add(claims, "X2", depends=("M",))
+    rejected(claims)
+
+    claims.ops.move_task("C", "P")
+    kept = state(claims)
+    claims.ops.move_task("M", "P")
+
+    assert kept == (Status.REVIEWED, None, ["M"])
+    assert (state(claims), blocked(claims, "X2")) == (
+        (Status.REVIEWED, "waits on C", ["M", "W"]),
+        "waits on M",
+    )
+
+
+def test_a_completed_child_imported_under_the_landed_plan_moves_it_back_before_landing(
+    tmp_path: Path,
+) -> None:
+    claims = landed_plan(tmp_path)
+    rejected(claims)
+    importer = BulkImporter(claims.nodes)
+
+    importer.import_dict(
+        {
+            "plans": [{"id": "P", "title": "P", "tasks": [{"id": "C", "title": "C"}]}],
+            "tasks": [{"id": "X", "title": "X", "depends_on": ["C"]}],
+        }
+    )
+    kept = state(claims)
+    importer.import_dict(
+        {
+            "plans": [
+                {
+                    "id": "P",
+                    "title": "P",
+                    "tasks": [
+                        {
+                            "id": "N",
+                            "title": "N",
+                            "status": "COMPLETED",
+                            "merge": "parent",
+                            "target_repo": "api",
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    add(claims, "X3", depends=("N",))
+
+    assert kept == (Status.REVIEWED, None, [])
+    assert (state(claims), blocked(claims, "X3")) == (
+        (Status.REVIEWED, "waits on C", ["W"]),
+        "waits on N",
+    )
+
+
 def test_a_child_reopened_under_the_landed_plan_moves_it_back_before_landing(
     tmp_path: Path,
 ) -> None:

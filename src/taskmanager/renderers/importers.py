@@ -223,6 +223,16 @@ class BulkImporter:
         if owed_ids:
             raise ValueError(f"{REFUSED}{'; '.join(owed_refusal(i) for i in owed_ids)}")
 
+        # A container the document creates is stated whole, its children with it; only a child
+        # placed under one already stored arrives under it.
+        arrived = {
+            r.target_id
+            for r in relations
+            if r.relation_type == RelationType.CONTAINS
+            and self.node_repo.get_node(r.source_id) is not None
+            and r.source_id not in self.node_repo.get_parent_ids(r.target_id)
+        }
+
         with validated_write(self.node_repo, self.snapshots, known, prefix=REFUSED):
             for node in nodes:
                 self.node_repo.save_node(node)
@@ -241,7 +251,7 @@ class BulkImporter:
                 for cond in conds:
                     self.node_repo.add_condition(cond)
             for node in nodes:
-                roll_up_ancestors(self.ops, node.id)
+                roll_up_ancestors(self.ops, node.id, arrived=node.id in arrived)
 
     @staticmethod
     def _parse_dep(dep: Any) -> str:
