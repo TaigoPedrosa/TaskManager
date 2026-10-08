@@ -8,8 +8,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from taskmanager.core.enums import EmbeddingProviderType
 from taskmanager.core.status import Action
+from taskmanager.engine.git import valid_branch
 
 DEFAULT_KEY_ENV: Final = "TASKMANAGER_OPENAI_API_KEY"
+# Where a chain lands at the top when neither its spec's `land_on` nor its repository's
+# `default_branch` names a branch.
+DEFAULT_BRANCH: Final = "main"
 
 KEYS: Final = (
     "embeddings.provider",
@@ -107,7 +111,15 @@ class Gate(BaseModel):
 class RepoConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    default_branch: str = DEFAULT_BRANCH
     gates: dict[Literal["main", "parent"], Gate] = Field(default_factory=dict)
+
+    @field_validator("default_branch")
+    @classmethod
+    def _is_a_branch_name(cls, value: str) -> str:
+        if not valid_branch(value):
+            raise ValueError(f"'{value}' is not a branch name git accepts")
+        return value
 
 
 class DispatchConfig(BaseModel):
@@ -151,6 +163,10 @@ class ProjectConfig(BaseModel):
             # A single number is the implementer's lease; every other action keeps its default.
             return self.lease_ttl if action == Action.IMPLEMENT else LEASE_TTL_DEFAULTS[action]
         return self.lease_ttl.get(action, LEASE_TTL_DEFAULTS[action])
+
+    def default_branch(self, repo: str | None) -> str:
+        found = self.repos.get(repo) if repo is not None else None
+        return found.default_branch if found is not None else DEFAULT_BRANCH
 
 
 class Resolved(NamedTuple):
@@ -296,6 +312,10 @@ class ConfigStore:
         if flag is not None:
             return int(_typed("lease_ttl", flag))
         return ProjectConfig(lease_ttl=self.resolve("lease_ttl").value).lease_ttl_for(action)
+
+    def branches(self) -> ProjectConfig:
+        """Only `repos` resolved: a reader of default branches needs no other key's read."""
+        return ProjectConfig(repos=self.resolve("repos").value)
 
     def document(self) -> dict[str, Any] | None:
         """The stored keys as a nested mapping, or None when nothing was ever set."""

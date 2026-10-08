@@ -16,6 +16,7 @@ from taskmanager.engine.chains import (
     meeting,
     satisfied,
 )
+from taskmanager.engine.config import DEFAULT_BRANCH
 
 Graph = dict[str, set[str]]
 
@@ -37,6 +38,11 @@ class SnapNode:
     sensitive: tuple[str, ...] = ()
     busy: bool = False
     literal_origin_main: bool = False
+    # Its own `land_on:` frontmatter as written; validation refuses it anywhere but on a spec.
+    land_on: str | None = None
+    # The branch its chain lands on at the top: its spec's `land_on`, else its repository's
+    # `default_branch`.
+    top: str = DEFAULT_BRANCH
 
 
 @dataclass

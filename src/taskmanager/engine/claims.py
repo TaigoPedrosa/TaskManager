@@ -39,7 +39,6 @@ from taskmanager.core.status import (
     Event,
     JobKind,
     JobState,
-    Merge,
     Outcome,
     Status,
 )
@@ -52,7 +51,7 @@ from taskmanager.engine import git as gitops
 from taskmanager.engine import selection
 from taskmanager.engine.chains import MAIN, meeting, sync_pairs
 from taskmanager.engine.conditions import ConditionRunner, is_executable
-from taskmanager.engine.config import ConfigStore, ProjectConfig
+from taskmanager.engine.config import DEFAULT_BRANCH, ConfigStore, ProjectConfig
 from taskmanager.engine.decisions import (
     open_failed_decision,
     open_stranded_decision,
@@ -144,7 +143,7 @@ class _UnmovedBranches:
     def branch_exists(self, node_id: str) -> bool:
         return False
 
-    def base_matches(self, node_id: str, new_target: str) -> bool:
+    def base_matches(self, node_id: str, new_target: str, new_top: str) -> bool:
         return True
 
 
@@ -207,15 +206,12 @@ class Claims:
     def branch_of(self, node_id: str) -> str:
         return self.ops.branch_of(self.node(node_id).id)
 
-    def _parent(self, node_id: str) -> str | None:
-        parents = self.nodes.get_parent_ids(node_id)
-        return parents[0] if parents else None
+    def target_of(self, node_id: str, repo: str | None = None) -> str:
+        """The branch `node_id` lands on: its parent's branch, or its chain's top branch."""
+        return self.ops.target_of(self.node(node_id).id, repo)
 
-    def target_of(self, node_id: str) -> str:
-        """The branch `node_id` lands on: `main`, or its parent's branch."""
-        return self.ops.target_of(self.node(node_id).id)
-
-    target_ref = staticmethod(Operations.target_ref)
+    def target_ref(self, node_id: str, repo: str | None = None) -> str:
+        return self.ops.target_ref(self.node(node_id).id, repo)
 
     def repos_of(self, node_id: str) -> list[str]:
         return self.ops.repos_of(self.node(node_id).id, self.config.repo_order)
@@ -405,7 +401,7 @@ class Claims:
         """The branch a step works on: the node's own, or for a review of landed code, the
         target it landed on."""
         if action == Action.REVIEW and node.claimed_from == Status.LANDED:
-            return self.target_ref(self.target_of(node.id))
+            return self.target_ref(node.id)
         return self.branch_of(node.id)
 
     @staticmethod
@@ -479,13 +475,18 @@ class Claims:
 
     def _base_ref(self, node_id: str, repo: str) -> str:
         """The ref `node_id`'s branch is cut from in `repo`, creating each ancestor container
-        branch on the way: a node builds on its landing target, never on `main` past a parent
-        that has not landed."""
+        branch on the way: a node builds on its landing target, never on the top branch past a
+        parent that has not landed. A top branch not on origin yet is cut from the repository's
+        default branch, and the first landing on it creates it."""
         repo_dir = self.root / repo
-        parent = self._parent(node_id)
-        if self.node(node_id).merge != Merge.PARENT or parent is None:
-            gitops.fetch(repo_dir)
-            return GitManager(repo_dir).default_base_ref()
+        parent = self.ops.landing_parent(self.node(node_id).id)
+        if parent is None:
+            top, default = self.ops.landing_branch(node_id, repo), self.ops.default_branch(repo)
+            gitops.fetch(repo_dir, top)
+            if top != default and not gitops.rev_parse(repo_dir, f"origin/{top}"):
+                top = default
+                gitops.fetch(repo_dir, top)
+            return GitManager(repo_dir).default_base_ref(top)
         parent_branch = self.branch_of(parent)
         if not gitops.rev_parse(repo_dir, f"refs/heads/{parent_branch}"):
             gitops.ensure_branch(repo_dir, parent_branch, self._base_ref(parent, repo))
@@ -673,7 +674,8 @@ class Claims:
                 continue
             mark = marks[-1]
             since = datetime.fromisoformat(str(mark["since"]))
-            key = (str(mark["repo"]), str(mark.get("target", "main")), str(mark["sha"]))
+            # A mark parked before marks named their target was parked on the default branch.
+            key = (str(mark["repo"]), str(mark.get("target", DEFAULT_BRANCH)), str(mark["sha"]))
             parked.setdefault(key, []).append((node.id, since, list(mark["failing"])))
         opened: list[str] = []
         now = datetime.now(tz=UTC)
@@ -882,7 +884,8 @@ class Claims:
 
     def _prove_landed(self, node_id: str) -> None:
         branch, target = self.branch_of(node_id), self.target_of(node_id)
-        ref = self.target_ref(target)
+        ref = self.target_ref(node_id)
+        at_top = self.ops.landing_parent(node_id) is None
         container = self.is_container(self.node(node_id))
         repos = self.repos_of(node_id)
         if not container and not repos:
@@ -891,8 +894,8 @@ class Claims:
             )
         for repo in repos:
             repo_dir = self.root / repo
-            if target == "main":
-                gitops.fetch(repo_dir)
+            if at_top:
+                gitops.fetch(repo_dir, target)
             if not gitops.rev_parse(repo_dir, f"refs/heads/{branch}"):
                 if container:
                     continue
@@ -986,15 +989,17 @@ class Claims:
         branch has nothing to sync. A carrier landed with an empty diff is on the source's tree
         but not its history, so the base holding the source is what ends its sync."""
         units: list[tuple[str, str, str]] = []
-        fetched: set[str] = set()
+        fetched: set[tuple[str, str]] = set()
         for source, base, carrier in pairs:
-            source_ref = self.target_ref("main" if source == MAIN else self.branch_of(source))
+            # `base` lands on `source`, so the source is read where `base`'s landing reads it.
+            source_ref = self.target_ref(base)
+            top = self.target_of(base) if source == MAIN else None
             base_branch, carried = self.branch_of(base), self.branch_of(carrier)
             for repo in self.known_repos():
                 repo_dir = self.root / repo
-                if source == MAIN and repo not in fetched:
-                    gitops.fetch(repo_dir)
-                    fetched.add(repo)
+                if top is not None and (repo, top) not in fetched:
+                    gitops.fetch(repo_dir, top)
+                    fetched.add((repo, top))
                 present = all(
                     gitops.rev_parse(repo_dir, ref)
                     for ref in (f"refs/heads/{base_branch}", f"refs/heads/{carried}", source_ref)
