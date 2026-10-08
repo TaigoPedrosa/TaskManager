@@ -21,18 +21,21 @@ from taskmanager.core.enums import (
     LedgerCommand,
     NodeKind,
     RecommendationStrategy,
+    RelationType,
     RenderView,
     SearchMode,
     TransferMode,
     VerificationType,
 )
-from taskmanager.core.lifecycle import next_action
+from taskmanager.core.lifecycle import advance, next_action
 from taskmanager.core.models import Condition, LedgerEvent, Node
 from taskmanager.core.naming import QualifiedPath
 from taskmanager.core.status import (
+    IN_STEP,
     Action,
     ConditionStage,
     DecisionStatus,
+    Event,
     JobKind,
     JobState,
     Merge,
@@ -64,6 +67,8 @@ from taskmanager.engine.search import SearchEngine, SearchError
 from taskmanager.engine.snapshot import (
     DisplayView,
     SnapshotBuilder,
+    apply_cycle,
+    cycle_of,
     phase_of,
     stored_status,
     waits_on,
@@ -137,9 +142,14 @@ def _emit(data: Any, as_yaml: bool = False) -> None:
     sys.stdout.write(json.dumps(data, indent=2, ensure_ascii=False, default=str) + "\n")
 
 
-# A restore reads only exports carrying this marker; an export without it came from a
-# pre-lifecycle tm, whose statuses and gated edges this version does not store.
-EXPORT_FORMAT: dict[str, Any] = {"format": "tm-lifecycle", "version": 1}
+# A restore reads only exports carrying one of these markers; an export without one came from a
+# pre-lifecycle tm, whose statuses and gated edges this version does not store. Version 1 has no
+# ordinals or supersedes edges, and restore reads it as it is.
+EXPORT_FORMAT: dict[str, Any] = {"format": "tm-lifecycle", "version": 2}
+READABLE_EXPORT_FORMATS = ({"format": "tm-lifecycle", "version": 1}, EXPORT_FORMAT)
+# Config keys whose value holds only on the machine that set it: an export leaves them out, and
+# a restore keeps the restoring machine's own.
+MACHINE_LOCAL_KEYS = frozenset({"worktree_dir"})
 
 
 def _task_spec_id(node_repo: NodeRepository, task_id: str) -> str | None:
@@ -2038,13 +2048,14 @@ def guide(
     sys.stdout.write("\n\n---\n\n".join(p.rstrip("\n") for p in parts) + "\n")
 
 
-def _export_node(node_repo: NodeRepository, node: Any) -> dict[str, Any]:
+def _export_node(node_repo: NodeRepository, node: Node, supersedes: list[str]) -> dict[str, Any]:
     return {
         "id": node.id,
         "kind": node.kind.value,
         "title": node.title,
         "status": node.status.value,
         "priority": node.priority,
+        "ordinal": node.ordinal,
         "target_repo": node.target_repo,
         "acceptable_models": node.acceptable_models,
         "frontmatter": node.frontmatter,
@@ -2057,11 +2068,11 @@ def _export_node(node_repo: NodeRepository, node: Any) -> dict[str, Any]:
         "outcome": node.outcome.value if node.outcome else None,
         "verdict": node.verdict,
         "fix_for": node.fix_for.value if node.fix_for else None,
-        "claimed_from": node.claimed_from.value if node.claimed_from else None,
         "review_cycles": node.review_cycles,
         "merge_attempts": node.merge_attempts,
         "step_failures": node.step_failures,
         "depends_on": sorted(node_repo.get_dependencies(node.id)),
+        "supersedes": supersedes,
         "conditions": [
             {"needs": c.needs, "command": c.command, "stage": c.stage.value}
             for c in node_repo.get_conditions(node.id)
@@ -2100,6 +2111,22 @@ def export_cmd(
             json.dumps(doc, indent=1, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8"
         )
 
+    with _user_errors():
+        caps = Claims.open(root).caps
+        settings = ConfigStore(root).document()
+    superseded: dict[str, list[str]] = {}
+    for new, old in node_repo.relations(RelationType.SUPERSEDES):
+        superseded.setdefault(new, []).append(old)
+
+    def entry(node: Node) -> dict[str, Any]:
+        if node.status in IN_STEP:
+            # An export holds only stable states and a lease never leaves its machine, so the
+            # node is written as a blocked release would leave it; sensitivity only picks a
+            # next step, never where a release returns.
+            released = advance(cycle_of(node, sensitive=False), Event.RELEASE_BLOCKED, caps)
+            node = apply_cycle(node, released)
+        return _export_node(node_repo, node, sorted(superseded.get(node.id, [])))
+
     directory.mkdir(parents=True, exist_ok=True)
     dump("_format.json", EXPORT_FORMAT)
     specs = {n.id: n for n in node_repo.list_nodes(kind=NodeKind.SPEC)}
@@ -2107,7 +2134,7 @@ def export_cmd(
     plans = node_repo.list_nodes(kind=NodeKind.PLAN)
     decisions = sorted(node_repo.list_nodes(kind=NodeKind.DECISION), key=lambda n: n.id)
     if decisions:
-        dump("_decisions.json", {"decisions": [_export_node(node_repo, d) for d in decisions]})
+        dump("_decisions.json", {"decisions": [entry(d) for d in decisions]})
     assets_src = root / ".taskmanager" / "assets"
     if assets_src.is_dir():
         assets_dst = directory / "assets"
@@ -2117,8 +2144,8 @@ def export_cmd(
                 (assets_dst / f.name).write_bytes(f.read_bytes())
     for plan in plans:
         children = set(node_repo.get_children(plan.id))
-        plan_doc = _export_node(node_repo, plan)
-        plan_doc["tasks"] = [_export_node(node_repo, t) for t in tasks if t.id in children]
+        plan_doc = entry(plan)
+        plan_doc["tasks"] = [entry(t) for t in tasks if t.id in children]
         owner = next((sid for sid in sorted(specs) if plan.id in node_repo.get_children(sid)), None)
         dump(
             f"{plan.id}.json",
@@ -2128,19 +2155,17 @@ def export_cmd(
             },
         )
     for spec_id in sorted(specs):
-        spec_doc: dict[str, Any] = {"spec": _export_node(node_repo, specs[spec_id])}
+        spec_doc: dict[str, Any] = {"spec": entry(specs[spec_id])}
         children = set(node_repo.get_children(spec_id))
         # Import accepts tasks straight under a spec, or under nothing; the archive keeps both.
-        if spec_tasks := [_export_node(node_repo, t) for t in tasks if t.id in children]:
+        if spec_tasks := [entry(t) for t in tasks if t.id in children]:
             spec_doc["tasks"] = spec_tasks
         dump(f"_spec-{spec_id}.json", spec_doc)
     parented = {c for n in [*specs.values(), *plans] for c in node_repo.get_children(n.id)}
-    if lone := [_export_node(node_repo, t) for t in tasks if t.id not in parented]:
+    if lone := [entry(t) for t in tasks if t.id not in parented]:
         dump("_tasks.json", {"tasks": lone})
-    with _user_errors():
-        settings = ConfigStore(root).document()
     if settings is not None:
-        dump("_config.json", settings)
+        dump("_config.json", {k: v for k, v in settings.items() if k not in MACHINE_LOCAL_KEYS})
     print(f"[green]Exported {len(plans)} plans and {len(specs)} specs to {directory}[/green]")
 
 
@@ -2154,7 +2179,8 @@ def restore_cmd(
 
     root = _get_root(path, must_exist=False)
     marker = directory / "_format.json"
-    if not marker.is_file() or json.loads(marker.read_text(encoding="utf-8")) != EXPORT_FORMAT:
+    export_format = json.loads(marker.read_text(encoding="utf-8")) if marker.is_file() else None
+    if export_format not in READABLE_EXPORT_FORMATS:
         print(
             f"[red]{escape(str(directory))} is a pre-lifecycle export: tm v0.2.0 is the last "
             "release that restores it. Re-import the ongoing work into this version with "
@@ -2205,7 +2231,8 @@ def restore_cmd(
         first = copy.deepcopy(doc)
         own = {n["id"] for n in nodes_of(first)}
         for n in nodes_of(first):
-            n["depends_on"] = [d for d in n.get("depends_on", []) if d in own]
+            for edges in ("depends_on", "supersedes"):
+                n[edges] = [d for d in n.get(edges, []) if d in own]
         importer.import_dict(first)
     if decisions_doc is not None:
         importer.import_dict(decisions_doc)
@@ -2213,8 +2240,13 @@ def restore_cmd(
         importer.import_dict(doc)
     settings_file = directory / "_config.json"
     if settings_file.exists():
+        exported = json.loads(settings_file.read_text(encoding="utf-8"))
         with _user_errors():
-            ConfigStore(root).replace(json.loads(settings_file.read_text(encoding="utf-8")))
+            store = ConfigStore(root)
+            local = {k: v for k, v in (store.document() or {}).items() if k in MACHINE_LOCAL_KEYS}
+            store.replace(
+                {k: v for k, v in exported.items() if k not in MACHINE_LOCAL_KEYS} | local
+            )
     specs = sum(1 for d in spec_docs if d.get("spec"))
     print(f"[green]Restored {len(plan_docs)} plans and {specs} specs into {root}[/green]")
 
