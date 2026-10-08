@@ -210,3 +210,23 @@ test('a clicked toggle leaves no tooltip behind once it redraws, and keyboard fo
   assert.equal(tip.classList.contains('hidden'), false);
   assert.equal(tip.textContent, 'Collapse all in S');
 });
+
+test('revealing a node under Expand all keeps every ancestor\'s children open, one closed by hand included', async () => {
+  const page = await live();
+  await click(page, page.$('#expand-all-btn'));
+  await click(page, doc(page).querySelector('[data-group-id="P1::children"]'));
+  assert.equal(doc(page).querySelector('[data-group-id="P1::children"]').getAttribute('aria-expanded'), 'false');
+
+  page.run("openNode('T1')");
+  await page.answer(page);
+
+  for (const id of ['S', 'P1']) {
+    assert.equal(doc(page).querySelector(`[data-group-id="${id}::children"]`).getAttribute('aria-expanded'), 'true', `${id}'s children stay open`);
+  }
+  let hiddenAbove = false;
+  for (let el = doc(page).querySelector('#doc-node-T1'); el; el = el.parentNode) {
+    if (el.classList && el.classList.contains('hidden')) hiddenAbove = true;
+  }
+  assert.equal(hiddenAbove, false, 'the revealed card shows');
+  assert.equal(nodeOpen(page, 'T1'), 'true');
+});

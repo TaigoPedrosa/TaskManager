@@ -577,8 +577,12 @@ function showReveal(id, chain) {
   }
   chain.slice(0, -1).forEach((ancestor) => {
     expandId(ancestor);
-    // A children group starts collapsed, so its id in collapsedGroups means open.
-    collapsedGroups.add(`${ancestor.id}::children`);
+    // collapsedGroups flips a group away from its default, so only a closed one is flipped.
+    const group = `${ancestor.id}::children`;
+    if (groupCollapsed(group, true)) {
+      if (collapsedGroups.has(group)) collapsedGroups.delete(group);
+      else collapsedGroups.add(group);
+    }
   });
   if (currentMode === window.VIEW_MODES.DOCUMENT) expandId(chain[chain.length - 1]);
   pendingReveal = id;
