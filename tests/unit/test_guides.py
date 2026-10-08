@@ -395,7 +395,7 @@ def test_plan_guide_names_each_thing_a_replacement_or_removal_deletes(
     assert "A task that removes a feature names" not in text
 
 
-def test_implement_and_review_guides_no_longer_limit_the_last_reader_rule_to_a_payload_field(
+def test_implement_and_review_guides_do_not_scope_the_last_reader_rule_to_a_payload_field(
     rendered: Callable[[str], str],
 ) -> None:
     """A rule scoped to payload fields lets an orphaned component, import or load through."""
