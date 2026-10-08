@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import subprocess
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -54,6 +55,7 @@ from taskmanager.engine.decisions import (
     read_decision,
     write_decision,
 )
+from taskmanager.engine.git import GitManager
 from taskmanager.engine.selection import ordered_repos
 from taskmanager.engine.snapshot import (
     SnapshotBuilder,
@@ -67,6 +69,8 @@ from taskmanager.engine.snapshot import (
 from taskmanager.engine.stepgraph import Snapshot
 from taskmanager.engine.validation import moved_tops, retargets, validate
 from taskmanager.engine.verification import VerificationEngine, VerificationResult
+
+_log = logging.getLogger(__name__)
 
 # The section a project bootstraps once and every `tm guide` overlay hangs off; `section set`
 # points a user here when they try to write to it before it exists.
@@ -394,6 +398,36 @@ class Operations:
             )
             for repo in repos
         )
+
+    def drop_worktrees(self, node_id: str) -> None:
+        """A completed node's code is on its target, so the worktrees its steps worked in go.
+        Its branch stays: a later sync reads it as the carrier of that code. A worktree git
+        refuses to remove, one holding uncommitted work, stays and is logged."""
+        # Set-aside nodes count here: a container whose children were all superseded still
+        # holds the worktrees its steps cut in their repositories.
+        repos: set[str] = set()
+        frontier = [node_id]
+        while frontier:
+            current = frontier.pop()
+            node = self.node_repo.get_node(current)
+            if node is not None and node.target_repo:
+                repos.add(node.target_repo)
+            frontier.extend(self.node_repo.get_children(current))
+        branch, root = self.branch_of(node_id), self._project_root()
+        # ponytail: one `git worktree list` per completed node and repository; list each
+        # repository once per commit if restoring a large estate into clones gets slow.
+        for repo in sorted(repos):
+            # A restored estate need not have every repository cloned.
+            if not (root / repo / ".git").exists():
+                continue
+            manager = GitManager(root / repo)
+            try:
+                worktree = manager.find_worktree(branch)
+                if worktree is not None:
+                    manager.remove_worktree(worktree)
+            except (subprocess.CalledProcessError, OSError) as exc:
+                detail = getattr(exc, "stderr", None) or exc
+                _log.warning("kept the worktree of %s in %s: %s", node_id, repo, detail)
 
     def _ledger(
         self,
