@@ -22,7 +22,7 @@ Every node takes the fields below; `verifications` and `target_repo` act only on
 | `ordinal` | Display order; the position in the list when omitted. |
 | `target_repo` | The directory, under the tm root, the task's branch is cut in. Per node and **not inherited**: set it on every task. A task without one cannot be implemented. |
 | `acceptable_models` | Real model ids. See §3. |
-| `review`, `fix`, `merge` | How the node reaches `main`. See §4. |
+| `review`, `fix`, `merge` | How the node reaches its spec's target branch. See §4. |
 | `requires` | Capabilities the agent needs, such as `figma`. See §3. |
 | `conditions` | States outside the corpus the node waits on, each with its command. See §5. |
 | `land_order` | On a plan or spec: the order its repositories land in. See §4. |
@@ -48,6 +48,7 @@ Frontmatter keys the estate reads:
 - `sensitive`: where a fix of this node is re-reviewed before it lands, as one of `tenant`, `rls`, `crypto` or `migration`, or a list of them: `sensitive: migration`, `sensitive: [tenant, rls]`. tm refuses any other name. A node that writes a migration, a path under `migrations/versions/` in its `declared_files`, is sensitive without the key. A sensitive node's fix gets one re-review, scoped to its open findings; every other fix lands without one.
 - `soft_depends_on`: ids this task builds against a stub until they land. It creates no edge and holds nothing back; it tells the implementer what the stub is for.
 - `gate_lane`: where this task's own gate can run. It is a claim about this task's files, so its author owns it.
+- `land_on`: on a spec only, the branch every node under it lands on, such as `feature/notify`, `release/2.4` or `fix/login-timeout` (§4). tm refuses it on a plan or task, and refuses a name `git check-ref-format --branch` rejects. On a spec already in the database, `tm task update <spec-id> --set land_on=<branch>`; on a new one, `tm spec add "<title>" --land-on <branch>`.
 
 ## 3. Models and capabilities
 
@@ -57,13 +58,17 @@ Frontmatter keys the estate reads:
 
 ## 4. Where a node lands: `review`, `fix`, `merge`
 
-- `merge: spec` (the default, except under a reviewed plan or spec) cuts the node's branch from `origin/main` and lands it where its spec lands, `main`. A spec's own `merge` is `spec`, and `main` is a branch, never a `merge` value.
-- `merge: parent` cuts it from the branch of the plan or spec above it, `tm/<parent-id>`, and lands it there. It reaches `main` only when that parent lands. A spec cannot land on a parent.
-- `review` puts a review after implement, or for a plan or spec, after its landing; `fix` makes this node fix its own rejections, and needs `review`. A task has both on unless the document says otherwise, and a plan or spec has both off. Children under a reviewed plan or spec take `review: false` and `fix: false` by default, and `merge: parent`, because its one review covers what lands on its branch; a sensitive child (§2) keeps `review` and `fix` on, and an explicit flag still wins. A child there with `review` off and `merge: spec` is refused: its code would reach `main` unreviewed.
+Every spec lands on a target branch, and so in the end does every node under it. Its `land_on` (§2) names that branch, and that is the normal case: a spec's work belongs on a feature, release or fix branch of its own, and tm lands it there and goes no further. Taking that branch on to environments and to `main` is the developer's. A spec with no `land_on` lands on `repos.<repo>.default_branch` in each repository it touches, `main` unless the project sets it. A target origin does not have yet is cut from that default branch, and the first landing on it creates it with its push. `tm task get <id> --yaml` prints the branch a node's chain lands on as `lands_on`.
+
+- `merge: spec` (the default, except under a reviewed plan or spec) cuts the node's branch from `origin/<target>` and lands it on its spec's target. A spec's own `merge` is `spec`, and `main` is a branch, never a `merge` value.
+- `merge: parent` cuts it from the branch of the plan or spec above it, `tm/<parent-id>`, and lands it there. It reaches the spec's target only when that parent lands. A spec cannot land on a parent.
+- `review` puts a review after implement, or for a plan or spec, after its landing; `fix` makes this node fix its own rejections, and needs `review`. A task has both on unless the document says otherwise, and a plan or spec has both off. Children under a reviewed plan or spec take `review: false` and `fix: false` by default, and `merge: parent`, because its one review covers what lands on its branch; a sensitive child (§2) keeps `review` and `fix` on, and an explicit flag still wins. A child there with `review` off and `merge: spec` is refused: its code would reach the target unreviewed.
+
+One wait never joins two targets. A `depends_on` edge from a node whose spec lands on one branch to a node whose spec lands on another is refused where it is written (an import, `tm task depends`, the web), naming both branches, and so are two open migration writers in one repository landing on different targets. Remove the edge, land one first, or land both on one target.
 
 Two shapes cover most work:
 
-- **Each task reviewed and landed alone.** Tasks keep the defaults and land on `main`; the plan is a grouping only.
+- **Each task reviewed and landed alone.** Tasks keep the defaults and land on the spec's target; the plan is a grouping only.
 - **One review for the whole plan.** Tasks carry `merge: parent` and no review of their own, and the plan carries `review: true` and `fix: true`. Once every task has landed on the plan's branch, the plan lands on its own target and reads `LANDED`: its code is there, its one review owed. That review reads the landing; an approval completes the plan, and a rejection is fixed on a branch cut from the target, which lands without a second review unless the plan is sensitive. A task may keep its own review with `review: true` and `fix: false`: a rejection then lands on the plan's branch unfixed, and the plan's review is where it gets fixed. tm refuses `review` without `fix` anywhere else, because a rejection nobody below fixes must land where a review above will see it.
 
 A plan or spec that touched several repositories lands them one at a time, in `land_order` (else the project's `repo_order`). A container whose tasks changed nothing has its code on its target already: it completes, or with `review` on reads `LANDED` and still takes its one review. One whose counted tasks name no `target_repo` has no repository to show that in, so it stays `IMPLEMENTED` rather than complete on a claim nothing proves; once its verification passes, complete it by hand with `tm task reset <id> --to COMPLETED --note "<why nothing lands>"`.
@@ -99,7 +104,7 @@ $ tm verify run NOTIFY-EMAIL-SENDER --ref tm/NOTIFY-EMAIL-SENDER
 symbol_signature  src/notify/email/sender.py  FAILED  File src/notify/email/sender.py missing
 ```
 
-The path checks read a ref of the task's `target_repo` (`origin/main` by default, fetched first; `--ref` names another) and never a working tree. `test_command` runs from the tm root with that ref in `TM_VERIFY_REF`, and a landing sets it to the landing target — the parent's branch for `merge: parent` — so a command reads `"${TM_VERIFY_REF:-origin/main}"` instead of naming `origin/main` (a plain `tm verify run` sets no ref); tm refuses one that names `origin/main` itself on a task landing on its parent. The target repository is a directory under the tm root, and the ref is not checked out anywhere, so a command that runs code checks the ref out itself first, as the worked example's do.
+The path checks read a ref of the task's `target_repo` and never a working tree: with no `--ref`, `origin/<the branch its spec lands on>`, fetched first; `--ref` names another. `test_command` runs from the tm root with that ref in `TM_VERIFY_REF`, and a landing sets it to the landing target — the parent's branch for `merge: parent` — so a command reads `"${TM_VERIFY_REF:-origin/main}"` instead of naming a branch; tm refuses one that names `origin/main` itself on a task read anywhere else: one landing on its parent, or under a spec whose target is not `main`. The target repository is a directory under the tm root, and the ref is not checked out anywhere, so a command that runs code checks the ref out itself first, as the worked example's do.
 
 A plan with `review: true` carries a verification of its own that runs its children's joined behaviour, the one test that exercises them together, so its review has a check beyond the children's suites.
 
@@ -164,7 +169,7 @@ tm verify remove <id> <verification-id>
 
 A ruling (a decision's answer, or a fix round's instruction) that changes a landed task's approach updates that task's verifications in the same step: `tm verify list <id>`, then `tm verify remove` for each row that checks the old approach, then `tm verify add` for the new one. A verification still checking the old approach fails the plan's landing on a green fix.
 
-A change to `merge` once the node's branch exists is refused unless that branch was cut from the new target: code cut from a plan's branch must never land on `main` carrying the plan's unreviewed work. Set the branch aside and start a new one first; `reopen` takes only a deferred, abandoned or failed node, so defer it before reopening, and wait for (or stop) a step in progress before deferring. A completed node has landed and a superseded one is carried by its replacement: neither is set aside, so file a new task, or change where the replacement lands.
+A change to where a node lands once its branch exists, through its `merge` or its spec's target, is refused unless that branch was cut from the new target: code cut from a plan's branch must never land on the spec's target carrying the plan's unreviewed work. Set the branch aside and start a new one first; `reopen` takes only a deferred, abandoned or failed node, so defer it before reopening, and wait for (or stop) a step in progress before deferring. A completed node has landed and a superseded one is carried by its replacement: neither is set aside, so file a new task, or change where the replacement lands.
 
 ```
 tm task defer <id> --note "<why>"
@@ -174,7 +179,7 @@ tm task update <id> --merge spec
 
 ## Worked example
 
-Imports as written: every task lands on the plan's branch with no review of its own, the plan lands on `main` and is reviewed there once, and `tm wave discover` offers `NOTIFY-EMAIL-SENDER` and `NOTIFY-EMAIL-TEMPLATES` first.
+Imports as written: every task lands on the plan's branch with no review of its own, the plan lands on the spec's `land_on`, `feature/notify`, and is reviewed there once, and `tm wave discover` offers `NOTIFY-EMAIL-SENDER` and `NOTIFY-EMAIL-TEMPLATES` first.
 
 <!-- tm:example -->
 
@@ -182,6 +187,8 @@ Imports as written: every task lands on the plan's branch with no review of its 
 spec:
   id: NOTIFY
   title: Outbound notifications
+  frontmatter:
+    land_on: feature/notify
   sections:
     context: One service sends every outbound message; delivery and retries are its own concern.
 
