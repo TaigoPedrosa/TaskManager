@@ -10,8 +10,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
+from click.testing import Result
 from lifecycle_estate import add, make_estate
+from typer.testing import CliRunner
 
+from taskmanager.cli.main import app as cli_app
 from taskmanager.core.enums import NodeKind
 from taskmanager.core.status import Action, Outcome, Status
 from taskmanager.engine import claims as claims_module
@@ -309,3 +313,72 @@ def test_an_advisory_that_cannot_read_impact_keeps_the_ready_line_and_adds_one_u
         f"ready {worktree}",
         "unavailable (codegraph impact src/a.py printed no affected files)",
     ]
+
+
+def start(claims: Claims, node_id: str, *flags: str) -> Result:
+    res = CliRunner().invoke(
+        cli_app,
+        [
+            "task",
+            "start",
+            node_id,
+            "--agent",
+            "agent-1",
+            "--session",
+            "s1",
+            "--worktree-dir",
+            str(claims.root / "api" / ".wt"),
+            *flags,
+            "-C",
+            str(claims.root),
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    return res
+
+
+def test_task_start_prints_the_codegraph_lines_in_its_yaml_document(
+    tmp_path: Path, log: Path, answer: Answer
+) -> None:
+    claims = make_estate(tmp_path)
+    indexed(claims.root / "api")
+    add(claims, "T2", files=["src/b.py"])
+    add(claims, "T1", files=["src/a.py"])
+    claim(claims, "T2")
+    answer(
+        symbols={"src/a.py": [["run", "function"]]},
+        impact={"src/a.py": ["src/b.py"], "run": ["src/b.py"]},
+    )
+
+    claimed = yaml.safe_load(start(claims, "T1").output)
+
+    assert claimed["codegraph"] == [
+        f"ready {claimed['worktree']}",
+        "run reaches src/b.py held by T2",
+    ]
+
+
+def test_task_start_json_with_codegraph_lines_is_one_document_on_stdout(
+    tmp_path: Path, log: Path
+) -> None:
+    claims = make_estate(tmp_path)
+    indexed(claims.root / "api")
+    add(claims, "T1", files=["src/a.py"])
+
+    res = start(claims, "T1", "--json")
+
+    assert res.stderr == ""
+    claimed = json.loads(res.output)
+    assert claimed["codegraph"] == [f"ready {claimed['worktree']}"]
+
+
+def test_task_start_with_no_codegraph_directory_prints_no_codegraph_key(
+    tmp_path: Path, log: Path
+) -> None:
+    claims = make_estate(tmp_path)
+    add(claims, "T1", files=["src/a.py"])
+
+    claimed = yaml.safe_load(start(claims, "T1").output)
+
+    assert claimed["worktree"] is not None
+    assert "codegraph" not in claimed

@@ -967,6 +967,8 @@ def task_start(
             "worktree": result.worktree,
             "worktrees": result.worktrees,
             "token": result.token,
+            # On stdout, never stderr: a dispatcher reads `--json 2>&1` as one document.
+            **({"codegraph": result.codegraph} if result.codegraph else {}),
         },
         as_yaml=yaml_output or not json_output,
     )
