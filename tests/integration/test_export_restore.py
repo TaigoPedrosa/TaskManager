@@ -23,7 +23,7 @@ def seeded(root: Path) -> None:
     spec = ops.add_spec("S", slug="S1")
     plan = ops.add_plan("P", spec, slug="P1", review=True, fix=True)
     a = ops.add_task("a", plan, slug="a", merge=Merge.PARENT, requires=["figma"])
-    # b depends on a, which only reaches MAIN once the plan lands; b must land through the
+    # b depends on a, which only reaches its target once the plan lands; b must land through the
     # plan too, or that dependency and b's own containment close a cycle.
     ops.add_task("b", plan, slug="b", merge=Merge.PARENT, depends_on=[a])
     ops.update_node(a, review=True)
