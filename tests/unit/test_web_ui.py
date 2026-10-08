@@ -492,7 +492,7 @@ def test_dialog_submit_shows_the_refusal_without_closing() -> None:
 
 def test_section_preview_and_stored_markdown_are_sanitised_with_dompurify() -> None:
     html = get_web_html()
-    assert "cdn.jsdelivr.net/npm/dompurify" in html
+    assert '<script src="/vendor/purify.min.js"></script>' in html
     assert "DOMPurify.sanitize(unsafeRenderSectionBody(content))" in html
     open_section_dialog = _function_body(html, "openSectionDialog")
     assert "renderSectionBody(content.value)" in open_section_dialog

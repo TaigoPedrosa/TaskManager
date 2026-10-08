@@ -568,7 +568,6 @@ export function loadPage({ fetch, beforeScripts, url = '/', html = servedPage() 
       return !event.defaultPrevented;
     },
     tailwind: {},
-    lucide: { createIcons() {} },
     fetch: async (url, opts) => {
       fetchCalls.push({ url, method: (opts && opts.method) || 'GET', body: opts && opts.body });
       const answered = fetch && (await fetch(url, opts));

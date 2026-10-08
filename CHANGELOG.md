@@ -21,8 +21,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Removed
 
 - The design notes and implementation plans under `docs/superpowers/`.
+- The `/docs` and `/redoc` API pages on `tm web`.
 - `tm install`, the empty `tm plugin` group and `install.sh`: the README's install commands
   replace them.
+
+### Security
+
+- `tm web` refuses a foreign `Host` or `Origin` on every route and on `/ws`, so a page on another
+  site can no longer read the estate through the socket or through a DNS-rebound hostname.
+- The web page and `tm web export` load marked, vis-network and DOMPurify from pinned copies
+  that ship with tm, not from unpinned CDN URLs, and the export opens offline.
+- `tm web` refuses a `--host` other than loopback unless `--expose` is passed: it has no
+  authentication, and any client that reaches the port can run commands through a verification.
 
 ## [0.3.7] - 2026-10-08
 
