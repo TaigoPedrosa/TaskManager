@@ -98,17 +98,7 @@ def _flags(after: Snapshot, n: SnapNode) -> list[Refusal]:
                 f"{', '.join(SENSITIVE_AREAS)}",
             )
         )
-    on_parent = n.merge == Merge.PARENT
-    if n.literal_origin_main and (on_parent or f"origin/{n.top}" != ORIGIN_MAIN):
-        where = "its parent's branch" if on_parent else f"its target {n.top}"
-        refusals.append(
-            Refusal(
-                n.id,
-                5,
-                f"{n.id}: lands on {where} but a test_command names {ORIGIN_MAIN}; "
-                "read the landing target from TM_VERIFY_REF instead",
-            )
-        )
+    refusals += _origin_main(n)
     if n.land_on is not None and n.kind != NodeKind.SPEC:
         refusals.append(
             Refusal(
@@ -123,6 +113,21 @@ def _flags(after: Snapshot, n: SnapNode) -> list[Refusal]:
             Refusal(n.id, 12, f"{n.id}: land_on '{n.land_on}' is not a branch name git accepts")
         )
     return refusals
+
+
+def _origin_main(n: SnapNode) -> list[Refusal]:
+    on_parent = n.merge == Merge.PARENT
+    if not (n.literal_origin_main and (on_parent or f"origin/{n.top}" != ORIGIN_MAIN)):
+        return []
+    where = "its parent's branch" if on_parent else f"its target {n.top}"
+    return [
+        Refusal(
+            n.id,
+            5,
+            f"{n.id}: lands on {where} but a test_command names {ORIGIN_MAIN}; "
+            "read the landing target from TM_VERIFY_REF instead",
+        )
+    ]
 
 
 def _unreviewed_on_target(before: Snapshot, after: Snapshot, n: SnapNode) -> list[Refusal]:
@@ -194,6 +199,23 @@ def retargets(before: Snapshot, after: Snapshot, branches: BranchFacts) -> list[
     chains land rather than any one node."""
     live = [n for _, n in sorted(after.nodes.items()) if n.status not in _LANDS_NO_MORE]
     return [refusal for n in live for refusal in _retarget(before, after, n, branches)]
+
+
+def moved_tops(before: Snapshot, after: Snapshot) -> list[Refusal]:
+    """Rules 5 and 13 over the work that still lands, for a write that moves where whole chains
+    land: a node moved off the target its `origin/main` check reads, and a wait newly drawn
+    across targets."""
+    moved = [
+        n
+        for _, n in sorted(after.nodes.items())
+        if n.status not in _LANDS_NO_MORE
+        and (old := before.nodes.get(n.id)) is not None
+        and old.top != n.top
+    ]
+    refusals = [refusal for n in moved for refusal in _origin_main(n)]
+    crossed = _crossings(after, _LANDS_NO_MORE)
+    already = _crossings(before, _LANDS_NO_MORE).keys()
+    return refusals + [crossed[k] for k in sorted(crossed.keys() - already)]
 
 
 def _placement(before: Snapshot, after: Snapshot, n: SnapNode) -> list[Refusal]:
@@ -268,9 +290,12 @@ def _busy(before: Snapshot, after: Snapshot, n: SnapNode) -> list[Refusal]:
     ]
 
 
-def _crossings(s: Snapshot) -> dict[tuple[str, ...], Refusal]:
+def _crossings(
+    s: Snapshot, settled: frozenset[Status] = frozenset()
+) -> dict[tuple[str, ...], Refusal]:
     """Every wait the step graph draws between two targets, which no meeting node can satisfy:
-    a dependency edge, once per node it gates, and a migration chain's link."""
+    a dependency edge, once per node it gates, and a migration chain's link. A node in `settled`
+    neither waits nor is waited on."""
     targets: dict[str, str] = {}
 
     def on(node_id: str) -> str:
@@ -283,11 +308,11 @@ def _crossings(s: Snapshot) -> dict[tuple[str, ...], Refusal]:
 
     found: dict[tuple[str, ...], Refusal] = {}
     for owner, dep in s.edges:
-        if not (work(owner) and work(dep)) or s.status(dep) == Status.SUPERSEDED:
+        if not (work(owner) and work(dep)) or s.status(dep) in {Status.SUPERSEDED, *settled}:
             continue
         for d in [owner, *s.descendants(owner)]:
             key = (owner, dep, on(d), on(dep))
-            if not work(d) or on(d) == on(dep) or key in found:
+            if not work(d) or s.status(d) in settled or on(d) == on(dep) or key in found:
                 continue
             who = owner if d == owner else f"{d} under it"
             found[key] = Refusal(

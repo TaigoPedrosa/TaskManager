@@ -7,7 +7,8 @@ from lifecycle_estate import add, branch_at, git, make_estate, on_branch, push_m
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import app as cli_app
-from taskmanager.core.enums import NodeKind
+from taskmanager.core.enums import NodeKind, VerificationType
+from taskmanager.core.models import NodeVerification
 from taskmanager.core.status import Merge, Status
 from taskmanager.engine.claims import Claims
 from taskmanager.engine.config import ConfigStore, ProjectConfig, RepoConfig
@@ -184,3 +185,65 @@ def test_a_config_write_reaches_its_guard_only_when_a_default_branch_moves(
     assert [(b.default_branch("api"), a.default_branch("api")) for b, a in seen] == [
         ("main", "develop")
     ]
+
+
+def crossing_estate(tmp_path: Path, dep: Status, owner: Status) -> Claims:
+    """W in web depends on A in api, both landing on main, with no branch cut."""
+    claims = make_estate(tmp_path, repos=("api", "web"))
+    add(claims, "A", status=dep)
+    add(claims, "W", repo="web", status=owner, depends=("A",))
+    return claims
+
+
+@pytest.mark.parametrize(
+    ("dep", "owner", "refused"),
+    [
+        (Status.READY, Status.READY, True),
+        (Status.COMPLETED, Status.READY, False),
+        (Status.READY, Status.COMPLETED, False),
+    ],
+    ids=["both-still-land", "dependency-landed", "dependent-landed"],
+)
+def test_moving_a_default_branch_refuses_splitting_a_dependency_still_to_land_across_targets(
+    tmp_path: Path, dep: Status, owner: Status, refused: bool
+) -> None:
+    claims = crossing_estate(tmp_path, dep, owner)
+
+    code, output = tm(claims, "config", "set", "repos", "{api: {default_branch: trunk}}")
+
+    crossing = "W: depends on A, which lands on trunk, but W lands on main"
+    assert (code, crossing in output) == ((1, True) if refused else (0, False)), output
+    assert default_branch(claims) == ("main" if refused else "trunk")
+
+
+@pytest.mark.parametrize(
+    ("status", "land_on", "refused"),
+    [
+        (Status.READY, None, True),
+        (Status.COMPLETED, None, False),
+        (Status.READY, "release/2", False),
+    ],
+    ids=["moved-off-main", "landed", "target-unmoved"],
+)
+def test_moving_a_default_branch_refuses_moving_a_check_naming_origin_main_off_main(
+    tmp_path: Path, status: Status, land_on: str | None, refused: bool
+) -> None:
+    claims = make_estate(tmp_path)
+    add(claims, "S", NodeKind.SPEC)
+    if land_on is not None:
+        claims.ops.update_node("S", frontmatter_set={"land_on": land_on})
+    add(claims, "T", parent="S", status=status)
+    claims.nodes.add_verification(
+        NodeVerification(
+            node_id="T",
+            verification_type=VerificationType.TEST_COMMAND,
+            target_path="",
+            expected_pattern="git diff --quiet origin/main",
+        )
+    )
+
+    code, output = tm(claims, "config", "set", "repos", "{api: {default_branch: trunk}}")
+
+    rule = "T: lands on its target trunk but a test_command names origin/main"
+    assert (code, rule in output) == ((1, True) if refused else (0, False)), output
+    assert default_branch(claims) == ("main" if refused else "trunk")
