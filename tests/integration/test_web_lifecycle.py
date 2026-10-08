@@ -63,7 +63,7 @@ def test_node_detail_carries_chains_dependencies_conditions_and_jobs(web: Web) -
     detail = client.get("/api/nodes/S1-P1-b").json()
     assert (detail["display"], detail["phase"]) == ("BLOCKED_BY_TASK", "QUEUED")
     assert detail["node"]["landing_chain"] == ["S1-P1-b"]
-    assert detail["node"]["base_chain"] == ["MAIN"]
+    assert detail["node"]["base_chain"] == ["TOP:main"]
     assert [(d["id"], d["status"], d["finished"]) for d in detail["dependency_details"]] == [
         ("S1-P1-a", "READY", False)
     ]
@@ -170,7 +170,7 @@ def test_a_verb_needs_a_note_and_reset_refuses_a_step_status(web: Web) -> None:
 
 def test_patch_sets_flags_merge_requires_and_land_order_through_validation(web: Web) -> None:
     client, root = web
-    # b depends on a; landing a on the parent plan while b still lands on MAIN would make b's
+    # b depends on a; landing a on the parent plan while b still lands on its target would make b's
     # start wait on the plan's landing while the plan's landing waits on b -- a real deadlock
     # the step-graph check refuses (spec S4.4). Moving b onto the same parent target first keeps
     # both landing chains meeting at `a` instead of routing through the plan.
