@@ -105,7 +105,7 @@ tm section set <task-id>:report --file <path> --header "## Report"
 
 The branch, the commits you made, the `tm verify run` exit code and which rows failed, and anything you could not do. Where the brief contradicts the tree — a file that does not exist, an interface that already differs — record the discrepancy, implement against the tree, and keep going.
 
-A report that fixes a contract its dependents build on (a shape, a name, an id scheme) writes the contract into the parent plan's `overview` with `tm section set <plan-id>:overview --file <path>` before the step closes. Only the parent's `context` and `overview` reach a dependent's brief, and no step runs between tasks to copy it there.
+A report that fixes a contract its dependents build on (a shape, a name, an id scheme) appends the contract to what `tm section get <plan-id>:overview` prints and writes the whole of it back with `tm section set <plan-id>:overview --file <path>` before the step closes. Only the parent's `context` and `overview` reach a dependent's brief, and no step runs between tasks to copy it there.
 
 ## 7. Close the step
 

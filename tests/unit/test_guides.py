@@ -700,8 +700,9 @@ BRIEF_RULES = [
         "implement",
         "## 6. Report",
         "A report that fixes a contract its dependents build on (a shape, a name, an id scheme) "
-        "writes the contract into the parent plan's `overview` with `tm section set "
-        "<plan-id>:overview --file <path>` before the step closes. Only the parent's `context` "
+        "appends the contract to what `tm section get <plan-id>:overview` prints and writes the "
+        "whole of it back with `tm section set <plan-id>:overview --file <path>` before the step "
+        "closes. Only the parent's `context` "
         "and `overview` reach a dependent's brief, and no step runs between tasks to copy it "
         "there.",
         id="implement:contract-to-overview",
