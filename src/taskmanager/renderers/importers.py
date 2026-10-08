@@ -68,6 +68,7 @@ class BulkImporter:
             "frontmatter",
             "sections",
             "depends_on",
+            "supersedes",
             "verifications",
             "tasks",
             "review",
@@ -177,6 +178,14 @@ class BulkImporter:
                     relation_type=RelationType.DEPENDS_ON,
                 )
                 for dep in raw.get("depends_on", [])
+            )
+            relations.extend(
+                NodeRelation(
+                    source_id=node.id,
+                    target_id=str(old),
+                    relation_type=RelationType.SUPERSEDES,
+                )
+                for old in raw.get("supersedes", [])
             )
             if stated is not None:
                 verifications[node.id] = stated
