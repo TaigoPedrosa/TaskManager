@@ -2114,7 +2114,7 @@ def export_cmd(
 
     with _user_errors():
         caps = Claims.open(root).caps
-        settings = ConfigStore(root).document() or {}
+        settings = ConfigStore(root).document()
     superseded: dict[str, list[str]] = {}
     for new, old in node_repo.relations(RelationType.SUPERSEDES):
         superseded.setdefault(new, []).append(old)
@@ -2165,8 +2165,8 @@ def export_cmd(
     parented = {c for n in [*specs.values(), *plans] for c in node_repo.get_children(n.id)}
     if lone := [entry(t) for t in tasks if t.id not in parented]:
         dump("_tasks.json", {"tasks": lone})
-    if shared := {k: v for k, v in settings.items() if k not in MACHINE_LOCAL_KEYS}:
-        dump("_config.json", shared)
+    if settings is not None:
+        dump("_config.json", {k: v for k, v in settings.items() if k not in MACHINE_LOCAL_KEYS})
     print(f"[green]Exported {len(plans)} plans and {len(specs)} specs to {directory}[/green]")
 
 

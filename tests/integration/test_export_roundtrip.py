@@ -53,9 +53,10 @@ def seeded(root: Path) -> None:
     second = ops.add_plan("second", spec, slug="P2", order=5)
     ops.add_task("building", first, slug="build")
     ops.add_task("reviewing", first, slug="review")
+    # The replacement's document restores before the one holding what it supersedes.
+    ops.add_task("new", first, slug="new")
     ops.add_task("old", second, slug="old")
-    ops.add_task("new", second, slug="new")
-    ops.supersede("S-P2-old", "S-P2-new")
+    ops.supersede("S-P2-old", "S-P1-new")
     in_step(root, "S-P1-build", Status.READY)
     in_step(root, "S-P1-review", Status.IMPLEMENTED)
     tm("config", "set", "worktree_dir", str(root / "worktrees"), "-C", str(root))
@@ -90,7 +91,7 @@ def test_export_restore_export_round_trips_steps_supersedes_ordinals_and_config(
         None,
         0,
     )
-    assert restored.relations(RelationType.SUPERSEDES) == [("S-P2-new", "S-P2-old")]
+    assert restored.relations(RelationType.SUPERSEDES) == [("S-P1-new", "S-P2-old")]
     ordinals = {
         n.id: n.ordinal for k in (NodeKind.SPEC, NodeKind.PLAN) for n in restored.list_nodes(kind=k)
     }
@@ -129,3 +130,24 @@ def test_restore_keeps_the_restoring_roots_worktree_dir_over_a_version_1_exports
         "worktree_dir": str(target / "worktrees"),
     }
     assert repo(target).get_node("S") is not None
+
+
+def test_restore_of_an_export_holding_only_machine_local_config_clears_the_targets_shared_keys(
+    tmp_path: Path,
+) -> None:
+    source, target = tmp_path / "source", tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+    tm("init", "-C", str(source))
+    create_container(source).get(Operations).add_spec("S", slug="S")
+    tm("config", "set", "worktree_dir", str(source / "worktrees"), "-C", str(source))
+    export = tmp_path / "e"
+    tm("export", str(export), "-C", str(source))
+    tm("init", "-C", str(target))
+    tm("config", "set", "worktree_dir", str(target / "worktrees"), "-C", str(target))
+    tm("config", "set", "max_merge_attempts", "9", "-C", str(target))
+
+    tm("restore", str(export), "-C", str(target))
+
+    assert ConfigStore(target).document() == {"worktree_dir": str(target / "worktrees")}
+    assert json.loads((export / "_config.json").read_text(encoding="utf-8")) == {}
