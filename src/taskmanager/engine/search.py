@@ -10,6 +10,7 @@ from typing import Any, Final, Protocol
 
 import httpx
 
+from taskmanager import __version__
 from taskmanager.core.enums import (
     EmbeddingProviderType,
     NodeKind,
@@ -30,8 +31,11 @@ DEFAULT_MODELS: Final = {
     EmbeddingProviderType.OPENAI: "text-embedding-3-small",
     EmbeddingProviderType.LOCAL: "all-MiniLM-L6-v2",
 }
-NO_PROVIDER: Final = "no embedding provider configured: `tm config set embeddings.provider ...`"
+NO_PROVIDER: Final = (
+    "no embedding provider configured: `tm config set embeddings.provider <local|openai>`"
+)
 REBUILD: Final = "run `tm index --rebuild`"
+REPOSITORY: Final = "git+https://github.com/TaigoPedrosa/TaskManager"
 
 # The plan a node belongs to: itself for a plan, its parent plan for a task.
 _PLAN_SQL: Final = """CASE n.kind WHEN 'plan' THEN n.id WHEN 'task' THEN (
@@ -95,8 +99,8 @@ class LocalEmbeddingProvider:
                 from sentence_transformers import SentenceTransformer
             except ImportError as exc:
                 raise SearchError(
-                    "sentence-transformers is not installed: "
-                    "pip install 'taskmanager[local-embeddings]'"
+                    "sentence-transformers is not installed: uv tool install --reinstall "
+                    f"'taskmanager[local-embeddings] @ {REPOSITORY}@v{__version__}'"
                 ) from exc
             try:
                 self._encoder = SentenceTransformer(self.model)
@@ -465,7 +469,7 @@ class SearchEngine:
                 f"""
                 SELECT n.id, n.kind, n.title, n.status, {_PLAN_SQL},
                        bm25(nodes_fts, 0.0, 10.0, 2.0, 1.0) AS rank,
-                       snippet(nodes_fts, -1, '[', ']', '...', 12)
+                       snippet(nodes_fts, -1, '**', '**', '...', 12)
                 FROM nodes_fts JOIN nodes n ON n.id = nodes_fts.node_id
                 WHERE nodes_fts MATCH ? {where}
                 ORDER BY rank ASC, n.id ASC LIMIT ?

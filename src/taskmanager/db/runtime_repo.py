@@ -153,6 +153,16 @@ class RuntimeRepository:
             conn.commit()
             return True
 
+    def set_worktree(self, task_id: str, token: str, path: str) -> None:
+        """Only the claim named by `token`: a lease released or taken over meanwhile is left as
+        its new holder wrote it."""
+        with self.db.get_state_connection() as conn:
+            conn.execute(
+                "UPDATE leases SET worktree_path = ? WHERE task_id = ? AND token = ?",
+                (path, task_id, token),
+            )
+            self.db.spec_commit(conn)
+
     def get_lease(self, task_id: str) -> Lease | None:
         with self.db.get_state_connection() as conn:
             row = conn.execute(

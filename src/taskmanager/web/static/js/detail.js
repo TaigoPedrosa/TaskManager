@@ -62,6 +62,13 @@ function factsStripHtml(node, lease, surface) {
   return `<div class="facts flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] leading-4">${facts.join('')}</div>`;
 }
 
+// Above the facts, so a superseded node's own sections read as history. The status is spelled
+// out, so no status icon sits beside it.
+function supersededHtml(by) {
+  if (!by) return '';
+  return `<p class="superseded-by flex flex-wrap items-center gap-1 text-xs leading-4 text-zinc-400">Superseded by ${idLink(by.id, undefined, 'wrap')} <span class="text-zinc-300">(${esc(getTheme(by.status).label)})</span></p>`;
+}
+
 function detailGroupHtml(ownerId, key, label, count, defaultCollapsed, innerHtml, meta = '') {
   if (!count) return '';
   const groupId = `${ownerId}::${key}`;
@@ -242,7 +249,7 @@ function nodeDetailHtml(node, body, row, { surface, byParent } = {}) {
     renderJobs(node, body.jobs),
     renderAttachmentsGroup(node, editable),
   ];
-  return `<div class="node-detail space-y-3" data-detail-for="${esc(node.id)}">${factsStripHtml(node, lease, surface)}${groups.join('')}</div>`;
+  return `<div class="node-detail space-y-3" data-detail-for="${esc(node.id)}">${supersededHtml(node.superseded_by)}${factsStripHtml(node, lease, surface)}${groups.join('')}</div>`;
 }
 
 

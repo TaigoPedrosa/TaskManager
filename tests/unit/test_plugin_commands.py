@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-COMMANDS = sorted((Path(__file__).resolve().parents[2] / "commands").glob("*.md"))
+COMMANDS = sorted((Path(__file__).resolve().parents[2] / "plugin" / "commands").glob("*.md"))
 
 _FRONTMATTER = re.compile(r"\A---\n(?P<head>.*?)\n---\n(?P<body>.*)\Z", re.DOTALL)
 _CODE_SPAN = re.compile(r"`([^`\n]+)`")

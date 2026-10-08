@@ -426,7 +426,7 @@ REMOVED_RUN_VERBS = re.compile(r"\btm run (start|stop|release|heartbeat)\b")
 def test_no_guide_or_command_page_shows_a_removed_run_verb() -> None:
     repo = Path(__file__).resolve().parents[2]
     guides = sorted((repo / "src" / "taskmanager" / "guides").glob("*.md"))
-    pages = [*guides, repo / "commands" / "task.md"]
+    pages = [*guides, repo / "plugin" / "commands" / "task.md"]
     assert len(pages) == 9, pages
     shown = [
         f"{page.name}: {line}"

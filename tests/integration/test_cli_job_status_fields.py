@@ -63,8 +63,8 @@ def test_job_status_unknown_field_is_refused_naming_it_and_the_valid_ones(tmp_pa
         app, ["job", "status", job_id, "--fields", "state,bogus", "--path", str(tmp_path)]
     )
     assert res.exit_code == 1
-    assert "bogus" in res.stdout
-    assert "state" in res.stdout
+    assert "bogus" in res.stderr
+    assert "state" in res.stderr
 
 
 def test_job_status_nested_field_a_run_never_populated_is_null_not_unknown(tmp_path: Path) -> None:

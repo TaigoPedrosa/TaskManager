@@ -473,7 +473,7 @@ def test_cli_import_hierarchy(tmp_path: Path) -> None:
         ["import", "--format", "json", "--file", str(json_path), "--path", str(tmp_path)],
     )
     assert res.exit_code == 0
-    assert "Successfully imported data" in res.stdout
+    assert "created: IMP-SPEC, IMP-SPEC-PLAN1, IMP-SPEC-PLAN1-T1\n" in res.stdout
 
     # verify imported elements
     res = runner.invoke(app, ["spec", "get", "IMP-SPEC", "--path", str(tmp_path)])
@@ -551,7 +551,7 @@ def test_cli_task_move_reparents_to_another_plan(tmp_path: Path) -> None:
         app, ["task", "move", "S1-P1-t1", "--plan", "NOPE", "--path", str(tmp_path)]
     )
     assert res.exit_code == 1
-    assert "not found" in res.stdout
+    assert "not found" in res.stderr
 
 
 def test_cli_section_remove_deletes_a_section(tmp_path: Path) -> None:
@@ -574,7 +574,7 @@ def test_cli_section_remove_deletes_a_section(tmp_path: Path) -> None:
 
     res = runner.invoke(app, ["section", "remove", "S1-P1-t1:steps", "--path", str(tmp_path)])
     assert res.exit_code == 1
-    assert "No section" in res.stdout
+    assert "No section" in res.stderr
 
 
 def test_cli_section_get_then_set_round_trips_content_byte_identical(tmp_path: Path) -> None:
@@ -637,7 +637,15 @@ def test_cli_section_get_piped_into_set_from_stdin_leaves_a_custom_header_and_co
         ["spec", "add", "S", "--slug", "S1"],
         ["plan", "add", "P", "--spec", "S1", "--slug", "P1"],
         ["task", "add", "T", "--plan", "S1-P1", "--slug", "t1"],
-        ["section", "set", "S1-P1-t1:figma", "--content", "frame — decisão\n", "-h", "## Frames"],
+        [
+            "section",
+            "set",
+            "S1-P1-t1:figma",
+            "--content",
+            "frame — decisão\n",
+            "--header",
+            "## Frames",
+        ],
     ):
         assert runner.invoke(app, [*args, *root]).exit_code == 0, args
     before = runner.invoke(app, ["section", "get", "S1-P1-t1:figma", *root])

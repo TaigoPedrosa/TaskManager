@@ -1,3 +1,4 @@
+import copy
 import os
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -57,6 +58,18 @@ _DISPATCH_BOUNDS: Final = (
 # Keys whose value is a whole mapping or list: stored and set as one value, never split into
 # dotted keys, and parsed from YAML when set from the command line.
 _WHOLE: Final = frozenset({"lease_ttl", "repos", "repo_order"})
+
+_GATE_NAMES: Final = ("main", "parent")
+# What a dotted key may name below `repos.<repo>`; a write through one merges into the stored
+# `repos` mapping. The mapping-valued ones, the repository's whole entry included, take YAML.
+_REPO_LEAVES: Final = (
+    "default_branch",
+    *(f"gates.{gate}.{field}" for gate in _GATE_NAMES for field in ("command", "junit", "timeout")),
+)
+_REPO_MAPPINGS: Final = ("gates", *(f"gates.{gate}" for gate in _GATE_NAMES))
+_VALID: Final = ", ".join(
+    (*KEYS, "repos.<repo>[.default_branch|.gates[.<main|parent>[.command|.junit|.timeout]]]")
+)
 
 LEASE_TTL_DEFAULTS: Final = {
     "implement": 10800,
@@ -189,6 +202,50 @@ class Resolved(NamedTuple):
     source: str
 
 
+class RepoKey(NamedTuple):
+    repo: str
+    path: tuple[str, ...]
+
+    @property
+    def is_mapping(self) -> bool:
+        return ".".join(self.path) not in _REPO_LEAVES
+
+
+def _repo_key(key: str) -> RepoKey | None:
+    """`repos.<repo>[.<key below it>]` as its repository and path; None for any other key. Read
+    from the right, so a repository named `.` or with a dot in its name reads as written."""
+    if not key.startswith("repos."):
+        return None
+    rest = key.removeprefix("repos.")
+    below = next((k for k in (*_REPO_LEAVES, *_REPO_MAPPINGS) if rest.endswith(f".{k}")), None)
+    repo = rest.removesuffix(f".{below}") if below else rest
+    if not repo or {"gates", "default_branch"} & set(repo.split(".")):
+        return None
+    return RepoKey(repo, tuple(below.split(".")) if below else ())
+
+
+def _with(repos: dict[str, Any], key: RepoKey, value: Any) -> dict[str, Any]:
+    out = copy.deepcopy(repos)
+    *parents, leaf = (key.repo, *key.path)
+    node = out
+    for part in parents:
+        node = node.setdefault(part, {})
+    node[leaf] = value
+    return out
+
+
+def _without(repos: dict[str, Any], key: RepoKey) -> dict[str, Any]:
+    out = copy.deepcopy(repos)
+    *parents, leaf = (key.repo, *key.path)
+    node: Any = out
+    for part in parents:
+        node = node.get(part)
+        if not isinstance(node, dict):
+            return out
+    node.pop(leaf, None)
+    return out
+
+
 def _nest(flat: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in flat.items():
@@ -217,23 +274,40 @@ def _lookup(dumped: dict[str, Any], key: str) -> Any:
 
 def _require_key(key: str) -> None:
     if key not in KEYS:
-        raise ConfigError(f"unknown key '{key}' (valid keys: {', '.join(KEYS)})")
+        raise ConfigError(f"unknown key '{key}' (valid keys: {_VALID})")
+
+
+def _yaml(key: str, raw: str) -> Any:
+    try:
+        return yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"{key}: not valid YAML (valid keys: {_VALID})") from exc
 
 
 def _typed(key: str, raw: Any) -> Any:
     """`raw` validated as `key`'s type and dumped JSON-ready; every message names the valid keys."""
     _require_key(key)
     if key in _WHOLE and isinstance(raw, str):
-        try:
-            raw = yaml.safe_load(raw)
-        except yaml.YAMLError as exc:
-            raise ConfigError(f"{key}: not valid YAML (valid keys: {', '.join(KEYS)})") from exc
+        raw = _yaml(key, raw)
     try:
         model = ProjectConfig.model_validate(_nest({key: raw}))
     except ValidationError as exc:
-        msg = str(exc.errors()[0]["msg"]).removeprefix("Value error, ")
-        raise ConfigError(f"{key}: {msg} (valid keys: {', '.join(KEYS)})") from exc
+        error = exc.errors()[0]
+        msg = str(error["msg"]).removeprefix("Value error, ")
+        # Inside `repos`, the message names the key that failed as a dotted write spells it.
+        where = ".".join(str(p) for p in error["loc"] if p != "[key]") if key == "repos" else key
+        raise ConfigError(f"{where}: {msg} (valid keys: {_VALID})") from exc
     return _lookup(model.model_dump(mode="json"), key)
+
+
+def _refuse_dropping(stored: dict[str, Any], repos: dict[str, Any]) -> None:
+    dropped = sorted(set(stored) - set(repos))
+    if dropped:
+        raise ConfigError(
+            f"repos: this value would drop the settings stored for {', '.join(dropped)}: "
+            "include every repository to keep, set one through `repos.<repo>.<key>`, or remove "
+            "one first with `tm config unset repos.<repo>`"
+        )
 
 
 def _default(key: str) -> Any:
@@ -295,14 +369,29 @@ class ConfigStore:
         self.path.write_text(yaml.safe_dump(_nest(flat), sort_keys=True), encoding="utf-8")
 
     def set(self, key: str, raw: str) -> None:
-        flat = {**self.read(), key: _typed(key, raw)}
+        flat = self.read()
+        stored = flat.get("repos", {})
+        found = _repo_key(key)
+        if found is not None:
+            value = _yaml(key, raw) if found.is_mapping else raw
+            flat["repos"] = _typed("repos", _with(stored, found, value))
+        else:
+            flat[key] = _typed(key, raw)
+            if key == "repos":
+                _refuse_dropping(stored, flat[key])
         _check_bounds(key, flat)
         self._write(flat)
 
     def unset(self, key: str) -> None:
-        _require_key(key)
-        flat = self.read()
-        flat.pop(key, None)
+        found = _repo_key(key)
+        if found is None:
+            _require_key(key)
+            flat = self.read()
+            flat.pop(key, None)
+        else:
+            flat = self.read()
+            if repos := _without(flat.pop("repos", {}), found):
+                flat["repos"] = _typed("repos", repos)
         _check_bounds(key, flat)
         if flat:
             self._write(flat)
@@ -312,6 +401,9 @@ class ConfigStore:
 
     def resolve(self, key: str, flag: Any = None) -> Resolved:
         """Flag, then the key's environment variable, then the file, then the default."""
+        found = _repo_key(key)
+        if found is not None:
+            return self._resolve_in_repos(found)
         _require_key(key)
         if flag is not None:
             return Resolved(_typed(key, flag), "flag")
@@ -325,6 +417,16 @@ class ConfigStore:
         if key in file_values:
             return Resolved(file_values[key], "config")
         return Resolved(_default(key), "default")
+
+    def _resolve_in_repos(self, key: RepoKey) -> Resolved:
+        """A repository with no entry reads as the defaults every repository has; a key under
+        it that is not set, such as a gate never configured, reads as None."""
+        repos = self.resolve("repos")
+        entry = repos.value.get(key.repo)
+        node: Any = RepoConfig().model_dump(mode="json") if entry is None else entry
+        for part in key.path:
+            node = node.get(part) if isinstance(node, dict) else None
+        return Resolved(node, "default" if entry is None else repos.source)
 
     def effective(self) -> dict[str, Resolved]:
         return {key: self.resolve(key) for key in KEYS}

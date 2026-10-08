@@ -8,7 +8,9 @@ A local task tracker for agents: a SQLite graph of specs, plans and tasks that c
 
 ## Requirements
 
-macOS or Linux; Python 3.14 (uv fetches it); git; every repository tm lands into needs an `origin` remote with its default branch (`repos.<repo>.default_branch`, `main` unless set). The plugin runs in Claude Code.
+macOS or Linux; Windows is not supported: tm runs gates, conditions and landings in POSIX process groups and checks them with `ps`. Python 3.14 (uv fetches it); git; every repository tm lands into needs an `origin` remote with its default branch (`repos.<repo>.default_branch`, `main` unless set). The plugin runs in Claude Code.
+
+Optional: [codegraph](https://www.npmjs.com/package/@colbymchenry/codegraph), a code index that implement, fix, review and plan agents query before reading files, and that `codegraph_query` verifications run against.
 
 ## Install
 
@@ -20,21 +22,34 @@ claude plugin install taskmanager@taskmanager
 
 The plugin carries the skills, the `/taskmanager:tm`, `:task` and `:board` commands, the `tm-op` agent and the `tm-wave` workflow. It does not install `tm`: install both, at the same version.
 
+codegraph, the optional extra, installs on its own and indexes each repository once:
+
+```bash
+npm install -g @colbymchenry/codegraph
+codegraph init <repository>
+```
+
+`tm doctor` lists what tm found: the required tools, and codegraph and each repository's index when present.
+
 ## Quickstart
 
 ```bash
 cd my-repo                      # a clone with its default branch on origin
 tm init
-tm config set repos '{".": {gates: {main: {command: "<your test command>"}}}}'
+tm config set repos...gates.main.command "<your test command>"
 tm guide plan                   # how to write plan.yaml
 tm import --format yaml -f plan.yaml
 tm wave discover --session me --slots 2 --max-strong 1
 tm web
 ```
 
-- `.` names the repository when the tm root is the repository itself; every task in `plan.yaml`
-  names it in `target_repo`.
-- `<your test command>` is the gate tm runs on the merged tip before a landing pushes.
+- `.` names the repository when the tm root is the repository itself, and every task in
+  `plan.yaml` names it in `target_repo`. Its gate key is `repos.<repo>.gates.main.command` with
+  `.` as `<repo>`, hence the three dots; with several repositories under one tm root, each is
+  set the same way under its own directory name.
+- `<your test command>` is the gate tm runs on the merged tip before a landing pushes. It may use
+  `{worktree}`, `{node}`, `{repo}` and `{target}`, each replaced shell-quoted; every other brace
+  reaches the shell as written.
 - A spec lands on its own branch, the one its `land_on` names, and on its repository's default branch (`main` unless set) without one.
 - `tm wave discover` prints what is claimable without claiming it, and `tm web` opens the board.
 - To dispatch, ask Claude Code for a wave: the plugin's dispatcher skill reads
@@ -46,8 +61,8 @@ tm web
 - `review`, `fix` and `merge` flags on every node in place of separate review and fix tasks, on plans and specs too
 - Landings as detached jobs: merge, gate against a cached baseline of the target, push, verify
 - Edges, decisions and conditions as the only things a node waits on, with a cycle check on every write
-- `state.db`, `cache.db` and `ledger.db` under `.taskmanager/`, SQLite in WAL mode, with `sqlite-vec` search
-- The `tm-wave` workflow (`workflows/tm-wave.js`): one step per node per tick, on the model family tm names, with a dispatching session looping itself to carry a node the rest of the way
+- `state.db`, `cache.db` and `audit.db` under `.taskmanager/`, SQLite in WAL mode, with `sqlite-vec` search
+- The `tm-wave` workflow (`plugin/workflows/tm-wave.js`): one step per node per tick, on the model family tm names, with a dispatching session looping itself to carry a node the rest of the way
 
 ## Lifecycle
 
@@ -76,22 +91,10 @@ A node goes `READY`, `IMPLEMENTING`, `IMPLEMENTED`, then through review, fix and
 
 ## Web
 
-`tm web` serves the visualizer over one FastAPI app: the page at `/` and each view path, static
-assets, the `/ws` subscribe protocol, and a handful of paginated HTTP reads.
+`tm web` serves the board on 127.0.0.1 by default: the page, its static assets, a live socket and a handful
+of paginated reads. The socket protocol and the HTTP reads are in
+[docs/web-protocol.md](docs/web-protocol.md).
 
-- `/ws` takes `{"type": "subscribe", "id", "filters", "open", "watch", "reset"}` and answers
-  `snapshot` (full state, on `reset: true` or a hash mismatch) or `update` (a diff since the
-  last message this session saw). A `LiveHub` (`src/taskmanager/web/live.py`) rebuilds its
-  model at most four times a second, on `PRAGMA data_version` moving or a lease/condition
-  deadline passing, and diffs it per session.
-- `GET /api/statuses`, `GET /api/nodes` (`parent=` or `ids=`, `include=body`, cursor-paginated)
-  and `GET /api/nodes/{id}` cover what a client reads over plain HTTP instead of the socket;
-  `/api/tree`, `/api/graph` and `/api/stats` are gone.
-- The wire contract — every message shape, the visible-set and facet rules, the row and body
-  fields — is the plan `DATA-WEB` in this project's own `tm` estate (`tm render DATA-WEB`),
-  not a doc here: `src/taskmanager/web/live.py`, `rows.py`, `visibility.py` and `bodies.py` are
-  its implementation, and `tests/fixtures/statuses_hash.json` /
-  `tests/fixtures/visibility_cases.json` are its golden vectors.
 - The toolbar holds four views, in order: Document, one card per spec/plan/task walked from the
   roots down; Graph, the node graph and inspector; Waves; and Decisions. Document opens first,
   for `tm web` and for a static export (`tm web export`) alike.
@@ -110,18 +113,11 @@ assets, the `/ws` subscribe protocol, and a handful of paginated HTTP reads.
   a "Compute next wave" button that adds one wave on top of the last, and "Reset" back to wave
   1. Each card lists its claimable entries (action, model, repos, status before/after) and a
   collapsible "Held" list of what the wave skipped and why.
-- `GET /api/waves?depth=&size=&spec=` (`src/taskmanager/web/app.py`) runs that same simulation
-  server-side over one snapshot of `state.db` and the cached conditions, and returns
-  `{"waves": [...], "max_depth": n}`; `depth` and `size` are bounds-checked server-side
-  regardless of what the client sends, and the page stops "Compute next wave" at `max_depth`.
-- Decisions (`web/static/js/decisions.js`) pages `GET /api/decisions`
-  (`status=open|answered|withdrawn`, cursor-paginated) into three tabs; the Open badge tracks
-  the live `decisions_open` count from every snapshot/update. Opening a decision
-  (`/decisions/<id>`) shows its question, context and options beside the list; below 640px the
-  decision is the page and the list opens as a drawer over it. An open decision answers with a
-  picked option or a custom answer, plus an optional rationale, over
-  `POST /api/decisions/{id}/answer`; withdrawing takes a reason over
-  `POST /api/decisions/{id}/withdraw`, and either can be reopened.
+- Decisions lists open, answered and withdrawn decisions in three tabs; the Open badge tracks the
+  live count. Opening a decision (`/decisions/<id>`) shows its question, context and options
+  beside the list; below 640px the decision is the page and the list opens as a drawer over it.
+  An open decision answers with a picked option or a custom answer, plus an optional rationale;
+  withdrawing takes a reason, and either can be reopened.
 
 ## Upgrading from 0.2
 
@@ -148,6 +144,9 @@ assets, the `/ws` subscribe protocol, and a handful of paginated HTTP reads.
   `tm db migrate` and the backup path.
 
 ## Development
+
+Python 3.14 through [uv](https://docs.astral.sh/uv/), Node 22 for the script tests, and the
+Tailwind standalone CLI v3.4.19 for the stylesheet test.
 
 ```bash
 uv sync
@@ -179,7 +178,7 @@ The test looks at `TAILWINDCSS_BIN`, then `./tailwindcss` at the repository root
 To keep the binary elsewhere, point the variable at it:
 
 ```bash
-TAILWINDCSS_BIN="$HOME/.local/share/tm-tools/tailwindcss" node --test 'tests/**/*.test.mjs'
+TAILWINDCSS_BIN=/path/to/tailwindcss node --test 'tests/**/*.test.mjs'
 ```
 
 Run the build from the repository root: the `content` globs resolve against the working

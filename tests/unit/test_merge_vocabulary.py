@@ -44,7 +44,7 @@ def test_import_merge_main_is_refused_and_writes_nothing(root: Path) -> None:
 
     code, output = tm(root, "import", stdin=json.dumps({"spec": SPEC, "plans": [plan]}))
 
-    assert (code, output) == (1, f"import refused, nothing written: node 'S-P-b': {REFUSAL}")
+    assert (code, output) == (1, f"import refused, nothing written: stdin: node 'S-P-b': {REFUSAL}")
     assert stored(root, "S-P-b") is None
 
 

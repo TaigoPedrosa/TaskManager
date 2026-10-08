@@ -461,7 +461,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(here, '../..');
 let pageHtml = null;
 
-// The page exactly as `tm web run` serves it: index.html with every slot filled, so the scripts
+// The page exactly as `tm web` serves it: index.html with every slot filled, so the scripts
 // run in their shipped order against the markup they ship with.
 export function servedPage() {
   pageHtml ??= execFileSync('uv', ['run', '--project', REPO_ROOT, '--quiet', 'python', '-c',

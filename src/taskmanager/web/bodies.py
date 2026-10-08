@@ -79,6 +79,7 @@ def lifecycle_fields(n: Node, view: DisplayView) -> dict[str, Any]:
         "landing_chain": landing_chain(view.snapshot, n.id),
         # The chain's last entry names the branch it lands on at the top, not the sentinel.
         "base_chain": [*base_chain(view.snapshot, n.id)[:-1], view.snapshot.nodes[n.id].top],
+        "superseded_by": view.superseded_by(n.id),
     }
 
 

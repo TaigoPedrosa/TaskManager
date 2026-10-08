@@ -300,10 +300,14 @@ class Claims:
         )
 
     @classmethod
-    def open(cls, root: Path, config: ProjectConfig | None = None) -> Claims:
+    def open(
+        cls, root: Path, config: ProjectConfig | None = None, actor: str | None = None
+    ) -> Claims:
         container = create_container(root)
         db = container.get(DatabaseManager)
         ops = container.get(Operations)
+        if actor is not None:
+            ops = ops.with_actor(actor)
         cfg = config or ConfigStore(root).project()
         jobs = JobRepository(db)
         cache = CacheRepository(db)
@@ -522,6 +526,8 @@ class Claims:
             self._unclaim(node)
             detail = getattr(exc, "stderr", None) or str(exc)
             raise OperationError(f"claim of {node.id} undone: {detail}".strip(), 409) from exc
+        if begun.worktree is not None:
+            self.runtime.set_worktree(node.id, lease.token, begun.worktree)
         own = [lock.file_path for lock in locks]
         lines = self._codegraph(own, begun.worktrees, snap)
         return replace(begun, token=lease.token, codegraph=lines)
@@ -610,7 +616,7 @@ class Claims:
 
         if not self.is_container(node):
             repo = repos[0]
-            path = cut(repo, base_dir / f"{repo}-{node.id}")
+            path = cut(repo, base_dir / (node.id if repo == "." else f"{repo}-{node.id}"))
             return path, {repo: path}
         worktrees = {repo: cut(repo, base_dir / node.id / repo) for repo in repos}
         return str(base_dir / node.id), worktrees
@@ -625,11 +631,19 @@ class Claims:
         """The ref `node_id`'s branch is cut from in `repo`, creating each ancestor container
         branch on the way: a node builds on its landing target, never on the top branch past a
         parent that has not landed. A top branch not on origin yet is cut from the repository's
-        default branch, and the first landing on it creates it."""
+        default branch, and the first landing on it creates it; with that one missing too, the
+        claim is refused, since the landing would have nowhere to push."""
         repo_dir = self.root / repo
         parent = self.ops.landing_parent(self.node(node_id).id)
         if parent is None:
-            return GitManager(repo_dir).default_base_ref(self.fetched_top(node_id, repo))
+            top = self.fetched_top(node_id, repo)
+            if not gitops.rev_parse(repo_dir, f"origin/{top}"):
+                raise OperationError(
+                    f"{repo} has no origin/{top}: tm cuts branches from origin/{top} and lands "
+                    "by pushing to origin",
+                    409,
+                )
+            return f"origin/{top}"
         parent_branch = self.branch_of(parent)
         if not gitops.rev_parse(repo_dir, f"refs/heads/{parent_branch}"):
             gitops.ensure_branch(repo_dir, parent_branch, self._base_ref(parent, repo))

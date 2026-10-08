@@ -1,6 +1,7 @@
 import re
 from dataclasses import replace
 from datetime import UTC, datetime
+from functools import partial
 from typing import TYPE_CHECKING, Final, Literal
 
 from taskmanager.core.display import Facts, display_status, phase
@@ -137,7 +138,8 @@ def roll_up_ancestors(
     land is landed already, one reaching DEFERRED or ABANDONED strands its dependents, and each
     move is ledgered. `arrived`: `node_id` has just come under its parent, so no ancestor's
     landing carried its code, whatever its status, and each is off its target until it lands
-    again."""
+    again. Every write that moves a node ends here, so this is also where a node left COMPLETED,
+    `node_id` included, loses its worktrees once the write commits."""
     # decisions imports this module, so importing it back at load time would be circular.
     from taskmanager.engine.decisions import open_stranded_decision, stranded_dependents
 
@@ -179,6 +181,13 @@ def roll_up_ancestors(
             ):
                 open_stranded_decision(ops, parent.id, derived, dependents)
         parents = node_repo.get_parent_ids(parent.id)
+    own = node_repo.get_node(node_id)
+    completed = [i for i, s in moved if s == Status.COMPLETED]
+    if own is not None and stored_status(own) == Status.COMPLETED:
+        completed.append(node_id)
+    # Removing a worktree cannot be rolled back, so it waits for the write to commit.
+    for done in dict.fromkeys(completed):
+        node_repo.db.after_commit(partial(ops.drop_worktrees, done))
     return moved
 
 
@@ -412,6 +421,38 @@ class DisplayView:
             self.builder.facts(node.id, self.snapshot), unmet_condition=self._unmet(node)
         )
         return display_status(cycle_in(self.snapshot, node), facts).value
+
+    def superseded_by(self, node_id: str) -> dict[str, str] | None:
+        """The node now carrying `node_id`'s work and its display, or None when it is not
+        superseded."""
+        data = self.snapshot.graph_data()
+        end = replacement(data, node_id)
+        return None if end is None else {"id": end, "status": self.display(data.nodes[end])}
+
+
+def display_view(node_repo: NodeRepository) -> DisplayView:
+    """What `tm` shows a reader: conditions read from the cache within `condition_ttl`."""
+    db = node_repo.db
+    return DisplayView(
+        SnapshotBuilder(node_repo, RuntimeRepository(db), JobRepository(db)),
+        CacheRepository(db),
+        ConfigStore(db.taskmanager_dir.parent).project().condition_ttl,
+    )
+
+
+def replacement(data: GraphData, node_id: str) -> str | None:
+    """The end of `node_id`'s `supersedes` chain, followed while each node on it is SUPERSEDED,
+    so A superseded by B superseded by C names C. `seen` stops a cycle an import can store."""
+    successor = {old: new for new, old in data.relations[RelationType.SUPERSEDES]}
+    end, seen = node_id, {node_id}
+    while (
+        data.nodes[end].status == Status.SUPERSEDED
+        and (new := successor.get(end)) is not None
+        and new not in seen
+    ):
+        seen.add(new)
+        end = new
+    return None if end == node_id else end
 
 
 def chain_holder(snapshot: Snapshot, node: Node) -> str | None:

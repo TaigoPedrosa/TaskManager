@@ -162,7 +162,7 @@ CLOSING_VERBS = {
     "merge": "tm job resume <job> --agent <name> --token <token>",
 }
 
-WORKFLOW = Path(__file__).resolve().parents[2] / "workflows" / "tm-wave.js"
+WORKFLOW = Path(__file__).resolve().parents[2] / "plugin" / "workflows" / "tm-wave.js"
 
 
 @pytest.mark.parametrize("topic", _topics())
@@ -206,13 +206,54 @@ def test_dispatch_guide_says_the_fix_round_caps_bound_only_the_sensitive_path() 
     assert "widening `acceptable_models`" in text
 
 
-def test_dispatch_guide_routes_questions_through_decisions() -> None:
-    """A question in chat is lost when the session ends; every question is a decision instead."""
-    text = _guide_text("dispatch")
-    assert "never ask" in text.lower()
-    assert "tm decision add" in text
-    assert "--blocks" in text
-    assert "tm decision list --status open" in text
+DISPATCH_QUESTION = (
+    "A question that holds work is a decision, not a chat message: `tm decision add … --blocks "
+    "<ids>`. It outlives the session and holds exactly the nodes it names. Say in your status "
+    "report that it is open."
+)
+DISPATCH_STOP = "When `tm wave discover` offers nothing and no step is in flight, report and stop."
+DISPATCH_HOUSE_RULES = (
+    "never asks the owner a question in chat",
+    "Never ask the owner a question in chat",
+    "only the user stops it",
+    "it still ticks, at the ceiling",
+)
+
+
+@pytest.mark.parametrize("where", ["dispatch.md", "plugin/skills/dispatcher/SKILL.md"])
+def test_dispatch_text_holds_a_question_as_a_decision_and_stops_when_nothing_is_left(
+    where: str, rendered: Callable[[str], str]
+) -> None:
+    text = rendered("dispatch") if where == "dispatch.md" else _doc_text(where)
+    assert DISPATCH_QUESTION in text
+    assert DISPATCH_STOP in text
+    assert [rule for rule in DISPATCH_HOUSE_RULES if rule in text] == []
+
+
+HOUSE_STYLE = (
+    *DISPATCH_HOUSE_RULES,
+    "docstring the fix touches",
+    "narrates history",
+    "One line per defect",
+    "no praise",
+    "never name a ruling, task, review or round",
+)
+
+
+@pytest.mark.parametrize("topic", _topics())
+def test_built_in_guide_leaves_house_style_to_the_project_addendum(
+    topic: str, rendered: Callable[[str], str]
+) -> None:
+    text = rendered(topic)
+    assert [phrase for phrase in HOUSE_STYLE if phrase in text] == []
+
+
+def test_review_guide_numbers_findings_for_the_fix_and_writes_one_when_none_is_open(
+    rendered: Callable[[str], str],
+) -> None:
+    text = rendered("review")
+    assert "Number the findings, because the fix answers them by number" in text
+    assert "With nothing open, write that" in text
 
 
 def test_dispatch_guide_answers_a_ruling_rejection_with_a_decision() -> None:
@@ -245,14 +286,12 @@ def test_dispatch_guide_names_every_argument_tm_wave_reads() -> None:
 REPO = Path(__file__).resolve().parents[2]
 DOCS = (
     "README.md",
-    "agents/tm-op.md",
-    "commands/board.md",
-    "commands/task.md",
-    "commands/tm.md",
-    "skills/dispatcher/SKILL.md",
-    "skills/taskmanager/SKILL.md",
-    "src/taskmanager/skills/dispatcher/SKILL.md",
-    "src/taskmanager/skills/taskmanager/SKILL.md",
+    "plugin/agents/tm-op.md",
+    "plugin/commands/board.md",
+    "plugin/commands/task.md",
+    "plugin/commands/tm.md",
+    "plugin/skills/dispatcher/SKILL.md",
+    "plugin/skills/taskmanager/SKILL.md",
 )
 
 
@@ -714,6 +753,24 @@ def test_no_guide_or_doc_says_a_chain_ends_on_main(where: str, text: str) -> Non
     assert [phrase for phrase in RETIRED_TARGET_WORDING if phrase in text] == []
 
 
+CURRENT_MODEL_IDS = {
+    "claude-haiku-4-5-20251001",
+    "claude-sonnet-5-5",
+    "claude-opus-5-5",
+    "claude-fable-5-1",
+}
+_MODEL_ID = re.compile(r"\bclaude-[a-z]+-\d[\w.-]*")
+
+
+@pytest.mark.parametrize("where,text", _TEXTS, ids=[w for w, _ in _TEXTS])
+def test_every_model_id_a_guide_or_doc_shows_is_a_current_one(where: str, text: str) -> None:
+    assert sorted(set(_MODEL_ID.findall(text)) - CURRENT_MODEL_IDS) == []
+
+
+def test_the_plan_guide_example_routes_on_a_current_model_id() -> None:
+    assert "acceptable_models: [claude-sonnet-5-5]" in _guide_text("plan")
+
+
 VERIFY_DEFAULT_REF = [
     ("overview", "With no `--ref`, it reads each task at `origin/<the branch its spec lands on>`"),
     ("plan", "with no `--ref`, `origin/<the branch its spec lands on>`, fetched first"),
@@ -801,13 +858,8 @@ def test_dispatch_guide_never_re_dispatches_a_review_of_a_fix_that_is_not_sensit
     assert "Never re-dispatch a review of a fix that is not sensitive." in never
 
 
-@pytest.mark.parametrize(
-    "doc", ["skills/dispatcher/SKILL.md", "src/taskmanager/skills/dispatcher/SKILL.md"]
-)
-def test_dispatcher_skill_lands_a_reviewed_container_first_and_never_re_reviews_a_plain_fix(
-    doc: str,
-) -> None:
-    text = _doc_text(doc)
+def test_dispatcher_skill_lands_a_container_first_and_never_re_reviews_a_plain_fix() -> None:
+    text = _doc_text("plugin/skills/dispatcher/SKILL.md")
     assert "reads `LANDED` until its one review, on its landed target, runs" in text
     assert "never re-dispatch a review of a fix that is not sensitive" in text
 
@@ -973,10 +1025,77 @@ BRIEF_RULES = [
     pytest.param(
         "overview",
         "# How TaskManager works",
-        "After `tm init`, set `repos.<repo>.gates.main` for every target repo before the first "
-        "dispatch: it gates every landing on a spec's target branch, whatever that branch is "
-        "named. Without it, every such landing is refused with `no gate`.",
+        "After `tm init`, give every repository a task names in `target_repo` a `main` gate, the "
+        "command tm runs on the merged tip before it pushes: `tm config set "
+        'repos.<repo>.gates.main.command "<command>"`. It gates every landing on a spec\'s target '
+        "branch, whatever that branch is named; without one, every such landing stops with "
+        "`no gate`.",
         id="overview:main-gate",
+    ),
+    pytest.param(
+        "overview",
+        "# How TaskManager works",
+        "A repository is a directory under the tm root with an `origin` remote holding its "
+        "default branch (`repos.<repo>.default_branch`, `main` unless set). When the tm root is "
+        "the repository itself, its name is `.`. The command runs in tm's merge worktree and may "
+        "use `{worktree}`, `{node}`, `{repo}` and `{target}`, each replaced shell-quoted; every "
+        "other brace reaches the shell as written.",
+        id="overview:repo-and-placeholders",
+    ),
+    pytest.param(
+        "overview",
+        "# How TaskManager works",
+        '"The owner" in these guides is whoever runs the project: the person who answers its '
+        "decisions, configures its gates and keeps its guide addendum. The addendum is a section "
+        "per topic on a spec with the id `guide`, created once with `tm spec add 'Project guide' "
+        "--slug guide`, then written with `tm section set guide:<topic> --file <path>`; "
+        "`tm guide <topic>` prints it after the built-in text.",
+        id="overview:owner-and-addendum",
+    ),
+    pytest.param(
+        "overview",
+        "## Moving an estate to this version",
+        "Configure each repository's landing gate, `tm config set repos.<repo>.gates.main "
+        "'{command: <template>, junit: <glob>, timeout: <seconds>}'`,",
+        id="overview:runbook-gate",
+    ),
+    pytest.param(
+        "overview",
+        "## Moving an estate to this version",
+        "7. Write the project's own conventions back into its guide addendum: `tm spec add "
+        "'Project guide' --slug guide` once, then `tm section set guide:<topic> --file <path>` "
+        "for each topic the old estate carried one for.",
+        id="overview:runbook-addendum",
+    ),
+    pytest.param(
+        "merge",
+        "## What tm already did",
+        "report it; the owner sets it with `tm config set repos.<repo>.gates.main.command "
+        '"<command>"`',
+        id="merge:no-gate",
+    ),
+    pytest.param(
+        "plan",
+        "## 1. Write the document",
+        "| `target_repo` | The directory, under the tm root, the task's branch is cut in; `.` when "
+        "the tm root is itself the repository.",
+        id="plan:single-repo",
+    ),
+    pytest.param(
+        "plan",
+        "## 3. Models and capabilities",
+        "tm routes on the Claude families `haiku`, `sonnet`, `opus` and `fable`, read from each "
+        "id: an id naming none of them is ignored, so a list of only such ids routes as an empty "
+        "one.",
+        id="plan:model-families",
+    ),
+    pytest.param(
+        "plan",
+        "## 6. Verifications",
+        "`symbol_signature` and `ast_export` parse the file as Python and fail on any other "
+        "language; for a symbol in another language, use a `test_command` or a "
+        "`codegraph_query`.",
+        id="plan:python-only-checks",
     ),
 ]
 
@@ -995,3 +1114,32 @@ def test_tm_guide_prints_each_brief_rule_once_in_its_role_s_section(
         if rule in part
     ]
     assert holding == [(topic, heading)]
+
+
+def test_overview_runbook_and_merge_guide_drop_the_gate_forms_tm_refuses(
+    rendered: Callable[[str], str],
+) -> None:
+    text = rendered("overview") + rendered("merge")
+    assert "set `repos.<repo>.gates.main` for every" not in text
+    assert "configures `repos.<repo>.gates.main` |" not in text
+    assert "tm config set repos '{<repo>:" not in text
+    assert "the owner's cutover" not in text
+    assert "Apply the project's prepared guide addendum" not in text
+
+
+def _readme_quickstart() -> list[str]:
+    section = _doc_text("README.md").split("## Quickstart\n", 1)[1].split("\n## ", 1)[0]
+    block = section.split("```bash\n", 1)[1].split("```", 1)[0]
+    return [line.split("#", 1)[0].strip() for line in block.splitlines()]
+
+
+def test_readme_quickstart_gate_line_is_one_tm_config_set_accepts(tmp_path: Path) -> None:
+    line = next(ln for ln in _readme_quickstart() if ln.startswith("tm config set "))
+    args = shlex.split(line.replace("<your test command>", "true"))[1:]
+    runner = CliRunner()
+    assert runner.invoke(app, ["init", "-C", str(tmp_path)]).exit_code == 0
+    result = runner.invoke(app, [*args, "-C", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    got = runner.invoke(app, ["config", "get", "repos...gates.main.command", "-C", str(tmp_path)])
+    assert got.exit_code == 0, got.output
+    assert got.stdout.strip() == "true"

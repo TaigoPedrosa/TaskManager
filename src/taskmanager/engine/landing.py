@@ -6,6 +6,7 @@ only when it stops at `needs_agent`.
 """
 
 import argparse
+import logging
 import os
 import shlex
 import subprocess
@@ -36,6 +37,7 @@ PUSH_PAUSE_SECONDS = 5
 PUSH_ERROR_LINES = 5
 LOCK_WAIT_SECONDS = 120
 LIVE = frozenset({JobState.RUNNING, JobState.NEEDS_AGENT})
+_logger = logging.getLogger(__name__)
 
 # Where a resumed job picks up, by the reason it stopped. A resolved conflict is gated like any
 # merge; an `error` starts over, since nothing after it can be trusted.
@@ -73,8 +75,8 @@ class Landing:
         claims.landing = self
 
     @classmethod
-    def open(cls, root: Path) -> Landing:
-        claims = Claims.open(root)
+    def open(cls, root: Path, actor: str | None = None) -> Landing:
+        claims = Claims.open(root, actor=actor)
         return cls(root, claims.config, claims, CacheRepository(claims.nodes.db), claims.jobs)
 
     def start_land(self, node_id: str) -> str:
@@ -131,9 +133,13 @@ class Landing:
         with self._beating(job.node_id):
             try:
                 return self._sync(job) if job.kind == JobKind.SYNC else self._land(job)
-            except (subprocess.CalledProcessError, OSError, OperationError) as exc:
-                detail = f"{exc}\n{getattr(exc, 'stderr', '') or ''}".strip()
-                return self._needs_agent(job, "error", error=detail)
+            except Exception as exc:
+                # Whatever stops a step stops the job for an agent: an exception let through
+                # would leave it `running` with no process left to end it. The traceback goes to
+                # the job's log.
+                _logger.exception("job %s stopped on an error", job.id)
+                detail = f"{type(exc).__name__}: {exc}\n{getattr(exc, 'stderr', '') or ''}"
+                return self._needs_agent(job, "error", error=detail.strip())
 
     def resume(
         self,
@@ -254,8 +260,10 @@ class Landing:
                 return self._needs_agent(
                     job,
                     "no gate",
-                    detail=f"repos.{job.repo}.gates.main is not configured: a repository with "
-                    f"no main gate cannot land on {job.target}",
+                    detail=f"repos.{job.repo}.gates.main is not configured (set it with `tm "
+                    f'config set repos.{job.repo}.gates.main.command "<command>"`, then `tm job '
+                    f"resume {job.id}`): a repository with no main gate cannot land on "
+                    f"{job.target}",
                 )
         else:
             # A node's own verification is red on its target by construction, so it has no

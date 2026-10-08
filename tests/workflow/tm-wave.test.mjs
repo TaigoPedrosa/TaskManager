@@ -1,11 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { discovery, djb2, json, landedRepo, makeTm, meta, realCksum, runWave, scriptCksum } from './harness.mjs'
+import { SOURCE, discovery, djb2, json, landedRepo, makeTm, meta, realCksum, runWave, scriptCksum } from './harness.mjs'
 
 const ARGS = { session: 's1', worktreeDir: '/wt', root: '/est' }
 const T1 = { id: 'T1', kind: 'task', action: 'implement', model: 'sonnet', repos: ['core'], requires: [], job: null, migration: false }
@@ -28,8 +28,24 @@ const releaseOf = token => `tm task release T1 --agent wf-s1-T1 --token ${token}
 const REVIEWERS = { task: 'task-reviewer', rereview: 'scoped-re-reviewer', container: 'branch-reviewer' }
 const scopeOf = work => work.prompt.split('\n').find(line => line.startsWith('Scope: '))
 
-test('session and worktreeDir are required', async () => {
-  await assert.rejects(runWave({ args: { session: 's1' }, tm: makeTm() }), /args\.session and args\.worktreeDir are required/)
+test('session is required', async () => {
+  await assert.rejects(runWave({ args: { worktreeDir: '/wt' }, tm: makeTm() }), /args\.session is required/)
+})
+
+test('without worktreeDir a claim leaves the worktree directory to the estate config', async () => {
+  const fresh = () => {
+    const tm = makeTm({
+      chosen: [T1],
+      nodes: { T1: node('READY', 'implement') },
+      start: { T1: [() => (tm.set('T1', { status: 'IMPLEMENTING', next_action: null }), claim('implement', { worktree: '/est/.worktrees/core-T1' }))] },
+    })
+    return tm
+  }
+  const without = await runWave({ args: { session: 's1', root: '/est' }, tm: fresh() })
+  const given = await runWave({ args: ARGS, tm: fresh() })
+  assert.ok(starts(without.ops).length > 0)
+  for (const c of starts(without.ops)) assert.doesNotMatch(c, /--worktree-dir/)
+  for (const c of starts(given.ops)) assert.match(c, /--worktree-dir \/wt /)
 })
 
 for (const key of ['release', 'maxFixRounds']) {
@@ -178,7 +194,9 @@ test('every agent runs under a phase the meta declares, across the run each step
 })
 
 for (const [fam, models, id] of [
-  ['opus', undefined, 'claude-opus-5'],
+  ['haiku', undefined, 'claude-haiku-4-5-20251001'],
+  ['sonnet', undefined, 'claude-sonnet-5-5'],
+  ['opus', undefined, 'claude-opus-5-5'],
   ['fable', undefined, 'claude-fable-5-1'],
   ['opus', { opus: 'claude-opus-6' }, 'claude-opus-6'],
 ]) {
@@ -200,12 +218,12 @@ test('a claim naming a family args.models does not map is released and never dis
   const tm = makeTm({
     chosen: [T1],
     nodes: { T1: node('READY', 'implement') },
-    start: { T1: [() => (tm.set('T1', { status: 'IMPLEMENTING', next_action: null }), claim('implement', { model: 'claude-opus-5', worktree: '/wt/core-T1' }))] },
+    start: { T1: [() => (tm.set('T1', { status: 'IMPLEMENTING', next_action: null }), claim('implement', { model: 'claude-opus-5-5', worktree: '/wt/core-T1' }))] },
   })
   const { ops, work, result } = await runWave({ args: ARGS, tm })
   assert.deepEqual(work, [])
   assert.deepEqual(releases(ops), [releaseOf('k1')])
-  assert.ok(result.results[0].trail.includes('claim names the model family claude-opus-5, which args.models does not map'))
+  assert.ok(result.results[0].trail.includes('claim names the model family claude-opus-5-5, which args.models does not map'))
 })
 
 test('an implement brief names the worktree, the branch, its base and the verb that closes it', async () => {
@@ -821,6 +839,21 @@ test('every op exports TM_ROOT for the estate instead of naming it in the instru
   }
 })
 
+test('tm-op runs where it starts, as every runner prompt names no directory and exports TM_ROOT', async () => {
+  const runnerDoc = readFileSync(new URL('../../plugin/agents/tm-op.md', import.meta.url), 'utf8')
+  assert.ok(runnerDoc.includes('in the directory you start in'), runnerDoc)
+  assert.ok(runnerDoc.includes('Do not `cd` first: the command exports `TM_ROOT`'), runnerDoc)
+  assert.ok(!runnerDoc.includes('the directory the message names'), runnerDoc)
+  const tm = makeTm({ chosen: [T1], nodes: { T1: node('FAILED', null) } })
+  const { calls } = await runWave({ args: ARGS, tm })
+  const ops = calls.filter(c => c.kind === 'op')
+  assert.ok(ops.length >= 2)
+  for (const c of ops) {
+    assert.match(c.prompt, /^\( export TM_ROOT=\S+; /m)
+    assert.doesNotMatch(c.prompt, /director|\bcd\s/i)
+  }
+})
+
 test('an op against the default root exports TM_ROOT=. rather than omitting it', async () => {
   const tm = makeTm({ chosen: [T1], nodes: { T1: node('FAILED', null) } })
   const { calls } = await runWave({ args: { session: 's1', worktreeDir: '/wt' }, tm })
@@ -852,4 +885,93 @@ test('read, start and job each keep their transcript small next to a job log the
     assert.ok(matched.length > 0, `no ${label} op ran`)
     for (const c of matched) assert.ok(c.stdout.length < 500, `${label} transcript was ${c.stdout.length} bytes: ${c.stdout.slice(0, 80)}`)
   }
+})
+
+test('every command runner is briefed on the current haiku id', async () => {
+  const tm = makeTm({ chosen: [T1], nodes: { T1: node('FAILED', null) } })
+  const { calls } = await runWave({ args: ARGS, tm })
+  const ops = calls.filter(c => c.kind === 'op')
+  assert.ok(ops.length >= 2)
+  for (const c of ops) assert.match(c.prompt, /^Model: claude-haiku-4-5-20251001$/m)
+})
+
+test('the dispatch guide and skill name the workflow by its plugin name and by the scriptPath of this script', () => {
+  const read = rel => readFileSync(new URL(`../../${rel}`, import.meta.url), 'utf8')
+  const [entry] = JSON.parse(read('.claude-plugin/marketplace.json')).plugins
+  const plugin = JSON.parse(read(`${entry.source}/.claude-plugin/plugin.json`))
+  const name = `${plugin.name}:${meta().name}`
+  assert.equal(name, 'taskmanager:tm-wave')
+  assert.equal(read(`${entry.source}/workflows/tm-wave.js`), SOURCE)
+  for (const doc of ['src/taskmanager/guides/dispatch.md', `${entry.source}/skills/dispatcher/SKILL.md`]) {
+    const text = read(doc)
+    assert.ok(text.includes(`\`Workflow({name: '${name}', args: {`), doc)
+    assert.ok(text.includes("with the plugin installed, or by `scriptPath`, the plugin's `workflows/tm-wave.js`"), doc)
+  }
+})
+
+const opTypes = calls => calls.filter(c => c.kind === 'op').map(c => c.opts.agentType)
+const runnerSwitches = logs => logs.filter(l => / runner returned nothing; /.test(l))
+
+test("commands run on the plugin's taskmanager:tm-op runner", async () => {
+  const tm = makeTm({ chosen: [T1], nodes: { T1: node('FAILED', null) } })
+  const { calls, logs } = await runWave({ args: ARGS, tm })
+  assert.ok(opTypes(calls).length >= 2)
+  assert.deepEqual([...new Set(opTypes(calls))], ['taskmanager:tm-op'])
+  assert.deepEqual(runnerSwitches(logs), [])
+})
+
+test('a session that does not know taskmanager:tm-op runs every command on tm-op', async () => {
+  const tm = makeTm({ chosen: [T1], nodes: { T1: node('FAILED', null) } })
+  const { calls, logs } = await runWave({ args: ARGS, tm, refuse: o => o.agentType === 'taskmanager:tm-op' })
+  assert.ok(opTypes(calls).length >= 2)
+  assert.deepEqual([...new Set(opTypes(calls))], ['tm-op'])
+  assert.deepEqual(runnerSwitches(logs), ['discover:attempt-1: the taskmanager:tm-op runner returned nothing; tm-op takes the rest of this run'])
+})
+
+test('a session that knows neither runner type runs every command on the generic runner', async () => {
+  const tm = makeTm({ chosen: [T1], nodes: { T1: node('FAILED', null) } })
+  const refuse = o => o.agentType === 'taskmanager:tm-op' || o.agentType === 'tm-op'
+  const { calls, logs } = await runWave({ args: ARGS, tm, refuse })
+  assert.ok(opTypes(calls).length >= 2)
+  assert.deepEqual([...new Set(opTypes(calls))], [undefined])
+  assert.deepEqual(runnerSwitches(logs), [
+    'discover:attempt-1: the taskmanager:tm-op runner returned nothing; tm-op takes the rest of this run',
+    'discover:attempt-1: the tm-op runner returned nothing; the generic runner takes the rest of this run',
+  ])
+})
+
+test('two commands failing on one runner type at once move past that type only', async () => {
+  const T2 = { ...T1, id: 'T2' }
+  const tm = makeTm({ chosen: [T1, T2], nodes: { T1: node('FAILED', null), T2: { ...node('FAILED', null), id: 'T2' } } })
+  const refuse = o => o.agentType === 'taskmanager:tm-op' && o.phase !== 'Discover'
+  const { calls, logs, result } = await runWave({ args: ARGS, tm, refuse })
+  assert.deepEqual(result.results.map(r => r.status), ['FAILED', 'FAILED'])
+  assert.deepEqual(opTypes(calls), ['taskmanager:tm-op', 'tm-op', 'tm-op'])
+  assert.equal(runnerSwitches(logs).length, 1)
+})
+
+test('a brief leaves comment, test-name and review-format rules to the project guide addendum', async () => {
+  const tm = makeTm({
+    chosen: [T1],
+    nodes: { T1: node('READY', 'implement') },
+    start: {
+      T1: [
+        () => (tm.set('T1', { status: 'IMPLEMENTING', next_action: null }), claim('implement', { worktree: '/wt/core-T1' })),
+        () => (tm.set('T1', { status: 'REVIEWING', next_action: null }), claim('review')),
+      ],
+    },
+  })
+  const agents = (prompt, opts) => {
+    if (opts.label === 'implement:T1') tm.set('T1', { status: 'IMPLEMENTED', next_action: 'review' })
+    if (opts.label === 'review:T1') tm.set('T1', { status: 'REVIEWED', next_action: null })
+    return 'done'
+  }
+  const briefs = []
+  for (let i = 0; i < 2; i++) briefs.push(...(await runWave({ args: ARGS, tm, agents })).work.map(w => w.prompt))
+  assert.equal(briefs.length, 2)
+  for (const brief of briefs) {
+    assert.match(brief, /^Sections: before any tm section set, tm section get the same key and append to it\.$/m)
+    assert.ok(!brief.includes('never name a ruling'), brief)
+  }
+  assert.match(briefs[1], /^Findings: append numbered findings to tm section T1:review; write it even when nothing is open, saying so\.$/m)
 })

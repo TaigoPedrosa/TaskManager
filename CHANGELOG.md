@@ -16,6 +16,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   of `tm web`.
 - The plugin's skills give the command that installs `tm`, and tell an agent to stop when `tm` is
   not on PATH.
+- `tm config set`, `get` and `unset` take dotted keys under `repos`:
+  `repos.<repo>.gates.<main|parent>[.command|.junit|.timeout]`, `repos.<repo>.gates`,
+  `repos.<repo>.default_branch` and `repos.<repo>`. Each merges into the stored mapping; the
+  repository at the tm root is `.`, as in `repos...gates.main.command`.
+- A lease records the worktree its claim cut, so `tm run list` shows it.
 
 ### Changed
 
@@ -23,6 +28,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   plugin manifest.
 - `/taskmanager:tm` only runs a `tm` command: invoking it no longer opts the session into the
   Workflow tool, a self-paced loop or any other tool.
+- The plugin lives under `plugin/`, so installing it copies its skills, commands, agent and
+  workflow rather than the whole repository.
+- The dispatch guide and the dispatcher skill run the workflow as `taskmanager:tm-wave`, or by
+  `scriptPath` at the plugin's `workflows/tm-wave.js`.
+- `tm-wave` runs its commands on the plugin's `taskmanager:tm-op` agent, then on `tm-op`, before
+  the generic agent, and maps model families to `claude-haiku-4-5-20251001`,
+  `claude-sonnet-5-5`, `claude-opus-5-5` and `claude-fable-5-1` by default.
+- The shipped dispatch, fix and review guides and the `tm-wave` briefs carry no house style: a
+  dispatcher reports and stops when nothing is claimable or in flight, a question that holds work
+  is a decision, and comment, test-name and review-format rules belong in a project's own guide
+  addendum (`tm section set guide:<topic>`).
 
 ### Removed
 
@@ -30,6 +46,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - The `/docs` and `/redoc` API pages on `tm web`.
 - `tm install`, the empty `tm plugin` group and `install.sh`: the README's install commands
   replace them.
+- The unused copy of the skills under `src/taskmanager/skills`.
 
 ### Fixed
 
@@ -39,6 +56,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   that fact through `tm restore`; an older tm does not restore it.
 - `tm web --host` takes an IPv6 address: it found no free port for one, and printed its URL
   without brackets.
+- A gate command may hold braces of its own (`${HOME}`, `awk '{print $1}'`, `find -exec {} +`):
+  only `{worktree}`, `{node}`, `{repo}` and `{target}` are replaced.
+- A landing job stopped by any error waits for an agent with the error named, instead of staying
+  `running` with no process behind it.
+- `tm config set repos` refuses a value that would drop a repository's stored settings, and names
+  the repository.
+- A claim in a repository with no `origin/<default branch>` is refused, naming it, instead of
+  failing at landing. A landing with no main gate names the command that sets one.
+- An implement or fix worktree is removed once its node is `COMPLETED`, unless it holds
+  uncommitted work. The `tm/<id>` branch stays.
+- A task whose `target_repo` is `.` gets the worktree `<worktree_dir>/<id>`, not `.-<id>`.
 
 ### Security
 

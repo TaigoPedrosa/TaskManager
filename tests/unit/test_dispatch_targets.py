@@ -9,10 +9,7 @@ from taskmanager.engine.config import ConfigError, ConfigStore
 runner = CliRunner()
 
 REPO = Path(__file__).resolve().parents[2]
-SKILL_COPIES = (
-    REPO / "skills/dispatcher/SKILL.md",
-    REPO / "src/taskmanager/skills/dispatcher/SKILL.md",
-)
+DISPATCHER_SKILL = REPO / "plugin/skills/dispatcher/SKILL.md"
 
 
 @pytest.fixture
@@ -23,7 +20,7 @@ def root(tmp_path: Path) -> Path:
 
 def tm(root: Path, *args: str) -> tuple[int, str]:
     res = runner.invoke(app, [*args, "-C", str(root)])
-    return res.exit_code, res.stdout
+    return res.exit_code, res.output
 
 
 def test_config_list_shows_the_dispatch_defaults(root: Path) -> None:
@@ -144,13 +141,7 @@ def test_guide_describes_the_staggered_tick(root: Path) -> None:
         assert needle in out, needle
 
 
-@pytest.mark.parametrize("path", SKILL_COPIES, ids=[str(p) for p in SKILL_COPIES])
-def test_dispatcher_skill_copies_describe_the_staggered_tick(path: Path) -> None:
-    text = path.read_text(encoding="utf-8")
+def test_dispatcher_skill_describes_the_staggered_tick() -> None:
+    text = DISPATCHER_SKILL.read_text(encoding="utf-8")
     for needle in ("wave_size", "tick_budget", "maxBatch", "exclude", "staggered"):
         assert needle in text, needle
-
-
-def test_dispatcher_skill_copies_stay_identical() -> None:
-    texts = {p.read_text(encoding="utf-8") for p in SKILL_COPIES}
-    assert len(texts) == 1

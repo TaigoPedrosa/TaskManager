@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 
-const SOURCE = readFileSync(new URL('../../workflows/tm-wave.js', import.meta.url), 'utf8')
+export const SOURCE = readFileSync(new URL('../../plugin/workflows/tm-wave.js', import.meta.url), 'utf8')
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 const META_START = 'export const meta = '
 
@@ -131,7 +131,7 @@ export function makeTm({ chosen = [], nodes = {}, start = {}, job = {}, parked =
     }
     m = inner.match(/^\S+ ((?:task|plan) list --(?:plan|spec) \S+) --json$/)
     if (m && lists[m[1]]) return json(lists[m[1]].map(id => ({ id, kind: m[1].split(' ')[0] })))
-    m = inner.match(/^\S+ task start (\S+) --agent wf-\S+ --session \S+ --worktree-dir \S+ --json$/)
+    m = inner.match(/^\S+ task start (\S+) --agent wf-\S+ --session \S+(?: --worktree-dir \S+)? --json$/)
     if (m && starts[m[1]]) {
       const reply = starts[m[1]]()
       const c = parse(reply.text)
@@ -184,11 +184,14 @@ const RUNNER = /^\( (.*) \); echo "__EXIT:\$\?"$/m
 // text, so the fake tm is answered on the command with that export stripped back off.
 const TM_ROOT = /^export TM_ROOT=(\S+); (.*)$/
 
-export async function runWave({ args, tm, agents = () => 'done' }) {
+// `refuse(opts)` true makes that call fail as the harness fails an agent type the session does not
+// know; a refused call is never recorded.
+export async function runWave({ args, tm, agents = () => 'done', refuse = () => false }) {
   const calls = []
   const logs = []
   const errors = []
   const agent = async (prompt, opts = {}) => {
+    if (refuse(opts)) throw new Error(`unknown agent type ${opts.agentType}`)
     const m = prompt.match(RUNNER)
     if (m) {
       const rooted = m[1].match(TM_ROOT)
