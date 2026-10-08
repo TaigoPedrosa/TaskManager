@@ -9,6 +9,8 @@ description: Use when planning a wave, dispatching a subagent, routing a task to
 
 `tm` installs separately from this plugin: `uv tool install git+https://github.com/TaigoPedrosa/TaskManager@v<this plugin's version>`. When `tm` is not on PATH, say so and stop; run nothing in its place.
 
+`tm --version` must print this plugin's version; otherwise stop and say which one to upgrade.
+
 The instructions ship with the tool and are printed on demand, so nothing here repeats them.
 
 ## Read the topic for what you are doing

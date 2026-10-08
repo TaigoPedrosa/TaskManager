@@ -183,7 +183,7 @@ def test_a_tool_that_cannot_start_is_found_at_its_path(repo: Path, bin_dir: Path
 
 
 def test_the_taskmanager_skill_runs_tm_doctor_on_first_contact() -> None:
-    skill = Path(__file__).resolve().parents[2] / "skills/taskmanager/SKILL.md"
+    skill = Path(__file__).resolve().parents[2] / "plugin/skills/taskmanager/SKILL.md"
     row = next(
         line for line in skill.read_text(encoding="utf-8").splitlines() if "first contact" in line
     )

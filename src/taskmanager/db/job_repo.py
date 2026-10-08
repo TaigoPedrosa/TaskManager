@@ -69,6 +69,24 @@ class JobRepository:
             ).fetchall()
         return [_row_to_job(r) for r in rows]
 
+    def list_jobs(
+        self, node_id: str | None = None, states: Collection[JobState] | None = None
+    ) -> list[Job]:
+        where: list[str] = []
+        params: list[str] = []
+        if node_id is not None:
+            where.append("node_id = ?")
+            params.append(node_id)
+        if states is not None:
+            where.append(f"state IN ({', '.join('?' for _ in states)})")
+            params.extend(s.value for s in states)
+        clause = f" WHERE {' AND '.join(where)}" if where else ""
+        with self.db.get_state_connection() as conn:
+            rows = conn.execute(
+                f"SELECT {_COLUMNS} FROM jobs{clause} ORDER BY rowid ASC", params
+            ).fetchall()
+        return [_row_to_job(r) for r in rows]
+
     def update(self, job: Job) -> bool:
         """Writes a live job's progress (step, worktree, pid, heartbeat, result), never its
         state: a job expired under its running process stays expired and records nothing more.
