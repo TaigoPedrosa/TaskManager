@@ -43,6 +43,8 @@ tm verify run <node-id> --ref tm/<node-id>
 
 Exit 1 names the failing rows. `No verifications to run.` exits 2 and is no evidence at all.
 
+Before closing, read `tm verify list <node-id>` against the fix, and for a plan or spec the list of each task under it, since its landing runs them all. A row that checks what the fix replaced (an identifier, a file, a pattern) is updated in the same step, with `tm verify remove` and `tm verify add`, and named in the report.
+
 ## 4. Report
 
 Answer each finding by its number, with the commit that closed it or the words "not done" and why, appended to the report:

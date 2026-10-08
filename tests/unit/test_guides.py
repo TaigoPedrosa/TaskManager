@@ -705,6 +705,25 @@ BRIEF_RULES = [
         id="plan:third-party-contents",
     ),
     pytest.param(
+        "plan",
+        "## 10. Amend it",
+        "A ruling (a decision's answer, or a fix round's instruction) that changes a landed task's "
+        "approach updates that task's verifications in the same step: `tm verify list <id>`, then "
+        "`tm verify remove` for each row that checks the old approach, then `tm verify add` for "
+        "the new one. A verification still checking the old approach fails the plan's landing on "
+        "a green fix.",
+        id="plan:ruling-verifications",
+    ),
+    pytest.param(
+        "fix",
+        "## 3. Verify and keep the lease alive",
+        "Before closing, read `tm verify list <node-id>` against the fix, and for a plan or spec "
+        "the list of each task under it, since its landing runs them all. A row that checks what "
+        "the fix replaced (an identifier, a file, a pattern) is updated in the same step, with "
+        "`tm verify remove` and `tm verify add`, and named in the report.",
+        id="fix:stale-verifications",
+    ),
+    pytest.param(
         "implement",
         "## 2. Read the brief",
         "An instruction about a third-party artifact's structure (which layers a style holds, the "

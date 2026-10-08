@@ -162,6 +162,8 @@ tm verify list <id>
 tm verify remove <id> <verification-id>
 ```
 
+A ruling (a decision's answer, or a fix round's instruction) that changes a landed task's approach updates that task's verifications in the same step: `tm verify list <id>`, then `tm verify remove` for each row that checks the old approach, then `tm verify add` for the new one. A verification still checking the old approach fails the plan's landing on a green fix.
+
 A change to `merge` once the node's branch exists is refused unless that branch was cut from the new target: code cut from a plan's branch must never land on `main` carrying the plan's unreviewed work. Set the branch aside and start a new one first; `reopen` takes only a deferred, abandoned or failed node, so defer it before reopening, and wait for (or stop) a step in progress before deferring. A completed node has landed and a superseded one is carried by its replacement: neither is set aside, so file a new task, or change where the replacement lands.
 
 ```
