@@ -18,6 +18,7 @@ from rich import print
 from rich.markup import escape
 from rich.table import Table
 
+from taskmanager import __version__
 from taskmanager.core.enums import (
     ImportFormat,
     LedgerCommand,
@@ -30,13 +31,14 @@ from taskmanager.core.enums import (
     VerificationType,
 )
 from taskmanager.core.lifecycle import advance, next_action
-from taskmanager.core.models import Condition, LedgerEvent, Node
+from taskmanager.core.models import Condition, Job, LedgerEvent, Node
 from taskmanager.core.naming import QualifiedPath
 from taskmanager.core.status import (
     IN_STEP,
     Action,
     ConditionStage,
     DecisionStatus,
+    DisplayStatus,
     Event,
     JobKind,
     JobState,
@@ -58,7 +60,7 @@ from taskmanager.db.schema import STATE_SCHEMA_VERSION
 from taskmanager.di.container import TaskManagerProvider
 from taskmanager.engine import doctor
 from taskmanager.engine.chains import landing_chain
-from taskmanager.engine.claims import Blocker, Claims, DecisionSpec
+from taskmanager.engine.claims import LIVE_JOBS, Blocker, Claims, DecisionSpec
 from taskmanager.engine.config import ConfigError, ConfigStore
 from taskmanager.engine.decisions import DECISION_STATUS_LABELS, read_decision
 from taskmanager.engine.discovery import discover, djb2
@@ -114,6 +116,27 @@ app.add_typer(job_app)
 app.add_typer(land_app)
 app.add_typer(db_app)
 task_app.add_typer(condition_app)
+
+
+def _print_version(value: bool) -> None:
+    if value:
+        sys.stdout.write(f"tm {__version__}\n")
+        raise typer.Exit
+
+
+@app.callback()
+def main_callback(
+    _version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            callback=_print_version,
+            is_eager=True,
+            help="Print tm's version and exit",
+        ),
+    ] = False,
+) -> None:
+    pass
 
 
 def _emit(data: Any, as_yaml: bool = False) -> None:
@@ -196,14 +219,25 @@ def _view(container: Container) -> DisplayView:
     return display_view(container.get(NodeRepository))
 
 
-def _list_rows(container: Container, kind: NodeKind, status: Status | None) -> list[dict[str, Any]]:
+def _list_rows(
+    container: Container,
+    kind: NodeKind,
+    status: Status | None,
+    state: DisplayStatus | None = None,
+) -> list[dict[str, Any]]:
     view = _view(container)
     nodes = [
         n
         for n in container.get(NodeRepository).list_nodes(kind=kind)
         if status is None or stored_status(n) == status
     ]
-    return [_node_row(n, view.display(n)) for n in nodes]
+    rows = [_node_row(n, view.display(n)) for n in nodes]
+    return [r for r in rows if state is None or r["state"] == state]
+
+
+_STATE_OPTION = typer.Option(
+    "--state", help="Filter by derived state (BLOCKED_BY_TASK, STALE, WAITING_REVIEW, ...)"
+)
 
 
 def _next_action(container: Container, node: Node) -> str | None:
@@ -465,20 +499,32 @@ def spec_list(
     status: Annotated[
         Status | None, typer.Option("--status", help="Filter by stored status")
     ] = None,
+    state: Annotated[DisplayStatus | None, _STATE_OPTION] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
     yaml_output: Annotated[
         bool, typer.Option("--yaml", help="Output as YAML (fewer tokens than JSON)")
     ] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
-    rows = _list_rows(_get_container(_get_root(path)), NodeKind.SPEC, status)
+    rows = _list_rows(_get_container(_get_root(path)), NodeKind.SPEC, status, state)
     if json_output or yaml_output:
         _emit(rows, yaml_output)
         return
     _print_rows("Specifications", rows)
 
 
-def _print_container(label: str, container: Container, node_id: str, children_label: str) -> None:
+_JSON_OPTION = typer.Option("--json", help="Output as JSON")
+_YAML_OPTION = typer.Option("--yaml", help="Output as YAML (fewer tokens than JSON)")
+
+
+def _print_container(
+    label: str,
+    container: Container,
+    node_id: str,
+    children_label: str,
+    as_json: bool = False,
+    as_yaml: bool = False,
+) -> None:
     node_repo = container.get(NodeRepository)
     node = node_repo.get_node(node_id)
     if node is None:
@@ -486,6 +532,9 @@ def _print_container(label: str, container: Container, node_id: str, children_la
         raise typer.Exit(code=1)
     view = _view(container)
     children = node_repo.get_children(node_id)
+    if as_json or as_yaml:
+        _emit(_node_row(node, view.display(node)) | {"children": children}, as_yaml)
+        return
     print(f"[bold cyan]{label}:[/] {node.id}")
     print(f"[bold]Title:[/] {escape(node.title)}")
     print(f"[bold]Status:[/] {node.status.value}")
@@ -498,9 +547,12 @@ def _print_container(label: str, container: Container, node_id: str, children_la
 @spec_app.command("get")
 def spec_get(
     spec_id: str,
+    json_output: Annotated[bool, _JSON_OPTION] = False,
+    yaml_output: Annotated[bool, _YAML_OPTION] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
-    _print_container("Spec", _get_container(_get_root(path)), spec_id, "Plans")
+    container = _get_container(_get_root(path))
+    _print_container("Spec", container, spec_id, "Plans", json_output, yaml_output)
 
 
 # A plain string, not a choice of the enum, so a refused value reaches `parse_merge` and its
@@ -544,6 +596,7 @@ def plan_list(
     status: Annotated[
         Status | None, typer.Option("--status", help="Filter by stored status")
     ] = None,
+    state: Annotated[DisplayStatus | None, _STATE_OPTION] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
     yaml_output: Annotated[
         bool, typer.Option("--yaml", help="Output as YAML (fewer tokens than JSON)")
@@ -551,7 +604,7 @@ def plan_list(
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     container = _get_container(_get_root(path))
-    rows = _list_rows(container, NodeKind.PLAN, status)
+    rows = _list_rows(container, NodeKind.PLAN, status, state)
     if spec:
         children = set(container.get(NodeRepository).get_children(spec))
         rows = [r for r in rows if r["id"] in children]
@@ -564,9 +617,12 @@ def plan_list(
 @plan_app.command("get")
 def plan_get(
     plan_id: str,
+    json_output: Annotated[bool, _JSON_OPTION] = False,
+    yaml_output: Annotated[bool, _YAML_OPTION] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
-    _print_container("Plan", _get_container(_get_root(path)), plan_id, "Tasks")
+    container = _get_container(_get_root(path))
+    _print_container("Plan", container, plan_id, "Tasks", json_output, yaml_output)
 
 
 def _csv(raw: str | None) -> list[str]:
@@ -674,6 +730,7 @@ def task_list(
     status: Annotated[
         Status | None, typer.Option("--status", help="Filter by stored status")
     ] = None,
+    state: Annotated[DisplayStatus | None, _STATE_OPTION] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
     yaml_output: Annotated[
         bool, typer.Option("--yaml", help="Output as YAML (fewer tokens than JSON)")
@@ -686,7 +743,7 @@ def task_list(
 ) -> None:
     container = _get_container(_get_root(path))
     node_repo = container.get(NodeRepository)
-    rows = _list_rows(container, NodeKind.TASK, status)
+    rows = _list_rows(container, NodeKind.TASK, status, state)
     if plan:
         children = set(node_repo.get_children(plan))
         rows = [r for r in rows if r["id"] in children]
@@ -842,12 +899,15 @@ def task_get(
     ] = False,
     fields: Annotated[
         str | None,
-        typer.Option("--fields", help="Comma-separated keys to print; requires --json"),
+        typer.Option(
+            "--fields",
+            help="Comma-separated keys to print, dotted selects nested; with --json or --yaml",
+        ),
     ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
-    if fields is not None and not json_output:
-        print("[red]--fields requires --json[/red]")
+    if fields is not None and not (json_output or yaml_output):
+        print("[red]--fields requires --json or --yaml[/red]")
         raise typer.Exit(code=1)
     container = _get_container(_get_root(path))
     node_repo = container.get(NodeRepository)
@@ -911,13 +971,7 @@ def task_get(
             }
         )
         if fields is not None:
-            requested = [f.strip() for f in fields.split(",") if f.strip()]
-            unknown = [f for f in requested if f not in doc]
-            if unknown:
-                valid = ", ".join(sorted(doc))
-                print(f"[red]unknown field(s): {', '.join(unknown)} (valid: {valid})[/red]")
-                raise typer.Exit(code=1)
-            doc = {f: doc[f] for f in requested}
+            doc = _pick_fields(doc, fields)
         _emit(doc, yaml_output)
         return
     print(f"[bold cyan]Task:[/] {task.id}")
@@ -1104,12 +1158,25 @@ def task_heartbeat(
     node_id: Annotated[
         str | None, typer.Argument(help="Node ID (optional inside its worktree)")
     ] = None,
+    agent: Annotated[
+        str | None,
+        typer.Option("--agent", help="Refused unless the node's live lease is this agent's"),
+    ] = None,
+    token: Annotated[
+        str | None,
+        typer.Option("--token", help="Refused unless the node's live lease is this claim's"),
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
-    tid = _resolve_task_id(_get_container(root).get(RuntimeRepository), node_id)
+    runtime = _get_container(root).get(RuntimeRepository)
+    tid = _resolve_task_id(runtime, node_id)
+    claims = _claims(root)
+    lease = runtime.get_lease(tid)
     with _refusing():
-        alive = _claims(root).heartbeat(tid)
+        if lease is not None:
+            claims.own(tid, lease, agent, token)
+        alive = claims.heartbeat(tid)
     if not alive:
         print(f"[red]No live lease on {escape(tid)}[/red]")
         raise typer.Exit(code=1)
@@ -1215,6 +1282,23 @@ def _dotted_get(doc: dict[str, Any], dotted: str) -> tuple[bool, Any]:
     return True, cur
 
 
+def _pick_fields(doc: dict[str, Any], fields: str) -> dict[str, Any]:
+    requested = [f.strip() for f in fields.split(",") if f.strip()]
+    picked: dict[str, Any] = {}
+    unknown = []
+    for f in requested:
+        found, value = _dotted_get(doc, f)
+        if found:
+            picked[f] = value
+        else:
+            unknown.append(f)
+    if unknown:
+        valid = ", ".join(sorted(doc))
+        print(f"[red]unknown field(s): {', '.join(unknown)} (valid: {valid})[/red]")
+        raise typer.Exit(code=1)
+    return picked
+
+
 @job_app.command("status")
 def job_status(
     job_id: str,
@@ -1244,21 +1328,26 @@ def job_status(
         raise typer.Exit(code=1)
     doc = job.model_dump(mode="json")
     if fields is not None:
-        requested = [f.strip() for f in fields.split(",") if f.strip()]
-        picked: dict[str, Any] = {}
-        unknown = []
-        for f in requested:
-            found, value = _dotted_get(doc, f)
-            if not found:
-                unknown.append(f)
-            else:
-                picked[f] = value
-        if unknown:
-            valid = ", ".join(sorted(doc))
-            print(f"[red]unknown field(s): {', '.join(unknown)} (valid: {valid})[/red]")
-            raise typer.Exit(code=1)
-        doc = picked
+        doc = _pick_fields(doc, fields)
     _emit(doc, yaml_output)
+
+
+@job_app.command("list")
+def job_list(
+    node: Annotated[str | None, typer.Option("--node", help="Only this node's jobs")] = None,
+    state: Annotated[
+        list[JobState] | None, typer.Option("--state", help="Only jobs in this state, repeatable")
+    ] = None,
+    json_output: Annotated[bool, _JSON_OPTION] = False,
+    yaml_output: Annotated[bool, _YAML_OPTION] = False,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Landing and sync jobs, oldest first."""
+    jobs = _get_container(_get_root(path)).get(JobRepository).list_jobs(node, state or None)
+    if json_output or yaml_output:
+        _emit([job.model_dump(mode="json") for job in jobs], yaml_output)
+        return
+    _print_jobs("Jobs", jobs)
 
 
 @job_app.command("resume")
@@ -1405,14 +1494,18 @@ def run_list(
     ] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
-    runtime_repo = _get_container(_get_root(path)).get(RuntimeRepository)
+    """Every live lease, locked file and running or stopped job."""
+    container = _get_container(_get_root(path))
+    runtime_repo = container.get(RuntimeRepository)
     leases = runtime_repo.list_leases()
     locks = runtime_repo.list_locks()
+    jobs = container.get(JobRepository).list_jobs(states=LIVE_JOBS)
     if json_output or yaml_output:
         _emit(
             {
                 "leases": [lease.model_dump(mode="json") for lease in leases],
                 "locks": [lock.model_dump(mode="json") for lock in locks],
+                "jobs": [job.model_dump(mode="json") for job in jobs],
             },
             yaml_output,
         )
@@ -1439,6 +1532,25 @@ def run_list(
     for lock in locks:
         table_locks.add_row(lock.file_path, lock.task_id, lock.lock_type.value)
     print(table_locks)
+    _print_jobs("Live Jobs", jobs)
+
+
+def _print_jobs(title: str, jobs: list[Job]) -> None:
+    table = Table(title=title)
+    for column in ("Job ID", "Kind", "Node ID", "Repo", "Target", "State", "Step", "Heartbeat"):
+        table.add_column(column)
+    for job in jobs:
+        table.add_row(
+            escape(job.id),
+            job.kind.value,
+            escape(job.node_id),
+            escape(job.repo),
+            escape(job.target),
+            job.state.value,
+            escape(job.step or "-"),
+            job.heartbeat.isoformat(),
+        )
+    print(table)
 
 
 @run_app.command("sweep")
@@ -1613,6 +1725,8 @@ def verify_run(
             ),
         ),
     ] = None,
+    json_output: Annotated[bool, _JSON_OPTION] = False,
+    yaml_output: Annotated[bool, _YAML_OPTION] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
@@ -1632,6 +1746,16 @@ def verify_run(
     except OperationError as exc:
         print(f"[yellow]{exc}[/yellow]")
         raise typer.Exit(code=2) from exc
+
+    if json_output or yaml_output:
+        _emit(
+            {
+                "passed": all_passed,
+                "results": [dataclasses.asdict(r) for r in results],
+            },
+            yaml_output,
+        )
+        raise typer.Exit(code=0 if all_passed else 1)
 
     table = Table(title="Verification Results")
     table.add_column("Target", style="cyan")
@@ -2366,9 +2490,16 @@ def config_list(
         )
         return
     for key, resolved in effective.items():
-        sys.stdout.write(
-            f"{key} = {resolved.value if resolved.value is not None else ''}  ({resolved.source})\n"
-        )
+        sys.stdout.write(f"{key} = {_config_text(resolved.value)}  ({resolved.source})\n")
+
+
+def _config_text(value: Any) -> str:
+    """A mapping or list prints as JSON, which a script parses; a Python repr parses nowhere."""
+    if value is None:
+        return ""
+    if isinstance(value, dict | list):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
 
 
 @config_app.command("get")
@@ -2379,7 +2510,7 @@ def config_get(
     root = _get_root(path)
     with _user_errors():
         value = ConfigStore(root).resolve(key).value
-    sys.stdout.write(f"{value if value is not None else ''}\n")
+    sys.stdout.write(f"{_config_text(value)}\n")
 
 
 @config_app.command("set", context_settings={"ignore_unknown_options": True})
@@ -2540,12 +2671,17 @@ def import_cmd(
 def audit_list(
     target: Annotated[str | None, typer.Option("--target", help="Filter by target ID")] = None,
     limit: Annotated[int, typer.Option("--limit", "-n", help="Limit results")] = 50,
+    json_output: Annotated[bool, _JSON_OPTION] = False,
+    yaml_output: Annotated[bool, _YAML_OPTION] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
     container = _get_container(root)
     ledger_repo = container.get(LedgerRepository)
     events = ledger_repo.list_events(target_id=target, limit=limit)
+    if json_output or yaml_output:
+        _emit([e.model_dump(mode="json") for e in events], yaml_output)
+        return
 
     table = Table(title="Audit Ledger Events")
     table.add_column("ID", justify="right")
