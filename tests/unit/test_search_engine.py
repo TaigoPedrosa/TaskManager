@@ -7,6 +7,7 @@ import httpx
 import pytest
 from typer.testing import CliRunner
 
+from taskmanager import __version__
 from taskmanager.cli.main import app
 from taskmanager.core.enums import (
     EmbeddingProviderType,
@@ -90,7 +91,7 @@ def test_fts_ranks_a_title_match_above_a_body_only_match(kit: Kit) -> None:
     hits = kit.engine.fts("rotate")
     assert [h.id for h in hits] == ["T-title", "T-body"]
     assert hits[0].score > hits[1].score
-    assert "[rotate]" in hits[1].snippet
+    assert "**rotate**" in hits[1].snippet
 
 
 @pytest.mark.parametrize(
@@ -359,7 +360,7 @@ def _cli(root: Path, *args: str) -> tuple[int, str]:
     # Everything after `--` is a query word, so -C has to come before it.
     cut = args.index("--") if "--" in args else len(args)
     res = runner.invoke(app, [*args[:cut], "-C", str(root), *args[cut:]])
-    return res.exit_code, res.stdout
+    return res.exit_code, res.output
 
 
 @pytest.fixture
@@ -423,7 +424,7 @@ def test_semantic_search_and_index_without_a_provider_exit_1_with_the_hint(proje
         assert code == 1 and "Traceback" not in out
         assert (
             out.strip()
-            == "no embedding provider configured: `tm config set embeddings.provider ...`"
+            == "no embedding provider configured: `tm config set embeddings.provider <local|openai>`"
         )
 
 
@@ -514,7 +515,10 @@ def test_a_missing_sentence_transformers_prints_the_install_hint(
     _cli(project, "config", "set", "embeddings.provider", "local")
     code, out = _cli(project, "index")
     assert code == 1 and "Traceback" not in out
-    assert "pip install 'taskmanager[local-embeddings]'" in out
+    assert (
+        "sentence-transformers is not installed: uv tool install --reinstall "
+        f"'taskmanager[local-embeddings] @ git+https://github.com/TaigoPedrosa/TaskManager@v{__version__}'"
+    ) in out
     assert _cli(project, "index", "--status")[0] == 0
 
 

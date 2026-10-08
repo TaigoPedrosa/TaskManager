@@ -58,8 +58,8 @@ def test_task_get_unknown_field_is_refused_naming_it_and_the_valid_ones(tmp_path
         app, ["task", "get", task_id, "--json", "--fields", "status,bogus", "--path", str(tmp_path)]
     )
     assert res.exit_code == 1
-    assert "bogus" in res.stdout
-    assert "status" in res.stdout
+    assert "bogus" in res.stderr
+    assert "status" in res.stderr
 
 
 def test_task_get_fields_without_json_is_refused(tmp_path: Path) -> None:

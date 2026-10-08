@@ -1050,7 +1050,7 @@ def test_get_file_svg_is_still_sandboxed_against_a_direct_open(
 def test_write_guard_pins_host_against_dns_rebinding(tmp_path: Path) -> None:
     db_mgr = DatabaseManager(tmp_path / ".taskmanager")
     db_mgr.init_all()
-    # The real server: bound to 127.0.0.1:6701, as `tm web run` would call it.
+    # The real server: bound to 127.0.0.1:6701, as `tm web` would call it.
     app = create_app(tmp_path, host="127.0.0.1", port=6701)
     client = TestClient(app)
 

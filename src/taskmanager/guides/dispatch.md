@@ -7,7 +7,7 @@ For the session manager: run the `tm-wave` workflow, which asks tm what each nod
 The plugin ships the dispatcher as a workflow script, run by name, `Workflow({name: 'taskmanager:tm-wave', args: {...}})` with the plugin installed, or by `scriptPath`, the plugin's `workflows/tm-wave.js`. One run is one tick:
 
 1. `tm wave discover` chooses a batch: every claimable node, within the session's slots, file-disjoint within the batch.
-2. Each chosen node's next step is claimed once, and no node waits for a sibling. `tm task get` reads where it stands and its `next_action`; `tm task start --worktree-dir <worktreeDir>` claims that one step and names its action and model family; the workflow dispatches the agent that action needs on the model id `models` maps that family to; the agent does the step and closes it with its guide's verb, passing the lease's agent name with `--agent` and the claim's token with `--token`. For a `merge` or a `sync`, the workflow waits on `tm job status <job> --wait 540` instead. When the job is already parked for an agent — a merge claim of a node already `MERGING`, or any sync claim — that claim is the hand-over: the workflow dispatches the agent the job needs, on the new token `tm job resume` asks for, and this run's one step is that hand-over. A container landing in several repositories runs one job per repository within that step, and the workflow follows each to the next.
+2. Each chosen node's next step is claimed once, and no node waits for a sibling. `tm task get` reads where it stands and its `next_action`; `tm task start` claims that one step and names its action and model family; the workflow dispatches the agent that action needs on the model id `models` maps that family to; the agent does the step and closes it with its guide's verb, passing the lease's agent name with `--agent` and the claim's token with `--token`. For a `merge` or a `sync`, the workflow waits on `tm job status <job> --wait 540` instead. When the job is already parked for an agent — a merge claim of a node already `MERGING`, or any sync claim — that claim is the hand-over: the workflow dispatches the agent the job needs, on the new token `tm job resume` asks for, and this run's one step is that hand-over. A container landing in several repositories runs one job per repository within that step, and the workflow follows each to the next.
 3. The run reads the node once more and stops, returning whatever its status now is — mid-step, `COMPLETED`, `FAILED`, or blocked on something outside the step. It claims nothing further: a node still short of `COMPLETED` goes back through `tm wave discover` on a later tick.
 
 A step the agent leaves open, an agent that dies, or a handed-over job the agent never resumed is released by the workflow with `tm task release <id> --agent <its lease's agent> --token <its claim's token>` as a failed step, which tm counts; tm refuses that release once another claim holds the node. A job the agent resumed that stops again is left parked, since tm has counted it already, and the next claim hands it over. A claim naming a family `models` does not map is released the same way, never run on a guess. tm counts fix rounds and landing failures too, so the workflow keeps no counter and no hold of its own.
@@ -18,12 +18,12 @@ A question that holds work is a decision, not a chat message: `tm decision add �
 
 **Typical target** (`tm config` keys `dispatch.tick_min`, `dispatch.tick_max`, `dispatch.wave_size`, `dispatch.tick_budget`, effective here): a wakeup every {{tick_min}}–{{tick_max}} s, waves of at most {{wave_size}} nodes, at most {{tick_budget}} nodes dispatched per tick across those staggered waves. A dispatch message's own numbers override these for that session; `tm config set` changes what this line prints.
 
-Arguments, of which `session` and `worktreeDir` are required:
+Arguments, of which `session` is required:
 
 | Argument | What it is |
 |:--|:--|
 | `session` | this dispatching session's name; every lease carries it |
-| `worktreeDir` | where implement and fix worktrees are cut, passed to every claim as `tm task start --worktree-dir` |
+| `worktreeDir` | where implement and fix worktrees are cut, passed to every claim as `tm task start --worktree-dir`; omitted means the estate's `worktree_dir` config |
 | `specs` | spec ids to discover under; omitted means every spec and every node with no spec |
 | `slots` | agents this session may hold at once (default 9) |
 | `maxStrong` | of those, how many may run on `opus` or `fable` (default 5) |

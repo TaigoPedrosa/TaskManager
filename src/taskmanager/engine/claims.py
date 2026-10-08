@@ -300,10 +300,14 @@ class Claims:
         )
 
     @classmethod
-    def open(cls, root: Path, config: ProjectConfig | None = None) -> Claims:
+    def open(
+        cls, root: Path, config: ProjectConfig | None = None, actor: str | None = None
+    ) -> Claims:
         container = create_container(root)
         db = container.get(DatabaseManager)
         ops = container.get(Operations)
+        if actor is not None:
+            ops = ops.with_actor(actor)
         cfg = config or ConfigStore(root).project()
         jobs = JobRepository(db)
         cache = CacheRepository(db)

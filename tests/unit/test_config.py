@@ -44,7 +44,7 @@ def root(tmp_path: Path) -> Path:
 
 def tm(root: Path, *args: str) -> tuple[int, str]:
     res = runner.invoke(app, [*args, "-C", str(root)])
-    return res.exit_code, res.stdout
+    return res.exit_code, res.output
 
 
 @pytest.mark.parametrize(

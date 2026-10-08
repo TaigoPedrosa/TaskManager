@@ -10,11 +10,12 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, NoReturn, cast
 
 import typer
 from dishka import Container, make_container
 from rich import print
+from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
@@ -78,12 +79,13 @@ from taskmanager.engine.snapshot import (
     stored_status,
     waits_on,
 )
-from taskmanager.renderers.importers import BulkImporter
+from taskmanager.renderers.importers import REFUSED, BulkImporter, Imported
 from taskmanager.renderers.markdown import MarkdownRenderer
 
 app = typer.Typer(
     name="taskmanager",
     help="Local agentic task tracker system powered by SQLite and DAG heuristics",
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
 spec_app = typer.Typer(name="spec", help="Manage specifications")
 plan_app = typer.Typer(name="plan", help="Manage plans")
@@ -100,6 +102,9 @@ job_app = typer.Typer(name="job", help="Landing and sync jobs")
 land_app = typer.Typer(name="land", help="Start a node's landing")
 condition_app = typer.Typer(name="condition", help="States outside the corpus a node waits on")
 db_app = typer.Typer(name="db", help="The estate's state.db schema")
+
+# Soft wrap: a refusal is one line a script can match, whatever the terminal width.
+_stderr = Console(stderr=True, soft_wrap=True)
 
 app.add_typer(spec_app)
 app.add_typer(plan_app)
@@ -263,7 +268,7 @@ def _refusing() -> Iterator[None]:
     try:
         yield
     except OperationError as exc:
-        print(f"[red]{escape(str(exc))}[/red]")
+        _stderr.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(code=1) from exc
 
 
@@ -276,19 +281,20 @@ _PRE_LIFECYCLE = (
 def _refuse_pre_lifecycle(root: Path) -> None:
     # Checked before any connection opens: opening one on an old estate raises mid-command.
     if DatabaseManager(root / ".taskmanager").is_pre_lifecycle():
-        print(f"[red]{escape(_PRE_LIFECYCLE)}[/red]")
+        _stderr.print(f"[red]{escape(_PRE_LIFECYCLE)}[/red]")
         raise typer.Exit(code=1)
 
 
-def _claims(root: Path) -> Claims:
-    """Claims wired to the landing engine, which a merge claim starts its job through."""
+def _claims(root: Path, agent: str | None = None) -> Claims:
+    """Claims wired to the landing engine, which a merge claim starts its job through; the
+    ledger names `agent` as the actor of every event they record, `cli` without one."""
     _refuse_pre_lifecycle(root)
-    return Landing.open(root).claims
+    return Landing.open(root, actor=agent).claims
 
 
-def _landing(root: Path) -> Landing:
+def _landing(root: Path, agent: str | None = None) -> Landing:
     _refuse_pre_lifecycle(root)
-    return Landing.open(root)
+    return Landing.open(root, actor=agent)
 
 
 def _find_root(start: Path) -> Path | None:
@@ -341,7 +347,7 @@ def _user_errors() -> Iterator[None]:
     try:
         yield
     except (ConfigError, SearchError) as exc:
-        sys.stdout.write(f"{exc}\n")
+        sys.stderr.write(f"{exc}\n")
         raise typer.Exit(code=1) from exc
 
 
@@ -416,20 +422,64 @@ def init(
         Path | None, typer.Option("--path", "-C", help="Target project root directory")
     ] = None,
 ) -> None:
+    """Create the estate under .taskmanager and print what tm needs, with the command that fixes each missing piece."""
     root = _get_root(path, must_exist=False)
     if archive:
         try:
             moved = DatabaseManager.archive_pre_lifecycle(root)
         except ValueError as exc:
-            print(f"[red]{escape(str(exc))}[/red]")
+            _stderr.print(f"[red]{escape(str(exc))}[/red]")
             raise typer.Exit(code=1) from exc
         print(f"[yellow]Moved the pre-lifecycle estate to {moved}[/yellow]")
     container = _get_container(root)
     db = container.get(DatabaseManager)
     db.init_all()
     _record_ledger(container, command=LedgerCommand.INIT, target_id=str(root))
+    _exclude_local_state(root)
     print(f"[green]Initialized .taskmanager in {root}[/green]")
     sys.stdout.writelines(f"{fact.line()}\n" for fact in _doctor_facts(root))
+    sys.stdout.write(
+        "next: read `tm guide overview`, then give every repository a task lands in a main gate: "
+        'tm config set repos.<repo>.gates.main.command "<command>"\n'
+    )
+
+
+def _exclude_local_state(root: Path) -> None:
+    """When the root sits in a git repository, its estate and worktrees go in .git/info/exclude:
+    they are this machine's state, and `git status` would otherwise list them as untracked."""
+    try:
+        res = subprocess.run(
+            [
+                "git",
+                "rev-parse",
+                "--path-format=absolute",
+                "--show-toplevel",
+                "--git-path",
+                "info/exclude",
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return
+    lines = res.stdout.splitlines()
+    if res.returncode != 0 or len(lines) != 2:
+        return
+    toplevel, exclude = Path(lines[0]), Path(lines[1])
+    with _user_errors():
+        worktrees = ConfigStore(root).resolve("worktree_dir").value
+    patterns = []
+    for local in (root / ".taskmanager", (root / worktrees).resolve()):
+        if local.is_relative_to(toplevel):
+            patterns.append(f"/{local.relative_to(toplevel).as_posix()}/")
+    text = exclude.read_text(encoding="utf-8") if exclude.is_file() else ""
+    missing = [p for p in patterns if p not in text.splitlines()]
+    if missing:
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        lead = "\n" if text and not text.endswith("\n") else ""
+        exclude.write_text(text + lead + "".join(f"{p}\n" for p in missing), encoding="utf-8")
 
 
 def _doctor_facts(root: Path) -> list[doctor.Fact]:
@@ -474,6 +524,7 @@ def spec_add(
     ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Create a spec, the top-level node that lands on its own branch."""
     root = _get_root(path)
     ops = _get_container(root).get(Operations)
     with _refusing():
@@ -506,6 +557,7 @@ def spec_list(
     ] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """List specs with their derived state."""
     rows = _list_rows(_get_container(_get_root(path)), NodeKind.SPEC, status, state)
     if json_output or yaml_output:
         _emit(rows, yaml_output)
@@ -528,7 +580,7 @@ def _print_container(
     node_repo = container.get(NodeRepository)
     node = node_repo.get_node(node_id)
     if node is None:
-        print(f"[red]{label} '{node_id}' not found[/red]")
+        _stderr.print(f"[red]{label} '{node_id}' not found[/red]")
         raise typer.Exit(code=1)
     view = _view(container)
     children = node_repo.get_children(node_id)
@@ -551,6 +603,7 @@ def spec_get(
     yaml_output: Annotated[bool, _YAML_OPTION] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Print one spec and its plans."""
     container = _get_container(_get_root(path))
     _print_container("Spec", container, spec_id, "Plans", json_output, yaml_output)
 
@@ -581,6 +634,7 @@ def plan_add(
     merge: Annotated[str | None, _MERGE_OPTION] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Create a plan under a spec."""
     root = _get_root(path)
     ops = _get_container(root).get(Operations)
     with _refusing():
@@ -603,6 +657,7 @@ def plan_list(
     ] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """List plans, optionally those of one spec."""
     container = _get_container(_get_root(path))
     rows = _list_rows(container, NodeKind.PLAN, status, state)
     if spec:
@@ -621,6 +676,7 @@ def plan_get(
     yaml_output: Annotated[bool, _YAML_OPTION] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Print one plan and its tasks."""
     container = _get_container(_get_root(path))
     _print_container("Plan", container, plan_id, "Tasks", json_output, yaml_output)
 
@@ -676,6 +732,7 @@ def task_add(
     set_frontmatter: Annotated[list[str] | None, _SET_OPTION] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Create a task under a plan."""
     root = _get_root(path)
     ops = _get_container(root).get(Operations)
     frontmatter = _frontmatter_pairs(set_frontmatter)
@@ -709,14 +766,12 @@ def task_supersede(
     ] = TransferMode.ALL.value,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Replace a task with another; the old one's dependents move to the new one."""
     root = _get_root(path)
     container = _get_container(root)
     ops = container.get(Operations)
-    try:
+    with _refusing():
         ops.supersede(old_id, new_id, transfer_blocks)
-    except OperationError as exc:
-        print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1) from exc
     print(f"[green]Task {old_id} superseded by {new_id}[/green]")
 
 
@@ -741,6 +796,7 @@ def task_list(
     ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """List tasks, filtered by plan, spec, stored status or derived state."""
     container = _get_container(_get_root(path))
     node_repo = container.get(NodeRepository)
     rows = _list_rows(container, NodeKind.TASK, status, state)
@@ -812,11 +868,8 @@ def task_depends(
             f"{', '.join(gated)}: a dependency is a bare id; an edge waits for the "
             "dependency's code to land, so it carries no status gate"
         )
-    try:
+    with _refusing():
         deps = ops.set_dependencies(task_id, to_add, to_remove)
-    except OperationError as exc:
-        print(f"[red]{escape(str(exc))}[/red]")
-        raise typer.Exit(code=1) from exc
     print(f"[green]{task_id} depends on: {escape(', '.join(deps)) or '-'}[/green]")
 
 
@@ -851,6 +904,7 @@ def task_update(
     ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Change a node's title, priority, models, repository, flags or frontmatter."""
     root = _get_root(path)
     ops = _get_container(root).get(Operations)
     frontmatter_set = _frontmatter_pairs(set_frontmatter)
@@ -882,11 +936,8 @@ def task_move(
     root = _get_root(path)
     container = _get_container(root)
     ops = container.get(Operations)
-    try:
+    with _refusing():
         ops.move_task(task_id, plan)
-    except OperationError as exc:
-        print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1) from exc
     print(f"[green]Moved {task_id} to {plan}[/green]")
 
 
@@ -906,14 +957,15 @@ def task_get(
     ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Print one node: its state, next step, dependencies, lease and jobs."""
     if fields is not None and not (json_output or yaml_output):
-        print("[red]--fields requires --json or --yaml[/red]")
+        _stderr.print("[red]--fields requires --json or --yaml[/red]")
         raise typer.Exit(code=1)
     container = _get_container(_get_root(path))
     node_repo = container.get(NodeRepository)
     task = node_repo.get_node(task_id)
     if not task:
-        print(f"[red]Task '{task_id}' not found[/red]")
+        _stderr.print(f"[red]Task '{task_id}' not found[/red]")
         raise typer.Exit(code=1)
     view = _view(container)
     snapshot = view.snapshot
@@ -1009,7 +1061,7 @@ def task_start(
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     """Claim the node's next step and print it; `blocked` exits 3 and writes nothing."""
-    claims = _claims(_get_root(path))
+    claims = _claims(_get_root(path), agent)
     with _refusing():
         result = claims.start(node_id, agent, session, ttl, worktree_dir=worktree_dir)
     _emit(
@@ -1049,7 +1101,7 @@ def task_complete(
 ) -> None:
     """Close an implement or a fix step."""
     with _refusing():
-        status = _claims(_get_root(path)).complete(node_id, agent=agent, token=token)
+        status = _claims(_get_root(path), agent).complete(node_id, agent=agent, token=token)
     print(f"[green]{node_id} is {status.value}[/green]")
 
 
@@ -1075,7 +1127,7 @@ def task_review(
     if approve == reject:
         raise typer.BadParameter("give exactly one of --approve or --reject")
     with _refusing():
-        status = _claims(_get_root(path)).review(
+        status = _claims(_get_root(path), agent).review(
             node_id, approve, verdict, agent=agent, token=token
         )
     print(f"[green]{node_id} is {status.value}[/green]")
@@ -1147,7 +1199,7 @@ def task_release(
         else None
     )
     with _refusing():
-        status = _claims(_get_root(path)).release(
+        status = _claims(_get_root(path), agent).release(
             node_id, blocked=blocker, agent=agent, token=token
         )
     print(f"[green]{node_id} is {status.value}[/green]")
@@ -1168,17 +1220,18 @@ def task_heartbeat(
     ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Extend the live lease on a node, inside its worktree with no id."""
     root = _get_root(path)
     runtime = _get_container(root).get(RuntimeRepository)
     tid = _resolve_task_id(runtime, node_id)
-    claims = _claims(root)
+    claims = _claims(root, agent)
     lease = runtime.get_lease(tid)
     with _refusing():
         if lease is not None:
             claims.own(tid, lease, agent, token)
         alive = claims.heartbeat(tid)
     if not alive:
-        print(f"[red]No live lease on {escape(tid)}[/red]")
+        _stderr.print(f"[red]No live lease on {escape(tid)}[/red]")
         raise typer.Exit(code=1)
     print(f"[green]Heartbeat recorded for {tid}[/green]")
 
@@ -1224,6 +1277,7 @@ def task_defer(
     note: Annotated[str, typer.Option("--note", help="Why, and until when")],
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Set a node aside until `tm task reopen` brings it back."""
     with _refusing():
         status = _claims(_get_root(path)).defer(node_id, note)
     print(f"[green]{node_id} is {status.value}[/green]")
@@ -1235,6 +1289,7 @@ def task_abandon(
     note: Annotated[str, typer.Option("--note", help="Why it is dropped")],
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Drop a node; `tm task reopen` brings it back."""
     with _refusing():
         status = _claims(_get_root(path)).abandon(node_id, note)
     print(f"[green]{node_id} is {status.value}[/green]")
@@ -1250,6 +1305,7 @@ def condition_add(
     ] = ConditionStage.CLAIM,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Make a node wait until a command exits 0."""
     ops = _get_container(_get_root(path)).get(Operations)
     with _refusing():
         added = ops.add_condition(node_id, needs, command, stage)
@@ -1262,6 +1318,7 @@ def condition_remove(
     idx: int,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Remove a condition by its index."""
     ops = _get_container(_get_root(path)).get(Operations)
     with _refusing():
         ops.remove_condition(node_id, idx)
@@ -1294,7 +1351,7 @@ def _pick_fields(doc: dict[str, Any], fields: str) -> dict[str, Any]:
             unknown.append(f)
     if unknown:
         valid = ", ".join(sorted(doc))
-        print(f"[red]unknown field(s): {', '.join(unknown)} (valid: {valid})[/red]")
+        _stderr.print(f"[red]unknown field(s): {', '.join(unknown)} (valid: {valid})[/red]")
         raise typer.Exit(code=1)
     return picked
 
@@ -1324,7 +1381,7 @@ def job_status(
         time.sleep(min(1.0, left))
         job = jobs.get(job_id)
     if job is None:
-        print(f"[red]No job '{escape(job_id)}'[/red]")
+        _stderr.print(f"[red]No job '{escape(job_id)}'[/red]")
         raise typer.Exit(code=1)
     doc = job.model_dump(mode="json")
     if fields is not None:
@@ -1372,7 +1429,7 @@ def job_resume(
     """How an agent finishes a landing or sync job that stopped for it."""
     if own_defect is not None and push:
         raise typer.BadParameter("--own-defect and --push contradict each other")
-    landing = _landing(_get_root(path))
+    landing = _landing(_get_root(path), agent)
     with _refusing():
         state = landing.resume(job_id, own_defect=own_defect, push=push, agent=agent, token=token)
     print(f"[green]Job {job_id}: {state.value}[/green]")
@@ -1395,6 +1452,7 @@ def section_get(
     qualified_path: str,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Print one section of a node, or all of them; the header goes to stderr."""
     root = _get_root(path)
     container = _get_container(root)
     node_repo = container.get(NodeRepository)
@@ -1411,7 +1469,7 @@ def section_get(
 
     sec = node_repo.get_section(qp.node_id, qp.section_key)
     if not sec:
-        print(f"[red]Section '{qp.section_key}' not found on node '{qp.node_id}'[/red]")
+        _stderr.print(f"[red]Section '{qp.section_key}' not found on node '{qp.node_id}'[/red]")
         raise typer.Exit(code=1)
     # Header on stderr, content alone on stdout, no added newline: `tm section get id:key > f`
     # then `tm section set id:key -f f` round-trips byte-identical.
@@ -1431,18 +1489,19 @@ def section_set(
         typer.FileText | None,
         typer.Option("--file", "-f", encoding="utf-8", help="Read content from file, - for stdin"),
     ] = None,
-    header: Annotated[
-        str | None, typer.Option("--header", "-h", help="Section markdown header")
-    ] = None,
+    header: Annotated[str | None, typer.Option("--header", help="Section markdown header")] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Write a section of a node from an argument, --content or --file."""
     root = _get_root(path)
     container = _get_container(root)
     ops = container.get(Operations)
     qp = QualifiedPath.parse(qualified_path)
 
     if not qp.section_key:
-        print(f"[red]Qualified path must include section key (e.g. {qp.node_id}:steps)[/red]")
+        _stderr.print(
+            f"[red]Qualified path must include section key (e.g. {qp.node_id}:steps)[/red]"
+        )
         raise typer.Exit(code=1)
 
     text_content = ""
@@ -1455,13 +1514,10 @@ def section_set(
 
     # Without --header the stored one stays, so `section get | section set --file -` round-trips.
     stored = container.get(NodeRepository).get_section(qp.node_id, qp.section_key)
-    try:
+    with _refusing():
         ops.set_section(
             qp.node_id, qp.section_key, text_content, header or (stored.header if stored else None)
         )
-    except OperationError as exc:
-        print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1) from exc
     print(f"[green]Saved section {qualified_path}[/green]")
 
 
@@ -1470,19 +1526,19 @@ def section_remove(
     qualified_path: str,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Delete a section from a node."""
     root = _get_root(path)
     container = _get_container(root)
     ops = container.get(Operations)
     qp = QualifiedPath.parse(qualified_path)
 
     if not qp.section_key:
-        print(f"[red]Qualified path must include section key (e.g. {qp.node_id}:steps)[/red]")
+        _stderr.print(
+            f"[red]Qualified path must include section key (e.g. {qp.node_id}:steps)[/red]"
+        )
         raise typer.Exit(code=1)
-    try:
+    with _refusing():
         ops.remove_section(qp.node_id, qp.section_key)
-    except OperationError as exc:
-        print(f"[red]{escape(str(exc))}[/red]")
-        raise typer.Exit(code=1) from exc
     print(f"[green]Removed section {qualified_path}[/green]")
 
 
@@ -1570,10 +1626,10 @@ def wave_discover(
     session: Annotated[str, typer.Option("--session", help="Dispatching session id")],
     slots: Annotated[
         int, typer.Option("--slots", help="Total concurrent slots this session may hold")
-    ],
+    ] = 9,
     max_strong: Annotated[
         int, typer.Option("--max-strong", help="Cap on opus/fable leases for this session")
-    ],
+    ] = 5,
     spec: Annotated[
         list[str] | None,
         typer.Option("--spec", help="Spec id to search, repeatable; omitted means every node"),
@@ -1644,6 +1700,7 @@ def verify_add(
     ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Add a check to a task: a path, a symbol, a test command or a codegraph query."""
     root = _get_root(path)
     container = _get_container(root)
     ops = container.get(Operations)
@@ -1665,7 +1722,7 @@ def verify_list(
     root = _get_root(path)
     node_repo = _get_container(root).get(NodeRepository)
     if node_repo.get_node(task_id) is None:
-        print(f"[red]Task '{task_id}' not found[/red]")
+        _stderr.print(f"[red]Task '{task_id}' not found[/red]")
         raise typer.Exit(code=1)
     rows = [
         {
@@ -1703,11 +1760,8 @@ def verify_remove(
     root = _get_root(path)
     container = _get_container(root)
     ops = container.get(Operations)
-    try:
+    with _refusing():
         ops.remove_verification(task_id, verification_id)
-    except OperationError as exc:
-        print(f"[red]{escape(str(exc))}[/red]")
-        raise typer.Exit(code=1) from exc
     print(f"[green]Removed verification {verification_id} from {escape(task_id)}[/green]")
 
 
@@ -1729,6 +1783,7 @@ def verify_run(
     yaml_output: Annotated[bool, _YAML_OPTION] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Run a task's checks against a ref; exit 1 when any fails, 2 when it has none."""
     root = _get_root(path)
     container = _get_container(root)
     ops = container.get(Operations)
@@ -1791,18 +1846,16 @@ def decision_add(
     blocks: Annotated[str | None, typer.Option("--blocks", help="Comma-separated task ids")] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Raise a question for a person to answer, optionally holding tasks until it is answered."""
     root = _get_root(path)
     container = _get_container(root)
     ops = container.get(Operations)
     ctx = context_file.read_text(encoding="utf-8") if context_file else context
     blocked = [t.strip() for t in blocks.split(",") if t.strip()] if blocks else []
-    try:
+    with _refusing():
         decision_id = ops.add_decision(
             question, slug, priority, ctx, option, recommend, not no_custom, raised_by, blocked
         )
-    except OperationError as exc:
-        print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1) from exc
     print(f"[green]Raised decision {decision_id}[/green]")
 
 
@@ -1815,6 +1868,7 @@ def decision_list(
     yaml_output: Annotated[bool, typer.Option("--yaml")] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """List decisions, optionally by status."""
     root = _get_root(path)
     container = _get_container(root)
     node_repo = container.get(NodeRepository)
@@ -1850,12 +1904,13 @@ def decision_get(
     yaml_output: Annotated[bool, typer.Option("--yaml")] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Print one decision, its options and its answer."""
     root = _get_root(path)
     container = _get_container(root)
     node_repo = container.get(NodeRepository)
     node = node_repo.get_node(decision_id)
     if node is None or node.kind != NodeKind.DECISION:
-        print(f"[red]Decision '{decision_id}' not found[/red]")
+        _stderr.print(f"[red]Decision '{decision_id}' not found[/red]")
         raise typer.Exit(code=1)
     data = read_decision(node)
     label = DECISION_STATUS_LABELS.get(cast("DecisionStatus", node.status), node.status.value)
@@ -1885,17 +1940,15 @@ def decision_answer(
     by: Annotated[str, typer.Option("--by")] = "cli",
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Answer a decision with an option or free text; the tasks it held become claimable."""
     root = _get_root(path)
     container = _get_container(root)
     ops = container.get(Operations)
     if (option is None) == (custom is None):
         raise typer.BadParameter("give --option <key> or --custom <text>, not both or neither")
     text = custom if custom is not None else (note or "")
-    try:
+    with _refusing():
         ops.answer_decision(decision_id, option, text, rationale, by)
-    except OperationError as exc:
-        print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1) from exc
     print(f"[green]Answered {decision_id}[/green]")
 
 
@@ -1904,14 +1957,12 @@ def decision_reopen(
     decision_id: str,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Reopen an answered decision; the tasks it held wait again."""
     root = _get_root(path)
     container = _get_container(root)
     ops = container.get(Operations)
-    try:
+    with _refusing():
         ops.reopen_decision(decision_id)
-    except OperationError as exc:
-        print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1) from exc
     print(f"[green]Reopened {decision_id}[/green]")
 
 
@@ -1921,14 +1972,12 @@ def decision_withdraw(
     reason: Annotated[str, typer.Option("--reason")] = "",
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Withdraw a decision that no longer needs an answer."""
     root = _get_root(path)
     container = _get_container(root)
     ops = container.get(Operations)
-    try:
+    with _refusing():
         ops.withdraw_decision(decision_id, reason)
-    except OperationError as exc:
-        print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1) from exc
     print(f"[green]Withdrew {decision_id}[/green]")
 
 
@@ -1938,15 +1987,13 @@ def decision_block(
     tasks: Annotated[str, typer.Option("--tasks", help="Comma-separated task ids")],
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Make tasks wait on a decision."""
     root = _get_root(path)
     container = _get_container(root)
     ops = container.get(Operations)
     ids = [t.strip() for t in tasks.split(",") if t.strip()]
-    try:
+    with _refusing():
         ops.link_decision(decision_id, add=ids)
-    except OperationError as exc:
-        print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1) from exc
     print(f"[green]{', '.join(ids)} now wait on {decision_id}[/green]")
 
 
@@ -1956,15 +2003,13 @@ def decision_unblock(
     tasks: Annotated[str, typer.Option("--tasks", help="Comma-separated task ids")],
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Stop tasks waiting on a decision."""
     root = _get_root(path)
     container = _get_container(root)
     ops = container.get(Operations)
     ids = [t.strip() for t in tasks.split(",") if t.strip()]
-    try:
+    with _refusing():
         ops.link_decision(decision_id, remove=ids)
-    except OperationError as exc:
-        print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1) from exc
     print(f"[green]{', '.join(ids)} no longer wait on {decision_id}[/green]")
 
 
@@ -1979,14 +2024,12 @@ def attach_cmd(
     ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Copy a file into the estate as an asset of a node."""
     root = _get_root(path)
     container = _get_container(root)
     ops = container.get(Operations)
-    try:
+    with _refusing():
         entry = ops.attach(node_id, file, caption, source, replace)
-    except OperationError as exc:
-        print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1) from exc
     print(f"[green]Attached {entry['asset']} to {node_id}[/green]")
 
 
@@ -1996,14 +2039,12 @@ def detach_cmd(
     asset: str,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Remove an asset from a node."""
     root = _get_root(path)
     container = _get_container(root)
     ops = container.get(Operations)
-    try:
+    with _refusing():
         ops.detach(node_id, asset)
-    except OperationError as exc:
-        print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1) from exc
     print(f"[green]Detached {asset} from {node_id}[/green]")
 
 
@@ -2015,14 +2056,12 @@ def attachments_cmd(
     yaml_output: Annotated[bool, typer.Option("--yaml")] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """List a node's assets; --check re-hashes the ones copied from project files."""
     root = _get_root(path)
     container = _get_container(root)
     ops = container.get(Operations)
-    try:
+    with _refusing():
         entries = ops.list_attachments(node_id, check)
-    except OperationError as exc:
-        print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1) from exc
     if json_output or yaml_output:
         _emit(entries, yaml_output)
         return
@@ -2123,6 +2162,7 @@ def render(
     ] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Print nodes as markdown: full, summary, or the subagent brief."""
     root = _get_root(path)
     container = _get_container(root)
     renderer = container.get(MarkdownRenderer)
@@ -2130,7 +2170,7 @@ def render(
     for qualified_id in qualified_ids:
         qp = QualifiedPath.parse(qualified_id)
         if recursive and qp.section_key:
-            print(
+            _stderr.print(
                 "[red]--recursive renders a node, not one of its sections; "
                 "drop the `:section` part[/red]"
             )
@@ -2142,23 +2182,32 @@ def render(
                 else renderer.render(qp.node_id, view=view)
             )
         except ValueError as exc:
-            print(f"[red]{exc}[/red]")
+            _stderr.print(f"[red]{escape(str(exc))}[/red]")
             raise typer.Exit(code=1) from exc
     sys.stdout.write("\n\n---\n\n".join(outputs) + "\n")
+
+
+def _refuse_import(source: str, reason: str) -> NoReturn:
+    _stderr.print(f"[red]{escape(f'{REFUSED}{source}: {reason.removeprefix(REFUSED)}')}[/red]")
+    raise typer.Exit(code=1)
 
 
 class _RefusingImporter:
     """A refused import prints why and exits 1 instead of a traceback."""
 
-    def __init__(self, importer: BulkImporter) -> None:
+    def __init__(self, importer: BulkImporter, source: str) -> None:
         self._importer = importer
+        self._source = source
 
-    def import_dict(self, data: dict[str, Any]) -> None:
+    def import_dict(self, data: Any) -> Imported:
+        if not isinstance(data, dict):
+            _refuse_import(self._source, "the document is not a mapping")
         try:
-            self._importer.import_dict(data)
+            return self._importer.import_dict(data)
         except ValueError as exc:
-            print(f"[red]{exc}[/red]")
-            raise typer.Exit(code=1) from exc
+            _refuse_import(self._source, str(exc))
+        except (KeyError, TypeError, AttributeError) as exc:
+            _refuse_import(self._source, f"malformed document ({type(exc).__name__}: {exc})")
 
 
 def _dispatch_targets(text: str, root: Path) -> str:
@@ -2386,7 +2435,7 @@ def restore_cmd(
     marker = directory / "_format.json"
     export_format = json.loads(marker.read_text(encoding="utf-8")) if marker.is_file() else None
     if export_format not in READABLE_EXPORT_FORMATS:
-        print(
+        _stderr.print(
             f"[red]{escape(str(directory))} is a pre-lifecycle export: tm v0.2.0 is the last "
             "release that restores it. Re-import the ongoing work into this version with "
             "`tm import`.[/red]"
@@ -2394,7 +2443,7 @@ def restore_cmd(
         raise typer.Exit(code=1)
     container = _get_container(root)
     container.get(DatabaseManager).init_all()
-    importer = _RefusingImporter(container.get(BulkImporter))
+    importer = _RefusingImporter(container.get(BulkImporter), str(directory))
 
     assets_dir = directory / "assets"
     if assets_dir.is_dir():
@@ -2415,7 +2464,7 @@ def restore_cmd(
         json.loads(decisions_file.read_text(encoding="utf-8")) if decisions_file.exists() else None
     )
     if not docs and decisions_doc is None:
-        print(f"[red]No export files in {directory}[/red]")
+        _stderr.print(f"[red]No export files in {directory}[/red]")
         raise typer.Exit(code=1)
 
     def nodes_of(doc: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2507,6 +2556,7 @@ def config_get(
     key: str,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Print a key's effective value."""
     root = _get_root(path)
     with _user_errors():
         value = ConfigStore(root).resolve(key).value
@@ -2519,6 +2569,7 @@ def config_set(
     value: str,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Write a key to .taskmanager/config.yaml; dotted keys under repos merge."""
     root = _get_root(path)
     with _user_errors(), _refusing():
         _config_store(root).set(key, value)
@@ -2530,6 +2581,7 @@ def config_unset(
     key: str,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Remove a key from .taskmanager/config.yaml, back to its default."""
     root = _get_root(path)
     with _user_errors(), _refusing():
         _config_store(root).unset(key)
@@ -2610,61 +2662,64 @@ def root_cmd(path: Annotated[Path | None, typer.Option("--path", "-C")] = None) 
     sys.stdout.write(f"{_get_root(path)}\n")
 
 
+_IMPORT_SUFFIXES = {
+    ".yaml": ImportFormat.YAML,
+    ".yml": ImportFormat.YAML,
+    ".md": ImportFormat.MARKDOWN,
+}
+
+
+def _parse_import(content: str, format: ImportFormat) -> Any:
+    import yaml
+
+    if format == ImportFormat.JSON:
+        return json.loads(content)
+    if format == ImportFormat.YAML:
+        return yaml.safe_load(content)
+    parts = content.split("---", 2)
+    if not content.startswith("---") or len(parts) < 3:
+        raise ValueError("a markdown import needs a `---` frontmatter block")
+    return yaml.safe_load(parts[1])
+
+
 @app.command("import")
 def import_cmd(
     format: Annotated[
-        ImportFormat, typer.Option("--format", help="Input format: json, yaml, or markdown")
-    ] = ImportFormat.JSON,
+        ImportFormat | None,
+        typer.Option(
+            "--format",
+            help="json, yaml or markdown (default: from the file's suffix, else json)",
+        ),
+    ] = None,
     file: Annotated[
         Path | None, typer.Option("--file", "-f", help="File to import (defaults to stdin)")
     ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Create or update specs, plans, tasks and decisions from one document; all or nothing."""
+    import yaml
+
     root = _get_root(path)
     container = _get_container(root)
-    importer = _RefusingImporter(container.get(BulkImporter))
-
-    if file:
-        content = file.read_text(encoding="utf-8")
-    else:
-        content = sys.stdin.read()
-
-    if format == ImportFormat.JSON:
-        data = json.loads(content)
-        importer.import_dict(data)
-    elif format == ImportFormat.YAML:
-        try:
-            import importlib
-
-            yaml_mod = importlib.import_module("yaml")
-            data = yaml_mod.safe_load(content)
-        except ImportError, ValueError, AttributeError:
-            data = json.loads(content)
-        importer.import_dict(data)
-    elif format == ImportFormat.MARKDOWN:
-        if content.startswith("---"):
-            parts = content.split("---", 2)
-            if len(parts) >= 3:
-                fm = parts[1].strip()
-                try:
-                    import importlib
-
-                    yaml_mod = importlib.import_module("yaml")
-                    data = yaml_mod.safe_load(fm)
-                except ImportError, ValueError, AttributeError:
-                    data = json.loads(fm)
-                importer.import_dict(data)
-            else:
-                raise typer.BadParameter("Invalid markdown frontmatter")
-        else:
-            raise typer.BadParameter("Markdown format requires frontmatter structure")
+    source = str(file) if file else "stdin"
+    fmt = (
+        format or (_IMPORT_SUFFIXES.get(file.suffix.lower()) if file else None) or ImportFormat.JSON
+    )
+    try:
+        content = file.read_text(encoding="utf-8") if file else sys.stdin.read()
+        data = _parse_import(content, fmt)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        _refuse_import(source, str(exc))
+    imported = _RefusingImporter(container.get(BulkImporter), source).import_dict(data)
 
     _record_ledger(
         container,
         command=LedgerCommand.IMPORT,
-        payload={"format": format.value, "file": str(file) if file else "stdin"},
+        payload={"format": fmt.value, "file": source},
     )
-    print(f"[green]Successfully imported data from {file or 'stdin'}[/green]")
+    print(f"[green]Imported {escape(source)}[/green]")
+    sys.stdout.write(f"created: {', '.join(imported.created) or '-'}\n")
+    sys.stdout.write(f"updated: {', '.join(imported.updated) or '-'}\n")
 
 
 @audit_app.command("list")
@@ -2675,6 +2730,7 @@ def audit_list(
     yaml_output: Annotated[bool, _YAML_OPTION] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
+    """Print the latest ledger events, newest first."""
     root = _get_root(path)
     container = _get_container(root)
     ledger_repo = container.get(LedgerRepository)
@@ -2740,7 +2796,7 @@ def _run_web_server(
     # The Host pin stops a browser, not a script: any client that reaches the port can send
     # `Host: localhost` and then add and run a verification command.
     if not expose and not _is_loopback(host):
-        print(
+        _stderr.print(
             f"[red]--host {escape(host)} serves the estate with no authentication: any machine "
             "that reaches it can read every node and run commands through its verifications. "
             "Pass --expose to serve it anyway.[/red]"
@@ -2751,7 +2807,9 @@ def _run_web_server(
     _refuse_pre_lifecycle(root)
     db_mgr = DatabaseManager(root / ".taskmanager")
     if not db_mgr.is_initialized():
-        print(f"[red]Error:[/red] TaskManager is not initialized in {root}. Run 'tm init' first.")
+        _stderr.print(
+            f"[red]Error:[/red] TaskManager is not initialized in {root}. Run 'tm init' first."
+        )
         raise typer.Exit(code=1)
 
     actual_port = _find_available_port(host, port)
@@ -2781,7 +2839,7 @@ def _run_web_server(
 @web_app.callback(invoke_without_command=True)
 def web_callback(
     ctx: typer.Context,
-    host: Annotated[str, typer.Option("--host", "-h", help="Host address")] = "127.0.0.1",
+    host: Annotated[str, typer.Option("--host", help="Host address")] = "127.0.0.1",
     port: Annotated[int, typer.Option("--port", "-p", help="Starting port number")] = 6701,
     open_browser: Annotated[
         bool, typer.Option("--open/--no-open", help="Auto-open browser")
@@ -2796,24 +2854,6 @@ def web_callback(
     """Interactive web visualizer and dashboard."""
     if ctx.invoked_subcommand is None:
         _run_web_server(host=host, port=port, open_browser=open_browser, path=path, expose=expose)
-
-
-@web_app.command("run")
-def web_run(
-    host: Annotated[str, typer.Option("--host", "-h", help="Host address")] = "127.0.0.1",
-    port: Annotated[int, typer.Option("--port", "-p", help="Starting port number")] = 6701,
-    open_browser: Annotated[
-        bool, typer.Option("--open/--no-open", help="Auto-open browser")
-    ] = True,
-    path: Annotated[
-        Path | None, typer.Option("--path", "-C", help="Project root directory")
-    ] = None,
-    expose: Annotated[
-        bool, typer.Option("--expose", help="Allow a --host other than loopback")
-    ] = False,
-) -> None:
-    """Run interactive web server with real-time updates."""
-    _run_web_server(host=host, port=port, open_browser=open_browser, path=path, expose=expose)
 
 
 @web_app.command("export")
@@ -2832,7 +2872,9 @@ def web_export(
     _refuse_pre_lifecycle(root)
     db_mgr = DatabaseManager(root / ".taskmanager")
     if not db_mgr.is_initialized():
-        print(f"[red]Error:[/red] TaskManager is not initialized in {root}. Run 'tm init' first.")
+        _stderr.print(
+            f"[red]Error:[/red] TaskManager is not initialized in {root}. Run 'tm init' first."
+        )
         raise typer.Exit(code=1)
 
     exported = export_static_html(root, output)
@@ -2855,7 +2897,9 @@ def db_migrate(
     try:
         found = db.migrate_state()
     except StateNotInitialized:
-        print(f"[red]Error:[/red] TaskManager is not initialized in {root}. Run 'tm init' first.")
+        _stderr.print(
+            f"[red]Error:[/red] TaskManager is not initialized in {root}. Run 'tm init' first."
+        )
         raise typer.Exit(code=1) from None
     if found is None:
         print(f"state.db is current at schema {STATE_SCHEMA_VERSION}: nothing to migrate")
@@ -2872,7 +2916,7 @@ def main() -> None:
     try:
         app()
     except (StateSchemaTooNew, StateSchemaTooOld) as exc:
-        print(f"[red]{escape(str(exc))}[/red]")
+        _stderr.print(f"[red]{escape(str(exc))}[/red]")
         raise SystemExit(1) from exc
 
 

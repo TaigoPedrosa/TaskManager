@@ -131,7 +131,7 @@ export function makeTm({ chosen = [], nodes = {}, start = {}, job = {}, parked =
     }
     m = inner.match(/^\S+ ((?:task|plan) list --(?:plan|spec) \S+) --json$/)
     if (m && lists[m[1]]) return json(lists[m[1]].map(id => ({ id, kind: m[1].split(' ')[0] })))
-    m = inner.match(/^\S+ task start (\S+) --agent wf-\S+ --session \S+ --worktree-dir \S+ --json$/)
+    m = inner.match(/^\S+ task start (\S+) --agent wf-\S+ --session \S+(?: --worktree-dir \S+)? --json$/)
     if (m && starts[m[1]]) {
       const reply = starts[m[1]]()
       const c = parse(reply.text)

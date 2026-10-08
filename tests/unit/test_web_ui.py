@@ -986,7 +986,7 @@ def test_a_filter_change_also_refetches_waves() -> None:
 
 def test_page_carries_an_inline_favicon_so_the_browser_never_requests_favicon_ico() -> None:
     # Without a <link rel="icon">, a browser falls back to GET /favicon.ico, a 404 console
-    # error on `tm web run` and on a served export alike.
+    # error on `tm web` and on a served export alike.
     assert re.search(r'<link rel="icon" href="data:image/svg\+xml,', get_web_html())
 
 

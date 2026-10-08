@@ -44,7 +44,7 @@ A question that holds work is a decision, not a chat message: `tm decision add â
 
 If the harness demands a permission for that mechanism which the session cannot grant itself, ask the user for it as a question, with the options and a recommendation, in the same response, and keep doing every part that does not depend on the answer. Falling back to sequential dispatches without saying so is the failure this paragraph exists to name: each dispatch looks correct on its own, so nothing in the transcript shows the mechanism was abandoned.
 
-`session` and `worktreeDir` are required; every other argument is listed in `tm guide dispatch`. A run holds at most `min(16, CPUs - 2)` agents concurrently, so pass `maxBatch` at or under that to keep a large batch from sitting claimed but idle instead of waiting for the next tick.
+`session` is required; `worktreeDir` defaults to the estate's `worktree_dir` config, and every other argument is listed in `tm guide dispatch`. A run holds at most `min(16, CPUs - 2)` agents concurrently, so pass `maxBatch` at or under that to keep a large batch from sitting claimed but idle instead of waiting for the next tick.
 
 ## The shape of it
 

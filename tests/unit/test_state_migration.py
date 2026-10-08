@@ -632,7 +632,7 @@ _ESTATE_COMMANDS: dict[str, list[str]] = {
     "wave": ["wave", "discover", "--session", "s", "--slots", "1", "--max-strong", "1"],
     "verify": ["verify", "list", "S1"],
     "audit": ["audit", "list"],
-    "web run": ["web", "run", "--no-open"],
+    "web": ["web", "--no-open"],
     "web export": ["web", "export", "-o", "out.html"],
     "decision": ["decision", "list"],
     "job": ["job", "status", "J1"],
@@ -673,11 +673,11 @@ def test_a_too_new_schema_is_only_its_refusal_from_every_command(
 
     out, err = capsys.readouterr()
     assert exited.value.code == 1
-    assert out.strip() == (
+    assert err.strip() == (
         f"state.db is schema {STATE_SCHEMA_VERSION + 1}, newer than this tm "
         f"({STATE_SCHEMA_VERSION}): upgrade tm"
     ), out + err
-    assert err == ""
+    assert out == ""
 
 
 _OPENING_COMMANDS = {name: argv for name, argv in _ESTATE_COMMANDS.items() if name != "db"}
@@ -705,12 +705,12 @@ def test_an_older_schema_is_only_its_refusal_from_every_command_and_stays_unmigr
     out, err = capsys.readouterr()
     assert exited.value.code == 1
     # Rich wraps a line at the terminal width, and the backup path makes this one long.
-    assert " ".join(out.split()) == (
+    assert " ".join(err.split()) == (
         f"state.db is schema 2; run `tm db migrate`, which copies it to "
         f"{root / '.taskmanager' / 'state.db.schema2.bak'} and then migrates it to schema "
         f"{STATE_SCHEMA_VERSION}"
     ), out + err
-    assert err == ""
+    assert out == ""
     assert _user_version(state_db) == 2
     assert _sha256(state_db) == before
     assert not state_db.with_name("state.db.schema2.bak").exists()

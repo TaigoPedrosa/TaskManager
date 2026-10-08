@@ -1,7 +1,7 @@
 export const meta = {
   name: 'tm-wave',
   description: 'Choose claimable tm nodes, claim each one\'s next step, run it, and stop: tm task start names the step and its model, an agent does it and closes it, a landing runs as a tm job, and the next tick claims the next step',
-  whenToUse: 'Dispatcher tick. args: {session, worktreeDir, specs, slots, maxStrong, maxBatch, exclude, holdMerge, root, tm, agentTypes, reviewerTypes, capabilities, preamble, rulesDir, gateLane, models}. session and worktreeDir are required; specs defaults to every spec; root defaults to the session cwd and tm to the tm on PATH; agentTypes (repo -> agent type for implement and fix), reviewerTypes ({task, rereview, container} -> agent type), capabilities (agent type -> the requires values it serves), preamble (repo -> a line prepended to its briefs, plus a "default" key) and rulesDir default to none; gateLane (a string, or repo -> text with a "default" key; `{task}` becomes the node id) defaults to none; models (the family tm names on a claim -> model id) overrides the current Claude ids family by family.',
+  whenToUse: 'Dispatcher tick. args: {session, worktreeDir, specs, slots, maxStrong, maxBatch, exclude, holdMerge, root, tm, agentTypes, reviewerTypes, capabilities, preamble, rulesDir, gateLane, models}. session is required; worktreeDir defaults to the worktree_dir config key; specs defaults to every spec; root defaults to the session cwd and tm to the tm on PATH; agentTypes (repo -> agent type for implement and fix), reviewerTypes ({task, rereview, container} -> agent type), capabilities (agent type -> the requires values it serves), preamble (repo -> a line prepended to its briefs, plus a "default" key) and rulesDir default to none; gateLane (a string, or repo -> text with a "default" key; `{task}` becomes the node id) defaults to none; models (the family tm names on a claim -> model id) overrides the current Claude ids family by family.',
   phases: [
     { title: 'Discover', detail: '`tm wave discover` chooses the batch', model: 'haiku' },
     { title: 'Claim', detail: 'tm task get and tm task start, and a release when a step is left open', model: 'haiku' },
@@ -15,8 +15,9 @@ export const meta = {
 
 const A = args || {}
 const SESSION = A.session
-const WT = A.worktreeDir
-if (!SESSION || !WT) throw new Error('args.session and args.worktreeDir are required')
+// Without one, tm task start cuts worktrees where the estate's worktree_dir config says.
+const WT = A.worktreeDir || null
+if (!SESSION) throw new Error('args.session is required')
 const RETIRED = {
   release: 'a node waits only on what tm task release --blocked names, and the workflow holds nothing',
   maxFixRounds: 'tm counts fix rounds itself; set max_fix_rounds with tm config set',
@@ -215,7 +216,7 @@ async function release(n, trail, why, token) {
 // A claim is a write, so it is never retried: a second attempt would find the first one's lease.
 async function start(n, trail) {
   const r = await opJson('start', n.id,
-    `${TM} task start ${q(n.id)} --agent ${agentName(n)} --session ${q(SESSION)} --worktree-dir ${q(WT)} --json`,
+    `${TM} task start ${q(n.id)} --agent ${agentName(n)} --session ${q(SESSION)}${WT ? ` --worktree-dir ${q(WT)}` : ''} --json`,
     { attempts: 1 })
   if (!r) {
     await release(n, trail, 'its claim could not be read')
@@ -319,7 +320,8 @@ async function work(n, c, s, trail) {
       : `Scope: ${landed ? `what ${n.id} and every node under it landed on ${targets}` : `the whole diff of ${c.branch} from its base`}, in each repository it touched: ${repos.map(r => `git -C ${ROOT}/${r} ${diff(r)}`).join('; ')}.${landed ? ' A repository where that prints nothing had nothing land.' : ''}${container ? ' This is a container review: read what is true only between its children, and every child tm render lists as rejected by its own review.' : ''}`
     body += `\nFindings: append numbered findings to tm section ${n.id}:review; write it even when nothing is open, saying so.`
     // One scratch path per repository: a container review may execute code in several.
-    const scratch = repos.map(r => `${WT}/${r}-${n.id}-review`).join(' or ') || `${WT}/<repo>-${n.id}-review`
+    const wtDir = WT || `<the directory ${TM} config get worktree_dir names>`
+    const scratch = repos.map(r => `${wtDir}/${r}-${n.id}-review`).join(' or ') || `${wtDir}/<repo>-${n.id}-review`
     body += `\nScratch: a worktree you cut to execute the code goes at ${scratch}, the one named for its repository, detached, and you remove it with git worktree remove before you close the step.`
   } else {
     // A container's step spans repositories, and tm cuts one worktree of its branch in each.

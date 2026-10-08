@@ -185,7 +185,7 @@ def test_cli_web_uninitialized_error(tmp_path: Path) -> None:
     empty_dir.mkdir()
     res = runner.invoke(app, ["web", "export", "--path", str(empty_dir)])
     assert res.exit_code != 0
-    assert "not initialized" in res.stdout
+    assert "not initialized" in res.stderr
 
 
 SEEDED_DISPLAY = {

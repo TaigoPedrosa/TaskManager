@@ -38,8 +38,11 @@ def _tm(
     with pytest.raises(SystemExit) as exited:
         main()
     out, err = capsys.readouterr()
-    assert err == ""
-    return exited.value.code, " ".join(out.split())
+    code = exited.value.code
+    # Success speaks on stdout, a refusal on stderr, and neither writes to the other stream.
+    said, silent = (out, err) if code == 0 else (err, out)
+    assert silent == ""
+    return code, " ".join(said.split())
 
 
 def _v2_estate(root: Path) -> Path:
