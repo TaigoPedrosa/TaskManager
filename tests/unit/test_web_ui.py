@@ -102,8 +102,8 @@ def test_document_sections_default_collapsed_and_remember_expand_state() -> None
     section_items = _function_body(html, "sectionItemsHtml")
     assert "<details open class" not in html
     assert 'aria-expanded="${isOpen}"' in section_items
-    assert "expandedSections.has(id)" in section_items
-    assert "expandedSections" in _function_body(html, "attachSectionToggleHandlers")
+    assert "sectionOpen(id)" in section_items
+    assert "toggledSections" in _function_body(html, "attachSectionToggleHandlers")
 
 
 def test_plan_and_task_headers_are_not_sticky() -> None:
@@ -123,7 +123,7 @@ def test_status_icon_carries_a_title_and_no_status_chip_is_left() -> None:
 def test_group_headers_default_all_collapsed() -> None:
     html = get_web_html()
     group_collapsed = _function_body(html, "groupCollapsed")
-    assert "collapsedGroups.has(groupId) ? !defaultCollapsed : defaultCollapsed" in group_collapsed
+    assert "collapsedGroups.has(groupId) ? !base : base" in group_collapsed
 
     render_sections = _function_body(html, "renderSections")
     assert "groupCollapsed(groupId, true)" in render_sections
@@ -145,15 +145,6 @@ def test_group_header_toggle_is_wired_independently_of_node_and_section_collapse
     assert "collapsedGroups.add(id)" in shared
     attach = _function_body(html, "attachCollapsibleHandlers")
     assert "attachGroupHeaderHandlers(unifiedDocument, renderUnifiedDocument)" in attach
-
-    # The all-sections toolbar button only ever touches expandedSections, never the groups.
-    toggle_sections_handler = re.search(
-        r"toggleSectionsBtn\.addEventListener\('click', \(\) => \{(.*?)\n\}\);",
-        html,
-        re.DOTALL,
-    )
-    assert toggle_sections_handler, "toggleSectionsBtn click handler not found"
-    assert "collapsedGroups" not in toggle_sections_handler.group(1)
 
 
 def test_group_header_is_keyboard_operable_everywhere_it_renders() -> None:
@@ -886,9 +877,10 @@ def test_core_creates_the_store_and_follows_its_connection_state() -> None:
 
 def test_expand_collapse_drive_the_stores_open_and_watch_sets_not_a_local_flag() -> None:
     toggle = _function_body(get_web_html(), "toggleExpand")
-    expand = _function_body(get_web_html(), "expandId")
-    assert "window.tmStore.open([node.id])" in expand
-    assert "window.tmStore.watch([node.id])" in expand
+    assert "expandRows([node])" in _function_body(get_web_html(), "expandId")
+    expand = _function_body(get_web_html(), "expandRows")
+    assert "window.tmStore.open(containers)" in expand
+    assert "window.tmStore.watch(ids)" in expand
     assert "expandId(row)" in toggle
     assert "window.tmStore.close(closed)" in toggle
     assert "window.tmStore.unwatch(closed)" in toggle

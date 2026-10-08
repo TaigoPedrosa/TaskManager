@@ -238,7 +238,7 @@ test('below sm the toolbar is one row, brand, switcher, search and Filters, and 
   assert.ok(toggle.querySelector('use[href="#icon-chevron-down"]'));
   assert.equal(toggle.textContent.trim(), 'Filters (1)', 'a status filter counts while its chip is folded away');
 
-  const order = ['filter-controls-group', 'stats-digest', 'toolbar-actions', 'sort-control', 'toggle-sections-btn', 'legend-btn', 'refresh-btn'];
+  const order = ['filter-controls-group', 'stats-digest', 'toolbar-actions', 'sort-control', 'expand-all-btn', 'legend-btn', 'refresh-btn'];
   const inPanel = panel.querySelectorAll(order.map((id) => `#${id}`).join(', ')).map((el) => el.id);
   assert.deepEqual(inPanel, order, 'filters, then chips, then + New and the actions, in Tab order');
 

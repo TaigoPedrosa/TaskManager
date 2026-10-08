@@ -30,12 +30,13 @@ function landsText(node) {
   return (node.base_chain || []).map(id => (id === 'MAIN' ? 'main' : `tm/${id}`)).join(' → ');
 }
 
+// A value longer than the strip (a review verdict) wraps inside it instead of running past the card.
 function factHtml(label, valueHtml) {
-  return `<span class="fact inline-flex items-center gap-1 whitespace-nowrap"><span class="text-zinc-400">${esc(label)}</span>${valueHtml}</span>`;
+  return `<span class="fact inline-flex items-center gap-1 min-w-0 max-w-full"><span class="flex-shrink-0 whitespace-nowrap text-zinc-400">${esc(label)}</span>${valueHtml}</span>`;
 }
 
 function factText(value) {
-  return `<span class="font-mono text-zinc-200">${esc(value)}</span>`;
+  return `<span class="min-w-0 break-words font-mono text-zinc-200">${esc(value)}</span>`;
 }
 
 const FACT_COUNTERS = [['Reviews', 'review_cycles'], ['Merge attempts', 'merge_attempts'], ['Step failures', 'step_failures']];

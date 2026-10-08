@@ -215,7 +215,7 @@ if (typeof setViewMode === 'function') {
       graphPane.classList.add('hidden');
       sidebarPane.classList.add('hidden');
       decisionsPane.classList.remove('hidden');
-      toggleSectionsBtn.classList.add('hidden');
+      expandAllBtn.classList.add('hidden');
       viewWavesBtn.className = VIEW_BTN_INACTIVE;
       viewGraphBtn.className = VIEW_BTN_INACTIVE;
       viewDocBtn.className = VIEW_BTN_INACTIVE;

@@ -189,6 +189,9 @@ test('the facts strip reads where it lands, review and fix, non-zero counters, r
   const card = await openAt('/document/U');
   assert.deepEqual(facts(card, '#doc-node-U', 'U'), ['Lease wf-u', 'Lands tm/P → main', 'Review off', 'Fix off', 'Step failures 1']);
   assert.ok(card.$('#doc-node-U .fact .lease-badge [aria-label="Implementing"]'), 'the Lease fact is the lease badge');
+  const lands = card.$$('#doc-node-U .fact').find((f) => text(f.children[0]) === 'Lands');
+  assert.ok(['min-w-0', 'max-w-full'].every((c) => lands.classList.contains(c)) && !lands.classList.contains('whitespace-nowrap'), 'a fact shrinks to the strip');
+  assert.ok(lands.children[1].classList.contains('break-words'), 'so a long value wraps inside the card');
 });
 
 test('the drawer carries the lease, model, repo and priority pills, and a container lists its children with their progress', async () => {
@@ -753,7 +756,7 @@ test('a section row is a disclosure button with its Edit and Delete beside it, n
     toggle.click();
     assert.equal(toggle.getAttribute('aria-expanded'), 'true');
     assert.equal(sectionBody.classList.contains('hidden'), false);
-    assert.ok(page.run("expandedSections.has('T::objective')"));
+    assert.ok(page.run("sectionOpen('T::objective')"));
     toggle.click();
     assert.equal(toggle.getAttribute('aria-expanded'), 'false');
     assert.ok(sectionBody.classList.contains('hidden'));

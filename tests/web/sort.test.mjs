@@ -192,7 +192,7 @@ test('the control leads the actions group at every width, which below sm is the 
     page.window.innerWidth = width;
     page.window.dispatchEvent(new page.window.Event('resize'));
     assert.equal(control.parentNode.children[0], control, `at ${width}`);
-    assert.equal(control.parentNode.children[1].id, 'toggle-sections-btn');
+    assert.equal(control.parentNode.children[1].id, 'expand-all-btn');
     assert.equal(control.parentNode.parentNode.id, 'filters-panel');
     assert.equal(control.parentNode.parentNode.children.at(-1), control.parentNode, 'the actions close the panel');
   }

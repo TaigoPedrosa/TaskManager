@@ -36,14 +36,14 @@ test('the switcher opens on Document, and clicking each of the four segments sho
   await page.settle();
   assert.deepEqual(paneVisibility(page), ONLY.document);
   assert.deepEqual(selectedSegments(page), ['view-doc-btn']);
-  assert.equal(page.$('#toggle-sections-btn').classList.contains('hidden'), false);
+  assert.equal(page.$('#expand-all-btn').classList.contains('hidden'), false);
 
   for (const [view, id] of [['graph', 'view-graph-btn'], ['waves', 'view-waves-btn'], ['decisions', 'view-decisions-btn'], ['document', 'view-doc-btn']]) {
     page.$(`#${id}`).click();
     await page.settle();
     assert.deepEqual(paneVisibility(page), ONLY[view], `${view} shows only its own pane`);
     assert.deepEqual(selectedSegments(page), [id]);
-    assert.equal(page.$('#toggle-sections-btn').classList.contains('hidden'), view !== 'document', 'the section toggle shows only in Document');
+    assert.equal(page.$('#expand-all-btn').classList.contains('hidden'), !['document', 'graph'].includes(view), 'the expand-all toggle shows only in Document and Graph');
   }
   assert.ok(page.fetchCalls.some((c) => c.url.startsWith('/api/decisions')), 'opening Decisions fetches its data');
 });

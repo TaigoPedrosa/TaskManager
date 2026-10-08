@@ -11,18 +11,21 @@ let isStaticMode = typeof window.STATIC_DATA !== 'undefined';
 // a container's children, watch fetches a node's own body); this set is this view's own record
 // of which ids it asked the store to expand, since the store exposes no getter for either set.
 const expandedIds = new Set();
-const expandedSections = new Set();
 // Group headers ("Tasks (N)", "Sections (N)") are a third, independent collapse level:
 // they hide a plan's task-card list or a section list's rows
-// without touching expandedIds (the plan/task body) or expandedSections (a section's
-// own open state). A group id's default (collapsed or not) varies by group type, so this
-// set stores only ids whose state differs from their default; see groupCollapsed().
-// Session-only, never persisted, same as the two sets above.
+// without touching expandedIds (the plan/task body) or a section's own open state. A group's
+// default (collapsed or not) varies by group type and by Expand all, so this set and
+// toggledSections store only ids whose state differs from their default; see groupCollapsed()
+// and sectionOpen(). Session-only, never persisted, same as the set above.
 const collapsedGroups = new Set();
-// Every section id rendered by the Document view's current pass, rebuilt from scratch on
-// each render (renderUnifiedDocument resets it first) -- the toggle-all-sections button
-// reads it, so it only ever reflects the sections actually on screen right now.
-let allSectionIds = [];
+const toggledSections = new Set();
+// Expand all and Collapse all: a node's entry covers it and everything under it (true opens,
+// false closes), the nearest entry above a node wins, and allExpanded covers every node with
+// none. A node no entry covers reads each group's own default; see expandAllOf().
+const expandAllState = new Map();
+let allExpanded = false;
+// The held rows Expand all has already opened, so one closed by hand afterwards stays closed.
+const expandSwept = new Set();
 
 
 // DOM Elements
@@ -39,7 +42,6 @@ const viewDocBtn = document.getElementById('view-doc-btn');
 const graphFitBtn = document.getElementById('graph-fit-btn');
 const refreshBtn = document.getElementById('refresh-btn');
 const expandAllBtn = document.getElementById('expand-all-btn');
-const toggleSectionsBtn = document.getElementById('toggle-sections-btn');
 const sidebarResizeHandle = document.getElementById('sidebar-resize-handle');
 const graphInspector = document.getElementById('graph-inspector');
 const networkCanvas = document.getElementById('network-canvas');
@@ -153,7 +155,7 @@ function setViewMode(mode) {
     documentPane.classList.add('hidden');
     graphPane.classList.remove('hidden');
     sidebarPane.classList.add('hidden');
-    toggleSectionsBtn.classList.add('hidden');
+    expandAllBtn.classList.add('hidden');
     initWaves();
   } else if (mode === window.VIEW_MODES.DOCUMENT) {
     viewWavesBtn.className = VIEW_BTN_INACTIVE;
@@ -162,7 +164,7 @@ function setViewMode(mode) {
     documentPane.classList.remove('hidden');
     graphPane.classList.add('hidden');
     sidebarPane.classList.add('hidden');
-    toggleSectionsBtn.classList.remove('hidden');
+    expandAllBtn.classList.remove('hidden');
   } else {
     viewGraphBtn.className = VIEW_BTN_ACTIVE;
     viewWavesBtn.className = VIEW_BTN_INACTIVE;
@@ -170,7 +172,7 @@ function setViewMode(mode) {
     documentPane.classList.add('hidden');
     graphPane.classList.remove('hidden');
     sidebarPane.classList.remove('hidden');
-    toggleSectionsBtn.classList.add('hidden');
+    expandAllBtn.classList.remove('hidden');
     if (networkInstance) {
       setTimeout(() => networkInstance.fit(), 50);
     }
@@ -193,13 +195,7 @@ function resetView() {
       resetWaves();
       wavesPane.scrollTop = 0;
     } else {
-      if (expandedIds.size > 0) {
-        window.tmStore.close([...expandedIds]);
-        window.tmStore.unwatch([...expandedIds]);
-        expandedIds.clear();
-      }
-      expandedSections.clear();
-      collapsedGroups.clear();
+      resetExpansion();
       documentPane.scrollTop = 0;
       treeList.scrollTop = 0;
       if (view === window.VIEW_MODES.GRAPH && networkInstance) {
@@ -224,44 +220,6 @@ viewGraphBtn.addEventListener('click', () => onViewSegment(window.VIEW_MODES.GRA
 viewWavesBtn.addEventListener('click', () => onViewSegment(window.VIEW_MODES.WAVES));
 graphFitBtn.addEventListener('click', () => networkInstance && networkInstance.fit());
 refreshBtn.addEventListener('click', () => window.tmStore.resync());
-
-
-// Document sections: default collapsed, remembered for this session only (never persisted),
-// so a re-render after a filter change never surprise-collapses one the user just opened.
-function updateToggleSectionsButton() {
-  const label = expandedSections.size > 0 ? 'Collapse all sections' : 'Expand all sections';
-  toggleSectionsBtn.title = label;
-  toggleSectionsBtn.setAttribute('aria-label', label);
-}
-
-toggleSectionsBtn.addEventListener('click', () => {
-  if (expandedSections.size > 0) {
-    expandedSections.clear();
-  } else {
-    allSectionIds.forEach(id => expandedSections.add(id));
-  }
-  scheduleRender();
-});
-
-
-// Expand / Collapse All. A click opens every visible, still-collapsed container one level
-// further (the next level's rows arrive once the store answers); once nothing visible is
-// left to open, the same button collapses back to the roots. Unlike the old whole-tree
-// walk, this never touches a row the store hasn't sent yet -- there is nothing else to walk.
-expandAllBtn.addEventListener('click', () => {
-  const containers = [...window.tmStore.rows.values()].filter(r => r.kind !== 'task');
-  const toOpen = containers.filter(r => !expandedIds.has(r.id)).map(r => r.id);
-  if (toOpen.length > 0) {
-    toOpen.forEach(id => expandedIds.add(id));
-    window.tmStore.open(toOpen);
-    window.tmStore.watch(toOpen);
-  } else {
-    const roots = [...window.tmStore.rows.values()].filter(r => r.parent === null).map(r => r.id);
-    window.tmStore.close(roots);
-    window.tmStore.unwatch([...expandedIds]);
-    expandedIds.clear();
-  }
-});
 
 
 function esc(text) {
@@ -475,9 +433,14 @@ document.addEventListener('mouseout', (e) => {
   const a = tipTarget(e);
   if (a && a === tipAnchor && !(e.relatedTarget && a.contains(e.relatedTarget))) hideTip();
 });
+// Focus from the keyboard opens the tooltip; focus a click gives (or a re-render hands back
+// after one) leaves it to hover, so it never stays pinned once the pointer leaves.
+let focusFromKeyboard = true;
+document.addEventListener('keydown', () => { focusFromKeyboard = true; }, true);
+document.addEventListener('pointerdown', () => { focusFromKeyboard = false; }, true);
 document.addEventListener('focusin', (e) => {
   const a = tipTarget(e);
-  if (a) showTip(a, esc(a.getAttribute('aria-label')));
+  if (a && focusFromKeyboard) showTip(a, esc(a.getAttribute('aria-label')));
 });
 document.addEventListener('focusout', (e) => {
   if (tipAnchor && tipTarget(e) === tipAnchor) hideTip();
