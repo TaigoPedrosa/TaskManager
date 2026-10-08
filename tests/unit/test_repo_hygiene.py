@@ -75,6 +75,16 @@ def test_the_changelog_has_an_entry_for_the_packaged_version() -> None:
     assert f"## [{version}]" in (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
 
 
+def test_the_changelog_names_the_first_run_docs_and_what_the_tm_command_grants() -> None:
+    changelog = " ".join((REPO / "CHANGELOG.md").read_text(encoding="utf-8").split())
+    lines = [
+        "The README opens with Requirements, Install and Quickstart sections",
+        "The plugin's skills give the command that installs `tm`",
+        "`/taskmanager:tm` only runs a `tm` command",
+    ]
+    assert [line for line in lines if line not in changelog] == []
+
+
 def test_ci_runs_every_gate() -> None:
     workflow = yaml.safe_load((REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
     runs = [step.get("run", "") for job in workflow["jobs"].values() for step in job["steps"]]

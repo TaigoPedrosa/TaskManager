@@ -12,11 +12,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - `CONTRIBUTING.md`, `SECURITY.md`, this changelog, issue templates and a pull request template.
 - The Gemini CLI extension loads `GEMINI.md`, which tells an agent how to get `tm` and which
   `tm guide` topic to read.
+- The README opens with Requirements, Install and Quickstart sections, a CI badge and a screenshot
+  of `tm web`.
+- The plugin's skills give the command that installs `tm`, and tell an agent to stop when `tm` is
+  not on PATH.
 
 ### Changed
 
 - TaskManager is released under the MIT license, declared in the wheel metadata and in every
   plugin manifest.
+- `/taskmanager:tm` only runs a `tm` command: invoking it no longer opts the session into the
+  Workflow tool, a self-paced loop or any other tool.
 
 ### Removed
 
