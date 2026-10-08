@@ -125,7 +125,7 @@ def add(
     *,
     parent: str | None = None,
     repo: str | None = "api",
-    merge: Merge = Merge.MAIN,
+    merge: Merge = Merge.SPEC,
     review: bool | None = None,
     fix: bool | None = None,
     status: Status = Status.READY,

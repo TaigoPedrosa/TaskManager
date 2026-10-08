@@ -90,6 +90,17 @@ class OperationError(ValueError):
         self.status_code = status_code
 
 
+MERGE_REFUSAL = "merge is parent or spec; main is now spec"
+
+
+def parse_merge(value: str) -> Merge:
+    """Every merge value a user writes, through import, the CLI or the web, is read here."""
+    try:
+        return Merge(value)
+    except ValueError:
+        raise OperationError(MERGE_REFUSAL) from None
+
+
 def child_defaults(
     child: Node,
     parent: Node | None,
@@ -102,9 +113,10 @@ def child_defaults(
     """`child` carrying each review, fix and merge flag its write states, and a default for each
     one it leaves out. A reviewed parent's one review reads what lands on the parent's branch,
     so a child under it lands there with no review of its own unless it is sensitive; anywhere
-    else a task reviews and fixes itself and lands on main, and a container does neither."""
+    else a task reviews and fixes itself and lands where its spec lands, and a container does
+    neither."""
     if parent is None or not parent.review:
-        own, lands_on = child.kind == NodeKind.TASK, Merge.MAIN
+        own, lands_on = child.kind == NodeKind.TASK, Merge.SPEC
     else:
         files = declared_files_of(child, list(verifications))
         own, lands_on = bool(sensitive_areas(child)) or writes_migration(files), Merge.PARENT
@@ -374,7 +386,7 @@ class Operations:
             status=Status.READY,
             review=review,
             fix=fix,
-            merge=Merge.MAIN,
+            merge=Merge.SPEC,
         )
         self._refuse_fix_without_review(node)
         with self._checked({spec_id}):
@@ -401,7 +413,7 @@ class Operations:
         order: int = 0,
         review: bool | None = None,
         fix: bool | None = None,
-        merge: Merge | None = None,
+        merge: str | None = None,
     ) -> str:
         self._validate_priority(priority)
         parent = self.node_repo.get_node(spec)
@@ -430,7 +442,7 @@ class Operations:
             parent,
             review=review,
             fix=fix,
-            merge=merge,
+            merge=None if merge is None else parse_merge(merge),
         )
         self._refuse_fix_without_review(plan_node)
         with self._checked({plan_id}):
@@ -464,7 +476,7 @@ class Operations:
         models: list[str] | None = None,
         review: bool | None = None,
         fix: bool | None = None,
-        merge: Merge | None = None,
+        merge: str | None = None,
         requires: list[str] | None = None,
         frontmatter: dict[str, Any] | None = None,
     ) -> str:
@@ -501,7 +513,7 @@ class Operations:
             parent,
             review=review,
             fix=fix,
-            merge=merge,
+            merge=None if merge is None else parse_merge(merge),
         )
         self._refuse_fix_without_review(task_node)
         with self._checked({task_id}):
@@ -535,7 +547,7 @@ class Operations:
         frontmatter_unset: list[str] | None = None,
         review: bool | None = None,
         fix: bool | None = None,
-        merge: Merge | None = None,
+        merge: str | None = None,
         requires: list[str] | None = None,
         land_order: list[str] | None = None,
     ) -> dict[str, Any]:
@@ -570,8 +582,8 @@ class Operations:
             node.fix = fix
             changed["fix"] = fix
         if merge is not None:
-            node.merge = merge
-            changed["merge"] = merge.value
+            node.merge = parse_merge(merge)
+            changed["merge"] = node.merge.value
         if requires is not None:
             node.requires = requires
             changed["requires"] = requires

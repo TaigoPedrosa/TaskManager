@@ -24,15 +24,15 @@ class Tree:
     statuses: dict[str, Status | DecisionStatus] = field(default_factory=dict)
     rows: dict[str, tuple[str | None, Merge]] = field(
         default_factory=lambda: {
-            "S": (None, Merge.MAIN),
+            "S": (None, Merge.SPEC),
             "P": ("S", PARENT),
-            "Q": ("S", Merge.MAIN),
+            "Q": ("S", Merge.SPEC),
             "T1": ("P", PARENT),
             "T2": ("P", PARENT),
-            "G": ("P", Merge.MAIN),
+            "G": ("P", Merge.SPEC),
             "U": ("Q", PARENT),
-            "M": (None, Merge.MAIN),
-            "D": (None, Merge.MAIN),
+            "M": (None, Merge.SPEC),
+            "D": (None, Merge.SPEC),
             "ORPHAN": (None, PARENT),
         }
     )

@@ -451,6 +451,15 @@ def spec_get(
     _print_container("Spec", _get_container(_get_root(path)), spec_id, "Plans")
 
 
+# A plain string, not a choice of the enum, so a refused value reaches `parse_merge` and its
+# message.
+_MERGE_OPTION = typer.Option(
+    "--merge",
+    metavar="|".join(Merge),
+    help="parent lands on the parent's branch; spec lands where its spec lands",
+)
+
+
 @plan_app.command("add")
 def plan_add(
     title: str,
@@ -465,9 +474,7 @@ def plan_add(
     fix: Annotated[
         bool | None, typer.Option("--fix/--no-fix", help="A rejection is fixed on this plan")
     ] = None,
-    merge: Annotated[
-        Merge | None, typer.Option("--merge", help="Land on the parent's branch or on main")
-    ] = None,
+    merge: Annotated[str | None, _MERGE_OPTION] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
@@ -554,9 +561,7 @@ def task_add(
     fix: Annotated[
         bool | None, typer.Option("--fix/--no-fix", help="A rejection is fixed by this task")
     ] = None,
-    merge: Annotated[
-        Merge | None, typer.Option("--merge", help="Land on the parent's branch or on main")
-    ] = None,
+    merge: Annotated[str | None, _MERGE_OPTION] = None,
     requires: Annotated[
         str | None, typer.Option("--requires", help="Comma-separated agent capabilities")
     ] = None,
@@ -726,9 +731,7 @@ def task_update(
     fix: Annotated[
         bool | None, typer.Option("--fix/--no-fix", help="A rejection is fixed by this node")
     ] = None,
-    merge: Annotated[
-        Merge | None, typer.Option("--merge", help="Land on the parent's branch or on main")
-    ] = None,
+    merge: Annotated[str | None, _MERGE_OPTION] = None,
     requires: Annotated[
         str | None,
         typer.Option("--requires", help="Comma-separated agent capabilities; '' clears them"),

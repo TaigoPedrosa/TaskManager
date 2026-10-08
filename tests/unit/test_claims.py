@@ -335,7 +335,7 @@ def test_a_review_verdict_is_refused_until_the_review_section_changes(tmp_path: 
 
 @pytest.mark.parametrize(
     ("merge", "branch", "base"),
-    [(Merge.MAIN, "origin/main", "main"), (Merge.PARENT, "tm/S", "tm/S")],
+    [(Merge.SPEC, "origin/main", "main"), (Merge.PARENT, "tm/S", "tm/S")],
 )
 def test_a_review_of_a_landed_plan_reads_the_target_it_landed_on_in_every_repository(
     tmp_path: Path, merge: Merge, branch: str, base: str

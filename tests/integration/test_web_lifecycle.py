@@ -27,8 +27,8 @@ def web(tmp_path: Path) -> Web:
     ops = create_container(tmp_path).get(Operations)
     spec = ops.add_spec("S", slug="S1")
     plan = ops.add_plan("P", spec, slug="P1", review=True, fix=True)
-    a = ops.add_task("a", plan, slug="a", review=True, fix=True, merge=Merge.MAIN)
-    ops.add_task("b", plan, slug="b", depends_on=[a], review=True, fix=True, merge=Merge.MAIN)
+    a = ops.add_task("a", plan, slug="a", review=True, fix=True, merge=Merge.SPEC)
+    ops.add_task("b", plan, slug="b", depends_on=[a], review=True, fix=True, merge=Merge.SPEC)
     return TestClient(create_app(tmp_path)), tmp_path
 
 
@@ -50,7 +50,7 @@ def test_nodes_carry_the_stored_status_display_phase_and_flags(web: Web) -> None
     assert (a["review"], a["fix"], a["merge"], a["body"]["node"]["branch"]) == (
         True,
         True,
-        "main",
+        "spec",
         "tm/S1-P1-a",
     )
     assert "virtual_status" not in a
@@ -121,7 +121,7 @@ def test_meta_lists_the_lifecycle_vocabularies(web: Web) -> None:
         "LANDED",
         "COMPLETED",
     ]
-    assert meta["merge_targets"] == ["parent", "main"]
+    assert meta["merge_targets"] == ["parent", "spec"]
     assert "none" in meta["decision_effects"]
 
 

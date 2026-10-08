@@ -449,7 +449,7 @@ function openFlagsDialog(node) {
     bodyHtml: `
       ${checkboxRow('fl-review', node.review, 'Review')}
       ${checkboxRow('fl-fix', node.fix, 'Fix')}
-      ${fieldRow('Lands on', `<select class="fl-merge ${SELECT_CLS}"><option value="main" ${node.merge === 'main' ? 'selected' : ''}>main</option><option value="parent" ${node.merge === 'parent' ? 'selected' : ''}>parent</option></select>`)}
+      ${fieldRow('Lands on', `<select class="fl-merge ${SELECT_CLS}"><option value="spec" ${node.merge === 'spec' ? 'selected' : ''}>spec</option><option value="parent" ${node.merge === 'parent' ? 'selected' : ''}>parent</option></select>`)}
       ${fieldRow('Requires', `<input type="text" class="fl-requires ${INPUT_CLS}" value="${esc((node.requires || []).join(', '))}">`)}
       ${isContainer ? fieldRow('Land order', `<input type="text" class="fl-land-order ${INPUT_CLS}" value="${esc((node.land_order || []).join(', '))}">`) : ''}
     `,

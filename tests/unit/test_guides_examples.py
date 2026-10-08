@@ -95,7 +95,7 @@ def test_the_example_imports_the_documented_flags(tmp_path: Path) -> None:
         doc = _yaml("task", "get", node_id, "--yaml", "-C", str(root))
         return doc["review"], doc["fix"], doc["merge"]
 
-    assert flags("NOTIFY-EMAIL") == (True, True, "main")
+    assert flags("NOTIFY-EMAIL") == (True, True, "spec")
     # The plan's one review of its landed branch covers every task under it.
     assert flags("NOTIFY-EMAIL-SENDER") == (False, False, "parent")
     assert flags("NOTIFY-EMAIL-TEMPLATES") == (False, False, "parent")

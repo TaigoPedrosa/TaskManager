@@ -45,7 +45,7 @@ class Node(BaseModel):
     claimed_from: Status | None = None
     review: bool = True
     fix: bool = True
-    merge: Merge = Merge.MAIN
+    merge: Merge = Merge.SPEC
     outcome: Outcome | None = None
     verdict: str | None = None
     fix_for: Outcome | None = None

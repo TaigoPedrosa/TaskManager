@@ -192,7 +192,7 @@ def _random_snapshot(rng: random.Random) -> Snapshot:
         parent = None
         if kind in (PLAN, TASK) and containers and rng.random() < 0.7:
             parent = rng.choice(containers)
-        merge = PARENT if parent is not None and rng.random() < 0.6 else Merge.MAIN
+        merge = PARENT if parent is not None and rng.random() < 0.6 else Merge.SPEC
         status: Status | DecisionStatus = rng.choice(
             [Status.READY] * 4
             + [Status.COMPLETED, Status.IMPLEMENTING, Status.SUPERSEDED, Status.DEFERRED]
