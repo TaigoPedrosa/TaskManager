@@ -2,10 +2,11 @@ import json
 from typing import Any
 
 from taskmanager.core.enums import CONTAINERS, NodeKind, RelationType, RenderView
-from taskmanager.core.status import DecisionStatus, Outcome
+from taskmanager.core.models import Node
+from taskmanager.core.status import DecisionStatus, Outcome, Status
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.engine.decisions import read_decision
-from taskmanager.engine.snapshot import stored_status
+from taskmanager.engine.snapshot import display_view, stored_status
 
 
 class MarkdownRenderer:
@@ -53,10 +54,13 @@ class MarkdownRenderer:
         yaml_lines.append("---")
         frontmatter_text = "\n".join(yaml_lines)
 
+        superseded = self._superseded(node)
+
         if v == RenderView.SUMMARY:
             overview_sec = self.node_repo.get_section(node_id, "overview")
-            body = overview_sec.content if overview_sec else f"# {node.title}"
-            return f"{frontmatter_text}\n\n{body}\n"
+            body = [overview_sec.content] if overview_sec else []
+            title = [] if overview_sec else [f"# {node.title}"]
+            return "\n\n".join([frontmatter_text, *title, *superseded, *body]) + "\n"
 
         if v == RenderView.SUBAGENT:
             out = [frontmatter_text]
@@ -71,6 +75,7 @@ class MarkdownRenderer:
                             out.append(f"## Parent Context ({pnode.title})\n\n{psec.content}")
 
             out.append(f"# Task Brief: {node.title}")
+            out.extend(superseded)
             for sec in sections:
                 if sec.header:
                     out.append(f"{sec.header}\n\n{sec.content}")
@@ -103,7 +108,7 @@ class MarkdownRenderer:
             return "\n\n".join(out) + "\n"
 
         if v == RenderView.FULL:
-            out = [frontmatter_text, f"# {node.title}"]
+            out = [frontmatter_text, f"# {node.title}", *superseded]
             for sec in sections:
                 if sec.header:
                     out.append(f"{sec.header}\n\n{sec.content}")
@@ -130,6 +135,13 @@ class MarkdownRenderer:
         for child_id in self.node_repo.get_children(node_id):
             parts.append(self.render_recursive(child_id, view, seen))
         return "\n\n---\n\n".join(parts)
+
+    def _superseded(self, node: Node) -> list[str]:
+        # Ahead of every section, so a superseded node's old deferral reads as history.
+        if node.status != Status.SUPERSEDED:
+            return []
+        by = display_view(self.node_repo).superseded_by(node.id)
+        return [f"Superseded by {by['id']} ({by['status']})"] if by else []
 
     def _rejected_children(self, node: Any) -> list[str]:
         # Read from each child's stored outcome on every render, never copied into a section.

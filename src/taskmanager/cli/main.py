@@ -42,7 +42,6 @@ from taskmanager.core.status import (
     Outcome,
     Status,
 )
-from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import (
     DatabaseManager,
     StateNotInitialized,
@@ -69,6 +68,7 @@ from taskmanager.engine.snapshot import (
     SnapshotBuilder,
     apply_cycle,
     cycle_of,
+    display_view,
     phase_of,
     stored_status,
     waits_on,
@@ -185,12 +185,7 @@ def _node_row(node: Node, state: str | None = None) -> dict[str, Any]:
 
 
 def _view(container: Container) -> DisplayView:
-    root = container.get(TaskManagerProvider).root
-    return DisplayView(
-        container.get(SnapshotBuilder),
-        container.get(CacheRepository),
-        ConfigStore(root).project().condition_ttl,
-    )
+    return display_view(container.get(NodeRepository))
 
 
 def _list_rows(container: Container, kind: NodeKind, status: Status | None) -> list[dict[str, Any]]:
@@ -829,6 +824,7 @@ def task_get(
     view = _view(container)
     snapshot = view.snapshot
     state = view.display(task)
+    superseded_by = view.superseded_by(task_id)
     deps = {d: node_repo.get_node(d) for d in node_repo.get_dependencies(task_id)}
     verifications = node_repo.get_verifications(task_id)
     if json_output or yaml_output:
@@ -839,6 +835,7 @@ def task_get(
         doc.update(
             {
                 "spec_id": _task_spec_id(node_repo, task_id),
+                "superseded_by": superseded_by,
                 "next_action": _next_action(container, task),
                 "frontmatter": task.frontmatter,
                 "outcome": task.outcome.value if task.outcome else None,
@@ -893,6 +890,8 @@ def task_get(
     print(f"[bold]Title:[/] {escape(task.title)}")
     print(f"[bold]Status:[/] {task.status.value}")
     print(f"[bold]State:[/] {state}")
+    if superseded_by:
+        print(f"[bold]Superseded by:[/] {superseded_by['id']} ({superseded_by['status']})")
     print(f"[bold]Priority:[/] {task.priority}")
     print(f"[bold]Models:[/] {escape(', '.join(task.acceptable_models))}")
     if deps:

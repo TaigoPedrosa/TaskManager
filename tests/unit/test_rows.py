@@ -46,6 +46,7 @@ _ROW_FIELDS = {
     "requires",
     "lease",
     "waits_on",
+    "superseded_by",
     "child_count",
     "rev",
 }
