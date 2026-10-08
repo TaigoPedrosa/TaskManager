@@ -213,8 +213,8 @@ def moved_tops(before: Snapshot, after: Snapshot) -> list[Refusal]:
         and old.top != n.top
     ]
     refusals = [refusal for n in moved for refusal in _origin_main(n)]
-    crossed = _crossings(after, _LANDS_NO_MORE)
-    already = _crossings(before, _LANDS_NO_MORE).keys()
+    crossed = _crossings(after)
+    already = _crossings(before).keys()
     return refusals + [crossed[k] for k in sorted(crossed.keys() - already)]
 
 
@@ -290,12 +290,10 @@ def _busy(before: Snapshot, after: Snapshot, n: SnapNode) -> list[Refusal]:
     ]
 
 
-def _crossings(
-    s: Snapshot, settled: frozenset[Status] = frozenset()
-) -> dict[tuple[str, ...], Refusal]:
+def _crossings(s: Snapshot) -> dict[tuple[str, ...], Refusal]:
     """Every wait the step graph draws between two targets, which no meeting node can satisfy:
-    a dependency edge, once per node it gates, and a migration chain's link. A node in `settled`
-    neither waits nor is waited on."""
+    a dependency edge, once per node it gates, and a migration chain's link. Work that lands no
+    more neither waits nor is waited on."""
     targets: dict[str, str] = {}
 
     def on(node_id: str) -> str:
@@ -308,11 +306,11 @@ def _crossings(
 
     found: dict[tuple[str, ...], Refusal] = {}
     for owner, dep in s.edges:
-        if not (work(owner) and work(dep)) or s.status(dep) in {Status.SUPERSEDED, *settled}:
+        if not (work(owner) and work(dep)) or s.status(dep) in _LANDS_NO_MORE:
             continue
         for d in [owner, *s.descendants(owner)]:
             key = (owner, dep, on(d), on(dep))
-            if not work(d) or s.status(d) in settled or on(d) == on(dep) or key in found:
+            if not work(d) or s.status(d) in _LANDS_NO_MORE or on(d) == on(dep) or key in found:
                 continue
             who = owner if d == owner else f"{d} under it"
             found[key] = Refusal(
