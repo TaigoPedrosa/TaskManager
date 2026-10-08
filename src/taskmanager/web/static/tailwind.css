@@ -2302,11 +2302,6 @@ video {
   color: rgb(244 244 245 / var(--tw-text-opacity, 1));
 }
 
-.hover\:text-zinc-200:hover {
-  --tw-text-opacity: 1;
-  color: rgb(228 228 231 / var(--tw-text-opacity, 1));
-}
-
 .hover\:underline:hover {
   text-decoration-line: underline;
 }

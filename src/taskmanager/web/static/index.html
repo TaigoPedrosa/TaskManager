@@ -82,7 +82,7 @@
             <button type="button" data-sort="progress" aria-pressed="true" class="h-full px-2.5 flex items-center rounded-md font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 bg-zinc-800 text-white shadow-sm">Progress</button>
             <button type="button" data-sort="priority" aria-pressed="false" class="h-full px-2.5 flex items-center rounded-md font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 text-zinc-400 hover:text-white">Priority</button>
           </div>
-          <button id="toggle-sections-btn" title="Expand all sections" aria-label="Expand all sections" class="h-8 aspect-square flex items-center justify-center rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition">
+          <button id="expand-all-btn" type="button" aria-expanded="false" aria-label="Expand all" data-tip class="h-8 aspect-square flex items-center justify-center rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-chevrons-up-down"/></svg>
           </button>
           <button id="legend-btn" aria-expanded="false" aria-controls="legend-panel" title="Legend" aria-label="Legend" class="h-8 aspect-square flex items-center justify-center rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 hover:text-white transition">
@@ -121,11 +121,8 @@
     
     <!-- Sidebar / Hierarchical Navigation (Graph view only) -->
     <aside id="sidebar-pane" class="hidden relative border-r border-zinc-800 flex flex-col bg-zinc-900/40 flex-shrink-0" style="width:320px">
-      <div class="p-3 border-b border-zinc-800 flex items-center justify-between gap-2">
+      <div class="p-3 border-b border-zinc-800">
         <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Nodes</span>
-        <button id="expand-all-btn" title="Expand all" aria-label="Expand all tree nodes" class="h-7 w-7 flex items-center justify-center rounded-md bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-zinc-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor"><use href="#icon-chevrons-up-down"/></svg>
-        </button>
       </div>
       <div id="tree-list" role="tree" aria-label="Nodes" class="flex-1 overflow-y-auto p-2 space-y-1">
         <!-- Dynamically Populated Tree -->

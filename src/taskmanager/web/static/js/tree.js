@@ -18,11 +18,26 @@ function renderSectionBody(content) {
   return marked.parse(text, { breaks: true });
 }
 
-// A group id's collapsed state relative to its own default. collapsedGroups holds only
-// ids that were explicitly toggled away from default, so one set serves group types with
-// opposite defaults without reseeding it on every render.
+// A group or section id starts with its owner's id: "<owner>::<key>".
+function ownerOf(key) {
+  return key.split('::')[0];
+}
+
+// A group id's collapsed state relative to its default: its type's own, unless Expand all or
+// Collapse all covers its owner. collapsedGroups holds only ids that were explicitly toggled
+// away from that default, so one set serves group types with opposite defaults without
+// reseeding it on every render.
 function groupCollapsed(groupId, defaultCollapsed) {
-  return collapsedGroups.has(groupId) ? !defaultCollapsed : defaultCollapsed;
+  const all = expandAllOf(ownerOf(groupId));
+  const base = all === undefined ? defaultCollapsed : !all;
+  return collapsedGroups.has(groupId) ? !base : base;
+}
+
+// A section starts closed, or open under Expand all; toggledSections holds the ones toggled
+// away from that, for this session only, so re-rendering after a filter change never
+// re-collapses one.
+function sectionOpen(id) {
+  return toggledSections.has(id) !== (expandAllOf(ownerOf(id)) === true);
 }
 
 // `meta` is a value every row of the group shares, drawn once at the header's right.
@@ -32,13 +47,11 @@ function renderGroupHeader(groupId, label, count, defaultCollapsed, meta = '') {
   return `<div class="flex items-center gap-2">${header}<div class="flex items-center gap-1.5 flex-shrink-0">${meta}</div></div>`;
 }
 
-// Section rows start collapsed; expandedSections remembers, for this session only, which ones
-// the user opened, so re-rendering after a filter change never re-collapses them. A row reads
-// its key, and a leading heading in its content that repeats its header is dropped.
+// A row reads its key, and a leading heading in its content that repeats its header is dropped.
 function sectionItemsHtml(list, ownerId, editable = false) {
   const items = list.map(s => {
     const id = `${ownerId}::${s.key}`;
-    const isOpen = expandedSections.has(id);
+    const isOpen = sectionOpen(id);
     const label = (s.header || s.key).replace(/^#+\s*/, '');
     const body = stripRedundantLeadingHeading(s.content, label);
     const controls = editable ? `
@@ -78,12 +91,11 @@ function attachSectionToggleHandlers(root) {
   root.querySelectorAll('.section-toggle').forEach(btn => {
     btn.onclick = () => {
       const id = btn.getAttribute('data-section-id');
-      const open = !expandedSections.has(id);
-      if (open) expandedSections.add(id);
-      else expandedSections.delete(id);
+      if (toggledSections.has(id)) toggledSections.delete(id);
+      else toggledSections.add(id);
+      const open = sectionOpen(id);
       btn.setAttribute('aria-expanded', String(open));
       btn.closest('.section-row').querySelector('.section-body').classList.toggle('hidden', !open);
-      updateToggleSectionsButton();
     };
   });
 }
@@ -117,7 +129,7 @@ function visibleChildrenByParent() {
 
 // A re-render replaces a pane's markup. Its scroll offset carries over, and so does its focused
 // element: found again by the nearest attribute that names it, then by its place under that.
-const FOCUS_KEYS = ['id', 'data-group-id', 'data-section-id', 'data-node-id', 'data-step-of'];
+const FOCUS_KEYS = ['id', 'data-group-id', 'data-section-id', 'data-node-id', 'data-step-of', 'data-expand-all'];
 
 function redrawKeeping(root, scroller, draw) {
   let anchor = null;
@@ -133,6 +145,7 @@ function redrawKeeping(root, scroller, draw) {
   const top = scroller.scrollTop;
   draw();
   scroller.scrollTop = top;
+  if (tipAnchor && !document.contains(tipAnchor)) hideTip();
   let again = anchor && root.querySelector(anchor);
   path.forEach(i => { again = again && again.children[i]; });
   if (!again) return;
@@ -176,17 +189,27 @@ function collapseWithDescendants(id) {
 // pane state; one that arrives sooner never does.
 const slowReads = new Set();
 
-function expandId(node) {
-  if (expandedIds.has(node.id)) return;
-  expandedIds.add(node.id);
-  if (node.kind !== 'task') window.tmStore.open([node.id]);
-  window.tmStore.watch([node.id]);
-  slowReads.delete(node.id);
+function expandRows(list) {
+  const fresh = list.filter(r => !expandedIds.has(r.id));
+  if (fresh.length === 0) return;
+  const ids = fresh.map(r => r.id);
+  ids.forEach((id) => {
+    expandedIds.add(id);
+    slowReads.delete(id);
+  });
+  const containers = fresh.filter(r => r.kind !== 'task').map(r => r.id);
+  if (containers.length > 0) window.tmStore.open(containers);
+  window.tmStore.watch(ids);
   setTimeout(() => {
-    if (!expandedIds.has(node.id) || detailBody(node.id)) return;
-    slowReads.add(node.id);
+    const slow = ids.filter(id => expandedIds.has(id) && !detailBody(id));
+    if (slow.length === 0) return;
+    slow.forEach(id => slowReads.add(id));
     scheduleRender();
   }, LOADING_DELAY_MS);
+}
+
+function expandId(node) {
+  expandRows([node]);
 }
 
 function toggleExpand(row) {
@@ -198,6 +221,119 @@ function toggleExpand(row) {
     expandId(row);
   }
 }
+
+// The Expand all entry covering a held row (see expandAllState): true, false, or undefined
+// where each group's own default holds. A node the store does not hold (a decision, a drawer's
+// node outside the lists) is never covered.
+function expandAllOf(id) {
+  for (let row = window.tmStore.rows.get(id); row; row = window.tmStore.rows.get(row.parent)) {
+    if (expandAllState.has(row.id)) return expandAllState.get(row.id);
+  }
+  return window.tmStore.rows.has(id) && allExpanded ? true : undefined;
+}
+
+function isUnder(id, ancestorId) {
+  for (let row = window.tmStore.rows.get(id); row; row = window.tmStore.rows.get(row.parent)) {
+    if (row.id === ancestorId) return true;
+  }
+  return false;
+}
+
+// What a node's toggle does next: Collapse all once it is open and Expand all covers it.
+function allOpen(id) {
+  return expandedIds.has(id) && expandAllOf(id) === true;
+}
+
+// Forgets every entry, hand toggle and sweep mark on `id` and under it (null: everywhere), so
+// the entry set next is what shows there.
+function clearExpansionUnder(id) {
+  const under = key => id === null || isUnder(key, id);
+  [...expandAllState.keys()].filter(under).forEach(k => expandAllState.delete(k));
+  [...expandSwept].filter(under).forEach(k => expandSwept.delete(k));
+  [...collapsedGroups].filter(k => under(ownerOf(k))).forEach(k => collapsedGroups.delete(k));
+  [...toggledSections].filter(k => under(ownerOf(k))).forEach(k => toggledSections.delete(k));
+}
+
+// Opens each held row Expand all covers, once: a row arrives closed under an open container,
+// so this runs on every store change as well as on the click. A swept row the store dropped
+// is forgotten, so it opens again when it comes back.
+// ponytail: the store sends at most 200 watched ids, so past 200 open nodes a card's body never
+// arrives and it stays on its loading state; page the watch set if estates outgrow it.
+function sweepExpandAll() {
+  const rows = window.tmStore.rows;
+  [...expandSwept].filter(id => !rows.has(id)).forEach(id => expandSwept.delete(id));
+  const fresh = [...rows.values()].filter(r => !expandSwept.has(r.id) && expandAllOf(r.id) === true);
+  fresh.forEach(r => expandSwept.add(r.id));
+  expandRows(fresh);
+}
+
+window.tmStore.onChange(sweepExpandAll);
+
+// Every node closed, and every group and section at its default.
+function resetExpansion() {
+  if (expandedIds.size > 0) {
+    window.tmStore.close([...expandedIds]);
+    window.tmStore.unwatch([...expandedIds]);
+    expandedIds.clear();
+  }
+  clearExpansionUnder(null);
+  allExpanded = false;
+  syncExpandAllBtn();
+}
+
+// Expand all on a node (null: every node) opens it and everything under it, now and as rows
+// arrive there.
+function expandAllUnder(id) {
+  clearExpansionUnder(id);
+  if (id === null) allExpanded = true;
+  else expandAllState.set(id, true);
+  sweepExpandAll();
+  syncExpandAllBtn();
+  scheduleRender();
+}
+
+// Collapse all on a node closes every node, group and section under it and keeps the node open;
+// on every node it is a reset.
+function collapseAllUnder(id) {
+  if (id === null) {
+    resetExpansion();
+  } else {
+    clearExpansionUnder(id);
+    expandAllState.set(id, false);
+    const below = [...expandedIds].filter(x => x !== id && isUnder(x, id));
+    below.forEach(x => expandedIds.delete(x));
+    if (below.length > 0) {
+      window.tmStore.close(below);
+      window.tmStore.unwatch(below);
+    }
+  }
+  scheduleRender();
+}
+
+// The icon and the name say what the next click does.
+function expandAllToggle(id) {
+  const open = allOpen(id);
+  const label = `${open ? 'Collapse' : 'Expand'} all in ${id}`;
+  return `<button type="button" class="relative z-[1] w-6 h-6 flex-shrink-0 flex items-center justify-center rounded-md text-zinc-400 hover:text-white hover:bg-zinc-800 transition ${FOCUS_RING}" data-expand-all="${esc(id)}" aria-expanded="${open}" aria-label="${esc(label)}" data-tip>${renderIcon(open ? 'chevrons-down-up' : 'chevrons-up-down', 'w-3.5 h-3.5')}</button>`;
+}
+
+function syncExpandAllBtn() {
+  const label = allExpanded ? 'Collapse all' : 'Expand all';
+  expandAllBtn.setAttribute('aria-expanded', String(allExpanded));
+  expandAllBtn.setAttribute('aria-label', label);
+  expandAllBtn.querySelector('use').setAttribute('href', `#icon-${allExpanded ? 'chevrons-down-up' : 'chevrons-up-down'}`);
+  if (tipAnchor === expandAllBtn) showTip(expandAllBtn, esc(label));
+}
+
+expandAllBtn.addEventListener('click', () => (allExpanded ? collapseAllUnder(null) : expandAllUnder(null)));
+
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest && e.target.closest('[data-expand-all]');
+  if (!btn) return;
+  const id = btn.getAttribute('data-expand-all');
+  if (allOpen(id)) collapseAllUnder(id);
+  else expandAllUnder(id);
+});
 
 // Before any row: loading until the store first answers, an error once the socket closed or
 // the subscribe was refused without an answer, else the fact that nothing matches.
@@ -290,6 +426,7 @@ function drawTree() {
       <span class="flex-1 min-w-0 truncate" title="${esc(node.title)}">${esc(node.title)}</span>
       ${progressHtml}
       ${leasePulse(leaseOf(node))}
+      ${hasChildren ? expandAllToggle(node.id) : ''}
     `;
 
     const toggleBtn = row.querySelector('.toggle-btn');
@@ -506,11 +643,8 @@ function renderUnifiedDocument() {
   redrawKeeping(unifiedDocument, documentPane, () => {
     unifiedDocument.innerHTML = lookup + (roots.length ? cards : emptyPaneState());
   });
-  allSectionIds = [...unifiedDocument.querySelectorAll('.section-toggle')].map(b => b.getAttribute('data-section-id'));
-
   attachCollapsibleHandlers();
   attachSectionToggleHandlers(unifiedDocument);
-  updateToggleSectionsButton();
   finishReveal(true);
 }
 
@@ -579,6 +713,7 @@ function renderSpecCard(spec, byParent) {
           <span class="flex-1"></span>
           ${leasePulse(leaseOf(spec))}
           <span class="inline-flex items-center gap-1.5 flex-shrink-0">${pills}</span>
+          ${expandAllToggle(spec.id)}
           ${isOpen ? cardActionsHtml(spec) : ''}
         </div>
         <h1 class="text-2xl font-bold tracking-tight text-white">${esc(spec.title)}</h1>
@@ -609,6 +744,7 @@ function renderPlanCard(plan, byParent, shared = SHOW_EVERY_META) {
         ${p.total > 0 ? `<div class="hidden sm:block w-40 flex-shrink min-w-0">${progressBar(counts, 'h-2')}</div>${progressCount(p)}` : ''}
         ${leasePulse(leaseOf(plan))}
         ${rowPills(shared.priority === null ? priorityPill(plan.priority) : '')}
+        ${expandAllToggle(plan.id)}
         ${isOpen ? `<span class="hidden sm:inline-flex">${cardActionsHtml(plan)}</span>` : ''}
       </div>
       ${isOpen ? `<div class="plan-body p-4 space-y-3">${cardBodyHtml(plan, byParent)}</div>` : ''}
@@ -631,6 +767,7 @@ function renderTaskCard(task, shared = SHOW_EVERY_META) {
         <span class="flex-1 min-w-0 truncate text-[13px] text-zinc-200" title="${esc(task.title)}">${esc(task.title)}</span>
         ${leasePulse(leaseOf(task))}
         ${rowPills(pills)}
+        ${expandAllToggle(task.id)}
         ${isOpen ? `<span class="hidden sm:inline-flex">${cardActionsHtml(task)}</span>` : ''}
       </div>
       ${isOpen ? `<div class="task-body p-3.5 rounded-b-lg bg-zinc-950/80 border-t border-zinc-800/60 space-y-3">${cardBodyHtml(task)}</div>` : ''}

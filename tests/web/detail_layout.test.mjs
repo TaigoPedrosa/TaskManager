@@ -753,7 +753,7 @@ test('a section row is a disclosure button with its Edit and Delete beside it, n
     toggle.click();
     assert.equal(toggle.getAttribute('aria-expanded'), 'true');
     assert.equal(sectionBody.classList.contains('hidden'), false);
-    assert.ok(page.run("expandedSections.has('T::objective')"));
+    assert.ok(page.run("sectionOpen('T::objective')"));
     toggle.click();
     assert.equal(toggle.getAttribute('aria-expanded'), 'false');
     assert.ok(sectionBody.classList.contains('hidden'));
