@@ -77,6 +77,7 @@ def test_doctor_yaml_prints_the_same_facts(project: Path, bin_dir: Path) -> None
     _tool(bin_dir, "git", "git version 2.55.0")
     _tool(bin_dir, "codegraph", "1.6.0")
     (project / ".codegraph").mkdir()
+    (project / ".codegraph" / "codegraph.db").touch()
 
     res = runner.invoke(app, ["doctor", "--yaml", "-C", str(project)])
 

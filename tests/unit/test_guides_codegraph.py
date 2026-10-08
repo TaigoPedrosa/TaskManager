@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Self
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import app
@@ -254,6 +255,7 @@ def _install_codegraph(bin_dir: Path) -> None:
 
 def _index(project: Path) -> None:
     (project / ".codegraph").mkdir()
+    (project / ".codegraph" / "codegraph.db").touch()
 
 
 def _guide(project: Path, *args: str) -> str:
@@ -306,6 +308,38 @@ def test_guide_with_codegraph_and_no_index_prints_the_builtin_guide_alone(
     _install_codegraph(bin_dir)
 
     assert _guide(project, topic) == _builtin(topic) + "\n"
+
+
+@pytest.mark.parametrize("topic", ROLES)
+def test_guide_with_a_codegraph_directory_holding_no_database_prints_the_builtin_guide_alone(
+    topic: str, project: Path, bin_dir: Path
+) -> None:
+    _install_codegraph(bin_dir)
+    (project / ".codegraph").mkdir()
+    (project / ".codegraph" / ".gitignore").write_text("*\n!.gitignore\n", encoding="utf-8")
+
+    assert _guide(project, topic) == _builtin(topic) + "\n"
+
+
+@pytest.mark.parametrize("topic", ROLES)
+def test_guide_without_codegraph_names_no_claim_codegraph_line(topic: str, project: Path) -> None:
+    out = _guide(project, topic)
+
+    assert "codegraph:" not in out
+    assert "reaches <file> held by" not in out
+
+
+def test_implement_block_s_example_claim_shows_a_ready_and_an_advisory_codegraph_line(
+    ready: Path,
+) -> None:
+    block = _block(ready, "implement")
+
+    claim = block.split("```yaml\n", 1)[1].split("```", 1)[0]
+    assert yaml.safe_load(claim)["codegraph"] == [
+        "ready <dir>/backend-<task-id>",
+        "<symbol> reaches <file> held by <other-id>",
+    ]
+    assert "`<symbol> reaches <file> held by <other-id>` says" in block
 
 
 def test_guide_for_a_role_with_no_block_prints_the_builtin_guide_alone(ready: Path) -> None:

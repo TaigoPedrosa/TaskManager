@@ -12,13 +12,11 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
 
 from taskmanager.core.enums import VerificationType
 from taskmanager.core.models import NodeVerification
 from taskmanager.engine.config import DEFAULT_BRANCH, ConfigStore
-
-CODEGRAPH_INSTALL: Final = "npm install -g @colbymchenry/codegraph"
+from taskmanager.engine.doctor import CODEGRAPH_INSTALL, codegraph_index
 
 
 @dataclass
@@ -410,7 +408,7 @@ class VerificationEngine:
         if shutil.which("codegraph") is None:
             return result(False, f"codegraph is not on PATH; install it: `{CODEGRAPH_INSTALL}`")
         repo_root = self.root / target_repo
-        if not (repo_root / ".codegraph").is_dir():
+        if not codegraph_index(repo_root).is_file():
             return result(
                 False, f"{target_repo} has no codegraph index; run `codegraph init` in {repo_root}"
             )

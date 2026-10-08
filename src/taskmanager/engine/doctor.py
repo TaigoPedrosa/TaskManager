@@ -67,9 +67,15 @@ def _repos(root: Path) -> list[str]:
     return [r for r in dict.fromkeys(named) if (root / r / ".git").exists()]
 
 
+def codegraph_index(repo: Path) -> Path:
+    # codegraph counts a project as initialized only once this database exists; a `.codegraph/`
+    # holding its committed `.gitignore` alone is not one.
+    return repo / ".codegraph" / "codegraph.db"
+
+
 def _index(root: Path, repo: str) -> Fact:
     index = root / repo / ".codegraph"
-    ok = index.is_dir()
+    ok = codegraph_index(root / repo).is_file()
     fix = f"codegraph init {root / repo}"
     return Fact(
         f"codegraph index ({repo})", False, ok, str(index) if ok else None, None if ok else fix
