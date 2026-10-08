@@ -43,7 +43,7 @@ class Snapshot:
     nodes: dict[str, SnapNode]
     edges: list[tuple[str, str]]
     # The bulk read `SnapshotBuilder.build()` made this snapshot from: None only for a snapshot a
-    # test builds by hand for the validation rules, which never read it.
+    # test builds by hand for the validation rules, where a rule reading it refuses nothing.
     data: GraphData | None = None
     _children: dict[str, list[str]] = field(
         init=False, repr=False, compare=False, default_factory=dict

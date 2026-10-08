@@ -1,14 +1,23 @@
 import ast
+import contextlib
+import io
+import json
 import os
+import re
 import shutil
 import subprocess
+import tarfile
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 from taskmanager.core.enums import VerificationType
 from taskmanager.core.models import NodeVerification
 from taskmanager.engine.config import DEFAULT_BRANCH
+
+CODEGRAPH_INSTALL: Final = "npm install -g @colbymchenry/codegraph"
 
 
 @dataclass
@@ -189,6 +198,56 @@ def _resolve_ref(repo_root: Path, ref: str | None, branch: str) -> tuple[str, st
     return f"origin/{branch}", None
 
 
+def codegraph_regex(pattern: str | None) -> re.Pattern[str]:
+    """A codegraph_query's `expected_pattern`, compiled; a ValueError says why it cannot judge."""
+    if not pattern:
+        raise ValueError(
+            "has no expected_pattern, the regex its `codegraph query --json` output must match"
+        )
+    try:
+        return re.compile(pattern)
+    except re.error as e:
+        raise ValueError(f"has an expected_pattern that is not a regex: {e}") from None
+
+
+def _codegraph_flags(query_json: str | None) -> list[str]:
+    try:
+        flags = json.loads(query_json or "{}")
+        return [arg for key, value in flags.items() for arg in (f"--{key}", str(value))]
+    except ValueError, AttributeError:
+        raise ValueError(
+            f"has codegraph_query_json {query_json!r}, which is not a JSON object of query flags"
+        ) from None
+
+
+def _index_tree(repo_root: Path, sha: str, tree: Path) -> str | None:
+    """Export `sha` into `tree` and index it there, since codegraph reads a directory and never a
+    git ref. The failure, or None once `tree` holds the index."""
+    build = Path(tempfile.mkdtemp(prefix=f".{sha}-", dir=tree.parent))
+    try:
+        archive = subprocess.run(
+            ["git", "-C", str(repo_root), "archive", "--format=tar", sha],
+            capture_output=True,
+            check=True,
+        )
+        # ponytail: the whole archive sits in memory; stream it through a pipe when a tree
+        # outgrows RAM.
+        with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
+            tar.extractall(build, filter="data")
+        init = subprocess.run(
+            ["codegraph", "init", "-y", str(build)], capture_output=True, text=True, check=False
+        )
+        if init.returncode != 0:
+            detail = init.stderr.strip() or init.stdout.strip()
+            return f"`codegraph init` failed with exit code {init.returncode}: {detail}"
+        # A run that indexed the same sha first left an identical tree there.
+        with contextlib.suppress(OSError):
+            build.rename(tree)
+        return None
+    finally:
+        shutil.rmtree(build, ignore_errors=True)
+
+
 class VerificationEngine:
     def __init__(self, target_root: Path) -> None:
         self.root = Path(target_root)
@@ -200,8 +259,11 @@ class VerificationEngine:
         ref: str | None = None,
         branch: str | None = None,
     ) -> VerificationResult:
-        """With no `ref`, a path check reads `origin/<branch>` (the default branch when none is
-        named), and a test command is handed `origin/<branch>` only when `branch` is named."""
+        """With no `ref`, a path check or a codegraph query reads `origin/<branch>` (the default
+        branch when none is named), and a test command is handed `origin/<branch>` only when
+        `branch` is named."""
+        if ver.verification_type == VerificationType.CODEGRAPH_QUERY:
+            return self._codegraph_at_ref(ver, target_repo or ".", ref, branch or DEFAULT_BRANCH)
         if target_repo and ver.verification_type in _PATH_VERIFICATION_TYPES:
             return self._verify_at_ref(ver, target_repo, ref, branch or DEFAULT_BRANCH)
         if ref is None and branch is not None:
@@ -316,6 +378,73 @@ class VerificationEngine:
             return _symbol_signature_result(ver, shown.stdout, mode_suffix)
         return _ast_export_result(ver, shown.stdout, mode_suffix)
 
+    def _codegraph_at_ref(
+        self, ver: NodeVerification, target_repo: str, ref: str | None, branch: str
+    ) -> VerificationResult:
+        def result(passed: bool, message: str) -> VerificationResult:
+            return VerificationResult(
+                ver.id, ver.target_path, ver.verification_type, passed, message
+            )
+
+        try:
+            regex = codegraph_regex(ver.expected_pattern)
+            flags = _codegraph_flags(ver.codegraph_query_json)
+        except ValueError as e:
+            return result(False, f"codegraph_query {ver.target_path!r} {e}")
+        if shutil.which("codegraph") is None:
+            return result(False, f"codegraph is not on PATH; install it: `{CODEGRAPH_INSTALL}`")
+        repo_root = self.root / target_repo
+        if not (repo_root / ".codegraph").is_dir():
+            return result(
+                False, f"{target_repo} has no codegraph index; run `codegraph init` in {repo_root}"
+            )
+
+        effective_ref, fetch_error = _resolve_ref(repo_root, ref, branch)
+        if fetch_error is not None:
+            return result(
+                False,
+                f"git fetch origin {branch} in {target_repo} failed, refusing to fall back to "
+                f"the working tree: {fetch_error}",
+            )
+        mode_suffix = f" (git ref {effective_ref} in {target_repo})"
+        sha = _git(
+            repo_root, "rev-parse", "--verify", "--quiet", f"{effective_ref}^{{commit}}"
+        ).stdout.strip()
+        if not sha:
+            return result(False, f"Ref {effective_ref} does not resolve in {target_repo}")
+
+        cache = self.root / ".taskmanager" / "cache" / "codegraph"
+        tree = cache / sha
+        if not tree.is_dir():
+            cache.mkdir(parents=True, exist_ok=True)
+            # Keeps the exported trees out of git and out of the repository's own index.
+            (cache / ".gitignore").write_text("*\n", encoding="utf-8")
+            # ponytail: one tree and index per verified sha, never evicted; prune the oldest
+            # when the cache's size matters.
+            failure = _index_tree(repo_root, sha, tree)
+            if failure is not None:
+                return result(False, failure + mode_suffix)
+
+        query = subprocess.run(
+            ["codegraph", "query", *flags, "--json", "-p", str(tree), "--", ver.target_path],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if query.returncode != 0:
+            detail = query.stderr.strip() or query.stdout.strip()
+            return result(
+                False,
+                f"codegraph query failed with exit code {query.returncode}{mode_suffix}: {detail}",
+            )
+        if regex.search(query.stdout):
+            return result(True, f"codegraph query matched /{regex.pattern}/{mode_suffix}")
+        return result(
+            False,
+            f"codegraph query {ver.target_path!r} output does not match "
+            f"/{regex.pattern}/{mode_suffix}",
+        )
+
     def _verify_in_tree(self, ver: NodeVerification, ref: str | None = None) -> VerificationResult:
         full_path = self.root / ver.target_path
 
@@ -405,40 +534,6 @@ class VerificationEngine:
                     message=f"Failed to read {ver.target_path}: {e}",
                 )
             return _ast_export_result(ver, content, mode_suffix="")
-
-        if ver.verification_type == VerificationType.CODEGRAPH_QUERY:
-            if not shutil.which("codegraph"):
-                return VerificationResult(
-                    verification_id=ver.id,
-                    target_path=ver.target_path,
-                    verification_type=ver.verification_type,
-                    passed=True,
-                    message="codegraph CLI not installed; skipped",
-                )
-            res = subprocess.run(
-                ["codegraph", "query", ver.codegraph_query_json or "{}"],
-                cwd=self.root,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            passed = res.returncode == 0
-            msg = (
-                res.stdout.strip()
-                or res.stderr.strip()
-                or (
-                    "Query executed successfully"
-                    if passed
-                    else f"codegraph query failed with exit code {res.returncode}"
-                )
-            )
-            return VerificationResult(
-                verification_id=ver.id,
-                target_path=ver.target_path,
-                verification_type=ver.verification_type,
-                passed=passed,
-                message=msg,
-            )
 
         if ver.verification_type == VerificationType.TEST_COMMAND:
             command = ver.expected_pattern or ver.target_path
