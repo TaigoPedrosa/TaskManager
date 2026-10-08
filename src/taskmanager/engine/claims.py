@@ -49,7 +49,7 @@ from taskmanager.db.job_repo import JobRepository
 from taskmanager.di.container import create_container
 from taskmanager.engine import git as gitops
 from taskmanager.engine import selection
-from taskmanager.engine.chains import MAIN, meeting, sync_pairs
+from taskmanager.engine.chains import TOP, meeting, sync_pairs
 from taskmanager.engine.conditions import ConditionRunner, is_executable
 from taskmanager.engine.config import DEFAULT_BRANCH, ConfigStore, ProjectConfig
 from taskmanager.engine.decisions import (
@@ -993,7 +993,7 @@ class Claims:
         for source, base, carrier in pairs:
             # `base` lands on `source`, so the source is read where `base`'s landing reads it.
             source_ref = self.target_ref(base)
-            top = self.target_of(base) if source == MAIN else None
+            top = self.target_of(base) if source.startswith(TOP) else None
             base_branch, carried = self.branch_of(base), self.branch_of(carrier)
             for repo in self.known_repos():
                 repo_dir = self.root / repo

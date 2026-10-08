@@ -10,10 +10,16 @@ from typing import Final, Protocol
 from taskmanager.core.enums import NodeKind
 from taskmanager.core.lifecycle import REOPENABLE
 from taskmanager.core.status import EXITS, IN_STEP, Merge, Status
-from taskmanager.engine.chains import MAIN, ON_TARGET, landing_target
+from taskmanager.engine.chains import ON_TARGET, TOP, landing_target, target
 from taskmanager.engine.git import valid_branch
 from taskmanager.engine.snapshot import ORIGIN_MAIN
-from taskmanager.engine.stepgraph import SnapNode, Snapshot, find_cycle, format_cycle
+from taskmanager.engine.stepgraph import (
+    SnapNode,
+    Snapshot,
+    find_cycle,
+    format_cycle,
+    migration_writers,
+)
 
 _SET_ASIDE_OR_FAILED = EXITS | {Status.FAILED}
 # What a `sensitive:` key may name: a fix touching one of these gets one review scoped to its
@@ -150,13 +156,12 @@ def _retarget(
     if old is None:
         return []
     new_target = landing_target(after, n.id)
-    # At the top, a changed `land_on` (or repository) moves the target with the chain unchanged.
-    if new_target == landing_target(before, n.id) and (new_target != MAIN or n.top == old.top):
+    if new_target == landing_target(before, n.id):
         return []
     if not branches.branch_exists(n.id) or branches.base_matches(n.id, new_target, n.top):
         return []
     # A branch cut from a container's branch would carry that container's unreviewed code.
-    where = n.top if new_target == MAIN else new_target
+    where = new_target.removeprefix(TOP)
     refused = f"{n.id}: its branch exists and was not cut from {where}"
     # Only a node already set aside or failed reopens, and landed or replaced work never does.
     if n.status in ON_TARGET:
@@ -254,6 +259,48 @@ def _busy(before: Snapshot, after: Snapshot, n: SnapNode) -> list[Refusal]:
     ]
 
 
+def _crossings(s: Snapshot) -> dict[tuple[str, ...], Refusal]:
+    """Every wait the step graph draws between two targets, which no meeting node can satisfy:
+    a dependency edge, once per node it gates, and a migration chain's link."""
+    targets: dict[str, str] = {}
+
+    def on(node_id: str) -> str:
+        if node_id not in targets:
+            targets[node_id] = target(s, node_id)
+        return targets[node_id]
+
+    def work(node_id: str) -> bool:
+        return node_id in s.nodes and s.nodes[node_id].kind != NodeKind.DECISION
+
+    found: dict[tuple[str, ...], Refusal] = {}
+    for owner, dep in s.edges:
+        if not (work(owner) and work(dep)) or s.status(dep) == Status.SUPERSEDED:
+            continue
+        for d in [owner, *s.descendants(owner)]:
+            key = (owner, dep, on(d), on(dep))
+            if not work(d) or on(d) == on(dep) or key in found:
+                continue
+            who = owner if d == owner else f"{d} under it"
+            found[key] = Refusal(
+                owner,
+                13,
+                f"{owner}: depends on {dep}, which lands on {on(dep)}, but {who} lands on "
+                f"{on(d)}; remove the edge, or land both on one target",
+            )
+    for repo in sorted({n.repo for n in s.nodes.values() if n.writes_migration and n.repo}):
+        writers = sorted(n.id for n in migration_writers(s, repo))
+        for i, a in enumerate(writers):
+            for b in writers[i + 1 :]:
+                if on(a) != on(b):
+                    found[(repo, a, b, on(a), on(b))] = Refusal(
+                        a,
+                        13,
+                        f"{a}: writes {repo}'s migrations on {on(a)} while {b} writes them on "
+                        f"{on(b)}; land one of them first, or land both on one target",
+                    )
+    return found
+
+
 def validate(
     before: Snapshot, after: Snapshot, touched: set[str], branches: BranchFacts
 ) -> list[Refusal]:
@@ -278,6 +325,9 @@ def validate(
         refusals += _retarget(before, after, n, branches)
         refusals += _placement(before, after, n)
         refusals += _busy(before, after, n)
+    # Only the write that draws a wait across targets is refused, never one around it.
+    crossed = _crossings(after)
+    refusals += [crossed[k] for k in sorted(crossed.keys() - _crossings(before).keys())]
     cycle = find_cycle(after)
     if cycle is not None:
         refusals.append(
