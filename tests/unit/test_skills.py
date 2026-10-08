@@ -17,7 +17,7 @@ def _parse_frontmatter(text: str) -> dict[str, str]:
 
 
 def test_bundled_skills_exist() -> None:
-    skill_dir = REPO / "src/taskmanager/skills"
+    skill_dir = REPO / "plugin/skills"
     tm_skill = skill_dir / "taskmanager/SKILL.md"
     dispatcher_skill = skill_dir / "dispatcher/SKILL.md"
 
@@ -45,7 +45,7 @@ def test_bundled_skills_exist() -> None:
 
 def test_taskmanager_skill_sends_the_agent_to_the_guides() -> None:
     """The procedure lives in `tm guide <topic>`; a copy of it in the skill is a second source."""
-    tm_skill = REPO / "src/taskmanager/skills/taskmanager/SKILL.md"
+    tm_skill = REPO / "plugin/skills/taskmanager/SKILL.md"
     assert tm_skill.exists()
     content = tm_skill.read_text(encoding="utf-8")
 
@@ -56,7 +56,7 @@ def test_taskmanager_skill_sends_the_agent_to_the_guides() -> None:
 
 
 def test_dispatcher_skill_runs_waves_through_tm_wave() -> None:
-    content = (REPO / "src/taskmanager/skills/dispatcher/SKILL.md").read_text(encoding="utf-8")
+    content = (REPO / "plugin/skills/dispatcher/SKILL.md").read_text(encoding="utf-8")
     for needle in (
         "tm guide dispatch",
         "tm-wave",

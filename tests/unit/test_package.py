@@ -30,7 +30,7 @@ def test_every_manifest_carries_the_release_version() -> None:
     versions = {
         "pyproject": project["version"],
         "package": taskmanager.__version__,
-        "plugin": read_json(".claude-plugin/plugin.json")["version"],
+        "plugin": read_json("plugin/.claude-plugin/plugin.json")["version"],
         "marketplace": [plugin["version"] for plugin in marketplace],
         "gemini": read_json("gemini-extension.json")["version"],
     }
@@ -78,7 +78,7 @@ def test_every_plugin_manifest_declares_mit() -> None:
     marketplace = read_json(".claude-plugin/marketplace.json")["plugins"]
     assert isinstance(marketplace, list)
     licenses = {
-        "plugin": read_json(".claude-plugin/plugin.json")["license"],
+        "plugin": read_json("plugin/.claude-plugin/plugin.json")["license"],
         "marketplace": [plugin["license"] for plugin in marketplace],
     }
     assert licenses == {"plugin": "MIT", "marketplace": ["MIT"]}

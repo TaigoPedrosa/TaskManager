@@ -47,7 +47,7 @@ tm web
 - Landings as detached jobs: merge, gate against a cached baseline of the target, push, verify
 - Edges, decisions and conditions as the only things a node waits on, with a cycle check on every write
 - `state.db`, `cache.db` and `ledger.db` under `.taskmanager/`, SQLite in WAL mode, with `sqlite-vec` search
-- The `tm-wave` workflow (`workflows/tm-wave.js`): one step per node per tick, on the model family tm names, with a dispatching session looping itself to carry a node the rest of the way
+- The `tm-wave` workflow (`plugin/workflows/tm-wave.js`): one step per node per tick, on the model family tm names, with a dispatching session looping itself to carry a node the rest of the way
 
 ## Lifecycle
 
