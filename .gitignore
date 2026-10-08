@@ -13,3 +13,7 @@ spec-dashboard.html
 coverage.xml
 htmlcov/
 /tailwindcss
+.playwright-cli/
+.playwright-mcp/
+.taskmanager-bkp/
+/*.png
