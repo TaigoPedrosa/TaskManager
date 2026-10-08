@@ -715,7 +715,6 @@ function resolvedHtml(node, data, editable, waiting) {
         ${label('Withdrawn', 'text-zinc-400')}
         ${data.withdrawn_reason ? `<div class="text-sm text-zinc-100">${esc(data.withdrawn_reason)}</div>` : ''}
         ${data.withdrawn_by ? closedByHtml('Withdrawn', data.withdrawn_by, data.withdrawn_at) : ''}
-        ${reopen}
       </div>`;
   }
   return '';

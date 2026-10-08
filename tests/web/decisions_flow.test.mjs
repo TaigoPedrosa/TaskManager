@@ -938,7 +938,9 @@ test('every pointer action is a focusable button or link: rows, options, ids, ×
   page.document.createElement = create;
   assert.equal(picked, 2, 'Enter and Space open the file picker');
 
-  await closeElsewhere(page, server, 'decision-D43', { status: 'WITHDRAWN', withdrawn_by: 'Ana' });
+  await closeElsewhere(page, server, 'decision-D43', {
+    status: 'ANSWERED', answer: { option: 'a', text: '', rationale: '', answered_by: 'Ana', answered_at: at(52) },
+  });
   page.$$('#toast-root button').forEach((b) => reachable(b, 'a toast control'));
   page.$('#toast-root .toast-action').click();
   await page.settle();

@@ -330,6 +330,14 @@ test('an answered decision names who answered it from the API, and a withdrawn o
   assert.match(text(withdrawn), /^Withdrawn by Ana · \S/);
 });
 
+test('an answered decision offers Reopen and a withdrawn one does not', async () => {
+  const page = await openPage(fakeServer(frameDecisions()), { url: '/decisions/decision-D39' });
+  assert.equal(page.$$('#decisions-detail .dec-reopen-btn').length, 1);
+  await showTab(page, 'withdrawn');
+  assert.equal(page.$('#decisions-detail .dec-title').textContent, 'Start plan WEBUX-DECIDE before WEBUX-NODES lands?');
+  assert.equal(page.$$('#decisions-detail .dec-reopen-btn').length, 0);
+});
+
 const EXPLANATIONS = [
   'Select a decision to view it.', 'Write a custom answer instead of picking an option', '(optional)', '(optional, markdown)',
   'Which auth flow?', 'task-id', 'Pick an option or write a custom answer', 'Nothing picked yet — pick an option or write a custom answer',
