@@ -796,6 +796,21 @@ test('every op exports TM_ROOT for the estate instead of naming it in the instru
   }
 })
 
+test('tm-op runs where it starts, as every runner prompt names no directory and exports TM_ROOT', async () => {
+  const runnerDoc = readFileSync(new URL('../../plugin/agents/tm-op.md', import.meta.url), 'utf8')
+  assert.ok(runnerDoc.includes('in the directory you start in'), runnerDoc)
+  assert.ok(runnerDoc.includes('Do not `cd` first: the command exports `TM_ROOT`'), runnerDoc)
+  assert.ok(!runnerDoc.includes('the directory the message names'), runnerDoc)
+  const tm = makeTm({ chosen: [T1], nodes: { T1: node('FAILED', null) } })
+  const { calls } = await runWave({ args: ARGS, tm })
+  const ops = calls.filter(c => c.kind === 'op')
+  assert.ok(ops.length >= 2)
+  for (const c of ops) {
+    assert.match(c.prompt, /^\( export TM_ROOT=\S+; /m)
+    assert.doesNotMatch(c.prompt, /director|\bcd\s/i)
+  }
+})
+
 test('an op against the default root exports TM_ROOT=. rather than omitting it', async () => {
   const tm = makeTm({ chosen: [T1], nodes: { T1: node('FAILED', null) } })
   const { calls } = await runWave({ args: { session: 's1', worktreeDir: '/wt' }, tm })
