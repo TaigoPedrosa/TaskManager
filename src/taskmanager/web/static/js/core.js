@@ -320,8 +320,9 @@ function idLink(id, kind, look = 'inline') {
   return `<a href="${esc(pathFor(view, id))}" class="id-link font-mono ${ID_LOOK[look]}" data-id="${esc(id)}"${isDecision ? ' data-decision' : ''}>${icon}${esc(id)}</a>`;
 }
 
+// A spec's or plan's id does not name its kind; a task's is the default and a decision's id says it.
 function kindBadge(kind) {
-  if (kind !== 'spec' && kind !== 'plan' && kind !== 'decision') return '';
+  if (kind !== 'spec' && kind !== 'plan') return '';
   return `<span class="kind-badge inline-flex items-center flex-shrink-0 px-1.5 py-0.5 rounded-full bg-zinc-800 border border-zinc-700 font-mono font-medium text-[10px] leading-[14px] tracking-[0.04em] text-zinc-300">${esc(kind.toUpperCase())}</span>`;
 }
 

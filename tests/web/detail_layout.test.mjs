@@ -209,6 +209,16 @@ test('the drawer carries the lease, model, repo and priority pills, and a contai
   assert.ok(text(child).includes('0/2'), 'the plan row shows its own progress');
 });
 
+test('a decision in the drawer reads its id with no kind badge, where a plan keeps its badge', async () => {
+  const decision = body({ id: 'decision-D1', kind: 'decision', title: 'Pick one', status: 'OPEN', display: 'OPEN', phase: 'QUEUED', priority: 50 });
+  const page = await openAt('/graph/decision-D1', { fetch: server({ '/api/nodes/decision-D1': async () => jsonResponse(200, decision) }) });
+  assert.equal(page.$('#inspector-id').textContent, 'decision-D1');
+  assert.equal(page.$$('#inspector-line .kind-badge').length, 0);
+
+  const plan = await openAt('/graph/P');
+  assert.equal(plan.$('#inspector-line .kind-badge').textContent, 'PLAN');
+});
+
 test('a dependency names its blocked subset, and a decision reads its own status icon and label', async () => {
   const page = await openAt('/graph/T');
   const rows = page.$$('#inspector-body [data-group="dependencies"] [data-blocking]');
