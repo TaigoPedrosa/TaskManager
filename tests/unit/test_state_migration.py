@@ -382,15 +382,31 @@ def test_migrate_schema_3_estate_rewrites_main_to_spec_and_changes_nothing_else(
     assert _dump(backup) == before_dump
 
 
-# Each node a schema-4 estate holds, by its status and the status its step was claimed from.
-_V4_NODES = {
-    "L": ("LANDED", None, None, None),
-    "C": ("COMPLETED", None, None, None),
-    "RL": ("REVIEWING", "LANDED", None, None),
-    "RF": ("REVIEWING", "FIXED", None, "merge_failed"),
-    "RV": ("REVIEWED", None, "reject", None),
-    "FX": ("FIXED", None, "reject", "reject"),
-    "R": ("READY", None, None, None),
+# Each node a schema-4 estate holds: its kind, status, the status its step was claimed from, its
+# outcome and fix_for, the one job row it has as (kind, state), and the `on_target` schema 5 gives
+# it. A rollup moving a container back keeps its outcome and fix_for, as R and MI hold them.
+_LAND = ("land", "succeeded")
+_V4_NODES: dict[str, tuple[str, str, str | None, str | None, str | None, Any, int]] = {
+    "L": ("plan", "LANDED", None, None, None, None, 1),
+    "C": ("plan", "COMPLETED", None, None, None, None, 1),
+    "RL": ("plan", "REVIEWING", "LANDED", None, None, None, 1),
+    "RV": ("plan", "REVIEWED", None, "reject", None, _LAND, 1),
+    "RA": ("plan", "REVIEWED", None, "approve", "reject", _LAND, 1),
+    "FI": ("plan", "FIXING", "REVIEWED", "reject", "reject", _LAND, 1),
+    "FX": ("plan", "FIXED", None, "reject", "reject", _LAND, 1),
+    "SF": ("spec", "FIXED", None, "reject", "reject", _LAND, 1),
+    "RF": ("plan", "REVIEWING", "FIXED", "reject", "reject", _LAND, 1),
+    "MF": ("plan", "MERGING", "FIXED", "reject", "reject", _LAND, 1),
+    "MR": ("plan", "MERGING", "REVIEWED", "approve", "reject", _LAND, 1),
+    "RV-UNLANDED": ("plan", "REVIEWED", None, "reject", None, None, 0),
+    "FX-UNLANDED": ("plan", "FIXED", None, "reject", "reject", None, 0),
+    "RV-LAND-FAILED": ("plan", "REVIEWED", None, "reject", None, ("land", "own_defect"), 0),
+    "RV-SYNCED": ("plan", "REVIEWED", None, "reject", None, ("sync", "succeeded"), 0),
+    "RM": ("plan", "REVIEWED", None, "merge_failed", "reject", _LAND, 0),
+    "MI": ("plan", "MERGING", "IMPLEMENTED", "reject", "reject", _LAND, 0),
+    "MA": ("plan", "MERGING", "REVIEWED", "approve", "merge_failed", _LAND, 0),
+    "TF": ("task", "FIXED", None, "reject", "reject", _LAND, 0),
+    "R": ("plan", "READY", None, "reject", "reject", _LAND, 0),
 }
 
 
@@ -401,12 +417,18 @@ def _build_v4_estate(taskmanager_dir: Path) -> None:
     try:
         for version in (2, 3, 4):
             conn.executescript(STATE_MIGRATIONS[version])
-        for node_id, (status, claimed_from, outcome, fix_for) in _V4_NODES.items():
+        for node_id, (kind, status, claimed_from, outcome, fix_for, job, _) in _V4_NODES.items():
             conn.execute(
                 "INSERT INTO nodes (id, kind, title, status, claimed_from, outcome, fix_for) "
-                "VALUES (?, 'plan', ?, ?, ?, ?, ?)",
-                (node_id, node_id, status, claimed_from, outcome, fix_for),
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (node_id, kind, node_id, status, claimed_from, outcome, fix_for),
             )
+            if job is not None:
+                conn.execute(
+                    "INSERT INTO jobs (id, kind, node_id, repo, target, state, heartbeat) "
+                    "VALUES (?, ?, ?, 'api', 'main', ?, '2026-01-01 00:00:00')",
+                    (f"job-{node_id}", job[0], node_id, job[1]),
+                )
         conn.execute("PRAGMA user_version = 4")
         conn.commit()
     finally:
@@ -425,7 +447,7 @@ def test_migrate_schema_4_estate_puts_on_target_only_what_has_surely_landed(
         on_target = dict(conn.execute("SELECT id, on_target FROM nodes").fetchall())
     db.close()
 
-    assert on_target == {"L": 1, "C": 1, "RL": 1, "RF": 0, "RV": 0, "FX": 0, "R": 0}
+    assert on_target == {node_id: row[-1] for node_id, row in _V4_NODES.items()}
 
 
 def test_open_current_schema_estate_leaves_the_file_bytes_untouched(tmp_path: Path) -> None:

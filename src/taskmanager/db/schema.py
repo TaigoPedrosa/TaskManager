@@ -293,9 +293,13 @@ def _rebuild_nodes(body: str, select: str) -> str:
 
 # Schema 3 takes the current `Status` with the merge column it stored then, `parent` or `main`.
 # Schema 4 takes the current merge column, so every row schema 3 held on `main` reads `spec`.
-# Schema 5 adds `on_target`. The column is set for a node landed or completed, or one whose
-# review was claimed from LANDED; every other review or fix status can come before a landing as
-# well as after one, so it starts unset and the node's next landing sets it.
+# Schema 5 adds `on_target`, set for a node landed or completed, or one whose review was claimed
+# from LANDED. A container's review is claimed only from LANDED or FIXED and a rejected review of
+# a fix fails it, so a plan or spec whose review rejected, or whose fix answers that rejection, is
+# past its landing; a succeeded `land` job tells it from one a reset put there. A rollup moving
+# a container back keeps its outcome and fix_for, so a merge_failed outcome or a merge claimed
+# from IMPLEMENTED can come before a landing as well as after one: those start unset, and the
+# node's next landing sets it.
 _NODES_BODY_SQL_V4 = _NODES_BODY_SQL.replace(f" {_ON_TARGET_COLUMN},", "")
 _NODES_BODY_SQL_V3 = _NODES_BODY_SQL_V4.replace(
     "DEFAULT 'spec' CHECK (merge IN ('parent', 'spec'))",
@@ -310,7 +314,13 @@ STATE_MIGRATIONS: dict[int, str] = {
     ),
     5: f"ALTER TABLE nodes ADD COLUMN {_ON_TARGET_COLUMN};\n"
     + "UPDATE nodes SET on_target = 1 WHERE status IN ('LANDED', 'COMPLETED') "
-    + "OR (status = 'REVIEWING' AND claimed_from = 'LANDED');\n",
+    + "OR (status = 'REVIEWING' AND claimed_from = 'LANDED') "
+    + "OR (kind IN ('plan', 'spec') "
+    + "AND status IN ('REVIEWING', 'REVIEWED', 'FIXING', 'FIXED', 'MERGING') "
+    + "AND 'reject' IN (outcome, fix_for) AND outcome IS NOT 'merge_failed' "
+    + "AND claimed_from IS NOT 'IMPLEMENTED' "
+    + "AND EXISTS (SELECT 1 FROM jobs WHERE jobs.node_id = nodes.id "
+    + "AND jobs.kind = 'land' AND jobs.state = 'succeeded'));\n",
 }
 
 # Derived results only: dropping this database loses time, never state.
