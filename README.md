@@ -147,7 +147,7 @@ assets, the `/ws` subscribe protocol, and a handful of paginated HTTP reads.
 ```bash
 uv sync
 uv run pytest
-node --test tests/
+node --test 'tests/**/*.test.mjs'
 ```
 
 ### Rebuilding the web stylesheet
@@ -169,12 +169,12 @@ Swap `tailwindcss-macos-arm64` for `tailwindcss-linux-x64`, `tailwindcss-linux-a
 `tailwindcss-macos-x64` or a Windows build to match your platform.
 
 `tests/web/stylesheet.test.mjs` rebuilds the sheet and fails when it differs from the committed
-one. Without the CLI it fails too, never skips, so `node --test tests/` needs it. The test looks
-at `TAILWINDCSS_BIN`, then `./tailwindcss` at the repository root, then `PATH`. To keep the
-binary elsewhere, point the variable at it:
+one. Without the CLI it fails too, never skips, so `node --test 'tests/**/*.test.mjs'` needs it.
+The test looks at `TAILWINDCSS_BIN`, then `./tailwindcss` at the repository root, then `PATH`.
+To keep the binary elsewhere, point the variable at it:
 
 ```bash
-TAILWINDCSS_BIN="$HOME/.local/share/tm-tools/tailwindcss" node --test tests/
+TAILWINDCSS_BIN="$HOME/.local/share/tm-tools/tailwindcss" node --test 'tests/**/*.test.mjs'
 ```
 
 Run the build from the repository root: the `content` globs resolve against the working
