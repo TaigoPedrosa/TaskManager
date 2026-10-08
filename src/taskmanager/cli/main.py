@@ -1,3 +1,4 @@
+import dataclasses
 import ipaddress
 import json
 import logging
@@ -55,6 +56,7 @@ from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.db.schema import STATE_SCHEMA_VERSION
 from taskmanager.di.container import TaskManagerProvider
+from taskmanager.engine import doctor
 from taskmanager.engine.chains import landing_chain
 from taskmanager.engine.claims import Blocker, Claims, DecisionSpec
 from taskmanager.engine.config import ConfigError, ConfigStore
@@ -276,15 +278,20 @@ def _get_root(path: Path | None, *, must_exist: bool = True) -> Path:
         cwd = Path.cwd().resolve()
         found = _find_root(cwd)
         if found is None:
-            res = subprocess.run(
-                ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                cwd=cwd,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if res.returncode == 0 and res.stdout.strip():
-                found = _find_root(Path(res.stdout.strip()).resolve().parent)
+            try:
+                res = subprocess.run(
+                    ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                    cwd=cwd,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                common = res.stdout.strip() if res.returncode == 0 else ""
+            except OSError:
+                # No git on PATH: `tm doctor` still runs to say so.
+                common = ""
+            if common:
+                found = _find_root(Path(common).resolve().parent)
         root = found if found is not None else cwd
     if must_exist and not (root / ".taskmanager").is_dir():
         raise typer.BadParameter(
@@ -387,6 +394,27 @@ def init(
     db.init_all()
     _record_ledger(container, command=LedgerCommand.INIT, target_id=str(root))
     print(f"[green]Initialized .taskmanager in {root}[/green]")
+    sys.stdout.writelines(f"{fact.line()}\n" for fact in _doctor_facts(root))
+
+
+def _doctor_facts(root: Path) -> list[doctor.Fact]:
+    with _user_errors():
+        return doctor.facts(root)
+
+
+@app.command("doctor")
+def doctor_cmd(
+    yaml_output: Annotated[bool, typer.Option("--yaml", help="Output as YAML")] = False,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """What tm needs and what helps it, each missing piece with the command that fixes it;
+    exit 1 only when a required piece is missing."""
+    found = _doctor_facts(_get_root(path, must_exist=False))
+    if yaml_output:
+        _emit([dataclasses.asdict(f) for f in found], as_yaml=True)
+    else:
+        sys.stdout.writelines(f"{fact.line()}\n" for fact in found)
+    raise typer.Exit(code=doctor.exit_code(found))
 
 
 @spec_app.command("add")
