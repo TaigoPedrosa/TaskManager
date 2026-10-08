@@ -1143,3 +1143,16 @@ def test_readme_quickstart_gate_line_is_one_tm_config_set_accepts(tmp_path: Path
     got = runner.invoke(app, ["config", "get", "repos...gates.main.command", "-C", str(tmp_path)])
     assert got.exit_code == 0, got.output
     assert got.stdout.strip() == "true"
+
+
+def test_guide_lists_and_prints_intake(tmp_path: Path, rendered: Callable[[str], str]) -> None:
+    listed = CliRunner().invoke(app, ["guide", "-C", str(tmp_path)])
+    assert listed.exit_code == 0, listed.output
+    assert any(line.startswith("intake: ") for line in listed.stdout.splitlines()), listed.stdout
+    text = rendered("intake")
+    assert text.startswith("# Taking in outside work\n")
+    assert "Never reset or reopen a `COMPLETED` node" in text
+
+
+def test_dispatcher_skill_points_to_the_intake_guide() -> None:
+    assert "`tm guide intake`" in _doc_text("plugin/skills/dispatcher/SKILL.md")

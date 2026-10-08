@@ -24,6 +24,7 @@ tm guide <topic>    # the built-in guidance, then this project's addendum
 |:--|:--|
 | running waves, routing models, holding landings, handling failures | `tm guide dispatch` |
 | authoring new specs, plans and tasks, or amending landed ones | `tm guide plan` |
+| turning a ticket, an outside request or a defect report against landed work into nodes | `tm guide intake` |
 | first contact with `tm`, or a command you have not met | `tm guide overview` |
 
 Run `tm guide dispatch` before the first dispatch of the session. It names the arguments, what each refusal means and which step tm chooses when; a project's own conventions are appended to the same output, so the guide you read is the one that applies here.
