@@ -510,7 +510,7 @@ async def test_an_ancestors_merge_change_refreshes_a_watched_nodes_stale_chains(
     # from a tree walk over the view, not from T's own row, so a stale-body refresh that only
     # patched display and the relations left them stuck at the chain computed before P changed.
     estate.add("S", NodeKind.SPEC)
-    estate.add("P", NodeKind.PLAN, parent="S", merge=Merge.MAIN)
+    estate.add("P", NodeKind.PLAN, parent="S", merge=Merge.SPEC)
     estate.add("T", NodeKind.TASK, parent="P", merge=Merge.PARENT)
 
     hub = estate.hub()

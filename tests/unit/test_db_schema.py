@@ -205,3 +205,18 @@ def test_fresh_estate_accepts_a_landed_node_and_a_review_claimed_from_it(tmp_pat
         conn.commit()
         rows = conn.execute("SELECT id, status, claimed_from FROM nodes ORDER BY id").fetchall()
     assert rows == [("T1", "LANDED", None), ("T2", "REVIEWING", "LANDED")]
+
+
+def test_fresh_estate_defaults_merge_to_spec_and_refuses_main(tmp_path: Path) -> None:
+    db_mgr = DatabaseManager(tmp_path)
+    db_mgr.init_all()
+
+    with db_mgr.get_state_connection() as conn:
+        conn.execute("INSERT INTO nodes (id, kind, title) VALUES ('T1', 'task', 'T')")
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+            conn.execute(
+                "INSERT INTO nodes (id, kind, title, merge) VALUES ('T2', 'task', 'T', 'main')"
+            )
+        conn.commit()
+        rows = conn.execute("SELECT id, merge FROM nodes").fetchall()
+    assert rows == [("T1", "spec")]

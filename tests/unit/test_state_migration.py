@@ -1,4 +1,5 @@
 import hashlib
+import shutil
 import sqlite3
 import sys
 import threading
@@ -71,10 +72,18 @@ def _sqlite_master_rows(db: DatabaseManager) -> list[tuple[str, str, str, str]]:
 def test_migrated_v1_estate_matches_a_fresh_init(tmp_path: Path) -> None:
     old = tmp_path / "old"
     _build_v1_estate(old)
+    conn = sqlite3.connect(old / "state.db")
+    try:
+        conn.execute("INSERT INTO nodes (id, kind, title) VALUES ('T1', 'task', 't')")
+        conn.commit()
+        assert conn.execute("SELECT merge FROM nodes").fetchall() == [("main",)]
+    finally:
+        conn.close()
     migrated = DatabaseManager(old)
     assert migrated.migrate_state() == 1
     with migrated.get_state_connection() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 4
+        assert conn.execute("SELECT merge FROM nodes").fetchall() == [("spec",)]
 
     fresh = DatabaseManager(tmp_path / "fresh")
     fresh.init_all()
@@ -161,6 +170,21 @@ def _raw_rows(state_db: Path) -> dict[str, list[tuple[object, ...]]]:
         conn.close()
 
 
+# `SELECT rowid, * FROM nodes`: rowid, then the twelve columns before `merge`.
+_MERGE_AT = 13
+
+
+def _merge_as_spec(
+    rows: dict[str, list[tuple[object, ...]]],
+) -> dict[str, list[tuple[object, ...]]]:
+    """`rows` as schema 4 stores them: a node's `merge` of `main` reads `spec`."""
+    nodes = [
+        (*r[:_MERGE_AT], "spec" if r[_MERGE_AT] == "main" else r[_MERGE_AT], *r[_MERGE_AT + 1 :])
+        for r in rows["nodes"]
+    ]
+    return {**rows, "nodes": nodes}
+
+
 def _write_landed(state_db: Path, status: str, claimed_from: str | None) -> None:
     conn = sqlite3.connect(state_db)
     try:
@@ -173,23 +197,26 @@ def _write_landed(state_db: Path, status: str, claimed_from: str | None) -> None
         conn.close()
 
 
-def test_migrate_schema_2_estate_keeps_every_row_and_column_unchanged(tmp_path: Path) -> None:
+def test_migrate_schema_2_estate_keeps_every_row_and_column_but_merge_main_unchanged(
+    tmp_path: Path,
+) -> None:
     old = tmp_path / "old"
     _build_v2_estate(old)
     _seed_every_v2_status(old)
     before = _raw_rows(old / "state.db")
     seeded = {row[4] for row in before["nodes"]}
     assert seeded == {s.value for s in Status if s is not Status.LANDED} | set(DecisionStatus)
+    assert {row[_MERGE_AT] for row in before["nodes"]} == {"parent", "main"}
 
     db = DatabaseManager(old)
     assert db.migrate_state() == 2
     with db.get_state_connection() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA legacy_alter_table").fetchone()[0] == 0
     db.close()
 
-    assert _raw_rows(old / "state.db") == before
+    assert _raw_rows(old / "state.db") == _merge_as_spec(before)
     assert all(before.values())
 
 
@@ -212,11 +239,11 @@ def test_migrate_schema_2_estate_on_a_foreign_keys_on_build_keeps_every_child_ro
     db = DatabaseManager(old)
     assert db.migrate_state() == 2
     with db.get_state_connection() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     db.close()
 
-    assert _raw_rows(old / "state.db") == before
+    assert _raw_rows(old / "state.db") == _merge_as_spec(before)
     assert all(before.values())
 
 
@@ -259,7 +286,92 @@ def test_migrate_schema_2_estate_then_write_landed_succeeds(
     assert row == (status, claimed_from)
 
 
-def test_open_schema_3_estate_leaves_the_file_bytes_untouched(tmp_path: Path) -> None:
+def _build_v3_estate(taskmanager_dir: Path) -> None:
+    """A `state.db` at schema 3, as 0.3.7 wrote it: its `merge` CHECK takes `main`, not `spec`,
+    and it holds a task and decisions on `main` beside tasks on `parent`."""
+    _build_v2_estate(taskmanager_dir)
+    _seed_every_v2_status(taskmanager_dir)
+    conn = sqlite3.connect(taskmanager_dir / "state.db")
+    try:
+        conn.executescript(STATE_MIGRATIONS[3])
+        conn.execute("PRAGMA user_version = 3")
+        conn.execute(
+            "INSERT INTO nodes (id, kind, title, status, merge) "
+            "VALUES ('M1', 'task', 'on main', 'LANDED', 'main')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+_MERGE_COLUMN_V3 = "DEFAULT 'main' CHECK (merge IN ('parent', 'main'))"
+_MERGE_COLUMN_V4 = "DEFAULT 'spec' CHECK (merge IN ('parent', 'spec'))"
+
+
+def _dump(state_db: Path) -> list[str]:
+    # Sorted: a rebuild recreates `nodes`'s own trigger, which moves its line in the dump.
+    conn = sqlite3.connect(state_db)
+    try:
+        return sorted(conn.iterdump())
+    finally:
+        conn.close()
+
+
+def _dump_as_schema_4(state_db: Path, scratch: Path) -> list[str]:
+    """`state_db`'s dump with every `main` merge value, and the column's CHECK, read as schema
+    4 holds them; every other line as it is."""
+    shutil.copyfile(state_db, scratch)
+    conn = sqlite3.connect(scratch)
+    try:
+        # Dropped for the rewrite, so it does not bump `rev`, and recreated from its own text.
+        (trigger,) = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'trg_nodes_rev'"
+        ).fetchone()
+        conn.execute("DROP TRIGGER trg_nodes_rev")
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute("UPDATE nodes SET merge = 'spec' WHERE merge = 'main'")
+        conn.execute(trigger)
+        conn.commit()
+    finally:
+        conn.close()
+    return sorted(line.replace(_MERGE_COLUMN_V3, _MERGE_COLUMN_V4) for line in _dump(scratch))
+
+
+def test_migrate_schema_3_estate_rewrites_main_to_spec_and_changes_nothing_else(
+    tmp_path: Path,
+) -> None:
+    old = tmp_path / "old"
+    _build_v3_estate(old)
+    state_db = old / "state.db"
+    before_dump = _dump(state_db)
+    before = _raw_rows(state_db)
+    on_main = sorted(row[1] for row in before["nodes"] if row[_MERGE_AT] == "main")
+    assert {"M1", "D-OPEN"} <= set(on_main)
+    assert any(row[_MERGE_AT] == "parent" for row in before["nodes"])
+    expected = _dump_as_schema_4(state_db, tmp_path / "expected.db")
+    assert expected != before_dump
+
+    db = DatabaseManager(old)
+    assert db.migrate_state() == 3
+    db.close()
+
+    conn = sqlite3.connect(state_db)
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 4
+        merges = dict(conn.execute("SELECT id, merge FROM nodes").fetchall())
+    finally:
+        conn.close()
+    assert set(merges.values()) == {"parent", "spec"}
+    assert {merges[node_id] for node_id in on_main} == {"spec"}
+    assert _dump(state_db) == expected
+    assert _raw_rows(state_db) == _merge_as_spec(before)
+
+    backup = old / "state.db.schema3.bak"
+    assert _user_version(backup) == 3
+    assert _dump(backup) == before_dump
+
+
+def test_open_current_schema_estate_leaves_the_file_bytes_untouched(tmp_path: Path) -> None:
     estate = tmp_path / "estate"
     first = DatabaseManager(estate)
     first.init_all()
@@ -268,7 +380,7 @@ def test_open_schema_3_estate_leaves_the_file_bytes_untouched(tmp_path: Path) ->
 
     again = DatabaseManager(estate)
     with again.get_state_connection() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 4
     again.close()
 
     assert (estate / "state.db").read_bytes() == before
@@ -322,13 +434,16 @@ def test_newer_schema_is_refused_and_nothing_is_written(tmp_path: Path) -> None:
     future = tmp_path / "future"
     _build_v1_estate(future)
     conn = sqlite3.connect(future / "state.db")
-    conn.execute("PRAGMA user_version = 4")
+    conn.execute(f"PRAGMA user_version = {STATE_SCHEMA_VERSION + 1}")
     conn.commit()
     conn.close()
     before = (future / "state.db").read_bytes()
 
     with (
-        pytest.raises(StateSchemaTooNew, match=r"schema 4.*\(3\)"),
+        pytest.raises(
+            StateSchemaTooNew,
+            match=rf"schema {STATE_SCHEMA_VERSION + 1}.*\({STATE_SCHEMA_VERSION}\)",
+        ),
         DatabaseManager(future).get_state_connection(),
     ):
         pass
@@ -353,7 +468,9 @@ def _user_version(state_db: Path) -> int:
     return version
 
 
-@pytest.mark.parametrize(("schema", "build"), [(1, _build_v1_estate), (2, _build_v2_estate)])
+@pytest.mark.parametrize(
+    ("schema", "build"), [(1, _build_v1_estate), (2, _build_v2_estate), (3, _build_v3_estate)]
+)
 def test_open_older_schema_without_migrate_refuses_and_leaves_the_file_untouched(
     tmp_path: Path, schema: int, build: Any
 ) -> None:

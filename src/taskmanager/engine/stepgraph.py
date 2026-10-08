@@ -25,7 +25,7 @@ class SnapNode:
     id: str
     kind: NodeKind
     parent: str | None = None
-    merge: Merge = Merge.MAIN
+    merge: Merge = Merge.SPEC
     status: Status | DecisionStatus = Status.READY
     claimed_from: Status | None = None
     review: bool = True

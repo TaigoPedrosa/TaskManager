@@ -237,7 +237,7 @@ def test_condition_add_and_remove_and_prose_is_refused(tmp_path: Path) -> None:
 
 
 def test_task_update_sets_flags_merge_requires_and_land_order(tmp_path: Path) -> None:
-    # S1-P1-a can't take merge=parent here: S1-P1-b depends on it and stays merge=main, and a
+    # S1-P1-a can't take merge=parent here: S1-P1-b depends on it and stays merge=spec, and a
     # plan is implemented only once every child has landed, so that pair would deadlock the step
     # graph (S1-P1-b.start needs S1-P1.landed, which needs S1-P1-b.landed). An uninvolved sibling
     # exercises the same CLI write with no such cycle.

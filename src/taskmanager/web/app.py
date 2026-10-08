@@ -62,6 +62,8 @@ class SpecCreate(BaseModel):
     fix: bool = False
 
 
+# `merge` is a plain string in every body below, so a refused value reaches `parse_merge` and its
+# message rather than a schema error.
 class PlanCreate(BaseModel):
     title: str
     spec: str
@@ -70,7 +72,7 @@ class PlanCreate(BaseModel):
     order: int = 0
     review: bool | None = None
     fix: bool | None = None
-    merge: Merge | None = None
+    merge: str | None = None
 
 
 class TaskCreate(BaseModel):
@@ -83,7 +85,7 @@ class TaskCreate(BaseModel):
     models: list[str] = Field(default_factory=list)
     review: bool | None = None
     fix: bool | None = None
-    merge: Merge | None = None
+    merge: str | None = None
     requires: list[str] = Field(default_factory=list)
     frontmatter: dict[str, Any] = Field(default_factory=dict)
 
@@ -97,7 +99,7 @@ class NodeUpdate(BaseModel):
     frontmatter_unset: list[str] | None = None
     review: bool | None = None
     fix: bool | None = None
-    merge: Merge | None = None
+    merge: str | None = None
     requires: list[str] | None = None
     land_order: list[str] | None = None
 

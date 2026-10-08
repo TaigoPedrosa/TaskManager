@@ -16,7 +16,6 @@ from taskmanager.core.status import (
     IN_STEP,
     ConditionStage,
     DecisionStatus,
-    Merge,
     Outcome,
     Status,
 )
@@ -26,10 +25,12 @@ from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine.conditions import is_executable
 from taskmanager.engine.operations import (
+    OperationError,
     Operations,
     child_defaults,
     is_owed_key,
     owed_refusal,
+    parse_merge,
     validated_write,
 )
 from taskmanager.engine.snapshot import roll_up_ancestors
@@ -357,13 +358,17 @@ class BulkImporter:
         except ValidationError as exc:
             reasons = "; ".join(str(e["msg"]).removeprefix("Value error, ") for e in exc.errors())
             raise ValueError(f"{REFUSED}{reasons}") from None
+        try:
+            merge = None if (value := pick("merge", None)) is None else parse_merge(value)
+        except OperationError as exc:
+            raise ValueError(f"{REFUSED}node {node_id!r}: {exc}") from None
         node = child_defaults(
             node,
             parent,
             verifications,
             review=flag("review"),
             fix=flag("fix"),
-            merge=_optional(Merge, pick("merge", None)),
+            merge=merge,
         )
         if node.fix and not node.review:
             raise ValueError(

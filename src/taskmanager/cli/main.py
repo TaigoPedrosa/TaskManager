@@ -140,7 +140,9 @@ def _emit(data: Any, as_yaml: bool = False) -> None:
 
 # A restore reads only exports carrying this marker; an export without it came from a
 # pre-lifecycle tm, whose statuses and gated edges this version does not store.
-EXPORT_FORMAT: dict[str, Any] = {"format": "tm-lifecycle", "version": 1}
+EXPORT_FORMAT: dict[str, Any] = {"format": "tm-lifecycle", "version": 2}
+# Version 1 stored `merge: main`; restore reads it as `spec`, the rewrite state migration 4 makes.
+EXPORT_FORMAT_MERGE_MAIN: dict[str, Any] = {"format": "tm-lifecycle", "version": 1}
 
 
 def _task_spec_id(node_repo: NodeRepository, task_id: str) -> str | None:
@@ -451,6 +453,15 @@ def spec_get(
     _print_container("Spec", _get_container(_get_root(path)), spec_id, "Plans")
 
 
+# A plain string, not a choice of the enum, so a refused value reaches `parse_merge` and its
+# message.
+_MERGE_OPTION = typer.Option(
+    "--merge",
+    metavar="|".join(Merge),
+    help="parent lands on the parent's branch; spec lands where its spec lands",
+)
+
+
 @plan_app.command("add")
 def plan_add(
     title: str,
@@ -465,9 +476,7 @@ def plan_add(
     fix: Annotated[
         bool | None, typer.Option("--fix/--no-fix", help="A rejection is fixed on this plan")
     ] = None,
-    merge: Annotated[
-        Merge | None, typer.Option("--merge", help="Land on the parent's branch or on main")
-    ] = None,
+    merge: Annotated[str | None, _MERGE_OPTION] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
@@ -554,9 +563,7 @@ def task_add(
     fix: Annotated[
         bool | None, typer.Option("--fix/--no-fix", help="A rejection is fixed by this task")
     ] = None,
-    merge: Annotated[
-        Merge | None, typer.Option("--merge", help="Land on the parent's branch or on main")
-    ] = None,
+    merge: Annotated[str | None, _MERGE_OPTION] = None,
     requires: Annotated[
         str | None, typer.Option("--requires", help="Comma-separated agent capabilities")
     ] = None,
@@ -726,9 +733,7 @@ def task_update(
     fix: Annotated[
         bool | None, typer.Option("--fix/--no-fix", help="A rejection is fixed by this node")
     ] = None,
-    merge: Annotated[
-        Merge | None, typer.Option("--merge", help="Land on the parent's branch or on main")
-    ] = None,
+    merge: Annotated[str | None, _MERGE_OPTION] = None,
     requires: Annotated[
         str | None,
         typer.Option("--requires", help="Comma-separated agent capabilities; '' clears them"),
@@ -2155,7 +2160,8 @@ def restore_cmd(
 
     root = _get_root(path, must_exist=False)
     marker = directory / "_format.json"
-    if not marker.is_file() or json.loads(marker.read_text(encoding="utf-8")) != EXPORT_FORMAT:
+    export_format = json.loads(marker.read_text(encoding="utf-8")) if marker.is_file() else None
+    if export_format not in (EXPORT_FORMAT, EXPORT_FORMAT_MERGE_MAIN):
         print(
             f"[red]{escape(str(directory))} is a pre-lifecycle export: tm v0.2.0 is the last "
             "release that restores it. Re-import the ongoing work into this version with "
@@ -2187,12 +2193,6 @@ def restore_cmd(
     if not docs and decisions_doc is None:
         print(f"[red]No export files in {directory}[/red]")
         raise typer.Exit(code=1)
-    # Documents depend on each other, so the first pass keeps only the edges a document can
-    # satisfy by itself and the second adds the rest; decisions go in between so a task's
-    # depends_on edge onto one resolves in the second pass, then specs go last so their full
-    # data wins over the stub a plan's document carries.
-    plan_docs = [d for d in docs if d.get("plans")]
-    spec_docs = [d for d in docs if not d.get("plans")]
 
     def nodes_of(doc: dict[str, Any]) -> list[dict[str, Any]]:
         plans = doc.get("plans", [])
@@ -2201,6 +2201,18 @@ def restore_cmd(
             *(n for p in plans for n in [p, *p.get("tasks", [])]),
             *doc.get("tasks", []),
         ]
+
+    if export_format == EXPORT_FORMAT_MERGE_MAIN:
+        decisions = decisions_doc["decisions"] if decisions_doc else []
+        for node in [*(n for d in docs for n in nodes_of(d)), *decisions]:
+            if node.get("merge") == "main":
+                node["merge"] = Merge.SPEC.value
+    # Documents depend on each other, so the first pass keeps only the edges a document can
+    # satisfy by itself and the second adds the rest; decisions go in between so a task's
+    # depends_on edge onto one resolves in the second pass, then specs go last so their full
+    # data wins over the stub a plan's document carries.
+    plan_docs = [d for d in docs if d.get("plans")]
+    spec_docs = [d for d in docs if not d.get("plans")]
 
     for doc in [*plan_docs, *spec_docs]:
         first = copy.deepcopy(doc)

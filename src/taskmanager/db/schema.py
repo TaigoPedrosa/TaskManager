@@ -5,7 +5,7 @@ SCHEMA_VERSION = 1
 
 # state.db: bumped and migrated separately, since it changes far more often than the ledger
 # or the cache.
-STATE_SCHEMA_VERSION = 3
+STATE_SCHEMA_VERSION = 4
 
 # Built from the enums so the vocabulary SQLite enforces and the one the code writes cannot drift.
 _CYCLE_STATUSES = ", ".join(f"'{s.value}'" for s in Status)
@@ -31,7 +31,7 @@ _NODES_BODY_SQL = (
     ),
     review INTEGER NOT NULL DEFAULT 1 CHECK (review IN (0, 1)),
     fix INTEGER NOT NULL DEFAULT 1 CHECK (fix IN (0, 1)),
-    merge TEXT NOT NULL DEFAULT 'main' CHECK (merge IN ('parent', 'main')),
+    merge TEXT NOT NULL DEFAULT 'spec' CHECK (merge IN ('parent', 'spec')),
     outcome TEXT CHECK (outcome IN ('approve', 'reject', 'merge_failed')),
     verdict TEXT,
     fix_for TEXT CHECK (fix_for IN ('approve', 'reject', 'merge_failed')),
@@ -260,26 +260,44 @@ END;
 
 # Applied in order to an estate below STATE_SCHEMA_VERSION, each key the version it produces.
 #
-# Schema 3 rebuilds `nodes` so its status CHECK takes the current `Status`. `rowid` is copied
-# because `nodes_fts` rows are keyed by it. `legacy_alter_table` stops the rename from
-# re-parsing the other tables' triggers, which name `nodes` while it is briefly gone. Dropping
-# `nodes` drops its own trigger, which the trigger script then recreates. The connection runs
-# this with foreign keys off: under them the drop would cascade into every child table.
+# Schemas 3 and 4 rebuild `nodes`, the way SQLite changes a CHECK. `rowid` is copied because
+# `nodes_fts` rows are keyed by it. `legacy_alter_table` stops the rename from re-parsing the
+# other tables' triggers, which name `nodes` while it is briefly gone. Dropping `nodes` drops
+# its own trigger, which the trigger script then recreates. The connection runs this with
+# foreign keys off: under them the drop would cascade into every child table.
 _NODE_COLUMNS_V2 = (
     "rowid, id, kind, title, status, priority, ordinal, target_repo, acceptable_models, "
     "frontmatter_json, claimed_from, review, fix, merge, outcome, verdict, fix_for, "
     "review_cycles, merge_attempts, step_failures, branch, requires, land_order, created_at, "
     "updated_at, rev"
 )
+
+
+def _rebuild_nodes(body: str, select: str) -> str:
+    return (
+        "PRAGMA legacy_alter_table = ON;\n"
+        + f"CREATE TABLE nodes_new ({body};\n"
+        + f"INSERT INTO nodes_new ({_NODE_COLUMNS_V2}) SELECT {select} FROM nodes;\n"
+        + "DROP TABLE nodes;\n"
+        + "ALTER TABLE nodes_new RENAME TO nodes;\n"
+        + "PRAGMA legacy_alter_table = OFF;\n"
+        + NODE_REV_TRIGGERS_SQL
+    )
+
+
+# Schema 3 takes the current `Status` with the merge column it stored then, `parent` or `main`.
+# Schema 4 takes the current one, so every row schema 3 held on `main` reads `spec`.
+_NODES_BODY_SQL_V3 = _NODES_BODY_SQL.replace(
+    "DEFAULT 'spec' CHECK (merge IN ('parent', 'spec'))",
+    "DEFAULT 'main' CHECK (merge IN ('parent', 'main'))",
+)
 STATE_MIGRATIONS: dict[int, str] = {
     2: "ALTER TABLE nodes ADD COLUMN rev INTEGER NOT NULL DEFAULT 0;\n" + NODE_REV_TRIGGERS_SQL,
-    3: "PRAGMA legacy_alter_table = ON;\n"
-    + f"CREATE TABLE nodes_new ({_NODES_BODY_SQL};\n"
-    + f"INSERT INTO nodes_new ({_NODE_COLUMNS_V2}) SELECT {_NODE_COLUMNS_V2} FROM nodes;\n"
-    + "DROP TABLE nodes;\n"
-    + "ALTER TABLE nodes_new RENAME TO nodes;\n"
-    + "PRAGMA legacy_alter_table = OFF;\n"
-    + NODE_REV_TRIGGERS_SQL,
+    3: _rebuild_nodes(_NODES_BODY_SQL_V3, _NODE_COLUMNS_V2),
+    4: _rebuild_nodes(
+        _NODES_BODY_SQL,
+        _NODE_COLUMNS_V2.replace(", merge, ", ", IIF(merge = 'parent', 'parent', 'spec'), "),
+    ),
 }
 
 # Derived results only: dropping this database loses time, never state.

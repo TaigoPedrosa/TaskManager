@@ -57,9 +57,9 @@ Frontmatter keys the estate reads:
 
 ## 4. Where a node lands: `review`, `fix`, `merge`
 
-- `merge: main` (the default, except under a reviewed plan or spec) cuts the node's branch from `origin/main` and lands it on `main`.
+- `merge: spec` (the default, except under a reviewed plan or spec) cuts the node's branch from `origin/main` and lands it where its spec lands, `main`. A spec's own `merge` is `spec`, and `main` is a branch, never a `merge` value.
 - `merge: parent` cuts it from the branch of the plan or spec above it, `tm/<parent-id>`, and lands it there. It reaches `main` only when that parent lands. A spec cannot land on a parent.
-- `review` puts a review after implement, or for a plan or spec, after its landing; `fix` makes this node fix its own rejections, and needs `review`. A task has both on unless the document says otherwise, and a plan or spec has both off. Children under a reviewed plan or spec take `review: false` and `fix: false` by default, and `merge: parent`, because its one review covers what lands on its branch; a sensitive child (§2) keeps `review` and `fix` on, and an explicit flag still wins. A child there with `review` off and `merge: main` is refused: its code would reach `main` unreviewed.
+- `review` puts a review after implement, or for a plan or spec, after its landing; `fix` makes this node fix its own rejections, and needs `review`. A task has both on unless the document says otherwise, and a plan or spec has both off. Children under a reviewed plan or spec take `review: false` and `fix: false` by default, and `merge: parent`, because its one review covers what lands on its branch; a sensitive child (§2) keeps `review` and `fix` on, and an explicit flag still wins. A child there with `review` off and `merge: spec` is refused: its code would reach `main` unreviewed.
 
 Two shapes cover most work:
 
@@ -169,7 +169,7 @@ A change to `merge` once the node's branch exists is refused unless that branch 
 ```
 tm task defer <id> --note "<why>"
 tm task reopen <id> --note "<why>" --new-branch
-tm task update <id> --merge main
+tm task update <id> --merge spec
 ```
 
 ## Worked example

@@ -163,7 +163,7 @@ def test_a_merge_change_that_keeps_the_target_is_not_a_retarget() -> None:
     assert rules(before, after, {"T"}, branches) == [("T", 3)]
 
 
-@pytest.mark.parametrize(("merge", "refused"), [(PARENT, True), (Merge.MAIN, False)])
+@pytest.mark.parametrize(("merge", "refused"), [(PARENT, True), (Merge.SPEC, False)])
 def test_a_literal_origin_main_verification_is_refused_on_a_parent_landing(
     merge: Merge, refused: bool
 ) -> None:

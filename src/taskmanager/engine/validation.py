@@ -71,7 +71,12 @@ def _flags(after: Snapshot, n: SnapNode) -> list[Refusal]:
         )
     if n.merge == Merge.PARENT and (n.kind == NodeKind.SPEC or n.parent is None):
         refusals.append(
-            Refusal(n.id, 3, f"{n.id}: a spec or a parentless node lands on main; set merge=main")
+            Refusal(
+                n.id,
+                3,
+                f"{n.id}: a spec or a parentless node has no parent branch to land on; "
+                "set merge=spec",
+            )
         )
     unknown = [area for area in n.sensitive if area not in SENSITIVE_AREAS]
     if unknown:
@@ -97,7 +102,7 @@ def _flags(after: Snapshot, n: SnapNode) -> list[Refusal]:
 
 def _unreviewed_on_main(before: Snapshot, after: Snapshot, n: SnapNode) -> list[Refusal]:
     parent = after.nodes.get(n.parent) if n.parent is not None else None
-    if parent is None or not parent.review or n.review or n.merge != Merge.MAIN:
+    if parent is None or not parent.review or n.review or n.merge != Merge.SPEC:
         return []
     # Only the write that makes this shape is refused: a node already in it, left as it is,
     # never blocks a write around it.
@@ -114,9 +119,9 @@ def _unreviewed_on_main(before: Snapshot, after: Snapshot, n: SnapNode) -> list[
         Refusal(
             n.id,
             10,
-            f"{n.id}: lands on main with review off, so its code would reach main unreviewed: "
-            f"{parent.id}'s review reads only what lands on its branch; set merge=parent, or "
-            "turn review on",
+            f"{n.id}: lands where its spec lands with review off, so its code would land there "
+            f"unreviewed: {parent.id}'s review reads only what lands on its branch; set "
+            "merge=parent, or turn review on",
         )
     ]
 

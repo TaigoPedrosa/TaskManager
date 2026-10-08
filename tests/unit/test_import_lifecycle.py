@@ -73,9 +73,9 @@ REFUSED = [
     pytest.param(doc({"id": "S-P-a", "title": "a", "fix": False}), None, id="unfixed-on-main"),
     pytest.param({"spec": {"id": "S", "title": "S", "merge": "parent"}}, None, id="spec-on-parent"),
     pytest.param(
-        doc({"id": "S-P-a", "title": "a", "merge": "main"}, plan={"review": True, "fix": True}),
-        "S-P-a: lands on main with review off, so its code would reach main unreviewed: S-P's "
-        "review reads only what lands on its branch",
+        doc({"id": "S-P-a", "title": "a", "merge": "spec"}, plan={"review": True, "fix": True}),
+        "S-P-a: lands where its spec lands with review off, so its code would land there "
+        "unreviewed: S-P's review reads only what lands on its branch",
         id="unreviewed-on-main-under-a-reviewed-plan",
     ),
     pytest.param(
@@ -372,7 +372,7 @@ def test_an_imported_fix_is_reviewed_before_it_lands_only_when_the_node_is_sensi
             (True, True, Merge.PARENT),
         ),
         ({"frontmatter": {"sensitive": "rls"}, "fix": False}, (True, False, Merge.PARENT)),
-        ({"review": True, "fix": True, "merge": "main"}, (True, True, Merge.MAIN)),
+        ({"review": True, "fix": True, "merge": "spec"}, (True, True, Merge.SPEC)),
     ],
     ids=[
         "plain",
@@ -380,7 +380,7 @@ def test_an_imported_fix_is_reviewed_before_it_lands_only_when_the_node_is_sensi
         "declared-migration",
         "verified-migration",
         "explicit-fix-wins",
-        "explicit-main-with-review",
+        "explicit-spec-with-review",
     ],
 )
 def test_a_child_imported_under_a_reviewed_plan_lands_on_its_branch_and_reviews_only_if_sensitive(
@@ -413,12 +413,12 @@ def test_reimporting_a_child_already_landing_on_main_unreviewed_leaves_it_as_it_
     importer.import_dict(doc({"id": "S-P-a", "title": "a"}, plan={"review": True, "fix": True}))
     stored = repo.get_node("S-P-a")
     assert stored is not None
-    repo.save_node(stored.model_copy(update={"merge": Merge.MAIN}))
+    repo.save_node(stored.model_copy(update={"merge": Merge.SPEC}))
 
     importer.import_dict(doc({"id": "S-P-a", "title": "renamed"}))
 
     node = repo.get_node("S-P-a")
-    assert node is not None and (node.title, node.merge) == ("renamed", Merge.MAIN)
+    assert node is not None and (node.title, node.merge) == ("renamed", Merge.SPEC)
 
 
 def restore(tmp_path: Path, task: dict[str, Any]) -> tuple[int, str, Path]:
