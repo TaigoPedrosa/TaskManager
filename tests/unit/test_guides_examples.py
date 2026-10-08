@@ -102,6 +102,20 @@ def test_the_example_imports_the_documented_flags(tmp_path: Path) -> None:
     assert flags("NOTIFY-EMAIL-API") == (False, False, "parent")
 
 
+def test_every_example_node_lands_on_the_spec_s_land_on(tmp_path: Path) -> None:
+    land_on = yaml.safe_load(_example_document())["spec"]["frontmatter"]["land_on"]
+    guide = files("taskmanager").joinpath("guides/plan.md").read_text(encoding="utf-8")
+    assert f"the plan lands on the spec's `land_on`, `{land_on}`," in guide
+    root = _imported_root(tmp_path)
+
+    lands_on = {
+        node_id: _yaml("task", "get", node_id, "--yaml", "-C", str(root))["lands_on"]
+        for node_id in ("NOTIFY", "NOTIFY-EMAIL", *sorted(EXPECTED_TASKS))
+    }
+
+    assert lands_on == dict.fromkeys(lands_on, land_on)
+
+
 def test_discovery_offers_the_tasks_the_guide_says_it_offers_first(tmp_path: Path) -> None:
     root = _imported_root(tmp_path)
 
@@ -177,8 +191,8 @@ def test_every_example_test_command_runs_the_ref_it_is_given_in_its_target_repo(
     tmp_path: Path,
 ) -> None:
     """A landing runs these from the tm root with the target in TM_VERIFY_REF; one that runs the
-    root's own files, or the repository's working tree, reads neither the target nor the ref. A
-    plain `tm verify run` sets no ref, and then the command reads origin/main."""
+    root's own files, or the repository's working tree, reads neither the target nor the ref. Run
+    outside tm, with no ref exported, the command reads origin/main."""
     commands = _example_test_commands()
     assert len(commands) == 3
     repo = tmp_path / "backend"
