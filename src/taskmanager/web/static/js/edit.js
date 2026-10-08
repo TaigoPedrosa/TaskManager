@@ -34,10 +34,12 @@ function fieldRow(labelText, innerHtml) {
 // default its title) brings the draft back. onSubmit(panel, close, write) sends its writes
 // through `write(method, path, body)`, which is submitWrite on the submit button; a throw
 // (a missing field) shows its message in the form and as a toast, and the form stays open.
+// Either refusal puts focus on the `refusedFocus` field, else on the submit button, which
+// disabling it during the write took focus from.
 
 const dialogDrafts = new Map();
 
-function formDialog({ title, bodyHtml, onMount, onSubmit, submitLabel = 'Save', cancelLabel = 'Cancel', destructive = false, key = title }) {
+function formDialog({ title, bodyHtml, onMount, onSubmit, submitLabel = 'Save', cancelLabel = 'Cancel', destructive = false, key = title, refusedFocus = null }) {
   const opener = document.activeElement;
   let draft = dialogDrafts.get(key);
   if (!draft) {
@@ -63,7 +65,8 @@ function formDialog({ title, bodyHtml, onMount, onSubmit, submitLabel = 'Save', 
     const panel = overlay.querySelector('[role="dialog"]');
     const errorEl = panel.querySelector('.dlg-error');
     const submitBtn = panel.querySelector('.dlg-submit');
-    const write = (method, path, body) => submitWrite(submitBtn, { method, path, body });
+    const refocus = () => ((refusedFocus && panel.querySelector(refusedFocus)) || submitBtn).focus();
+    const write = (method, path, body) => submitWrite(submitBtn, { method, path, body }, refocus);
     const done = () => {
       dialogDrafts.delete(key);
       draft.close();
@@ -81,6 +84,8 @@ function formDialog({ title, bodyHtml, onMount, onSubmit, submitLabel = 'Save', 
         errorEl.textContent = message;
         errorEl.classList.remove('hidden');
         toast(message, { tone: 'error' });
+        submitBtn.disabled = false;
+        refocus();
       } finally {
         submitBtn.disabled = false;
       }
@@ -459,6 +464,7 @@ async function openFlagsDialog(node) {
   formDialog({
     title: `Flags of ${node.id}`,
     submitLabel: 'Save',
+    refusedFocus: isSpec ? '.fl-land-on' : '.fl-merge',
     bodyHtml: `
       ${checkboxRow('fl-review', node.review, 'Review')}
       ${checkboxRow('fl-fix', node.fix, 'Fix')}

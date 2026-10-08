@@ -272,7 +272,8 @@ class Element extends Node {
 
   scrollIntoView() {}
 
-  focus() { this.ownerDocument.activeElement = this; }
+  // A disabled control takes no focus, as in a browser.
+  focus() { if (!this.disabled) this.ownerDocument.activeElement = this; }
 
   blur() { if (this.ownerDocument.activeElement === this) this.ownerDocument.activeElement = this.ownerDocument.body; }
 
