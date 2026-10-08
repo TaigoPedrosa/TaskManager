@@ -1,6 +1,7 @@
 import re
 from dataclasses import replace
 from datetime import UTC, datetime
+from functools import partial
 from typing import TYPE_CHECKING, Final, Literal
 
 from taskmanager.core.display import Facts, display_status, phase
@@ -135,7 +136,8 @@ def roll_up_ancestors(
     with `include_self`), in the caller's transaction, and return every container that moved
     with its new status. The only rollup: a container reaching IMPLEMENTED with nothing left to
     land is landed already, one reaching DEFERRED or ABANDONED strands its dependents, and each
-    move is ledgered."""
+    move is ledgered. Every write that moves a node ends here, so this is also where a node left
+    COMPLETED, `node_id` included, loses its worktrees once the write commits."""
     # decisions imports this module, so importing it back at load time would be circular.
     from taskmanager.engine.decisions import open_stranded_decision, stranded_dependents
 
@@ -174,6 +176,13 @@ def roll_up_ancestors(
             ):
                 open_stranded_decision(ops, parent.id, derived, dependents)
         parents = node_repo.get_parent_ids(parent.id)
+    own = node_repo.get_node(node_id)
+    completed = [i for i, s in moved if s == Status.COMPLETED]
+    if own is not None and stored_status(own) == Status.COMPLETED:
+        completed.append(node_id)
+    # Removing a worktree cannot be rolled back, so it waits for the write to commit.
+    for done in dict.fromkeys(completed):
+        node_repo.db.after_commit(partial(ops.drop_worktrees, done))
     return moved
 
 

@@ -784,8 +784,6 @@ class Claims:
         self._ledger(
             command, node.id, {"event": event.value, "from": node.status, "to": nxt.status}
         )
-        if nxt.status == Status.COMPLETED:
-            self._drop_worktrees(node.id)
         return nxt.status
 
     def _write_blocker(self, node_id: str, blocker: Blocker) -> None:
@@ -912,24 +910,7 @@ class Claims:
                 self._strand(node.id, nxt.status)
             roll_up_ancestors(self.ops, node.id)
         self._ledger(command, node.id, {"from": node.status, "to": nxt.status})
-        if nxt.status == Status.COMPLETED:
-            self._drop_worktrees(node.id)
         return nxt.status
-
-    def _drop_worktrees(self, node_id: str) -> None:
-        """A completed node's code is on its target, so the worktrees its steps worked in go.
-        Its branch stays: a later sync reads it as the carrier of that code. A worktree git
-        refuses to remove, one holding uncommitted work, stays and is logged."""
-        branch = self.branch_of(node_id)
-        for repo in self.repos_of(node_id):
-            manager = GitManager(self.root / repo)
-            try:
-                worktree = manager.find_worktree(branch)
-                if worktree is not None:
-                    manager.remove_worktree(worktree)
-            except (CalledProcessError, OSError) as exc:
-                detail = getattr(exc, "stderr", None) or exc
-                _log.warning("kept the worktree of %s in %s: %s", node_id, repo, detail)
 
     def _prove_landed(self, node_id: str) -> None:
         branch = self.branch_of(node_id)
