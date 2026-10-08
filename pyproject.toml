@@ -1,6 +1,6 @@
 [project]
 name = "taskmanager"
-version = "0.3.5"
+version = "0.3.6"
 description = "Local agentic task tracker system powered by SQLite and DAG heuristics"
 authors = [{ name = "Taigo Pedrosa" }]
 readme = "README.md"
