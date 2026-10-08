@@ -45,8 +45,10 @@ function formDialog({ title, bodyHtml, onMount, onSubmit, submitLabel = 'Save', 
   if (!draft) {
     const overlay = document.createElement('div');
     overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4';
+    // Centred, the panel ends 8px above the tallest toast (16px off the bottom, 66px for three
+    // lines), so a refusal never covers Cancel or Save.
     overlay.innerHTML = `
-      <div role="dialog" aria-modal="true" aria-labelledby="dlg-title" class="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl p-4 space-y-4 max-h-[85vh] overflow-y-auto">
+      <div role="dialog" aria-modal="true" aria-labelledby="dlg-title" class="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl p-4 space-y-4 max-h-[calc(100vh-180px)] overflow-y-auto">
         <div class="flex items-center justify-between gap-2">
           <h2 id="dlg-title" class="text-sm font-semibold text-zinc-100">${esc(title)}</h2>
           <button type="button" class="dlg-close p-1 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-800 ${FOCUS_RING}" aria-label="Close">${renderIcon('x', 'w-4 h-4')}</button>
@@ -83,7 +85,7 @@ function formDialog({ title, bodyHtml, onMount, onSubmit, submitLabel = 'Save', 
         const message = err && err.message ? err.message : 'Request failed.';
         errorEl.textContent = message;
         errorEl.classList.remove('hidden');
-        toast(message, { tone: 'error' });
+        toast(message, { tone: 'error', owner: submitBtn });
         submitBtn.disabled = false;
         refocus();
       } finally {

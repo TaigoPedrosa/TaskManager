@@ -384,8 +384,8 @@ document.addEventListener('click', (e) => {
 });
 
 // The one tooltip: hover and keyboard focus open it on any [data-tip] (its text is the
-// element's aria-label), leaving, blur and Escape close it. The native title is held aside
-// while it shows, so the two never stack.
+// element's aria-label, else its own text), leaving, blur and Escape close it. The native title
+// is held aside while it shows, so the two never stack.
 const tipEl = document.createElement('div');
 tipEl.id = 'tm-tooltip';
 tipEl.setAttribute('role', 'tooltip');
@@ -406,9 +406,10 @@ function showTip(anchor, html, interactive = false) {
   tipEl.classList.toggle('pointer-events-none', !interactive);
   tipEl.classList.remove('hidden');
   const r = anchor.getBoundingClientRect();
-  const w = tipEl.getBoundingClientRect().width;
+  const { width: w, height: h } = tipEl.getBoundingClientRect();
   tipEl.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - w - 8))}px`;
-  tipEl.style.top = `${r.bottom + 6}px`;
+  // An anchor near the bottom edge (a toast) gets its tooltip above it.
+  tipEl.style.top = `${r.bottom + 6 + h > window.innerHeight ? r.top - h - 6 : r.bottom + 6}px`;
 }
 
 function hideTip() {
@@ -426,9 +427,13 @@ function tipTarget(e) {
   return e.target && e.target.closest ? e.target.closest('[data-tip]') : null;
 }
 
+function tipHtml(anchor) {
+  return esc(anchor.getAttribute('aria-label') ?? anchor.textContent);
+}
+
 document.addEventListener('mouseover', (e) => {
   const a = tipTarget(e);
-  if (a && a !== tipAnchor) showTip(a, esc(a.getAttribute('aria-label')));
+  if (a && a !== tipAnchor) showTip(a, tipHtml(a));
 });
 document.addEventListener('mouseout', (e) => {
   const a = tipTarget(e);
@@ -441,7 +446,7 @@ document.addEventListener('keydown', () => { focusFromKeyboard = true; }, true);
 document.addEventListener('pointerdown', () => { focusFromKeyboard = false; }, true);
 document.addEventListener('focusin', (e) => {
   const a = tipTarget(e);
-  if (a && focusFromKeyboard) showTip(a, esc(a.getAttribute('aria-label')));
+  if (a && focusFromKeyboard) showTip(a, tipHtml(a));
 });
 document.addEventListener('focusout', (e) => {
   if (tipAnchor && tipTarget(e) === tipAnchor) hideTip();
@@ -606,22 +611,32 @@ const TOAST_TONE = {
 const TOAST_ICON = { success: 'check-circle-2', error: 'octagon-x' };
 const TOAST_MS = 6000;
 let toastTimer = null;
+let toastOwner = null;
 
 // One toast at a time, announced by #toast-root's polite live region and never focused. An
 // error stays until its Retry, its close button or Escape; any other tone also leaves after 6 s.
 // `action` ({ label, run }) is its one control besides close; `retry` is the Retry action.
+// `owner` is the control whose write raised it: a dialog holding that control takes the toast
+// into its Tab cycle, and focus inside the toast goes back to it when the toast leaves.
 // `opts` may still be a bare tone string.
 function toast(message, opts = {}) {
-  const { tone = 'info', retry = null, action = retry && { label: 'Retry', run: retry } } = typeof opts === 'string' ? { tone: opts } : opts;
+  const { tone = 'info', retry = null, action = retry && { label: 'Retry', run: retry }, owner = null } = typeof opts === 'string' ? { tone: opts } : opts;
   dismissToast();
+  toastOwner = owner;
   const el = document.createElement('div');
   el.className = `toast pointer-events-auto flex items-center gap-2 px-3 py-2 rounded-lg border text-xs shadow-2xl max-w-sm ${TOAST_TONE[tone] || TOAST_TONE.info}`;
   el.setAttribute('data-tone', tone);
   el.innerHTML = (TOAST_ICON[tone] ? renderIcon(TOAST_ICON[tone], 'w-3.5 h-3.5 flex-shrink-0') : '')
-    + `<span class="flex-1 min-w-0 break-words">${esc(message)}</span>`
+    + `<span class="toast-message flex-1 min-w-0 break-words line-clamp-3 rounded-sm ${FOCUS_RING}">${esc(message)}</span>`
     + (action ? `<button type="button" class="toast-action${retry ? ' toast-retry' : ''} h-7 px-2.5 rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-[11px] font-medium text-zinc-200 flex-shrink-0 ${FOCUS_RING}">${esc(action.label)}</button>` : '')
     + `<button type="button" class="toast-close p-1 rounded-md hover:bg-black/20 flex-shrink-0 ${FOCUS_RING}" aria-label="Close">${renderIcon('x', 'w-3.5 h-3.5')}</button>`;
   toastRoot.appendChild(el);
+  // A message past three lines is cut there; its full text is the tooltip, on hover and on focus.
+  const text = el.querySelector('.toast-message');
+  if (text.scrollHeight > text.clientHeight) {
+    text.setAttribute('tabindex', '0');
+    text.setAttribute('data-tip', '');
+  }
   el.querySelector('.toast-close').addEventListener('click', dismissToast);
   const act = el.querySelector('.toast-action');
   if (act) act.addEventListener('click', () => { dismissToast(); action.run(); });
@@ -630,12 +645,16 @@ function toast(message, opts = {}) {
 
 function dismissToast() {
   clearTimeout(toastTimer);
+  const back = toastRoot.contains(document.activeElement) && toastOwner;
+  toastOwner = null;
   toastRoot.innerHTML = '';
+  if (back && document.contains(back)) back.focus();
 }
 
-// Escape closes a toast first; a dialog under it stays open for a second Escape.
+// Escape closes a toast first, after any tooltip open on its text; a dialog under it stays open
+// for a second Escape.
 document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape' || !toastRoot.querySelector('.toast')) return;
+  if (e.key !== 'Escape' || e.defaultPrevented || !toastRoot.querySelector('.toast')) return;
   e.preventDefault();
   dismissToast();
 });
@@ -646,8 +665,11 @@ const SPINNER = '<span class="inline-block w-3.5 h-3.5 rounded-full border-2 bor
 // response; on success it resolves with the server's answer. On failure the control comes
 // back, every field stays as typed, `onRefused` runs, and the error toast's Retry sends
 // `request` again, so the promise resolves on whichever attempt succeeds. Disabling the control
-// dropped focus, so `onRefused` is where a caller puts it back.
-function submitWrite(control, request, onRefused = null) {
+// dropped focus, so `onRefused` is where a caller puts it back; by default it goes back on the
+// control, unless it never left a field the write was fired from.
+function submitWrite(control, request, onRefused = () => {
+  if (!document.activeElement || document.activeElement === document.body) control.focus();
+}) {
   return new Promise((resolve) => {
     const send = () => {
       const label = control.innerHTML;
@@ -666,7 +688,7 @@ function submitWrite(control, request, onRefused = null) {
         resolve(data);
       }, (err) => {
         restore();
-        toast(err.message, { tone: 'error', retry: send });
+        toast(err.message, { tone: 'error', retry: send, owner: control });
         if (onRefused) onRefused();
       });
     };
@@ -674,15 +696,17 @@ function submitWrite(control, request, onRefused = null) {
   });
 }
 
-const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+const FOCUSABLE = 'button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
 // Shows `node` (an overlay holding a role="dialog" panel) with focus on its least
-// destructive control, keeps Tab inside it, and on Cancel, Close or Escape takes it off the
-// page with its fields as typed, runs `onClose` and returns focus to `opener`.
+// destructive control, keeps Tab inside it and a toast its own write raised, and on Cancel,
+// Close or Escape takes it off the page with its fields as typed, runs `onClose` and returns
+// focus to `opener`.
 function openDialog(node, opener = document.activeElement, onClose = null) {
   dialogRoot.appendChild(node);
-  const focusables = () => [...node.querySelectorAll(FOCUSABLE)]
+  const usable = root => [...root.querySelectorAll(FOCUSABLE)]
     .filter(el => !el.disabled && !el.closest('.hidden, [hidden]'));
+  const focusables = () => usable(node);
   function close() {
     document.removeEventListener('keydown', onKeydown);
     node.remove();
@@ -697,16 +721,15 @@ function openDialog(node, opener = document.activeElement, onClose = null) {
       return;
     }
     if (e.key !== 'Tab') return;
-    const els = focusables();
+    const own = focusables();
+    const els = toastOwner && node.contains(toastOwner) ? own.concat(usable(toastRoot)) : own;
     if (els.length === 0) return;
     const at = els.indexOf(document.activeElement);
-    if (e.shiftKey && at <= 0) {
-      e.preventDefault();
-      els[els.length - 1].focus();
-    } else if (!e.shiftKey && (at === -1 || at === els.length - 1)) {
-      e.preventDefault();
-      els[0].focus();
-    }
+    const to = at + (e.shiftKey ? -1 : 1);
+    // Between two of the dialog's own controls Tab stays native, so a radio group is one stop.
+    if (at !== -1 && at < own.length && to >= 0 && to < own.length) return;
+    e.preventDefault();
+    els[at === -1 ? (e.shiftKey ? els.length - 1 : 0) : (to + els.length) % els.length].focus();
   }
   document.addEventListener('keydown', onKeydown);
   node.querySelectorAll('.dlg-cancel, .dlg-close').forEach(btn => { btn.onclick = close; });
