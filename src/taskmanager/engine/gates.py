@@ -4,6 +4,7 @@ import argparse
 import glob
 import hashlib
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -27,10 +28,16 @@ TIMEOUT_EXIT = 124
 
 Attribution = Literal["push", "own_defect", "red_target", "unattributed"]
 
+_PLACEHOLDER = re.compile(r"\{(\w+)\}")
+
 
 def render(template: str, **values: str) -> str:
-    # The values are paths and ids spliced into a shell command line.
-    return template.format(**{key: shlex.quote(value) for key, value in values.items()})
+    """Each `{name}` given a value becomes it, shell-quoted, since the values are paths and ids
+    spliced into a command line. Every other brace is the shell's:
+    `${HOME}`, `awk '{print $1}'`, `find . -exec ls {} +`."""
+    return _PLACEHOLDER.sub(
+        lambda m: shlex.quote(values[m[1]]) if m[1] in values else m[0], template
+    )
 
 
 def template_hash(template: str) -> str:
