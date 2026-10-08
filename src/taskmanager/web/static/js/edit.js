@@ -85,7 +85,7 @@ function formDialog({ title, bodyHtml, onMount, onSubmit, submitLabel = 'Save', 
         const message = err && err.message ? err.message : 'Request failed.';
         errorEl.textContent = message;
         errorEl.classList.remove('hidden');
-        toast(message, { tone: 'error' });
+        toast(message, { tone: 'error', owner: submitBtn });
         submitBtn.disabled = false;
         refocus();
       } finally {

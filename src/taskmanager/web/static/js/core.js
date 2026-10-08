@@ -611,14 +611,18 @@ const TOAST_TONE = {
 const TOAST_ICON = { success: 'check-circle-2', error: 'octagon-x' };
 const TOAST_MS = 6000;
 let toastTimer = null;
+let toastOwner = null;
 
 // One toast at a time, announced by #toast-root's polite live region and never focused. An
 // error stays until its Retry, its close button or Escape; any other tone also leaves after 6 s.
 // `action` ({ label, run }) is its one control besides close; `retry` is the Retry action.
+// `owner` is the control whose write raised it: a dialog holding that control takes the toast
+// into its Tab cycle, and focus inside the toast goes back to it when the toast leaves.
 // `opts` may still be a bare tone string.
 function toast(message, opts = {}) {
-  const { tone = 'info', retry = null, action = retry && { label: 'Retry', run: retry } } = typeof opts === 'string' ? { tone: opts } : opts;
+  const { tone = 'info', retry = null, action = retry && { label: 'Retry', run: retry }, owner = null } = typeof opts === 'string' ? { tone: opts } : opts;
   dismissToast();
+  toastOwner = owner;
   const el = document.createElement('div');
   el.className = `toast pointer-events-auto flex items-center gap-2 px-3 py-2 rounded-lg border text-xs shadow-2xl max-w-sm ${TOAST_TONE[tone] || TOAST_TONE.info}`;
   el.setAttribute('data-tone', tone);
@@ -641,7 +645,10 @@ function toast(message, opts = {}) {
 
 function dismissToast() {
   clearTimeout(toastTimer);
+  const back = toastRoot.contains(document.activeElement) && toastOwner;
+  toastOwner = null;
   toastRoot.innerHTML = '';
+  if (back && document.contains(back)) back.focus();
 }
 
 // Escape closes a toast first, after any tooltip open on its text; a dialog under it stays open
@@ -681,7 +688,7 @@ function submitWrite(control, request, onRefused = () => {
         resolve(data);
       }, (err) => {
         restore();
-        toast(err.message, { tone: 'error', retry: send });
+        toast(err.message, { tone: 'error', retry: send, owner: control });
         if (onRefused) onRefused();
       });
     };
@@ -689,15 +696,17 @@ function submitWrite(control, request, onRefused = () => {
   });
 }
 
-const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+const FOCUSABLE = 'button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
 // Shows `node` (an overlay holding a role="dialog" panel) with focus on its least
-// destructive control, keeps Tab inside it, and on Cancel, Close or Escape takes it off the
-// page with its fields as typed, runs `onClose` and returns focus to `opener`.
+// destructive control, keeps Tab inside it and a toast its own write raised, and on Cancel,
+// Close or Escape takes it off the page with its fields as typed, runs `onClose` and returns
+// focus to `opener`.
 function openDialog(node, opener = document.activeElement, onClose = null) {
   dialogRoot.appendChild(node);
-  const focusables = () => [...node.querySelectorAll(FOCUSABLE)]
+  const usable = root => [...root.querySelectorAll(FOCUSABLE)]
     .filter(el => !el.disabled && !el.closest('.hidden, [hidden]'));
+  const focusables = () => usable(node);
   function close() {
     document.removeEventListener('keydown', onKeydown);
     node.remove();
@@ -712,16 +721,15 @@ function openDialog(node, opener = document.activeElement, onClose = null) {
       return;
     }
     if (e.key !== 'Tab') return;
-    const els = focusables();
+    const own = focusables();
+    const els = toastOwner && node.contains(toastOwner) ? own.concat(usable(toastRoot)) : own;
     if (els.length === 0) return;
     const at = els.indexOf(document.activeElement);
-    if (e.shiftKey && at <= 0) {
-      e.preventDefault();
-      els[els.length - 1].focus();
-    } else if (!e.shiftKey && (at === -1 || at === els.length - 1)) {
-      e.preventDefault();
-      els[0].focus();
-    }
+    const to = at + (e.shiftKey ? -1 : 1);
+    // Between two of the dialog's own controls Tab stays native, so a radio group is one stop.
+    if (at !== -1 && at < own.length && to >= 0 && to < own.length) return;
+    e.preventDefault();
+    els[at === -1 ? (e.shiftKey ? els.length - 1 : 0) : (to + els.length) % els.length].focus();
   }
   document.addEventListener('keydown', onKeydown);
   node.querySelectorAll('.dlg-cancel, .dlg-close').forEach(btn => { btn.onclick = close; });
