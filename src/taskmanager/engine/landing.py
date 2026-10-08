@@ -75,8 +75,8 @@ class Landing:
         claims.landing = self
 
     @classmethod
-    def open(cls, root: Path) -> Landing:
-        claims = Claims.open(root)
+    def open(cls, root: Path, actor: str | None = None) -> Landing:
+        claims = Claims.open(root, actor=actor)
         return cls(root, claims.config, claims, CacheRepository(claims.nodes.db), claims.jobs)
 
     def start_land(self, node_id: str) -> str:

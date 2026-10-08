@@ -106,4 +106,8 @@ def test_init_ends_with_the_doctor_summary(project: Path, bin_dir: Path) -> None
     assert lines[3:] == [
         "codegraph: 1.6.0",
         f"codegraph index (.): missing (recommended) -> codegraph init {project}",
+        (
+            "next: read `tm guide overview`, then give every repository a task lands in a main "
+            'gate: tm config set repos.<repo>.gates.main.command "<command>"'
+        ),
     ]

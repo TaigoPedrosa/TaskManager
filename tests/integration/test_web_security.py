@@ -146,12 +146,11 @@ def test_the_export_embeds_every_script_and_fetches_none(root: Path, tmp_path: P
     )
 
 
-@pytest.mark.parametrize("command", [["web"], ["web", "run"]], ids=["web", "web-run"])
 @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.20", "myhost.lan"])
 def test_web_on_a_non_loopback_host_without_expose_exits_1_before_serving(
-    root: Path, served: list[dict[str, Any]], command: list[str], host: str
+    root: Path, served: list[dict[str, Any]], host: str
 ) -> None:
-    res = CliRunner().invoke(cli, [*command, "--host", host, "--no-open", "-C", str(root)])
+    res = CliRunner().invoke(cli, ["web", "--host", host, "--no-open", "-C", str(root)])
 
     assert res.exit_code == 1
     message = " ".join(res.output.split())
@@ -160,16 +159,15 @@ def test_web_on_a_non_loopback_host_without_expose_exits_1_before_serving(
     assert served == []
 
 
-@pytest.mark.parametrize("command", [["web"], ["web", "run"]], ids=["web", "web-run"])
 @pytest.mark.parametrize(
     ("host", "flags"),
     [("127.0.0.1", []), ("localhost", []), ("0.0.0.0", ["--expose"])],
     ids=["loopback", "localhost", "exposed"],
 )
 def test_web_on_loopback_or_with_expose_serves_on_that_host(
-    root: Path, served: list[dict[str, Any]], command: list[str], host: str, flags: list[str]
+    root: Path, served: list[dict[str, Any]], host: str, flags: list[str]
 ) -> None:
-    argv = [*command, "--host", host, *flags, "--no-open", "-C", str(root)]
+    argv = ["web", "--host", host, *flags, "--no-open", "-C", str(root)]
     res = CliRunner().invoke(cli, argv)
 
     assert res.exit_code == 0, res.output

@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, cast
 
@@ -41,6 +42,12 @@ REFUSED = "import refused, nothing written: "
 
 def _optional[E: StrEnum](kind: type[E], value: Any) -> E | None:
     return None if value is None else kind(value)
+
+
+@dataclass(frozen=True)
+class Imported:
+    created: list[str] = field(default_factory=list)
+    updated: list[str] = field(default_factory=list)
 
 
 class BulkImporter:
@@ -145,7 +152,7 @@ class BulkImporter:
             )
             raise ValueError(f"{REFUSED}duplicate id {detail}")
 
-    def import_dict(self, data: dict[str, Any]) -> None:
+    def import_dict(self, data: dict[str, Any]) -> Imported:
         self._refuse_unknown_keys(data)
         self._refuse_duplicate_ids(data)
         nodes: list[Node] = []
@@ -153,6 +160,7 @@ class BulkImporter:
         relations: list[NodeRelation] = []
         verifications: dict[str, list[NodeVerification]] = {}
         conditions: dict[str, list[Condition]] = {}
+        imported = Imported()
 
         def take(raw: dict[str, Any], kind: NodeKind, parent: Node | None) -> Node:
             stated = (
@@ -160,10 +168,10 @@ class BulkImporter:
                 if "verifications" in raw
                 else None
             )
-            node = self._parse_node(
-                raw, kind, self.node_repo.get_node(raw["id"]), parent, stated or ()
-            )
+            existing = self.node_repo.get_node(raw["id"])
+            node = self._parse_node(raw, kind, existing, parent, stated or ())
             nodes.append(node)
+            (imported.created if existing is None else imported.updated).append(node.id)
             sections.extend(self._parse_sections(node.id, raw.get("sections")))
             if parent is not None:
                 relations.append(
@@ -253,6 +261,7 @@ class BulkImporter:
                     self.node_repo.add_condition(cond)
             for node in nodes:
                 roll_up_ancestors(self.ops, node.id, arrived=node.id in arrived)
+        return imported
 
     @staticmethod
     def _parse_dep(dep: Any) -> str:

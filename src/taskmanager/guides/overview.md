@@ -105,6 +105,10 @@ None of these touches a node mid-step: wait for the step to end, or stop it.
 - `tm config list` shows every setting with its effective value and source; `tm config set <key> <value>` changes one.
 - `tm decision list --status open` is the owner's queue; `tm decision get <id> --yaml` is one decision with its options.
 
+## Search
+
+`tm search <words>` matches titles and section text, and prints each hit with its matched words in `**bold**`. Searching by meaning, `--mode semantic` or `--mode hybrid` for both, needs an embedding provider: `tm config set embeddings.provider local` embeds on this machine, and `openai` calls the OpenAI API with the key in the variable `embeddings.api_key_env` names (`TASKMANAGER_OPENAI_API_KEY` unless set). Then `tm index` embeds every node, and a later run embeds only what changed. The default `--mode auto` is `hybrid` once an index exists, and `fts` before.
+
 ## Verification
 
 `tm verify run` reads `file_exists`, `file_absent`, `symbol_signature` and `ast_export` from a ref of the node's `target_repo`, never a working tree, and runs every `test_command` from the project root with that ref exported as `TM_VERIFY_REF`. With no `--ref`, it reads each task at `origin/<the branch its spec lands on>`, fetched first; `--ref tm/<id>` reads the node's own branch, with no fetch. A landing runs the node's verifications with `--ref` set to its target, so a `test_command` reads `"${TM_VERIFY_REF:-origin/main}"` rather than naming a branch; tm refuses a `test_command` that names `origin/main` itself on a node read anywhere else: one landing on its parent, or under a spec whose target is not `main`.
@@ -124,7 +128,7 @@ A question nobody in the loop can answer is not a reason to stop and ask: releas
 | `Invalid value: no .taskmanager at <dir>: pass -C, set TM_ROOT, or run tm init there` | 2 | you are outside the project; pass `-C <project root>` |
 | `this directory holds a pre-lifecycle estate: run tm init --archive ...` | 1 | the owner's cutover has not run here; stop and report, never run `tm init` yourself |
 | `action: blocked` with a `reason` | 3 | nothing was claimed; the reason names the edge, decision, condition, sync or lease |
-| `import refused, nothing written: unknown ids [...]` | 1 | the document depends on ids that do not exist yet |
+| `import refused, nothing written: <file>: unknown ids [...]` | 1 | the document depends on ids that do not exist yet |
 | a refusal naming a field and a fix | 1 | a flag rule or the cycle check refused the write; nothing was written |
 | `Section '<key>' not found on node '<id>'` | 1 | list the node's sections with `tm section get <id>` |
 

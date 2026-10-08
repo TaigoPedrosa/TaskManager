@@ -28,8 +28,24 @@ const releaseOf = token => `tm task release T1 --agent wf-s1-T1 --token ${token}
 const REVIEWERS = { task: 'task-reviewer', rereview: 'scoped-re-reviewer', container: 'branch-reviewer' }
 const scopeOf = work => work.prompt.split('\n').find(line => line.startsWith('Scope: '))
 
-test('session and worktreeDir are required', async () => {
-  await assert.rejects(runWave({ args: { session: 's1' }, tm: makeTm() }), /args\.session and args\.worktreeDir are required/)
+test('session is required', async () => {
+  await assert.rejects(runWave({ args: { worktreeDir: '/wt' }, tm: makeTm() }), /args\.session is required/)
+})
+
+test('without worktreeDir a claim leaves the worktree directory to the estate config', async () => {
+  const fresh = () => {
+    const tm = makeTm({
+      chosen: [T1],
+      nodes: { T1: node('READY', 'implement') },
+      start: { T1: [() => (tm.set('T1', { status: 'IMPLEMENTING', next_action: null }), claim('implement', { worktree: '/est/.worktrees/core-T1' }))] },
+    })
+    return tm
+  }
+  const without = await runWave({ args: { session: 's1', root: '/est' }, tm: fresh() })
+  const given = await runWave({ args: ARGS, tm: fresh() })
+  assert.ok(starts(without.ops).length > 0)
+  for (const c of starts(without.ops)) assert.doesNotMatch(c, /--worktree-dir/)
+  for (const c of starts(given.ops)) assert.match(c, /--worktree-dir \/wt /)
 })
 
 for (const key of ['release', 'maxFixRounds']) {
