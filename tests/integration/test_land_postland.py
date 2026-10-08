@@ -41,7 +41,7 @@ REVIEWED_PLAN = {
 }
 MIGRATION = "api/migrations/versions/0002_keys.py"
 UNREVIEWED_ON_MAIN = (
-    "S-P-c: lands where its spec lands with review off, so its code would land there "
+    "S-P-c: lands on its target main with review off, so its code would land there "
     "unreviewed: S-P's review reads only what lands on its branch; set merge=parent, or turn "
     "review on"
 )

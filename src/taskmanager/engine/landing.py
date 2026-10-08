@@ -98,7 +98,9 @@ class Landing:
         ):
             raise OperationError(f"{node_id} is already landing", 409)
         repos = self.claims.repos_of(node_id)
-        job = self._new_job(JobKind.LAND, node_id, repos[0], self.claims.target_of(node_id), {})
+        job = self._new_job(
+            JobKind.LAND, node_id, repos[0], self.claims.target_of(node_id, repos[0]), {}
+        )
         self._launch(job)
         return job.id
 
@@ -288,7 +290,7 @@ class Landing:
             if remote and remote != job.result["base_sha"]:
                 # The full gate runs at the tip that is pushed, so a moved main is merged in and
                 # gated again.
-                gitops.fetch(repo_dir)
+                gitops.fetch(repo_dir, job.target)
                 subject = f"merge({job.node_id}): origin/main into its landing"
                 if not gitops.merge_no_ff(worktree, "origin/main", subject):
                     return self._needs_agent(job, "conflict")
@@ -609,8 +611,8 @@ class Landing:
 
     def _target_ref(self, job: Job) -> str:
         if job.target == "main":
-            gitops.fetch(self._dir(job))
-        return self.claims.target_ref(job.target)
+            gitops.fetch(self._dir(job), job.target)
+        return self.claims.target_ref(job.node_id, job.repo)
 
     def _gate_config(self, repo: str, which: Literal["main", "parent"]) -> Gate | None:
         repo_config = self.config.repos.get(repo)

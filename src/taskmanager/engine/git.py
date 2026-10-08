@@ -1,4 +1,5 @@
 import subprocess
+from functools import cache
 from pathlib import Path
 
 
@@ -20,21 +21,21 @@ class GitManager:
             return (self.root / common_path).resolve()
         return common_path.resolve()
 
-    def default_base_ref(self) -> str:
-        """`origin/main` when the repository has one, else `HEAD`."""
+    def default_base_ref(self, branch: str) -> str:
+        """`origin/<branch>` when the repository has one, else `HEAD`."""
         res = subprocess.run(
-            ["git", "rev-parse", "--verify", "--quiet", "origin/main"],
+            ["git", "rev-parse", "--verify", "--quiet", f"origin/{branch}"],
             cwd=self.root,
             capture_output=True,
             text=True,
             check=False,
         )
-        return "origin/main" if res.returncode == 0 else "HEAD"
+        return f"origin/{branch}" if res.returncode == 0 else "HEAD"
 
     def create_worktree(
         self, branch_name: str, worktree_path: Path, base_ref: str = "HEAD"
     ) -> Path:
-        """`--no-track`: a branch cut from `origin/main` would otherwise push to `main`.
+        """`--no-track`: a branch cut from `origin/<target>` would otherwise push to `<target>`.
 
         Returns the worktree actually in use, which is `worktree_path` on a fresh checkout but
         the branch's existing worktree when one is already checked out elsewhere: `git worktree
@@ -148,8 +149,18 @@ def diff_quiet(repo: Path, base: str, branch: str) -> bool:
     return _git(repo, "diff", "--quiet", f"{base}...{branch}").returncode == 0
 
 
-def fetch(repo: Path) -> bool:
-    return _git(repo, "fetch", "-q", "origin", "main").returncode == 0
+def fetch(repo: Path, branch: str) -> bool:
+    return _git(repo, "fetch", "-q", "origin", branch).returncode == 0
+
+
+@cache
+def valid_branch(name: str) -> bool:
+    """`git check-ref-format --branch` accepts `name` as written: inside a repository it would
+    also expand `@{-1}`, which names no branch of its own."""
+    res = subprocess.run(
+        ["git", "check-ref-format", "--branch", name], capture_output=True, text=True, check=False
+    )
+    return res.returncode == 0 and res.stdout.strip() == name
 
 
 def ensure_branch(repo: Path, branch: str, base: str) -> bool:
@@ -157,7 +168,7 @@ def ensure_branch(repo: Path, branch: str, base: str) -> bool:
 
     One `update-ref` with an empty old value, so of two claims creating the same branch at once
     exactly one creates it and the other reads False. A bare ref carries no upstream, so a bare
-    `git push` from a branch cut from `origin/main` never targets the deploying `main`.
+    `git push` from a branch cut from `origin/<target>` never targets the deploying `<target>`.
     """
     ref = f"refs/heads/{branch}"
     sha = _run(repo, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}")

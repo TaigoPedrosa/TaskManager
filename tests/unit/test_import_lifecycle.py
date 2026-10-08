@@ -74,7 +74,7 @@ REFUSED = [
     pytest.param({"spec": {"id": "S", "title": "S", "merge": "parent"}}, None, id="spec-on-parent"),
     pytest.param(
         doc({"id": "S-P-a", "title": "a", "merge": "spec"}, plan={"review": True, "fix": True}),
-        "S-P-a: lands where its spec lands with review off, so its code would land there "
+        "S-P-a: lands on its target main with review off, so its code would land there "
         "unreviewed: S-P's review reads only what lands on its branch",
         id="unreviewed-on-main-under-a-reviewed-plan",
     ),

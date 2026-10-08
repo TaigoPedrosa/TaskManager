@@ -139,6 +139,7 @@ def test_get_prints_the_effective_value(root: Path) -> None:
         ("set", "repos", "{core: {gates: {staging: {command: make}}}}"),
         ("set", "repos", "{core: {gates: {main: {timeout: 60}}}}"),
         ("set", "repos", "{core: {gates: {main: {command: make, retries: 2}}}}"),
+        ("set", "repos", "{core: {default_branch: 'a..b'}}"),
     ],
 )
 def test_an_unknown_key_or_a_bad_value_is_one_line_and_exit_1(
@@ -247,7 +248,8 @@ def test_whole_valued_keys_are_set_as_yaml_and_stored_nested(root: Path) -> None
         "repo_order": ["core", "api", "web"],
         "repos": {
             "core": {
-                "gates": {"main": {"command": "make ci", "junit": "out/*.xml", "timeout": 3600}}
+                "default_branch": "main",
+                "gates": {"main": {"command": "make ci", "junit": "out/*.xml", "timeout": 3600}},
             }
         },
     }
@@ -258,6 +260,21 @@ def test_whole_valued_keys_are_set_as_yaml_and_stored_nested(root: Path) -> None
     assert project.repos == {
         "core": RepoConfig(gates={"main": Gate(command="make ci", junit="out/*.xml")})
     }
+
+
+@pytest.mark.parametrize(
+    ("repos", "repo", "branch"),
+    [(None, "core", "main"), ("{core: {default_branch: trunk}}", "core", "trunk")]
+    + [("{core: {default_branch: trunk}}", other, "main") for other in ("web", None)],
+)
+def test_default_branch_reads_the_repository_s_key_else_main(
+    root: Path, repos: str | None, repo: str | None, branch: str
+) -> None:
+    store = ConfigStore(root)
+    if repos is not None:
+        store.set("repos", repos)
+    assert store.branches().default_branch(repo) == branch
+    assert store.project().default_branch(repo) == branch
 
 
 def test_a_hand_written_repos_block_reads_back_whole(root: Path) -> None:

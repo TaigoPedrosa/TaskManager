@@ -20,8 +20,8 @@ class Branches:
     def branch_exists(self, node_id: str) -> bool:
         return node_id in self.existing
 
-    def base_matches(self, node_id: str, new_target: str) -> bool:
-        return self.cut_from.get(node_id) == new_target
+    def base_matches(self, node_id: str, new_target: str, new_top: str) -> bool:
+        return self.cut_from.get(node_id) == (new_top if new_target == MAIN else new_target)
 
 
 def snap(*nodes: SnapNode, edges: list[tuple[str, str]] | None = None) -> Snapshot:
@@ -163,12 +163,54 @@ def test_a_merge_change_that_keeps_the_target_is_not_a_retarget() -> None:
     assert rules(before, after, {"T"}, branches) == [("T", 3)]
 
 
-@pytest.mark.parametrize(("merge", "refused"), [(PARENT, True), (Merge.SPEC, False)])
-def test_a_literal_origin_main_verification_is_refused_on_a_parent_landing(
-    merge: Merge, refused: bool
+@pytest.mark.parametrize(
+    ("merge", "top", "refused"),
+    [(PARENT, "main", True), (Merge.SPEC, "main", False), (Merge.SPEC, "release/2", True)],
+)
+def test_a_literal_origin_main_verification_is_refused_unless_the_node_lands_on_main(
+    merge: Merge, top: str, refused: bool
 ) -> None:
-    after = with_node(EMPTY, SnapNode("T", TASK, parent="P", merge=merge, literal_origin_main=True))
-    assert rules(EMPTY, after, {"T"}) == ([("T", 5)] if refused else [])
+    node = SnapNode("T", TASK, parent="P", merge=merge, literal_origin_main=True, top=top)
+    assert rules(EMPTY, with_node(EMPTY, node), {"T"}) == ([("T", 5)] if refused else [])
+
+
+def test_a_literal_origin_main_refusal_names_the_target_the_node_lands_on() -> None:
+    node = SnapNode("T", TASK, parent="P", literal_origin_main=True, top="release/2")
+    [refusal] = validate(EMPTY, with_node(EMPTY, node), {"T"}, Branches())
+    assert refusal.message.startswith("T: lands on its target release/2 but a test_command")
+
+
+@pytest.mark.parametrize(
+    ("node", "refused"),
+    [
+        (SnapNode("S", SPEC, land_on="release/2"), False),
+        (SnapNode("S", SPEC, land_on="a..b"), True),
+        (SnapNode("S", SPEC, land_on=""), True),
+        (SnapNode("P", PLAN, land_on="release/2"), True),
+        (SnapNode("T", TASK, land_on="release/2"), True),
+    ],
+    ids=["spec", "invalid-name", "empty", "on-a-plan", "on-a-task"],
+)
+def test_land_on_is_refused_off_a_spec_or_when_git_rejects_the_name(
+    node: SnapNode, refused: bool
+) -> None:
+    assert rules(snap(), snap(node), {node.id}) == ([(node.id, 12)] if refused else [])
+
+
+def test_a_changed_land_on_rechecks_every_cut_branch_landing_at_the_top_below_the_spec() -> None:
+    nodes = (
+        SnapNode("S", SPEC),
+        SnapNode("P", PLAN, parent="S"),
+        SnapNode("T", TASK, parent="P"),
+        SnapNode("C", TASK, parent="P", merge=PARENT),
+    )
+    before = snap(*nodes)
+    after = snap(*(replace(n, top="release/2") for n in nodes))
+    branches = Branches(existing={"T", "C"}, cut_from={"T": "main", "C": "P"})
+    [refusal] = validate(before, after, {"S"}, branches)
+    assert (refusal.node_id, refusal.rule) == ("T", 4)
+    assert refusal.message.startswith("T: its branch exists and was not cut from release/2")
+    assert rules(before, after, {"S"}, replace(branches, cut_from={"T": "release/2"})) == []
 
 
 COMPLETED_P = SnapNode("P", PLAN, status=Status.COMPLETED)

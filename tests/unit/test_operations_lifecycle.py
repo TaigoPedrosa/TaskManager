@@ -617,7 +617,7 @@ def test_an_update_declaring_a_migration_makes_the_node_s_fix_take_a_review(env:
 
 
 UNREVIEWED_ON_MAIN = (
-    "lands where its spec lands with review off, so its code would land there unreviewed: "
+    "lands on its target main with review off, so its code would land there unreviewed: "
     "S1-P1's review reads only what lands on its branch; set merge=parent, or turn review on"
 )
 

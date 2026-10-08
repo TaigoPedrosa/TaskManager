@@ -138,7 +138,7 @@ def test_push_to_a_moved_main_merges_it_in_and_gates_again_without_pushing(
         merged.append(ref)
         return True
 
-    monkeypatch.setattr(gitops, "fetch", lambda repo: True)
+    monkeypatch.setattr(gitops, "fetch", lambda repo, branch: True)
     monkeypatch.setattr(gitops, "merge_no_ff", merge_no_ff)
     monkeypatch.setattr(gitops, "rev_parse", lambda repo, ref: "moved")
     job = pushing(claims)
