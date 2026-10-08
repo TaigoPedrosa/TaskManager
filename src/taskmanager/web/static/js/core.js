@@ -646,8 +646,11 @@ const SPINNER = '<span class="inline-block w-3.5 h-3.5 rounded-full border-2 bor
 // response; on success it resolves with the server's answer. On failure the control comes
 // back, every field stays as typed, `onRefused` runs, and the error toast's Retry sends
 // `request` again, so the promise resolves on whichever attempt succeeds. Disabling the control
-// dropped focus, so `onRefused` is where a caller puts it back.
-function submitWrite(control, request, onRefused = null) {
+// dropped focus, so `onRefused` is where a caller puts it back; by default it goes back on the
+// control, unless it never left a field the write was fired from.
+function submitWrite(control, request, onRefused = () => {
+  if (!document.activeElement || document.activeElement === document.body) control.focus();
+}) {
   return new Promise((resolve) => {
     const send = () => {
       const label = control.innerHTML;
