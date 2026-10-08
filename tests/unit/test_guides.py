@@ -386,11 +386,21 @@ def test_plan_guide_names_each_thing_a_replacement_or_removal_deletes(
     assert (
         "- A task that replaces or removes something names each thing that goes (the "
         "implementations one now replaces; a feature's markup, handlers, styles and the state it "
-        "reset) and deletes each one in the same task, or moves it to where it is still used; its "
-        "acceptance lists them, each with a check that fails when it comes back."
+        "reset) and everything that loses its last reader with it (components, props, model "
+        "fields, imports, and computations or loads whose only consumer was the removed code), and "
+        "deletes each one in the same task, or moves it to where it is still used; its acceptance "
+        "lists them, each with a check that fails when it comes back."
     ) in text
     assert "names the function that stays" not in text
     assert "A task that removes a feature names" not in text
+
+
+def test_implement_and_review_guides_no_longer_limit_the_last_reader_rule_to_a_payload_field(
+    rendered: Callable[[str], str],
+) -> None:
+    """A rule scoped to payload fields lets an orphaned component, import or load through."""
+    assert "When a task stops reading a payload field" not in rendered("implement")
+    assert "a payload field with no remaining reader" not in rendered("review")
 
 
 def test_plan_guide_asks_a_ui_acceptance_for_each_interaction_s_behaviour(
@@ -763,9 +773,10 @@ BRIEF_RULES = [
     pytest.param(
         "implement",
         "## 5. Verify",
-        "- When a task stops reading a payload field, it removes the producer in the same task, "
-        "or names the task that does.",
-        id="implement:payload-producer",
+        "- After removing something, search for every file, symbol, field, and computation or "
+        "load whose last reader was the removed code, and delete each one in the same step, a "
+        "payload field's producer included. Name them in the report.",
+        id="implement:last-reader",
     ),
     pytest.param(
         "implement",
@@ -781,7 +792,8 @@ BRIEF_RULES = [
         "review",
         "## 3. Read the branch",
         "A diff that edits a file missing from `declared_files`, a test that selects another "
-        "file's markup by class, and a payload field with no remaining reader are each a finding.",
+        "file's markup by class, and anything the diff left without a reader (a file, symbol, "
+        "field, or a computation or load whose only consumer it removed) are each a finding.",
         id="review:scope-findings",
     ),
     pytest.param(

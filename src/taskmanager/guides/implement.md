@@ -72,7 +72,7 @@ The path checks read the ref, never your worktree, so without `--ref` they read 
 
 - A generated file (a built stylesheet, a lockfile, a schema dump) is regenerated, never edited or hand-merged: a branch that changes any of its inputs rebuilds it before closing, and a conflict on it is resolved by rebuilding it on the merged tree.
 - A test selects only markup that its own task's declared files render. It reaches another file's control by what that control shows the user (role, accessible name), never by its classes or inner elements.
-- When a task stops reading a payload field, it removes the producer in the same task, or names the task that does.
+- After removing something, search for every file, symbol, field, and computation or load whose last reader was the removed code, and delete each one in the same step, a payload field's producer included. Name them in the report.
 - When the task writes or reads a format another task also writes or reads (an id scheme, a URL key, a payload), run the round trip across both ends before closing the step: write it with one end, read it back with the other, get back the same thing, and put that run in the report. A mismatch with the other end is a decision (below), never a local reinterpretation.
 
 ## Waiting on something that takes time
