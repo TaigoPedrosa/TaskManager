@@ -1025,10 +1025,77 @@ BRIEF_RULES = [
     pytest.param(
         "overview",
         "# How TaskManager works",
-        "After `tm init`, set `repos.<repo>.gates.main` for every target repo before the first "
-        "dispatch: it gates every landing on a spec's target branch, whatever that branch is "
-        "named. Without it, every such landing is refused with `no gate`.",
+        "After `tm init`, give every repository a task names in `target_repo` a `main` gate, the "
+        "command tm runs on the merged tip before it pushes: `tm config set "
+        'repos.<repo>.gates.main.command "<command>"`. It gates every landing on a spec\'s target '
+        "branch, whatever that branch is named; without one, every such landing stops with "
+        "`no gate`.",
         id="overview:main-gate",
+    ),
+    pytest.param(
+        "overview",
+        "# How TaskManager works",
+        "A repository is a directory under the tm root with an `origin` remote holding its "
+        "default branch (`repos.<repo>.default_branch`, `main` unless set). When the tm root is "
+        "the repository itself, its name is `.`. The command runs in tm's merge worktree and may "
+        "use `{worktree}`, `{node}`, `{repo}` and `{target}`, each replaced shell-quoted; every "
+        "other brace reaches the shell as written.",
+        id="overview:repo-and-placeholders",
+    ),
+    pytest.param(
+        "overview",
+        "# How TaskManager works",
+        '"The owner" in these guides is whoever runs the project: the person who answers its '
+        "decisions, configures its gates and keeps its guide addendum. The addendum is a section "
+        "per topic on a spec with the id `guide`, created once with `tm spec add 'Project guide' "
+        "--slug guide`, then written with `tm section set guide:<topic> --file <path>`; "
+        "`tm guide <topic>` prints it after the built-in text.",
+        id="overview:owner-and-addendum",
+    ),
+    pytest.param(
+        "overview",
+        "## Moving an estate to this version",
+        "Configure each repository's landing gate, `tm config set repos.<repo>.gates.main "
+        "'{command: <template>, junit: <glob>, timeout: <seconds>}'`,",
+        id="overview:runbook-gate",
+    ),
+    pytest.param(
+        "overview",
+        "## Moving an estate to this version",
+        "7. Write the project's own conventions back into its guide addendum: `tm spec add "
+        "'Project guide' --slug guide` once, then `tm section set guide:<topic> --file <path>` "
+        "for each topic the old estate carried one for.",
+        id="overview:runbook-addendum",
+    ),
+    pytest.param(
+        "merge",
+        "## What tm already did",
+        "report it; the owner sets it with `tm config set repos.<repo>.gates.main.command "
+        '"<command>"`',
+        id="merge:no-gate",
+    ),
+    pytest.param(
+        "plan",
+        "## 1. Write the document",
+        "| `target_repo` | The directory, under the tm root, the task's branch is cut in; `.` when "
+        "the tm root is itself the repository.",
+        id="plan:single-repo",
+    ),
+    pytest.param(
+        "plan",
+        "## 3. Models and capabilities",
+        "tm routes on the Claude families `haiku`, `sonnet`, `opus` and `fable`, read from each "
+        "id: an id naming none of them is ignored, so a list of only such ids routes as an empty "
+        "one.",
+        id="plan:model-families",
+    ),
+    pytest.param(
+        "plan",
+        "## 6. Verifications",
+        "`symbol_signature` and `ast_export` parse the file as Python and fail on any other "
+        "language; for a symbol in another language, use a `test_command` or a "
+        "`codegraph_query`.",
+        id="plan:python-only-checks",
     ),
 ]
 
@@ -1047,3 +1114,32 @@ def test_tm_guide_prints_each_brief_rule_once_in_its_role_s_section(
         if rule in part
     ]
     assert holding == [(topic, heading)]
+
+
+def test_overview_runbook_and_merge_guide_drop_the_gate_forms_tm_refuses(
+    rendered: Callable[[str], str],
+) -> None:
+    text = rendered("overview") + rendered("merge")
+    assert "set `repos.<repo>.gates.main` for every" not in text
+    assert "configures `repos.<repo>.gates.main` |" not in text
+    assert "tm config set repos '{<repo>:" not in text
+    assert "the owner's cutover" not in text
+    assert "Apply the project's prepared guide addendum" not in text
+
+
+def _readme_quickstart() -> list[str]:
+    section = _doc_text("README.md").split("## Quickstart\n", 1)[1].split("\n## ", 1)[0]
+    block = section.split("```bash\n", 1)[1].split("```", 1)[0]
+    return [line.split("#", 1)[0].strip() for line in block.splitlines()]
+
+
+def test_readme_quickstart_gate_line_is_one_tm_config_set_accepts(tmp_path: Path) -> None:
+    line = next(ln for ln in _readme_quickstart() if ln.startswith("tm config set "))
+    args = shlex.split(line.replace("<your test command>", "true"))[1:]
+    runner = CliRunner()
+    assert runner.invoke(app, ["init", "-C", str(tmp_path)]).exit_code == 0
+    result = runner.invoke(app, [*args, "-C", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    got = runner.invoke(app, ["config", "get", "repos...gates.main.command", "-C", str(tmp_path)])
+    assert got.exit_code == 0, got.output
+    assert got.stdout.strip() == "true"

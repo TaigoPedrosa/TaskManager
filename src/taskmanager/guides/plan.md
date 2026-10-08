@@ -20,7 +20,7 @@ Every node takes the fields below; `verifications` and `target_repo` act only on
 | `title` | One line, what the change is. |
 | `priority` | 1-100, default 50. Raise it to break a tie in discovery, not to express importance. |
 | `ordinal` | Display order; the position in the list when omitted. |
-| `target_repo` | The directory, under the tm root, the task's branch is cut in. Per node and **not inherited**: set it on every task. A task without one cannot be implemented. |
+| `target_repo` | The directory, under the tm root, the task's branch is cut in; `.` when the tm root is itself the repository. Per node and **not inherited**: set it on every task. A task without one cannot be implemented. |
 | `acceptable_models` | Real model ids. See §3. |
 | `review`, `fix`, `merge` | How the node reaches its spec's target branch. See §4. |
 | `requires` | Capabilities the agent needs, such as `figma`. See §3. |
@@ -52,7 +52,7 @@ Frontmatter keys the estate reads:
 
 ## 3. Models and capabilities
 
-`acceptable_models` decides the implement route: tm takes the cheapest family listed. An **empty list means every model**, not the strongest one. Reviews, fixes and landings follow from it and from `review_models`, as `tm guide dispatch` lists; tm prints the model family with every claim.
+`acceptable_models` decides the implement route: tm takes the cheapest family listed. An **empty list means every model**, not the strongest one. tm routes on the Claude families `haiku`, `sonnet`, `opus` and `fable`, read from each id: an id naming none of them is ignored, so a list of only such ids routes as an empty one. Reviews, fixes and landings follow from it and from `review_models`, as `tm guide dispatch` lists; tm prints the model family with every claim.
 
 `requires` names what the agent must be able to reach — `figma` for a node read against a design frame, say. The dispatcher routes the node to an agent type that serves it, or to the default agent, which reaches every connected tool.
 
@@ -95,7 +95,7 @@ The usual cause is an edge from a container to its own child, or between two chi
 
 ## 6. Verifications
 
-A verification is the node's own proof. `file_exists`, `file_absent`, `symbol_signature` and `ast_export` take a repo-relative path in `target_path` and count towards `declared_files`. `test_command` puts a label in `target_path` and the command in `expected_pattern`, and counts towards nothing. `codegraph_query` puts a search in `target_path` and a regex in `expected_pattern`, and counts towards nothing: tm runs `codegraph query --json` for that search and passes when the output matches the regex. `codegraph_query_json` optionally carries the query's other flags as a JSON object, such as `{"kind": "function", "limit": 20}`, set with `--query-json` on `tm verify add`. tm refuses a `codegraph_query` whose `expected_pattern` is missing or is not a regex, and query flags that are not a JSON object. It fails where it cannot run: without the `codegraph` CLI, or when the target repo's checkout has no `.codegraph/` index, which `codegraph init` there creates.
+A verification is the node's own proof. `file_exists`, `file_absent`, `symbol_signature` and `ast_export` take a repo-relative path in `target_path` and count towards `declared_files`. `symbol_signature` and `ast_export` parse the file as Python and fail on any other language; for a symbol in another language, use a `test_command` or a `codegraph_query`. `test_command` puts a label in `target_path` and the command in `expected_pattern`, and counts towards nothing. `codegraph_query` puts a search in `target_path` and a regex in `expected_pattern`, and counts towards nothing: tm runs `codegraph query --json` for that search and passes when the output matches the regex. `codegraph_query_json` optionally carries the query's other flags as a JSON object, such as `{"kind": "function", "limit": 20}`, set with `--query-json` on `tm verify add`. tm refuses a `codegraph_query` whose `expected_pattern` is missing or is not a regex, and query flags that are not a JSON object. It fails where it cannot run: without the `codegraph` CLI, or when the target repo's checkout has no `.codegraph/` index, which `codegraph init` there creates.
 
 A good check exits 0 exactly when this task's own deliverable exists: content this change makes true, never a path another task creates and never the whole suite. Write it, then run it once against the open task and watch it fail:
 
