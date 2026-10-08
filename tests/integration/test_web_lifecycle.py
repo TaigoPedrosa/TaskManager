@@ -27,8 +27,8 @@ def web(tmp_path: Path) -> Web:
     ops = create_container(tmp_path).get(Operations)
     spec = ops.add_spec("S", slug="S1")
     plan = ops.add_plan("P", spec, slug="P1", review=True, fix=True)
-    a = ops.add_task("a", plan, slug="a", review=True, fix=True, merge=Merge.MAIN)
-    ops.add_task("b", plan, slug="b", depends_on=[a], review=True, fix=True, merge=Merge.MAIN)
+    a = ops.add_task("a", plan, slug="a", review=True, fix=True, merge=Merge.SPEC)
+    ops.add_task("b", plan, slug="b", depends_on=[a], review=True, fix=True, merge=Merge.SPEC)
     return TestClient(create_app(tmp_path)), tmp_path
 
 
@@ -50,7 +50,7 @@ def test_nodes_carry_the_stored_status_display_phase_and_flags(web: Web) -> None
     assert (a["review"], a["fix"], a["merge"], a["body"]["node"]["branch"]) == (
         True,
         True,
-        "main",
+        "spec",
         "tm/S1-P1-a",
     )
     assert "virtual_status" not in a
@@ -63,7 +63,7 @@ def test_node_detail_carries_chains_dependencies_conditions_and_jobs(web: Web) -
     detail = client.get("/api/nodes/S1-P1-b").json()
     assert (detail["display"], detail["phase"]) == ("BLOCKED_BY_TASK", "QUEUED")
     assert detail["node"]["landing_chain"] == ["S1-P1-b"]
-    assert detail["node"]["base_chain"] == ["MAIN"]
+    assert detail["node"]["base_chain"] == ["main"]
     assert [(d["id"], d["status"], d["finished"]) for d in detail["dependency_details"]] == [
         ("S1-P1-a", "READY", False)
     ]
@@ -121,7 +121,7 @@ def test_meta_lists_the_lifecycle_vocabularies(web: Web) -> None:
         "LANDED",
         "COMPLETED",
     ]
-    assert meta["merge_targets"] == ["parent", "main"]
+    assert meta["merge_targets"] == ["parent", "spec"]
     assert "none" in meta["decision_effects"]
 
 
@@ -170,7 +170,7 @@ def test_a_verb_needs_a_note_and_reset_refuses_a_step_status(web: Web) -> None:
 
 def test_patch_sets_flags_merge_requires_and_land_order_through_validation(web: Web) -> None:
     client, root = web
-    # b depends on a; landing a on the parent plan while b still lands on MAIN would make b's
+    # b depends on a; landing a on the parent plan while b still lands on its target would make b's
     # start wait on the plan's landing while the plan's landing waits on b -- a real deadlock
     # the step-graph check refuses (spec S4.4). Moving b onto the same parent target first keeps
     # both landing chains meeting at `a` instead of routing through the plan.

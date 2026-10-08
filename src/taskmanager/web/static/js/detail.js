@@ -25,9 +25,11 @@ function detailStatus(node, body, row) {
   return (body && body.display) || node.status;
 }
 
-// The branches a node builds on, nearest first: "tm/P → main".
+// The branches a node builds on, nearest first: "tm/P → main". Every entry but the last is a
+// node id; the last is the branch the chain lands on at the top.
 function landsText(node) {
-  return (node.base_chain || []).map(id => (id === 'MAIN' ? 'main' : `tm/${id}`)).join(' → ');
+  const chain = node.base_chain || [];
+  return chain.map((x, i) => (i < chain.length - 1 ? `tm/${x}` : x)).join(' → ');
 }
 
 // A value longer than the strip (a review verdict) wraps inside it instead of running past the card.

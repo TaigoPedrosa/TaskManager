@@ -8,14 +8,8 @@ from graphlib import CycleError, TopologicalSorter
 from taskmanager.core.enums import CONTAINERS, NodeKind
 from taskmanager.core.status import EXITS, SET_ASIDE, DecisionStatus, Merge, Status
 from taskmanager.db.graph_reader import GraphData
-from taskmanager.engine.chains import (
-    ON_TARGET,
-    base_chain,
-    landing_chain,
-    landing_target,
-    meeting,
-    satisfied,
-)
+from taskmanager.engine.chains import ON_TARGET, base_chain, landing_chain, meet, meeting, satisfied
+from taskmanager.engine.config import DEFAULT_BRANCH
 
 Graph = dict[str, set[str]]
 
@@ -25,7 +19,7 @@ class SnapNode:
     id: str
     kind: NodeKind
     parent: str | None = None
-    merge: Merge = Merge.MAIN
+    merge: Merge = Merge.SPEC
     status: Status | DecisionStatus = Status.READY
     claimed_from: Status | None = None
     review: bool = True
@@ -37,6 +31,11 @@ class SnapNode:
     sensitive: tuple[str, ...] = ()
     busy: bool = False
     literal_origin_main: bool = False
+    # Its own `land_on:` frontmatter as written; validation refuses it anywhere but on a spec.
+    land_on: str | None = None
+    # The branch its chain lands on at the top: its spec's `land_on`, else its repository's
+    # `default_branch`.
+    top: str = DEFAULT_BRANCH
 
 
 @dataclass
@@ -72,6 +71,9 @@ class Snapshot:
 
     def status(self, node_id: str) -> Status | DecisionStatus:
         return self.nodes[node_id].status
+
+    def top(self, node_id: str) -> str:
+        return self.nodes[node_id].top
 
     def children(self, node_id: str) -> list[str]:
         return list(self._children.get(node_id, ()))
@@ -136,7 +138,7 @@ def _base_graph(s: Snapshot) -> Graph:
         if n.parent is not None and _is_work(s, n.parent) and n.status not in SET_ASIDE:
             graph[f"{n.id}.landed"].add(f"{n.parent}.implemented")
     # base_chain/landing_chain depend only on a node's own ancestry, so caching them here turns
-    # a container edge's fan-out to every descendant from one chain-to-MAIN walk per descendant
+    # a container edge's fan-out to every descendant from one chain-to-target walk per descendant
     # into one lookup: a plan with many children sharing a single dependency edge otherwise redoes
     # the same walk once per child.
     bases: dict[str, list[str]] = {}
@@ -147,7 +149,7 @@ def _base_graph(s: Snapshot) -> Graph:
             bases[x] = base_chain(s, x)
         if y not in landing_chains:
             landing_chains[y] = landing_chain(s, y)
-        return next(z for z in landing_chains[y] if landing_target(s, z) in bases[x])
+        return meet(s, bases[x], landing_chains[y])
 
     for dependent, dependency in s.edges:
         if not (_is_work(s, dependent) and _is_work(s, dependency)):
@@ -173,29 +175,33 @@ def _topological_rank(graph: Graph) -> dict[str, int]:
         return {}
 
 
-def _migration_order(s: Snapshot, repo: str, rank: dict[str, int]) -> list[str]:
-    def reaches_main(node_id: str) -> str:
-        return landing_chain(s, node_id)[-1]
+def _reaches_target(s: Snapshot, node_id: str) -> str:
+    return landing_chain(s, node_id)[-1]
 
-    writers = [
+
+def migration_writers(s: Snapshot, repo: str) -> list[SnapNode]:
+    """`repo`'s migration writers whose code has yet to reach its target: its migration chain."""
+    return [
         n
         for n in s.nodes.values()
         if n.repo == repo
         and n.writes_migration
         and n.kind not in CONTAINERS
-        # Code parked on a branch that was set aside never reaches main, so it holds nothing.
+        # Code parked on a branch that was set aside never reaches its target, so it holds nothing.
         and not any(s.status(x) in EXITS for x in landing_chain(s, n.id))
-        and s.status(reaches_main(n.id)) not in ON_TARGET
+        and s.status(_reaches_target(s, n.id)) not in ON_TARGET
     ]
 
+
+def _migration_order(s: Snapshot, repo: str, rank: dict[str, int]) -> list[str]:
     def key(n: SnapNode) -> tuple[int, int, int, str]:
         # Whoever already holds the chain keeps it: landed on a container branch first, then
-        # in a step, then the rest in the order their code can reach main.
+        # in a step, then the rest in the order their code can reach its target.
         held = 0 if n.status == Status.COMPLETED else 1 if n.status != Status.READY else 2
-        main_rank = rank.get(f"{reaches_main(n.id)}.landed", 0)
-        return held, main_rank, rank.get(f"{n.id}.start", 0), n.id
+        target_rank = rank.get(f"{_reaches_target(s, n.id)}.landed", 0)
+        return held, target_rank, rank.get(f"{n.id}.start", 0), n.id
 
-    return [n.id for n in sorted(writers, key=key)]
+    return [n.id for n in sorted(migration_writers(s, repo), key=key)]
 
 
 def migration_order(s: Snapshot, repo: str) -> list[str]:

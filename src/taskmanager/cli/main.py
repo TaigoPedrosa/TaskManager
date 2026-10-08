@@ -143,10 +143,14 @@ def _emit(data: Any, as_yaml: bool = False) -> None:
 
 
 # A restore reads only exports carrying one of these markers; an export without one came from a
-# pre-lifecycle tm, whose statuses and gated edges this version does not store. Version 1 has no
-# ordinals or supersedes edges, and restore reads it as it is.
-EXPORT_FORMAT: dict[str, Any] = {"format": "tm-lifecycle", "version": 2}
-READABLE_EXPORT_FORMATS = ({"format": "tm-lifecycle", "version": 1}, EXPORT_FORMAT)
+# pre-lifecycle tm, whose statuses and gated edges this version does not store. Versions 1 and 2
+# store `merge: main`, which restore reads as `spec`.
+EXPORT_FORMAT: dict[str, Any] = {"format": "tm-lifecycle", "version": 3}
+EXPORT_FORMATS_MERGE_MAIN = (
+    {"format": "tm-lifecycle", "version": 1},
+    {"format": "tm-lifecycle", "version": 2},
+)
+READABLE_EXPORT_FORMATS = (*EXPORT_FORMATS_MERGE_MAIN, EXPORT_FORMAT)
 # Config keys whose value holds only on the machine that set it: an export leaves them out, and
 # a restore keeps the restoring machine's own.
 MACHINE_LOCAL_KEYS = frozenset({"worktree_dir"})
@@ -397,12 +401,22 @@ def spec_add(
     fix: Annotated[
         bool, typer.Option("--fix/--no-fix", help="A rejection is fixed on this node")
     ] = False,
+    land_on: Annotated[
+        str | None,
+        typer.Option(
+            "--land-on",
+            metavar="<branch>",
+            help="The branch the spec lands on (default: repos.<repo>.default_branch)",
+        ),
+    ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
     ops = _get_container(root).get(Operations)
     with _refusing():
-        spec_id = ops.add_spec(title, slug, priority, order, review=review, fix=fix)
+        spec_id = ops.add_spec(
+            title, slug, priority, order, review=review, fix=fix, land_on=land_on
+        )
     print(f"[green]Added spec {spec_id}[/green]")
 
 
@@ -460,6 +474,15 @@ def spec_get(
     _print_container("Spec", _get_container(_get_root(path)), spec_id, "Plans")
 
 
+# A plain string, not a choice of the enum, so a refused value reaches `parse_merge` and its
+# message.
+_MERGE_OPTION = typer.Option(
+    "--merge",
+    metavar="|".join(Merge),
+    help="Land on the parent's branch, or where the spec lands",
+)
+
+
 @plan_app.command("add")
 def plan_add(
     title: str,
@@ -474,9 +497,7 @@ def plan_add(
     fix: Annotated[
         bool | None, typer.Option("--fix/--no-fix", help="A rejection is fixed on this plan")
     ] = None,
-    merge: Annotated[
-        Merge | None, typer.Option("--merge", help="Land on the parent's branch or on main")
-    ] = None,
+    merge: Annotated[str | None, _MERGE_OPTION] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
@@ -563,9 +584,7 @@ def task_add(
     fix: Annotated[
         bool | None, typer.Option("--fix/--no-fix", help="A rejection is fixed by this task")
     ] = None,
-    merge: Annotated[
-        Merge | None, typer.Option("--merge", help="Land on the parent's branch or on main")
-    ] = None,
+    merge: Annotated[str | None, _MERGE_OPTION] = None,
     requires: Annotated[
         str | None, typer.Option("--requires", help="Comma-separated agent capabilities")
     ] = None,
@@ -735,9 +754,7 @@ def task_update(
     fix: Annotated[
         bool | None, typer.Option("--fix/--no-fix", help="A rejection is fixed by this node")
     ] = None,
-    merge: Annotated[
-        Merge | None, typer.Option("--merge", help="Land on the parent's branch or on main")
-    ] = None,
+    merge: Annotated[str | None, _MERGE_OPTION] = None,
     requires: Annotated[
         str | None,
         typer.Option("--requires", help="Comma-separated agent capabilities; '' clears them"),
@@ -835,6 +852,7 @@ def task_get(
                 "requires": task.requires,
                 "land_order": task.land_order,
                 "landing_chain": [] if is_decision else landing_chain(snapshot, task_id),
+                "lands_on": None if is_decision else snapshot.nodes[task_id].top,
                 "depends_on": [
                     {"id": d, "status": n.status.value} if n else {"id": d} for d, n in deps.items()
                 ],
@@ -1547,8 +1565,8 @@ def verify_run(
             "--ref",
             help=(
                 "Git ref to check the task's path verifications against (e.g. tm/<task-id>), "
-                "read as-is with no fetch. Default: origin/main, fetched first. Also exported "
-                "to a test_command as TM_VERIFY_REF, unset when --ref is omitted."
+                "read as-is with no fetch. Default: origin/<the branch the task's chain lands "
+                "on>, fetched first. Exported to a test_command as TM_VERIFY_REF either way."
             ),
         ),
     ] = None,
@@ -2212,12 +2230,6 @@ def restore_cmd(
     if not docs and decisions_doc is None:
         print(f"[red]No export files in {directory}[/red]")
         raise typer.Exit(code=1)
-    # Documents depend on each other, so the first pass keeps only the edges a document can
-    # satisfy by itself and the second adds the rest; decisions go in between so a task's
-    # depends_on edge onto one resolves in the second pass, then specs go last so their full
-    # data wins over the stub a plan's document carries.
-    plan_docs = [d for d in docs if d.get("plans")]
-    spec_docs = [d for d in docs if not d.get("plans")]
 
     def nodes_of(doc: dict[str, Any]) -> list[dict[str, Any]]:
         plans = doc.get("plans", [])
@@ -2226,6 +2238,18 @@ def restore_cmd(
             *(n for p in plans for n in [p, *p.get("tasks", [])]),
             *doc.get("tasks", []),
         ]
+
+    if export_format in EXPORT_FORMATS_MERGE_MAIN:
+        decisions = decisions_doc["decisions"] if decisions_doc else []
+        for node in [*(n for d in docs for n in nodes_of(d)), *decisions]:
+            if node.get("merge") == "main":
+                node["merge"] = Merge.SPEC.value
+    # Documents depend on each other, so the first pass keeps only the edges a document can
+    # satisfy by itself and the second adds the rest; decisions go in between so a task's
+    # depends_on edge onto one resolves in the second pass, then specs go last so their full
+    # data wins over the stub a plan's document carries.
+    plan_docs = [d for d in docs if d.get("plans")]
+    spec_docs = [d for d in docs if not d.get("plans")]
 
     for doc in [*plan_docs, *spec_docs]:
         first = copy.deepcopy(doc)
@@ -2249,6 +2273,17 @@ def restore_cmd(
             )
     specs = sum(1 for d in spec_docs if d.get("spec"))
     print(f"[green]Restored {len(plan_docs)} plans and {specs} specs into {root}[/green]")
+
+
+def _config_store(root: Path) -> ConfigStore:
+    """The store `tm config` writes through: moving a default branch is checked against every
+    branch cut from it."""
+    return ConfigStore(
+        root,
+        lambda before, after: (
+            _get_container(root).get(Operations).check_default_branches(before, after)
+        ),
+    )
 
 
 @config_app.command("list")
@@ -2291,8 +2326,8 @@ def config_set(
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
-    with _user_errors():
-        ConfigStore(root).set(key, value)
+    with _user_errors(), _refusing():
+        _config_store(root).set(key, value)
     print(f"[green]Set {escape(key)}[/green]")
 
 
@@ -2302,8 +2337,8 @@ def config_unset(
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     root = _get_root(path)
-    with _user_errors():
-        ConfigStore(root).unset(key)
+    with _user_errors(), _refusing():
+        _config_store(root).unset(key)
     print(f"[green]Unset {escape(key)}[/green]")
 
 

@@ -67,8 +67,13 @@ class SpecCreate(BaseModel):
     priority: int = 50
     review: bool = False
     fix: bool = False
+    land_on: str | None = None
 
 
+# `land_on` is written as given and refused by the write's own check, which allows it on a spec
+# only, so a plan or a non-spec update naming it gets that rule's message, not a silent drop.
+# `merge` is a plain string in every body below, so a refused value reaches `parse_merge` and its
+# message rather than a schema error.
 class PlanCreate(BaseModel):
     title: str
     spec: str
@@ -77,7 +82,8 @@ class PlanCreate(BaseModel):
     order: int = 0
     review: bool | None = None
     fix: bool | None = None
-    merge: Merge | None = None
+    merge: str | None = None
+    land_on: str | None = None
 
 
 class TaskCreate(BaseModel):
@@ -90,7 +96,7 @@ class TaskCreate(BaseModel):
     models: list[str] = Field(default_factory=list)
     review: bool | None = None
     fix: bool | None = None
-    merge: Merge | None = None
+    merge: str | None = None
     requires: list[str] = Field(default_factory=list)
     frontmatter: dict[str, Any] = Field(default_factory=dict)
 
@@ -104,9 +110,10 @@ class NodeUpdate(BaseModel):
     frontmatter_unset: list[str] | None = None
     review: bool | None = None
     fix: bool | None = None
-    merge: Merge | None = None
+    merge: str | None = None
     requires: list[str] | None = None
     land_order: list[str] | None = None
+    land_on: str | None = None
 
 
 class NoteRequest(BaseModel):
@@ -723,7 +730,12 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     def create_spec(body: SpecCreate, actor: Actor) -> dict[str, str]:
         with _refusals():
             spec_id = operations.with_actor(actor).add_spec(
-                body.title, body.slug, body.priority, review=body.review, fix=body.fix
+                body.title,
+                body.slug,
+                body.priority,
+                review=body.review,
+                fix=body.fix,
+                land_on=body.land_on,
             )
         return {"id": spec_id}
 
@@ -739,6 +751,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
                 review=body.review,
                 fix=body.fix,
                 merge=body.merge,
+                land_on=body.land_on,
             )
         return {"id": plan_id}
 
@@ -763,6 +776,9 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
 
     @app.patch("/api/nodes/{node_id}")
     def patch_node(node_id: str, body: NodeUpdate, actor: Actor) -> dict[str, Any]:
+        frontmatter_set = body.frontmatter_set
+        if body.land_on is not None:
+            frontmatter_set = {**(frontmatter_set or {}), "land_on": body.land_on}
         with _refusals():
             changed = operations.with_actor(actor).update_node(
                 node_id,
@@ -770,7 +786,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
                 priority=body.priority,
                 models=body.acceptable_models,
                 repo=body.target_repo,
-                frontmatter_set=body.frontmatter_set,
+                frontmatter_set=frontmatter_set,
                 frontmatter_unset=body.frontmatter_unset,
                 review=body.review,
                 fix=body.fix,

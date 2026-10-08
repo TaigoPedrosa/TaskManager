@@ -501,7 +501,6 @@ function pageBarHtml(decisionId = null) {
 // Below sm a toast sits above the fixed answer bar, across the page: 12px over the bar, whose
 // height is 57px, or 81px once its "Answer <pick>" line shows.
 function liftToasts(bar) {
-  toastRoot.classList.toggle('max-sm:left-4', Boolean(bar));
   toastRoot.classList.toggle('max-sm:items-stretch', Boolean(bar));
   toastRoot.classList.toggle('max-sm:bottom-[69px]', bar === 'empty');
   toastRoot.classList.toggle('max-sm:bottom-[93px]', bar === 'picked');

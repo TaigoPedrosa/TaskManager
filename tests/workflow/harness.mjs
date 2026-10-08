@@ -41,11 +41,12 @@ export function scriptCksum(text) {
 
 // A repository as a landed container leaves it: on main, each of `landings` in turn lands by a
 // `merge(<lander>): land tm/<lander> on <onto>` merge bringing `<lander>.txt`, after a commit of
-// main's own so its first parent differs from the branch; each of `inner` lands on tm/<id> before
-// tm/<id> lands, as a child with merge: parent does. A later commit shares `merge(<id>): `'s
-// prefix, and origin/main and tm/S1 both point there. Every git call throws on a non-zero exit, so
-// a fixture that failed to build fails the test.
-export function landedRepo(dir, { id, landings = [id], inner = [], onto = 'main' }) {
+// main's own so its first parent differs from the branch; a lander in `elsewhere` names the
+// target it maps to instead of `onto`; each of `inner` lands on tm/<id> before tm/<id> lands, as a
+// child with merge: parent does. A later commit shares `merge(<id>): `'s prefix, and origin/main,
+// origin/<onto> and tm/S1 all point there. Every git call throws on a non-zero exit, so a fixture
+// that failed to build fails the test.
+export function landedRepo(dir, { id, landings = [id], inner = [], onto = 'main', elsewhere = {} }) {
   const git = (...a) => execFileSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { stdio: 'pipe' })
   const commit = (file, subject) => (writeFileSync(`${dir}/${file}`, subject), git('add', file), git('commit', '-q', '-m', subject))
   const branch = lander => (git('checkout', '-q', '-b', `tm/${lander}`), commit(`${lander}.txt`, `feat(${lander}): its change`))
@@ -61,10 +62,11 @@ export function landedRepo(dir, { id, landings = [id], inner = [], onto = 'main'
     }
     git('checkout', '-q', 'main')
     commit(`before-${lander}.txt`, 'before')
-    git('merge', '-q', '--no-ff', '-m', `merge(${lander}): land tm/${lander} on ${onto}`, `tm/${lander}`)
+    git('merge', '-q', '--no-ff', '-m', `merge(${lander}): land tm/${lander} on ${elsewhere[lander] ?? onto}`, `tm/${lander}`)
   }
   commit('after.txt', `merge(${id}): main moved`)
   git('update-ref', 'refs/remotes/origin/main', 'main')
+  git('update-ref', `refs/remotes/origin/${onto}`, 'main')
   git('branch', 'tm/S1', 'main')
 }
 

@@ -10,10 +10,20 @@ from typing import Final, Protocol
 from taskmanager.core.enums import NodeKind
 from taskmanager.core.lifecycle import REOPENABLE
 from taskmanager.core.status import EXITS, IN_STEP, Merge, Status
-from taskmanager.engine.chains import MAIN, ON_TARGET, landing_target
-from taskmanager.engine.stepgraph import SnapNode, Snapshot, find_cycle, format_cycle
+from taskmanager.engine.chains import ON_TARGET, TOP, landing_target, target
+from taskmanager.engine.git import valid_branch
+from taskmanager.engine.snapshot import ORIGIN_MAIN
+from taskmanager.engine.stepgraph import (
+    SnapNode,
+    Snapshot,
+    find_cycle,
+    format_cycle,
+    migration_writers,
+)
 
 _SET_ASIDE_OR_FAILED = EXITS | {Status.FAILED}
+# Work whose code never lands again, so nothing reads where it would.
+_LANDS_NO_MORE: Final = frozenset({Status.COMPLETED, Status.SUPERSEDED})
 # What a `sensitive:` key may name: a fix touching one of these gets one review scoped to its
 # findings before it lands.
 SENSITIVE_AREAS: Final = ("tenant", "rls", "crypto", "migration")
@@ -28,7 +38,7 @@ class Refusal:
 
 class BranchFacts(Protocol):
     def branch_exists(self, node_id: str) -> bool: ...
-    def base_matches(self, node_id: str, new_target: str) -> bool: ...
+    def base_matches(self, node_id: str, new_target: str, new_top: str) -> bool: ...
 
 
 def _flags(after: Snapshot, n: SnapNode) -> list[Refusal]:
@@ -71,7 +81,12 @@ def _flags(after: Snapshot, n: SnapNode) -> list[Refusal]:
         )
     if n.merge == Merge.PARENT and (n.kind == NodeKind.SPEC or n.parent is None):
         refusals.append(
-            Refusal(n.id, 3, f"{n.id}: a spec or a parentless node lands on main; set merge=main")
+            Refusal(
+                n.id,
+                3,
+                f"{n.id}: a spec or a parentless node has no parent branch to land on; "
+                f"set merge=spec to land on its target {n.top}",
+            )
         )
     unknown = [area for area in n.sensitive if area not in SENSITIVE_AREAS]
     if unknown:
@@ -83,21 +98,36 @@ def _flags(after: Snapshot, n: SnapNode) -> list[Refusal]:
                 f"{', '.join(SENSITIVE_AREAS)}",
             )
         )
-    if n.merge == Merge.PARENT and n.literal_origin_main:
+    on_parent = n.merge == Merge.PARENT
+    if n.literal_origin_main and (on_parent or f"origin/{n.top}" != ORIGIN_MAIN):
+        where = "its parent's branch" if on_parent else f"its target {n.top}"
         refusals.append(
             Refusal(
                 n.id,
                 5,
-                f"{n.id}: lands on its parent's branch but a test_command names origin/main; "
+                f"{n.id}: lands on {where} but a test_command names {ORIGIN_MAIN}; "
                 "read the landing target from TM_VERIFY_REF instead",
             )
+        )
+    if n.land_on is not None and n.kind != NodeKind.SPEC:
+        refusals.append(
+            Refusal(
+                n.id,
+                12,
+                f"{n.id}: land_on is set on a spec only, and {n.id} is a {n.kind}; unset it, "
+                "or set it on its spec",
+            )
+        )
+    elif n.land_on is not None and not valid_branch(n.land_on):
+        refusals.append(
+            Refusal(n.id, 12, f"{n.id}: land_on '{n.land_on}' is not a branch name git accepts")
         )
     return refusals
 
 
-def _unreviewed_on_main(before: Snapshot, after: Snapshot, n: SnapNode) -> list[Refusal]:
+def _unreviewed_on_target(before: Snapshot, after: Snapshot, n: SnapNode) -> list[Refusal]:
     parent = after.nodes.get(n.parent) if n.parent is not None else None
-    if parent is None or not parent.review or n.review or n.merge != Merge.MAIN:
+    if parent is None or not parent.review or n.review or n.merge != Merge.SPEC:
         return []
     # Only the write that makes this shape is refused: a node already in it, left as it is,
     # never blocks a write around it.
@@ -114,9 +144,9 @@ def _unreviewed_on_main(before: Snapshot, after: Snapshot, n: SnapNode) -> list[
         Refusal(
             n.id,
             10,
-            f"{n.id}: lands on main with review off, so its code would reach main unreviewed: "
-            f"{parent.id}'s review reads only what lands on its branch; set merge=parent, or "
-            "turn review on",
+            f"{n.id}: lands on its target {n.top} with review off, so its code would land there "
+            f"unreviewed: {parent.id}'s review reads only what lands on its branch; set "
+            "merge=parent, or turn review on",
         )
     ]
 
@@ -124,13 +154,16 @@ def _unreviewed_on_main(before: Snapshot, after: Snapshot, n: SnapNode) -> list[
 def _retarget(
     before: Snapshot, after: Snapshot, n: SnapNode, branches: BranchFacts
 ) -> list[Refusal]:
-    if n.id not in before.nodes or not branches.branch_exists(n.id):
+    old = before.nodes.get(n.id)
+    if old is None:
         return []
     new_target = landing_target(after, n.id)
-    if new_target == landing_target(before, n.id) or branches.base_matches(n.id, new_target):
+    if new_target == landing_target(before, n.id):
+        return []
+    if not branches.branch_exists(n.id) or branches.base_matches(n.id, new_target, n.top):
         return []
     # A branch cut from a container's branch would carry that container's unreviewed code.
-    where = "main" if new_target == MAIN else new_target
+    where = new_target.removeprefix(TOP)
     refused = f"{n.id}: its branch exists and was not cut from {where}"
     # Only a node already set aside or failed reopens, and landed or replaced work never does.
     if n.status in ON_TARGET:
@@ -154,6 +187,13 @@ def _retarget(
             n.id, 4, f"{refused}; {steps}reopen it with --new-branch before changing where it lands"
         )
     ]
+
+
+def retargets(before: Snapshot, after: Snapshot, branches: BranchFacts) -> list[Refusal]:
+    """Rule 4 alone, over every node whose code still lands: for a write that moves where whole
+    chains land rather than any one node."""
+    live = [n for _, n in sorted(after.nodes.items()) if n.status not in _LANDS_NO_MORE]
+    return [refusal for n in live for refusal in _retarget(before, after, n, branches)]
 
 
 def _placement(before: Snapshot, after: Snapshot, n: SnapNode) -> list[Refusal]:
@@ -228,22 +268,75 @@ def _busy(before: Snapshot, after: Snapshot, n: SnapNode) -> list[Refusal]:
     ]
 
 
+def _crossings(s: Snapshot) -> dict[tuple[str, ...], Refusal]:
+    """Every wait the step graph draws between two targets, which no meeting node can satisfy:
+    a dependency edge, once per node it gates, and a migration chain's link."""
+    targets: dict[str, str] = {}
+
+    def on(node_id: str) -> str:
+        if node_id not in targets:
+            targets[node_id] = target(s, node_id)
+        return targets[node_id]
+
+    def work(node_id: str) -> bool:
+        return node_id in s.nodes and s.nodes[node_id].kind != NodeKind.DECISION
+
+    found: dict[tuple[str, ...], Refusal] = {}
+    for owner, dep in s.edges:
+        if not (work(owner) and work(dep)) or s.status(dep) == Status.SUPERSEDED:
+            continue
+        for d in [owner, *s.descendants(owner)]:
+            key = (owner, dep, on(d), on(dep))
+            if not work(d) or on(d) == on(dep) or key in found:
+                continue
+            who = owner if d == owner else f"{d} under it"
+            found[key] = Refusal(
+                owner,
+                13,
+                f"{owner}: depends on {dep}, which lands on {on(dep)}, but {who} lands on "
+                f"{on(d)}; remove the edge, or land both on one target",
+            )
+    for repo in sorted({n.repo for n in s.nodes.values() if n.writes_migration and n.repo}):
+        writers = sorted(n.id for n in migration_writers(s, repo))
+        for i, a in enumerate(writers):
+            for b in writers[i + 1 :]:
+                if on(a) != on(b):
+                    found[(repo, a, b, on(a), on(b))] = Refusal(
+                        a,
+                        13,
+                        f"{a}: writes {repo}'s migrations on {on(a)} while {b} writes them on "
+                        f"{on(b)}; land one of them first, or land both on one target",
+                    )
+    return found
+
+
 def validate(
     before: Snapshot, after: Snapshot, touched: set[str], branches: BranchFacts
 ) -> list[Refusal]:
     present = {node_id for node_id in touched if node_id in after.nodes}
-    # A write to a container can break a rule its children keep only through it.
-    checked = present | {child for node_id in present for child in after.children(node_id)}
+    # A write to a container can break a rule its children keep only through it, and a spec's
+    # `land_on` moves every node below it that lands at the top.
+    retopped = {
+        node_id
+        for node_id, n in after.nodes.items()
+        if (old := before.nodes.get(node_id)) is not None and old.top != n.top
+    }
+    checked = (
+        present | {child for node_id in present for child in after.children(node_id)} | retopped
+    )
     refusals: list[Refusal] = []
     for node_id in sorted(checked):
         n = after.nodes[node_id]
         if n.kind == NodeKind.DECISION:
             continue
         refusals += _flags(after, n)
-        refusals += _unreviewed_on_main(before, after, n)
+        refusals += _unreviewed_on_target(before, after, n)
         refusals += _retarget(before, after, n, branches)
         refusals += _placement(before, after, n)
         refusals += _busy(before, after, n)
+    # Only the write that draws a wait across targets is refused, never one around it.
+    crossed = _crossings(after)
+    refusals += [crossed[k] for k in sorted(crossed.keys() - _crossings(before).keys())]
     cycle = find_cycle(after)
     if cycle is not None:
         refusals.append(

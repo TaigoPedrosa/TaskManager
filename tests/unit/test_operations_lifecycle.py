@@ -93,9 +93,9 @@ def test_new_nodes_start_ready_with_the_flags_of_their_kind(env: Env) -> None:
     node_repo, _runtime, _ledger, ops = env
     spec, plan, task = tree(ops)
     s, p, t = get(node_repo, spec), get(node_repo, plan), get(node_repo, task)
-    assert (s.status, s.review, s.fix, s.merge) == (Status.READY, False, False, Merge.MAIN)
-    assert (p.status, p.review, p.fix, p.merge) == (Status.READY, False, False, Merge.MAIN)
-    assert (t.status, t.review, t.fix, t.merge) == (Status.READY, True, True, Merge.MAIN)
+    assert (s.status, s.review, s.fix, s.merge) == (Status.READY, False, False, Merge.SPEC)
+    assert (p.status, p.review, p.fix, p.merge) == (Status.READY, False, False, Merge.SPEC)
+    assert (t.status, t.review, t.fix, t.merge) == (Status.READY, True, True, Merge.SPEC)
 
 
 def test_add_plan_with_review_stores_the_flags_and_creates_no_gate_node(env: Env) -> None:
@@ -139,7 +139,7 @@ def test_landing_on_a_parent_is_refused_for_a_node_with_no_parent(env: Env) -> N
     with pytest.raises(OperationError) as exc:
         ops.update_node("LONE", merge=Merge.PARENT)
     assert exc.value.status_code == 400
-    assert get(node_repo, "LONE").merge == Merge.MAIN
+    assert get(node_repo, "LONE").merge == Merge.SPEC
 
 
 def test_review_without_fix_is_allowed_landing_where_the_parent_reviews_and_fixes(
@@ -171,7 +171,7 @@ def test_landing_on_a_parent_is_refused_for_a_test_command_naming_origin_main(en
     with pytest.raises(OperationError) as exc:
         ops.update_node(task, merge=Merge.PARENT)
     assert exc.value.status_code == 400
-    assert get(node_repo, task).merge == Merge.MAIN
+    assert get(node_repo, task).merge == Merge.SPEC
 
 
 @pytest.mark.parametrize("landed", [Status.COMPLETED, Status.LANDED])
@@ -266,7 +266,7 @@ def test_moving_a_branch_cut_from_its_parent_onto_main_is_refused(env: Env, tmp_
     git(work, "branch", "--no-track", f"tm/{task}", f"tm/{plan}")
     git(work, "checkout", "--detach")
     with pytest.raises(OperationError) as exc:
-        ops.update_node(task, merge=Merge.MAIN)
+        ops.update_node(task, merge=Merge.SPEC)
     assert exc.value.status_code == 409
     assert get(node_repo, task).merge == Merge.PARENT
 
@@ -283,7 +283,7 @@ def test_moving_a_landed_branch_is_refused_as_landed_code(env: Env, tmp_path: Pa
     git(work, "checkout", "--detach")
     set_status(node_repo, task, Status.LANDED)
     with pytest.raises(OperationError, match="its code has landed; file a new task") as exc:
-        ops.update_node(task, merge=Merge.MAIN)
+        ops.update_node(task, merge=Merge.SPEC)
     assert exc.value.status_code == 409
     assert get(node_repo, task).merge == Merge.PARENT
 
@@ -617,8 +617,8 @@ def test_an_update_declaring_a_migration_makes_the_node_s_fix_take_a_review(env:
 
 
 UNREVIEWED_ON_MAIN = (
-    "lands on main with review off, so its code would reach main unreviewed: S1-P1's review "
-    "reads only what lands on its branch; set merge=parent, or turn review on"
+    "lands on its target main with review off, so its code would land there unreviewed: "
+    "S1-P1's review reads only what lands on its branch; set merge=parent, or turn review on"
 )
 
 
@@ -632,9 +632,9 @@ UNREVIEWED_ON_MAIN = (
             (True, True, Merge.PARENT),
         ),
         ({"review": True}, (True, False, Merge.PARENT)),
-        ({"review": True, "fix": True, "merge": Merge.MAIN}, (True, True, Merge.MAIN)),
+        ({"review": True, "fix": True, "merge": Merge.SPEC}, (True, True, Merge.SPEC)),
     ],
-    ids=["plain", "sensitive-key", "writes-a-migration", "explicit-review", "explicit-main"],
+    ids=["plain", "sensitive-key", "writes-a-migration", "explicit-review", "explicit-spec"],
 )
 def test_add_task_under_a_reviewed_plan_lands_on_its_branch_and_reviews_only_if_sensitive(
     env: Env, given: dict[str, object], expected: tuple[bool, bool, Merge]
@@ -656,7 +656,7 @@ def test_add_plan_under_a_reviewed_spec_lands_on_the_spec_s_branch(env: Env) -> 
 
 @pytest.mark.parametrize(
     "given",
-    [{"merge": Merge.MAIN}, {"merge": Merge.MAIN, "review": False, "fix": False}],
+    [{"merge": Merge.SPEC}, {"merge": Merge.SPEC, "review": False, "fix": False}],
     ids=["review-by-default", "review-stated-off"],
 )
 def test_add_task_landing_on_main_unreviewed_under_a_reviewed_plan_is_refused(
@@ -679,7 +679,7 @@ def test_an_update_sending_a_reviewed_plan_s_child_to_main_unreviewed_is_refused
     node_repo, _runtime, _ledger, ops = env
     _spec, _plan, task = tree(ops, review=True, fix=True)
     with pytest.raises(OperationError, match=f"{task}: {UNREVIEWED_ON_MAIN}"):
-        ops.update_node(task, merge=Merge.MAIN)
+        ops.update_node(task, merge=Merge.SPEC)
     assert get(node_repo, task).merge == Merge.PARENT
 
 
@@ -697,6 +697,6 @@ def test_a_child_already_landing_on_main_unreviewed_does_not_block_a_write_besid
 ) -> None:
     node_repo, _runtime, _ledger, ops = env
     _spec, plan, task = tree(ops, review=True, fix=True)
-    node_repo.save_node(get(node_repo, task).model_copy(update={"merge": Merge.MAIN}))
+    node_repo.save_node(get(node_repo, task).model_copy(update={"merge": Merge.SPEC}))
     ops.update_node(plan, title="renamed")
     assert get(node_repo, plan).title == "renamed"

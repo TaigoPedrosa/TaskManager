@@ -43,7 +43,7 @@ const BODIES = {
     sections: [{ key: 'context', header: null, content: 'Why.', ordinal: 1 }],
     verifications: [{ id: 7, verification_type: 'file_exists', target_path: 'src/app.py', expected_pattern: null }],
   }),
-  T: body({ ...TASK, fix: true, merge_attempts: 2, requires: ['figma'], land_order: ['A', 'B'], base_chain: ['P', 'MAIN'],
+  T: body({ ...TASK, fix: true, merge_attempts: 2, requires: ['figma'], land_order: ['A', 'B'], base_chain: ['P', 'main'],
     frontmatter: { attachments: [{ asset: 'a1.png', name: 'shot.png', mime: 'image/png', size_bytes: 2048, source: { state: 'fresh' } }] } }, {
     sections: [
       { key: 'objective', header: '## Objective', content: 'Do it.', ordinal: 1 },
@@ -61,7 +61,7 @@ const BODIES = {
     conditions: [{ idx: 0, needs: 'The CLI is on PATH', command: 'command -v "tailwindcss" && echo <ok>', stage: 'claim', last_result: null }],
     jobs: [{ id: 'j1', kind: 'land', node_id: 'T', repo: '.', target: 'main', state: 'succeeded', step: null, heartbeat: BEAT }],
   }),
-  U: body({ ...LEASED, step_failures: 1, base_chain: ['P', 'MAIN'] }, {
+  U: body({ ...LEASED, step_failures: 1, base_chain: ['P', 'main'] }, {
     lease: { agent_id: 'wf-u', action: 'implement', acquired_at: BEAT, last_heartbeat: BEAT },
   }),
 };
@@ -83,7 +83,7 @@ function server(overrides = {}) {
       const found = BODIES[decodeURIComponent(m[1])];
       return found ? jsonResponse(200, found) : jsonResponse(404, { detail: 'Node not found' });
     }
-    if (u.pathname === '/api/meta') return jsonResponse(200, { dispatch: { wave_size: 5, tick_budget: 20 }, plans: [{ id: 'P', title: 'A plan' }] });
+    if (u.pathname === '/api/meta') return jsonResponse(200, { dispatch: { wave_size: 5, tick_budget: 20 }, plans: [{ id: 'P', title: 'A plan' }], merge_targets: ['parent', 'spec'] });
     return undefined;
   };
 }

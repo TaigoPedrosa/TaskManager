@@ -1,5 +1,5 @@
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, Final, Literal, NamedTuple
 
@@ -8,8 +8,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from taskmanager.core.enums import EmbeddingProviderType
 from taskmanager.core.status import Action
+from taskmanager.engine.git import valid_branch
 
 DEFAULT_KEY_ENV: Final = "TASKMANAGER_OPENAI_API_KEY"
+# Where a chain lands at the top when neither its spec's `land_on` nor its repository's
+# `default_branch` names a branch.
+DEFAULT_BRANCH: Final = "main"
 
 KEYS: Final = (
     "embeddings.provider",
@@ -107,7 +111,15 @@ class Gate(BaseModel):
 class RepoConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    default_branch: str = DEFAULT_BRANCH
     gates: dict[Literal["main", "parent"], Gate] = Field(default_factory=dict)
+
+    @field_validator("default_branch")
+    @classmethod
+    def _is_a_branch_name(cls, value: str) -> str:
+        if not valid_branch(value):
+            raise ValueError(f"'{value}' is not a branch name git accepts")
+        return value
 
 
 class DispatchConfig(BaseModel):
@@ -151,6 +163,16 @@ class ProjectConfig(BaseModel):
             # A single number is the implementer's lease; every other action keeps its default.
             return self.lease_ttl if action == Action.IMPLEMENT else LEASE_TTL_DEFAULTS[action]
         return self.lease_ttl.get(action, LEASE_TTL_DEFAULTS[action])
+
+    def default_branch(self, repo: str | None) -> str:
+        found = self.repos.get(repo) if repo is not None else None
+        return found.default_branch if found is not None else DEFAULT_BRANCH
+
+
+def moved_defaults(before: ProjectConfig, after: ProjectConfig) -> list[str]:
+    """Each repository whose default branch differs from `before` to `after`, by name."""
+    repos = {*before.repos, *after.repos}
+    return sorted(r for r in repos if before.default_branch(r) != after.default_branch(r))
 
 
 class Resolved(NamedTuple):
@@ -232,8 +254,13 @@ def _check_all_bounds(flat: dict[str, Any]) -> None:
 class ConfigStore:
     """`<root>/.taskmanager/config.yaml`, holding only the keys that were set."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(
+        self, root: Path, guard: Callable[[ProjectConfig, ProjectConfig], None] | None = None
+    ) -> None:
         self.path = root / ".taskmanager" / "config.yaml"
+        # Shown the stored and the written `repos` before a write that moves a default branch;
+        # raising refuses the write.
+        self.guard = guard
 
     def read(self) -> dict[str, Any]:
         if not self.path.exists():
@@ -246,7 +273,15 @@ class ConfigStore:
             raise ConfigError(f"{self.path} is not a mapping")
         return {key: _typed(key, value) for key, value in _flatten(loaded)}
 
+    def _check_branches(self, flat: dict[str, Any]) -> None:
+        if self.guard is None:
+            return
+        before, after = self.branches(), ProjectConfig(repos=flat.get("repos", {}))
+        if moved_defaults(before, after):
+            self.guard(before, after)
+
     def _write(self, flat: dict[str, Any]) -> None:
+        self._check_branches(flat)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(yaml.safe_dump(_nest(flat), sort_keys=True), encoding="utf-8")
 
@@ -263,6 +298,7 @@ class ConfigStore:
         if flat:
             self._write(flat)
         else:
+            self._check_branches(flat)
             self.path.unlink(missing_ok=True)
 
     def resolve(self, key: str, flag: Any = None) -> Resolved:
@@ -296,6 +332,10 @@ class ConfigStore:
         if flag is not None:
             return int(_typed("lease_ttl", flag))
         return ProjectConfig(lease_ttl=self.resolve("lease_ttl").value).lease_ttl_for(action)
+
+    def branches(self) -> ProjectConfig:
+        """Only `repos` resolved: a reader of default branches needs no other key's read."""
+        return ProjectConfig(repos=self.resolve("repos").value)
 
     def document(self) -> dict[str, Any] | None:
         """The stored keys as a nested mapping, or None when nothing was ever set."""

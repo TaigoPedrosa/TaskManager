@@ -28,15 +28,15 @@ That is the brief the implementer was given, and the only standard you review ag
 
 ## 3. Read the branch
 
-In each repository the claim's `repos` names, `<base>` is `origin/main` when `base` is `main`, and the container branch otherwise:
+In each repository the claim's `repos` names, `<base>` is the claim's `base` as printed: the branch the node's spec lands on, or the container branch the node lands on. `<base-ref>` is where it is read: `origin/<base>` for the spec's target, and `<base>` itself for a container branch, which is local to the clone:
 
 ```
-git -C <repo> log --oneline <base>..<branch>
-git -C <repo> diff <base>...<branch>
+git -C <repo> log --oneline <base-ref>..<branch>
+git -C <repo> diff <base-ref>...<branch>
 git -C <repo> show <branch>:<path>
 ```
 
-For a review claimed from `LANDED`, `<base>...<branch>` is empty: the node's code is what landed on its target, `<base>`. That is its own landing merge, and the landing merge of every node under it that landed on that target itself rather than on the node's branch; a node whose children all landed that way has no landing merge of its own. List the nodes under it, a plan's with `tm task list --plan <node-id> --json`, a spec's with `tm plan list --spec <node-id> --json` and `tm task list --spec <node-id> --json`. Then read every one of those merges against its first parent, the target as it stood before it landed:
+For a review claimed from `LANDED`, `<base-ref>...<branch>` is empty: the node's code is what landed on its target, `<base>`. That is its own landing merge, and the landing merge of every node under it that landed on that target itself rather than on the node's branch; a node whose children all landed that way has no landing merge of its own. List the nodes under it, a plan's with `tm task list --plan <node-id> --json`, a spec's with `tm plan list --spec <node-id> --json` and `tm task list --spec <node-id> --json`. Then read every one of those merges against its first parent, the target as it stood before it landed:
 
 ```
 git -C <repo> log -p --diff-merges=first-parent -E --grep '^merge[(](<node-id>|<id under it>|...)[)]: land [^ ]+ on <base>$' <branch> --

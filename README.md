@@ -2,13 +2,13 @@
 
 [![CI](https://github.com/TaigoPedrosa/TaskManager/actions/workflows/ci.yml/badge.svg)](https://github.com/TaigoPedrosa/TaskManager/actions/workflows/ci.yml)
 
-A local task tracker for agents: a SQLite graph of specs, plans and tasks that claims each step of a node, lands finished work on its parent's branch or on `main`, and verifies it there.
+A local task tracker for agents: a SQLite graph of specs, plans and tasks that claims each step of a node, lands finished work on its parent's branch or on the branch its spec targets, and verifies it there.
 
 ![tm web, the Document view of a new project](docs/tm-web.png)
 
 ## Requirements
 
-macOS or Linux; Python 3.14 (uv fetches it); git; every repository tm lands into needs an `origin` remote with a `main` branch. The plugin runs in Claude Code.
+macOS or Linux; Python 3.14 (uv fetches it); git; every repository tm lands into needs an `origin` remote with its default branch (`repos.<repo>.default_branch`, `main` unless set). The plugin runs in Claude Code.
 
 ## Install
 
@@ -23,7 +23,7 @@ The plugin carries the skills, the `/taskmanager:tm`, `:task` and `:board` comma
 ## Quickstart
 
 ```bash
-cd my-repo                      # a clone with origin/main
+cd my-repo                      # a clone with its default branch on origin
 tm init
 tm config set repos '{".": {gates: {main: {command: "<your test command>"}}}}'
 tm guide plan                   # how to write plan.yaml
@@ -35,7 +35,7 @@ tm web
 - `.` names the repository when the tm root is the repository itself; every task in `plan.yaml`
   names it in `target_repo`.
 - `<your test command>` is the gate tm runs on the merged tip before a landing pushes.
-- A spec lands on its own branch, the one its `land_on` names, and on `main` without one.
+- A spec lands on its own branch, the one its `land_on` names, and on its repository's default branch (`main` unless set) without one.
 - `tm wave discover` prints what is claimable without claiming it, and `tm web` opens the board.
 - To dispatch, ask Claude Code for a wave: the plugin's dispatcher skill reads
   `tm guide dispatch` and runs the `tm-wave` workflow.
@@ -54,13 +54,18 @@ tm web
 A node goes `READY`, `IMPLEMENTING`, `IMPLEMENTED`, then through review, fix and landing as its
 `review`, `fix` and `merge` flags say. `tm guide overview` draws the whole cycle.
 
+- Every spec lands on a target branch. Its `land_on` frontmatter names the feature, release or
+  fix branch its work belongs to, and every node under it lands there; taking that branch on to
+  environments and to `main` is yours. A spec with no `land_on` lands on
+  `repos.<repo>.default_branch`, `main` unless set. `merge: spec` lands a node where its spec
+  lands, and `merge: parent` on the branch of the plan or spec above it.
 - Landing comes first. A plan or spec lands on its target once every child has landed on its
   branch; with `review` off that completes it, and with `review` on it reads `LANDED`: its code
   is on the target and its one review is owed.
 - One review, on the landed target. It reads the container's whole landing, so its children
   take `review: false`, `fix: false` and `merge: parent` by default, and a sensitive child keeps
   `review` and `fix` on; an explicit flag on a child still wins, and a child with `review` off
-  that would land on `main` is refused. An approval completes the container.
+  that would land on the spec's target is refused. An approval completes the container.
 - Fixes land without a re-review. A rejection is fixed on a branch cut from the landed target,
   and that fix lands as soon as it is done. A task with `review` on is still reviewed before it
   lands, and its fix lands the same way.

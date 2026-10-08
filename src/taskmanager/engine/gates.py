@@ -106,14 +106,16 @@ def red_target_cleared(
     repo: str,
     sha: str,
     template_hash: str,
-    target: str = "main",
+    target: str,
+    *,
+    remote: bool,
 ) -> bool:
-    """What a landing parked on a red target waits on: the target (`main`, or a local container
-    branch) moved past `sha`, and the baseline at the new sha, if one ran, no longer fails the
-    parked set. An unreadable target is not cleared."""
+    """What a landing parked on a red target waits on: the target (a top branch read on origin
+    when `remote`, else a local container branch) moved past `sha`, and the baseline at the new
+    sha, if one ran, no longer fails the parked set. An unreadable target is not cleared."""
     current = (
-        gitops.ls_remote(repo_dir, "refs/heads/main")[0]
-        if target == "main"
+        gitops.ls_remote(repo_dir, f"refs/heads/{target}")[0]
+        if remote
         else gitops.rev_parse(repo_dir, f"refs/heads/{target}")
     )
     if not current or current == sha:
@@ -136,27 +138,35 @@ def clear_red_targets(nodes: NodeRepository, node_id: str) -> None:
 
 
 def red_target_command(
-    root: Path, repo: str, sha: str, template_hash: str, target: str = "main"
+    root: Path, repo: str, sha: str, template_hash: str, target: str, *, remote: bool
 ) -> str:
     """The condition command tm stores for a parked landing: tm itself evaluating the rule."""
     parts = [sys.executable, "-m", "taskmanager.engine.gates", RED_TARGET, "--root", str(root)]
     parts += ["--repo", repo, "--sha", sha, "--template-hash", template_hash, "--target", target]
+    parts += ["--remote"] if remote else []
     return " ".join(shlex.quote(part) for part in parts)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m taskmanager.engine.gates")
     commands = parser.add_subparsers(dest="command", required=True)
-    red = commands.add_parser(RED_TARGET, help="exit 0 once a parked red main has cleared")
+    red = commands.add_parser(RED_TARGET, help="exit 0 once a parked red target has cleared")
     red.add_argument("--root", type=Path, required=True)
     red.add_argument("--repo", required=True)
     red.add_argument("--sha", required=True)
     red.add_argument("--template-hash", required=True)
-    red.add_argument("--target", default="main")
+    red.add_argument("--target", required=True)
+    red.add_argument("--remote", action="store_true", help="read the target on origin")
     args = parser.parse_args(argv)
     cache = CacheRepository(DatabaseManager(args.root / ".taskmanager"))
     cleared = red_target_cleared(
-        cache, args.root / args.repo, args.repo, args.sha, args.template_hash, args.target
+        cache,
+        args.root / args.repo,
+        args.repo,
+        args.sha,
+        args.template_hash,
+        args.target,
+        remote=args.remote,
     )
     return 0 if cleared else 1
 

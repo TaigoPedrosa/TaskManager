@@ -10,7 +10,7 @@ import { discovery, djb2, json, landedRepo, makeTm, meta, realCksum, runWave, sc
 const ARGS = { session: 's1', worktreeDir: '/wt', root: '/est' }
 const T1 = { id: 'T1', kind: 'task', action: 'implement', model: 'sonnet', repos: ['core'], requires: [], job: null, migration: false }
 
-const node = (status, next_action, extra = {}) => ({ id: 'T1', kind: 'task', status, next_action, outcome: null, ...extra })
+const node = (status, next_action, extra = {}) => ({ id: 'T1', kind: 'task', status, next_action, outcome: null, merge: 'spec', ...extra })
 const claim = (action, extra = {}) =>
   json({ action, reason: null, model: 'sonnet', job: null, repos: ['core'], branch: 'tm/T1', base: 'main', worktree: null, worktrees: {}, token: 'k1', ...extra })
 const jobAt = (state, extra = {}) =>
@@ -125,7 +125,7 @@ test('read() names exactly the fields it uses, and never sees the rest', async (
   })
   const agents = () => (tm.set('T1', { status: 'IMPLEMENTED', next_action: null }), 'done')
   const { ops, result } = await runWave({ args: ARGS, tm, agents })
-  assert.match(gets(ops)[0], /tm task get T1 --json --fields status,next_action,outcome /)
+  assert.match(gets(ops)[0], /tm task get T1 --json --fields status,next_action,outcome,merge /)
   assert.equal(result.results[0].status, 'IMPLEMENTED')
 })
 
@@ -216,7 +216,7 @@ test('an implement brief names the worktree, the branch, its base and the verb t
   })
   const agents = () => (tm.set('T1', { status: 'IMPLEMENTED', next_action: null }), 'done')
   const { work } = await runWave({ args: { ...ARGS, agentTypes: { core: 'python-dev' } }, tm, agents })
-  for (const text of ['tm-task: T1', 'tm guide implement', 'Worktree: /wt/core-T1', 'branch tm/T1', 'based on main', 'tm task complete T1 --agent wf-s1-T1 --token k1', 'tm task release T1 --agent wf-s1-T1 --token k1 --blocked', 'tm render T1 --view subagent']) {
+  for (const text of ['tm-task: T1', 'tm guide implement', 'Worktree: /wt/core-T1', 'branch tm/T1', 'based on origin/main', 'tm task complete T1 --agent wf-s1-T1 --token k1', 'tm task release T1 --agent wf-s1-T1 --token k1 --blocked', 'tm render T1 --view subagent']) {
     assert.ok(work[0].prompt.includes(text), text)
   }
   assert.equal(work[0].opts.agentType, 'python-dev')
@@ -487,7 +487,7 @@ test('a running job is polled with --wait, under the long runner timeout, until 
 test('a blocked claim naming a sync job waits it out, and a later run is what retries the claim', async () => {
   const tm = makeTm({
     chosen: [T1],
-    nodes: { T1: node('READY', 'implement') },
+    nodes: { T1: node('READY', 'implement', { merge: 'parent' }) },
     start: {
       T1: [
         json({ action: 'blocked', reason: 'syncing tm/P1', job: 'S1' }, 3),
@@ -511,7 +511,7 @@ test('a blocked claim naming a sync job waits it out, and a later run is what re
 test('a sync stopped for an agent is handed over by a later claim, on the family it names', async () => {
   const tm = makeTm({
     chosen: [T1],
-    nodes: { T1: node('READY', 'implement') },
+    nodes: { T1: node('READY', 'implement', { merge: 'parent' }) },
     start: {
       T1: [
         json({ action: 'blocked', reason: 'syncing tm/P1', job: 'S1' }, 3),
@@ -563,12 +563,12 @@ test('a sync the handed agent left stopped is released under its claim, so its l
   assert.ok(result.results[0].trail.includes('released, the sync agent left the job stopped'))
 })
 
-for (const [base, from] of [['main', 'origin/main'], ['tm/S1', 'tm/S1']]) {
-  test(`a container review based on ${base} reads every repository it touched from ${from}, on the container reviewer`, async () => {
+for (const [base, merge, from] of [['main', 'spec', 'origin/main'], ['release/1.0', 'spec', 'origin/release/1.0'], ['tm/S1', 'parent', 'tm/S1']]) {
+  test(`a container review with merge ${merge} based on ${base} reads every repository it touched from ${from}, on the container reviewer`, async () => {
     const P1 = { id: 'P1', kind: 'plan', action: 'review', model: 'opus', repos: ['core', 'web'], requires: [], job: null, migration: false }
     const tm = makeTm({
       chosen: [P1],
-      nodes: { P1: { ...node('IMPLEMENTED', 'review'), id: 'P1', kind: 'plan' } },
+      nodes: { P1: { ...node('IMPLEMENTED', 'review', { merge }), id: 'P1', kind: 'plan' } },
       start: { P1: [() => (tm.set('P1', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'opus', repos: ['core', 'web'], branch: 'tm/P1', base }))] },
     })
     const agents = () => (tm.set('P1', { status: 'REVIEWED', next_action: null }), 'done')
@@ -625,6 +625,29 @@ for (const target of ['origin/main', 'tm/S1']) {
     })
   }
 }
+
+test("a landed plan's review on origin/release/1.0 reads only the landings that name release/1.0, a dot matching only a dot", async t => {
+  const root = mkdtempSync(join(tmpdir(), 'wave-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  landedRepo(join(root, 'core'), {
+    id: 'P1', landings: ['P1', 'C2', 'C3'], inner: ['C1'], onto: 'release/1.0', elsewhere: { C2: 'releaseX1.0', C3: 'release/1X0' },
+  })
+  const tm = makeTm({
+    chosen: [{ id: 'P1', kind: 'plan', action: 'review', model: 'opus', repos: ['core'], requires: [], job: null, migration: false }],
+    nodes: { P1: { ...node('LANDED', 'review'), id: 'P1', kind: 'plan' } },
+    lists: { 'task list --plan P1': ['C1', 'C2', 'C3'] },
+    start: { P1: [() => (tm.set('P1', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'opus', branch: 'origin/release/1.0', base: 'release/1.0' }))] },
+  })
+  const agents = () => (tm.set('P1', { status: 'COMPLETED', next_action: null }), 'done')
+  const { work, errors } = await runWave({ args: { ...ARGS, root, reviewerTypes: REVIEWERS }, tm, agents })
+  assert.deepEqual(errors, [])
+  const scope = scopeOf(work[0])
+  assert.ok(scope.startsWith('Scope: what P1 and every node under it landed on origin/release/1.0, '), scope)
+  const [command] = scope.match(/git -C \S+ log [^']*'[^']*' origin\/release\/1\.0 --/) || []
+  assert.ok(command, scope)
+  const patch = execFileSync('sh', ['-c', command], { encoding: 'utf8' })
+  assert.deepEqual([...patch.matchAll(/^diff --git a\/(\S+)/gm)].map(m => m[1]).sort(), ['C1.txt', 'P1.txt'], command)
+})
 
 test('a landed container whose children cannot be read is released, never reviewed on a partial scope', async () => {
   const P1 = { id: 'P1', kind: 'plan', action: 'review', model: 'opus', repos: ['core'], requires: [], job: null, migration: false }

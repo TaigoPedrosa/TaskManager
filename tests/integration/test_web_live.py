@@ -510,14 +510,14 @@ async def test_an_ancestors_merge_change_refreshes_a_watched_nodes_stale_chains(
     # from a tree walk over the view, not from T's own row, so a stale-body refresh that only
     # patched display and the relations left them stuck at the chain computed before P changed.
     estate.add("S", NodeKind.SPEC)
-    estate.add("P", NodeKind.PLAN, parent="S", merge=Merge.MAIN)
+    estate.add("P", NodeKind.PLAN, parent="S", merge=Merge.SPEC)
     estate.add("T", NodeKind.TASK, parent="P", merge=Merge.PARENT)
 
     hub = estate.hub()
     await hub.refresh()
     session = hub.open_session(FakeSocket())
     snapshot = await subscribe(hub, session, 1, watch=["T"], reset=True)
-    assert snapshot["bodies"]["T"]["node"]["base_chain"] == ["P", "MAIN"]
+    assert snapshot["bodies"]["T"]["node"]["base_chain"] == ["P", "main"]
 
     p = estate.node_repo.get_node("P")
     assert p is not None
@@ -528,7 +528,7 @@ async def test_an_ancestors_merge_change_refreshes_a_watched_nodes_stale_chains(
     node_item = next(
         i for i in msg["items"] if i["op"] == "body" and i["id"] == "T" and i["part"] == "node"
     )
-    assert node_item["value"]["base_chain"] == ["P", "S", "MAIN"]
+    assert node_item["value"]["base_chain"] == ["P", "S", "main"]
     assert node_item["value"]["landing_chain"] == ["T", "P", "S"]
 
 

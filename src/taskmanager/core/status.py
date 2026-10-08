@@ -51,7 +51,7 @@ class Outcome(StrEnum):
 
 class Merge(StrEnum):
     PARENT = "parent"
-    MAIN = "main"
+    SPEC = "spec"
 
 
 class Phase(StrEnum):

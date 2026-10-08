@@ -118,7 +118,7 @@ def test_a_red_target_clears_once_main_moves_past_the_parked_failures(
         current = push_main(api, "next.txt", "n\n")
         if later is not None:
             cache.put_baseline("api", current, "h", later)
-    assert gates.red_target_cleared(cache, api, "api", sha, "h") is cleared
+    assert gates.red_target_cleared(cache, api, "api", sha, "h", "main", remote=True) is cleared
 
 
 def test_the_red_target_entry_point_exits_zero_only_once_cleared(
@@ -127,7 +127,7 @@ def test_the_red_target_entry_point_exits_zero_only_once_cleared(
     cache, api, sha = red
     cache.put_baseline("api", sha, "h", PARKED)
     args = ["red-target", "--root", str(tmp_path / "estate"), "--repo", "api", "--sha", sha]
-    args += ["--template-hash", "h"]
+    args += ["--template-hash", "h", "--target", "main", "--remote"]
     assert gates.main(args) == 1
     push_main(api, "next.txt", "n\n")
     assert gates.main(args) == 0

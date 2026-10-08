@@ -16,6 +16,7 @@ import typer.main
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import _guide_topics, app
+from taskmanager.core.status import Merge
 from taskmanager.engine.snapshot import writes_migration
 from taskmanager.engine.validation import SENSITIVE_AREAS
 
@@ -545,20 +546,173 @@ def test_merge_guide_ends_a_reviewed_container_s_landing_at_landed(
     ) in rendered("merge")
 
 
-def test_merge_guide_scopes_push_errors_to_a_push_to_main(
+def test_merge_guide_scopes_push_errors_to_a_push_to_the_spec_s_target(
     rendered: Callable[[str], str],
 ) -> None:
     """A container branch's compare-and-swap stops at push_failed without any push_errors."""
     text = rendered("merge")
     assert (
-        "A push to `main` records each in `result.push_errors` with its command, exit code and "
-        "stderr: an `ls-remote` with no answer is the network or the remote, a refused `push` a "
-        "permission, a protection rule or a hook."
+        "A push to the spec's target records each in `result.push_errors` with its command, exit "
+        "code and stderr: an `ls-remote` with no answer is the network or the remote, a refused "
+        "`push` a permission, a protection rule or a hook."
     ) in text
     assert (
         "A container branch, moved by a landing or a sync, records none: it moved under each of "
         "three compare-and-swaps, so other landings or syncs onto it kept moving it."
     ) in text
+
+
+def test_merge_guide_builds_gates_and_pushes_on_the_spec_s_target_whatever_it_is_named(
+    rendered: Callable[[str], str],
+) -> None:
+    text = rendered("merge")
+    assert (
+        "A fresh merge worktree cut from the target (`origin/<target>` when it is the branch the "
+        "node's spec lands on, or the container branch), and `git merge --no-ff` of the node's "
+        "branch with the subject `merge(<node-id>): land <branch> on <target>`. A spec's target "
+        "that origin does not have yet is cut from the repository's `default_branch`."
+    ) in text
+    assert (
+        "On the spec's target: the repository's `main` gate, whatever the target is named"
+    ) in text
+    assert (
+        "push `HEAD:<target>`, never force; a target origin does not have yet is created by this "
+        "push."
+    ) in text
+
+
+def test_review_guide_reads_a_spec_s_target_on_origin_and_a_container_branch_locally(
+    rendered: Callable[[str], str],
+) -> None:
+    """A landing's subject names the bare target, so the landed grep reads the claim's `base`,
+    while the diffs read the target where it lives: on origin, or in the shared clone."""
+    text = rendered("review")
+    assert (
+        "`<base>` is the claim's `base` as printed: the branch the node's spec lands on, or the "
+        "container branch the node lands on. `<base-ref>` is where it is read: `origin/<base>` for "
+        "the spec's target, and `<base>` itself for a container branch, which is local to the "
+        "clone:"
+    ) in text
+    assert "git -C <repo> diff <base-ref>...<branch>" in text
+    assert "For a review claimed from `LANDED`, `<base-ref>...<branch>` is empty" in text
+
+
+def test_plan_guide_sets_a_spec_s_target_with_land_on_once(rendered: Callable[[str], str]) -> None:
+    text = rendered("plan")
+    lines = [ln for ln in text.splitlines() if ln.startswith("- `land_on`:")]
+    assert lines == [
+        (
+            "- `land_on`: on a spec only, the branch every node under it lands on, such as "
+            "`feature/notify`, `release/2.4` or `fix/login-timeout` (§4). tm refuses it on a plan "
+            "or task, and refuses a name `git check-ref-format --branch` rejects. On a spec "
+            "already in the database, `tm task update <spec-id> --set land_on=<branch>`; on a new "
+            'one, `tm spec add "<title>" --land-on <branch>`.'
+        )
+    ]
+
+
+def _plan_section(text: str, number: int) -> str:
+    return text.split(f"## {number}. ", 1)[1].split(f"## {number + 1}. ", 1)[0]
+
+
+def test_plan_guide_frames_land_on_as_the_normal_case_and_default_branch_as_the_fallback(
+    rendered: Callable[[str], str],
+) -> None:
+    text = rendered("plan")
+    where = _plan_section(text, 4)
+    assert (
+        "Its `land_on` (§2) names that branch, and that is the normal case: a spec's work belongs "
+        "on a feature, release or fix branch of its own, and tm lands it there and goes no "
+        "further. Taking that branch on to environments and to `main` is the developer's."
+    ) in where
+    fallback = (
+        "A spec with no `land_on` lands on `repos.<repo>.default_branch` in each repository it "
+        "touches, `main` unless the project sets it."
+    )
+    assert fallback in where
+    assert text.count("default_branch`") == 1
+
+
+def test_plan_guide_refuses_a_wait_across_two_targets_once(rendered: Callable[[str], str]) -> None:
+    text = rendered("plan")
+    refusal = (
+        "One wait never joins two targets. A `depends_on` edge from a node whose spec lands on "
+        "one branch to a node whose spec lands on another is refused where it is written (an "
+        "import, `tm task depends`, the web), naming both branches, and so are two open "
+        "migration writers in one repository landing on different targets."
+    )
+    assert refusal in _plan_section(text, 4)
+    assert text.count("One wait never joins two targets.") == 1
+
+
+def test_overview_names_spec_and_parent_as_the_merge_values(
+    rendered: Callable[[str], str],
+) -> None:
+    text = rendered("overview")
+    assert (
+        "`merge` (`spec` to land where its spec lands, or `parent` to land on the branch of the "
+        "plan or spec above it)"
+    ) in text
+    assert "taking that branch on to environments and to `main` is the developer's" in text
+
+
+_MERGE_VALUE = re.compile(r"(?:\bmerge: |\bmerge=|--merge )(\w+)")
+_TEXTS = [
+    *((f"{t}.md", _guide_text(t)) for t in _topics()),
+    *((d, _doc_text(d)) for d in DOCS),
+]
+
+
+@pytest.mark.parametrize("where,text", _TEXTS, ids=[w for w, _ in _TEXTS])
+def test_every_merge_value_a_guide_or_doc_shows_is_one_tm_accepts(where: str, text: str) -> None:
+    assert sorted(set(_MERGE_VALUE.findall(text)) - {m.value for m in Merge}) == []
+
+
+RETIRED_TARGET_WORDING = (
+    "on `main`",
+    "reaches `main`",
+    "reach `main`",
+    "up to `main`",
+    "To `main`",
+    "push to `main`",
+    "a red `main`",
+    "a `main` that",
+    "`HEAD:main`",
+    "local `main`",
+    "`origin/main` by default",
+    "`main` means that repository's",
+    "unset when none was",
+    "sets no ref",
+    "with a `main` branch",
+    "a clone with origin/main",
+)
+
+
+@pytest.mark.parametrize("where,text", _TEXTS, ids=[w for w, _ in _TEXTS])
+def test_no_guide_or_doc_says_a_chain_ends_on_main(where: str, text: str) -> None:
+    """A spec lands on its own target branch; `main` is only the default one."""
+    assert [phrase for phrase in RETIRED_TARGET_WORDING if phrase in text] == []
+
+
+VERIFY_DEFAULT_REF = [
+    ("overview", "With no `--ref`, it reads each task at `origin/<the branch its spec lands on>`"),
+    ("plan", "with no `--ref`, `origin/<the branch its spec lands on>`, fetched first"),
+    (
+        "implement",
+        (
+            "A `test_command` reads the same ref from `TM_VERIFY_REF`, which every run exports: "
+            "the `--ref` given, that landing branch without one, and the landing target when tm "
+            "lands the task."
+        ),
+    ),
+]
+
+
+@pytest.mark.parametrize("topic,line", VERIFY_DEFAULT_REF, ids=[t for t, _ in VERIFY_DEFAULT_REF])
+def test_guide_reads_a_run_with_no_ref_at_the_task_s_landing_branch(
+    topic: str, line: str, rendered: Callable[[str], str]
+) -> None:
+    assert line in rendered(topic)
 
 
 def test_review_guide_scopes_a_re_review_to_the_open_findings_of_a_sensitive_fix(
@@ -800,7 +954,8 @@ BRIEF_RULES = [
         "overview",
         "# How TaskManager works",
         "After `tm init`, set `repos.<repo>.gates.main` for every target repo before the first "
-        "dispatch. Without it, every landing on `main` is refused with `no gate`.",
+        "dispatch: it gates every landing on a spec's target branch, whatever that branch is "
+        "named. Without it, every such landing is refused with `no gate`.",
         id="overview:main-gate",
     ),
 ]

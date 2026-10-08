@@ -46,7 +46,7 @@ from taskmanager.core.status import (
         ),
         (DecisionStatus, ["OPEN", "ANSWERED", "WITHDRAWN"]),
         (Outcome, ["approve", "reject", "merge_failed"]),
-        (Merge, ["parent", "main"]),
+        (Merge, ["parent", "spec"]),
         (
             Phase,
             ["QUEUED", "DISPATCHED", "COMPLETED", "FAILED", "DEFERRED", "ABANDONED", "SUPERSEDED"],

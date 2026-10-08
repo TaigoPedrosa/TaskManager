@@ -7,6 +7,7 @@ import pytest
 from test_state_migration import (
     _build_v1_estate,
     _build_v2_estate,
+    _merge_as_spec,
     _raw_rows,
     _seed_every_v2_status,
     _user_version,
@@ -66,7 +67,7 @@ def test_migrate_schema_2_estate_backs_it_up_then_keeps_every_row(
     assert _dump(backup) == before_dump
     assert _raw_rows(backup) == before_rows
     assert _user_version(state_db) == STATE_SCHEMA_VERSION
-    assert _raw_rows(state_db) == before_rows
+    assert _raw_rows(state_db) == _merge_as_spec(before_rows)
     assert all(before_rows.values())
 
 

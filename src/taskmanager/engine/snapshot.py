@@ -1,7 +1,7 @@
 import re
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 from taskmanager.core.display import Facts, display_status, phase
 from taskmanager.core.enums import CONTAINERS, NodeKind, RelationType, VerificationType
@@ -28,6 +28,7 @@ from taskmanager.db.node_repo import (
 )
 from taskmanager.db.runtime_repo import RuntimeRepository, lease_alive
 from taskmanager.engine.chains import satisfied
+from taskmanager.engine.config import ConfigStore, ProjectConfig
 from taskmanager.engine.stepgraph import SnapNode, Snapshot, migration_holders
 
 if TYPE_CHECKING:
@@ -40,6 +41,7 @@ _NOT_STARTED = frozenset({Status.READY}) | EXITS
 # `tm verify run --ref` exports TM_VERIFY_REF, so an `origin/main` fallback inside this
 # expansion follows the ref being verified; only a bare `origin/main` pins a check to main.
 _VERIFY_REF_EXPANSION = re.compile(r"\$\{TM_VERIFY_REF:-[^}]*\}")
+ORIGIN_MAIN: Final = "origin/main"
 
 
 def writes_migration(files: list[str]) -> bool:
@@ -47,7 +49,7 @@ def writes_migration(files: list[str]) -> bool:
 
 
 def names_origin_main(command: str) -> bool:
-    return "origin/main" in _VERIFY_REF_EXPANSION.sub("", command)
+    return ORIGIN_MAIN in _VERIFY_REF_EXPANSION.sub("", command)
 
 
 def sensitive_areas(node: Node) -> tuple[str, ...]:
@@ -175,6 +177,33 @@ def roll_up_ancestors(
     return moved
 
 
+def _top(snapshot: Snapshot, node_id: str, branches: ProjectConfig, repo: str | None = None) -> str:
+    """`Operations.landing_branch`, read from the snapshot."""
+    root, seen = node_id, {node_id}
+    while (parent := snapshot.nodes[root].parent) in snapshot.nodes and parent not in seen:
+        root = parent
+        seen.add(root)
+    land_on = snapshot.nodes[root].land_on
+    if land_on:
+        return land_on
+    if repo is None:
+        repo = snapshot.nodes[node_id].repo
+    if repo is None:
+        repos = (snapshot.nodes[d].repo for d in snapshot.counted_descendants(node_id))
+        repo = min(filter(None, repos), default=None)
+    return branches.default_branch(repo)
+
+
+def with_tops(snapshot: Snapshot, branches: ProjectConfig, repo: str | None = None) -> Snapshot:
+    """`snapshot` with each node's `top` as `Operations.landing_branch(node, repo)` reads it
+    under `branches`."""
+    tops = {
+        node_id: replace(n, top=_top(snapshot, node_id, branches, repo))
+        for node_id, n in snapshot.nodes.items()
+    }
+    return Snapshot(nodes=tops, edges=snapshot.edges, data=snapshot.data)
+
+
 class SnapshotBuilder:
     """The whole graph as the pure rules read it, and the per-node facts display derives from.
 
@@ -199,7 +228,10 @@ class SnapshotBuilder:
             node_id: self._snap(node, parents.get(node_id), data)
             for node_id, node in data.nodes.items()
         }
-        return Snapshot(nodes=nodes, edges=data.relations[RelationType.DEPENDS_ON], data=data)
+        edges = data.relations[RelationType.DEPENDS_ON]
+        # A container's repository is only known once its descendants are in the tree.
+        draft = Snapshot(nodes=nodes, edges=edges, data=data)
+        return with_tops(draft, ConfigStore(self.node_repo.db.taskmanager_dir.parent).branches())
 
     def cycle(self, node: Node) -> Cycle:
         return cycle_of(node, self._sensitive(node))
@@ -329,6 +361,7 @@ class SnapshotBuilder:
             sensitive=sensitive_areas(node),
             busy=self._busy(node.id, data),
             literal_origin_main=any(names_origin_main(c) for c in commands),
+            land_on=None if (land_on := node.frontmatter.get("land_on")) is None else str(land_on),
         )
 
 

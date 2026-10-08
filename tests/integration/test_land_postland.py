@@ -41,8 +41,9 @@ REVIEWED_PLAN = {
 }
 MIGRATION = "api/migrations/versions/0002_keys.py"
 UNREVIEWED_ON_MAIN = (
-    "S-P-c: lands on main with review off, so its code would reach main unreviewed: S-P's "
-    "review reads only what lands on its branch; set merge=parent, or turn review on"
+    "S-P-c: lands on its target main with review off, so its code would land there "
+    "unreviewed: S-P's review reads only what lands on its branch; set merge=parent, or turn "
+    "review on"
 )
 
 Create = Callable[[Path, dict[str, Any]], tuple[int, str]]
@@ -116,7 +117,7 @@ def test_a_child_added_under_a_reviewed_plan_takes_its_own_review_only_when_sens
 @pytest.mark.parametrize(("create", "refused"), [(by_import, 1), (by_task_add, 1), (by_api, 400)])
 @pytest.mark.parametrize(
     "fields",
-    [{"merge": "main"}, {"merge": "main", "review": False, "fix": False}],
+    [{"merge": "spec"}, {"merge": "spec", "review": False, "fix": False}],
     ids=["review-by-default", "review-stated-off"],
 )
 def test_a_child_landing_on_main_unreviewed_under_a_reviewed_plan_is_refused_and_not_written(

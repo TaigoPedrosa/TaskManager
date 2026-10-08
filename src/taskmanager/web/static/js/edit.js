@@ -439,17 +439,32 @@ function openResetDialog(node) {
   });
 }
 
-// Flags, merge, requires and land_order go through the same write rules as the CLI; a
-// refusal stays in the dialog to correct.
-function openFlagsDialog(node) {
-  const isContainer = node.kind === 'plan' || node.kind === 'spec';
+// Flags, merge, land_on, requires and land_order go through the same write rules as the CLI; a
+// refusal stays in the dialog to correct. A spec's merge is always spec, so a spec sets the
+// branch it lands on instead, and land_on is refused on anything else.
+async function openFlagsDialog(node) {
+  const isSpec = node.kind === 'spec';
+  const isContainer = node.kind === 'plan' || isSpec;
+  const landOn = (node.frontmatter && node.frontmatter.land_on) || '';
+  let mergeTargets = [];
+  if (!isSpec) {
+    try {
+      mergeTargets = (await api('GET', '/api/meta')).merge_targets;
+    } catch (e) {
+      toast(e.message, { tone: 'error' });
+      return;
+    }
+  }
+  const mergeOptions = mergeTargets.map(m => `<option value="${esc(m)}" ${node.merge === m ? 'selected' : ''}>${esc(m)}</option>`).join('');
   formDialog({
     title: `Flags of ${node.id}`,
     submitLabel: 'Save',
     bodyHtml: `
       ${checkboxRow('fl-review', node.review, 'Review')}
       ${checkboxRow('fl-fix', node.fix, 'Fix')}
-      ${fieldRow('Lands on', `<select class="fl-merge ${SELECT_CLS}"><option value="main" ${node.merge === 'main' ? 'selected' : ''}>main</option><option value="parent" ${node.merge === 'parent' ? 'selected' : ''}>parent</option></select>`)}
+      ${isSpec
+        ? fieldRow('Lands on', `<input type="text" class="fl-land-on ${INPUT_CLS}" value="${esc(landOn)}" spellcheck="false">`)
+        : fieldRow('Merge', `<span class="relative block"><select class="fl-merge ${SELECT_CLS}">${mergeOptions}</select>${renderIcon('chevron-down', 'absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 pointer-events-none text-zinc-400')}</span>`)}
       ${fieldRow('Requires', `<input type="text" class="fl-requires ${INPUT_CLS}" value="${esc((node.requires || []).join(', '))}">`)}
       ${isContainer ? fieldRow('Land order', `<input type="text" class="fl-land-order ${INPUT_CLS}" value="${esc((node.land_order || []).join(', '))}">`) : ''}
     `,
@@ -457,9 +472,15 @@ function openFlagsDialog(node) {
       const body = {
         review: panel.querySelector('.fl-review').checked,
         fix: panel.querySelector('.fl-fix').checked,
-        merge: panel.querySelector('.fl-merge').value,
         requires: commaList(panel, '.fl-requires'),
       };
+      if (isSpec) {
+        const branch = panel.querySelector('.fl-land-on').value.trim();
+        if (branch) body.land_on = branch;
+        else if (landOn) body.frontmatter_unset = ['land_on'];
+      } else {
+        body.merge = panel.querySelector('.fl-merge').value;
+      }
       if (isContainer) body.land_order = commaList(panel, '.fl-land-order');
       await write('PATCH', `/api/nodes/${node.id}`, body);
       toast(`${node.id} flags saved.`, { tone: 'success' });

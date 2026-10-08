@@ -3,6 +3,7 @@ import subprocess
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 
@@ -41,8 +42,9 @@ from taskmanager.engine.assets import (
     is_project_relative,
     store_asset,
 )
-from taskmanager.engine.chains import MAIN, landing_target
+from taskmanager.engine.chains import TOP, landing_target
 from taskmanager.engine.conditions import is_executable
+from taskmanager.engine.config import ConfigStore, ProjectConfig, moved_defaults
 from taskmanager.engine.decisions import (
     DecisionAnswer,
     DecisionData,
@@ -59,10 +61,11 @@ from taskmanager.engine.snapshot import (
     roll_up_ancestors,
     sensitive_areas,
     stored_status,
+    with_tops,
     writes_migration,
 )
 from taskmanager.engine.stepgraph import Snapshot
-from taskmanager.engine.validation import validate
+from taskmanager.engine.validation import retargets, validate
 from taskmanager.engine.verification import VerificationEngine, VerificationResult
 
 # The section a project bootstraps once and every `tm guide` overlay hangs off; `section set`
@@ -90,6 +93,22 @@ class OperationError(ValueError):
         self.status_code = status_code
 
 
+MERGE_REFUSAL = "merge is parent or spec; main is now spec"
+
+
+def _land_on(land_on: str | None) -> dict[str, Any]:
+    # land_on lives in frontmatter, where the write's own check reads it and refuses it off a spec.
+    return {} if land_on is None else {"land_on": land_on}
+
+
+def parse_merge(value: str) -> Merge:
+    """Every merge value a user writes, through import, the CLI or the web, is read here."""
+    try:
+        return Merge(value)
+    except ValueError:
+        raise OperationError(MERGE_REFUSAL) from None
+
+
 def child_defaults(
     child: Node,
     parent: Node | None,
@@ -102,9 +121,10 @@ def child_defaults(
     """`child` carrying each review, fix and merge flag its write states, and a default for each
     one it leaves out. A reviewed parent's one review reads what lands on the parent's branch,
     so a child under it lands there with no review of its own unless it is sensitive; anywhere
-    else a task reviews and fixes itself and lands on main, and a container does neither."""
+    else a task reviews and fixes itself and lands on its spec's target, and a container does
+    neither."""
     if parent is None or not parent.review:
-        own, lands_on = child.kind == NodeKind.TASK, Merge.MAIN
+        own, lands_on = child.kind == NodeKind.TASK, Merge.SPEC
     else:
         files = declared_files_of(child, list(verifications))
         own, lands_on = bool(sensitive_areas(child)) or writes_migration(files), Merge.PARENT
@@ -118,7 +138,7 @@ def child_defaults(
 
 
 # Refusals that conflict with the tree's current state rather than with the request itself.
-_CONFLICT_RULES = frozenset({4, 6, 7, 8})
+_CONFLICT_RULES = frozenset({4, 6, 7, 8, 13})
 
 
 class GitBranchFacts:
@@ -128,22 +148,34 @@ class GitBranchFacts:
     target keeps the base exactly when the branch forks from the new target at the same commit.
     """
 
-    def __init__(self, root: Path, node_repo: NodeRepository, tree: Snapshot) -> None:
+    def __init__(
+        self, root: Path, node_repo: NodeRepository, tree: Snapshot, only: str | None = None
+    ) -> None:
         self.root = root
         self.node_repo = node_repo
         self.tree = tree
+        # One repository's clone alone, for a tree whose tops were read in that repository.
+        self.only = only
+
+    @cached_property
+    def _branches(self) -> ProjectConfig:
+        return ConfigStore(self.root).branches()
 
     def _branch(self, node_id: str) -> str:
         node = self.node_repo.get_node(node_id)
         return node.branch if node is not None and node.branch else f"tm/{node_id}"
 
-    def _repos(self, node_id: str) -> list[Path]:
+    def _repos(self, node_id: str) -> list[tuple[str | None, Path]]:
         ids = [node_id, *self.tree.descendants(node_id)] if node_id in self.tree.nodes else []
         names = sorted(
             {repo for i in ids if (snap := self.tree.nodes.get(i)) and (repo := snap.repo)}
         )
-        dirs = [self.root / name for name in names] or [self.root]
-        return [d for d in dirs if (d / ".git").exists()]
+        dirs: list[tuple[str | None, Path]] = [
+            (name, self.root / name) for name in names if self.only in (None, name)
+        ]
+        if not names and self.only is None:
+            dirs = [(None, self.root)]
+        return [(name, d) for name, d in dirs if (d / ".git").exists()]
 
     @staticmethod
     def _git(repo: Path, *args: str) -> str | None:
@@ -153,27 +185,32 @@ class GitBranchFacts:
     def _has(self, repo: Path, ref: str) -> bool:
         return self._git(repo, "rev-parse", "--verify", "--quiet", ref) is not None
 
-    def _ref(self, repo: Path, target: str) -> str:
-        # A container branch not yet cut in this repository would be cut from its own base.
-        while target != MAIN:
+    def _ref(self, name: str | None, repo: Path, target: str, top: str) -> str:
+        # A container branch not yet cut in this repository would be cut from its own base, and
+        # a top branch not yet on origin from its repository's default branch.
+        while not target.startswith(TOP):
             branch = self._branch(target)
             if self._has(repo, f"refs/heads/{branch}"):
                 return branch
             target = landing_target(self.tree, target)
-        return "origin/main" if self._has(repo, "origin/main") else "main"
+        tops = (f"origin/{top}", f"origin/{self._branches.default_branch(name)}")
+        return next((ref for ref in tops if self._has(repo, ref)), top)
 
     def branch_exists(self, node_id: str) -> bool:
         ref = f"refs/heads/{self._branch(node_id)}"
-        return any(self._has(repo, ref) for repo in self._repos(node_id))
+        return any(self._has(repo, ref) for _name, repo in self._repos(node_id))
 
-    def base_matches(self, node_id: str, new_target: str) -> bool:
+    def base_matches(self, node_id: str, new_target: str, new_top: str) -> bool:
         branch = self._branch(node_id)
         current = landing_target(self.tree, node_id)
-        for repo in self._repos(node_id):
+        top = self.tree.nodes[node_id].top
+        for name, repo in self._repos(node_id):
             if not self._has(repo, f"refs/heads/{branch}"):
                 continue
-            recorded = self._git(repo, "merge-base", branch, self._ref(repo, current))
-            proposed = self._git(repo, "merge-base", branch, self._ref(repo, new_target))
+            recorded = self._git(repo, "merge-base", branch, self._ref(name, repo, current, top))
+            proposed = self._git(
+                repo, "merge-base", branch, self._ref(name, repo, new_target, new_top)
+            )
             if recorded is None or recorded != proposed:
                 return False
         return True
@@ -255,19 +292,55 @@ class Operations:
         node = self.node_repo.get_node(node_id)
         return (node.branch if node is not None else None) or f"tm/{node_id}"
 
-    def target_of(self, node_id: str) -> str:
-        """The branch `node_id` lands on: `main`, or its parent's branch."""
+    def landing_branch(self, node_id: str, repo: str | None = None) -> str:
+        """The branch `node_id`'s chain lands on at the top: its spec's `land_on`, else
+        `repos.<repo>.default_branch` for `repo`, or with none named, for the node's own
+        repository: its target_repo, else a container's first repository by name."""
+        root, seen = node_id, {node_id}
+        while (parents := self.node_repo.get_parent_ids(root)) and parents[0] not in seen:
+            root = parents[0]
+            seen.add(root)
+        spec = self.node_repo.get_node(root)
+        land_on = spec.frontmatter.get("land_on") if spec is not None else None
+        if land_on:
+            return str(land_on)
+        if repo is None:
+            node = self.node_repo.get_node(node_id)
+            own = node.target_repo if node is not None else None
+            repo = own or min(self.repos_of(node_id), default=None)
+        return self.default_branch(repo)
+
+    def default_branch(self, repo: str | None) -> str:
+        return ConfigStore(self._project_root()).branches().default_branch(repo)
+
+    def check_default_branches(self, before: ProjectConfig, after: ProjectConfig) -> None:
+        """Refuses moving a repository's default branch from `before` to `after` while a branch
+        cut there would land on the new one from another base: rule 4, read per repository."""
+        root, tree = self._project_root(), self.snapshots.build()
+        refusals = []
+        for repo in moved_defaults(before, after):
+            old = with_tops(tree, before, repo)
+            facts = GitBranchFacts(root, self.node_repo, old, only=repo)
+            refusals += retargets(old, with_tops(tree, after, repo), facts)
+        if refusals:
+            raise OperationError("Nothing changed: " + "; ".join(r.message for r in refusals), 409)
+
+    def landing_parent(self, node_id: str) -> str | None:
+        """The parent whose branch `node_id` lands on, or None when it lands at the top."""
         node = self.node_repo.get_node(node_id)
         parents = self.node_repo.get_parent_ids(node_id)
-        if node is not None and node.merge == Merge.PARENT and parents:
-            return self.branch_of(parents[0])
-        return "main"
+        return parents[0] if node is not None and node.merge == Merge.PARENT and parents else None
 
-    @staticmethod
-    def target_ref(target: str) -> str:
-        """The ref a landing target is read at: `main` only through the fetched `origin/main`;
-        container branches are local refs in the shared clones."""
-        return "origin/main" if target == "main" else target
+    def target_of(self, node_id: str, repo: str | None = None) -> str:
+        """The branch `node_id` lands on: its parent's branch, or its chain's top branch."""
+        parent = self.landing_parent(node_id)
+        return self.branch_of(parent) if parent else self.landing_branch(node_id, repo)
+
+    def target_ref(self, node_id: str, repo: str | None = None) -> str:
+        """The ref `node_id`'s landing target is read at: a top branch only through its fetched
+        `origin/` ref; container branches are local refs in the shared clones."""
+        parent = self.landing_parent(node_id)
+        return self.branch_of(parent) if parent else f"origin/{self.landing_branch(node_id, repo)}"
 
     def counted_descendants(self, node_id: str) -> list[str]:
         """The descendants a container still counts: a set-aside node never lands, so neither it
@@ -308,14 +381,13 @@ class Operations:
         repository its counted tasks name. No repository named, a git error, or a repository
         not cloned here reads as a change: nothing then proves the code is on its target."""
         repos = self.repos_of(container_id)
-        base = self.target_ref(self.target_of(container_id))
         branch = self.branch_of(container_id)
         root = self._project_root()
         return bool(repos) and all(
             (root / repo / ".git").exists()
             and (
                 not gitops.rev_parse(root / repo, f"refs/heads/{branch}")
-                or gitops.diff_quiet(root / repo, base, branch)
+                or gitops.diff_quiet(root / repo, self.target_ref(container_id, repo), branch)
             )
             for repo in repos
         )
@@ -352,6 +424,7 @@ class Operations:
         order: int = 0,
         review: bool = False,
         fix: bool = False,
+        land_on: str | None = None,
     ) -> str:
         self._validate_priority(priority)
         if slug:
@@ -374,7 +447,8 @@ class Operations:
             status=Status.READY,
             review=review,
             fix=fix,
-            merge=Merge.MAIN,
+            merge=Merge.SPEC,
+            frontmatter=_land_on(land_on),
         )
         self._refuse_fix_without_review(node)
         with self._checked({spec_id}):
@@ -388,6 +462,7 @@ class Operations:
                 "ordinal": order,
                 "review": review,
                 "fix": fix,
+                **_land_on(land_on),
             },
         )
         return spec_id
@@ -401,7 +476,8 @@ class Operations:
         order: int = 0,
         review: bool | None = None,
         fix: bool | None = None,
-        merge: Merge | None = None,
+        merge: str | None = None,
+        land_on: str | None = None,
     ) -> str:
         self._validate_priority(priority)
         parent = self.node_repo.get_node(spec)
@@ -426,11 +502,12 @@ class Operations:
                 priority=priority,
                 ordinal=order,
                 status=Status.READY,
+                frontmatter=_land_on(land_on),
             ),
             parent,
             review=review,
             fix=fix,
-            merge=merge,
+            merge=None if merge is None else parse_merge(merge),
         )
         self._refuse_fix_without_review(plan_node)
         with self._checked({plan_id}):
@@ -464,7 +541,7 @@ class Operations:
         models: list[str] | None = None,
         review: bool | None = None,
         fix: bool | None = None,
-        merge: Merge | None = None,
+        merge: str | None = None,
         requires: list[str] | None = None,
         frontmatter: dict[str, Any] | None = None,
     ) -> str:
@@ -501,7 +578,7 @@ class Operations:
             parent,
             review=review,
             fix=fix,
-            merge=merge,
+            merge=None if merge is None else parse_merge(merge),
         )
         self._refuse_fix_without_review(task_node)
         with self._checked({task_id}):
@@ -535,7 +612,7 @@ class Operations:
         frontmatter_unset: list[str] | None = None,
         review: bool | None = None,
         fix: bool | None = None,
-        merge: Merge | None = None,
+        merge: str | None = None,
         requires: list[str] | None = None,
         land_order: list[str] | None = None,
     ) -> dict[str, Any]:
@@ -570,8 +647,8 @@ class Operations:
             node.fix = fix
             changed["fix"] = fix
         if merge is not None:
-            node.merge = merge
-            changed["merge"] = merge.value
+            node.merge = parse_merge(merge)
+            changed["merge"] = node.merge.value
         if requires is not None:
             node.requires = requires
             changed["requires"] = requires
@@ -799,7 +876,13 @@ class Operations:
                 400,
             )
 
-        results = self.verification_engine.verify_all(vers, repo_for_node, ref)
+        # With no ref asked for, each task is read where its chain lands at the top.
+        branch_for_node = (
+            None
+            if ref is not None
+            else {n: self.landing_branch(n, repo_for_node[n]) for n in {v.node_id for v in vers}}
+        )
+        results = self.verification_engine.verify_all(vers, repo_for_node, ref, branch_for_node)
         all_passed = all(r.passed for r in results)
         self._ledger(
             LedgerCommand.VERIFICATION_RUN,
