@@ -360,8 +360,9 @@ test('the context renders its markdown with the app\'s type scale as classes, no
     assert.ok(el, `${sel} rendered`);
     for (const c of classes) assert.ok(el.classList.contains(c), `${sel} carries ${c}`);
   };
-  // The page loads marked from a CDN, which node does not; this stand-in turns the fixture's
-  // headings, numbered items, code spans and paragraphs into the tags marked would emit.
+  // The page loads marked from /vendor, which the harness does not run; this stand-in turns
+  // the fixture's headings, numbered items, code spans and paragraphs into the tags marked
+  // would emit.
   page.run(`var marked = { parse: (md) => md.split('\\n\\n').map((block) => {
     const inline = (t) => t.replace(/\`([^\`]+)\`/g, '<code>$1</code>');
     if (block.startsWith('### ')) return '<h3>' + inline(block.slice(4)) + '</h3>';

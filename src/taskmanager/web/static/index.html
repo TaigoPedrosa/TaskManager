@@ -8,12 +8,11 @@
   <style>
 <!--slot:tailwind-css-->
   </style>
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
-  <script src="https://unpkg.com/lucide@latest"></script>
-  <!-- Sections render as-is from a node's own content, and the page now writes content too,
-       so every marked.parse() result is sanitised through this before it reaches the DOM. -->
-  <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+  <script src="/vendor/marked.min.js"></script>
+  <script src="/vendor/vis-network.min.js"></script>
+  <!-- Sections render as-is from a node's own content, and the page writes content too, so
+       every marked.parse() result is sanitised through this before it reaches the DOM. -->
+  <script src="/vendor/purify.min.js"></script>
   <style>
 <!--slot:app-css-->
   </style>

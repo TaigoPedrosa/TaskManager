@@ -1,8 +1,10 @@
 import importlib.metadata
 import json
+import re
 import subprocess
 import tomllib
 import zipfile
+from importlib.resources import files
 from pathlib import Path
 
 import taskmanager
@@ -39,6 +41,17 @@ def test_every_manifest_carries_the_release_version() -> None:
         "marketplace": [RELEASE],
         "gemini": RELEASE,
     }
+
+
+def test_gemini_manifest_loads_a_context_file_naming_only_shipped_guides() -> None:
+    context = REPO / str(read_json("gemini-extension.json")["contextFileName"])
+    named = set(re.findall(r"`tm guide (\w+)`", context.read_text(encoding="utf-8")))
+    shipped = {
+        entry.name.removesuffix(".md")
+        for entry in files("taskmanager").joinpath("guides").iterdir()
+    }
+    assert named
+    assert named <= shipped
 
 
 def test_every_console_script_enters_through_main() -> None:

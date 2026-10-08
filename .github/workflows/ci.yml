@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The changelog test reads every release tag, which a shallow clone leaves out.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Fetch the Tailwind standalone CLI the stylesheet test rebuilds with
+        run: |
+          curl -sSfL -o tailwindcss \
+            https://github.com/tailwindlabs/tailwindcss/releases/download/v3.4.19/tailwindcss-linux-x64
+          echo "4af3198c015616ea7d6617974ec3d70d987ecc00c1ca8463b0a30fd65cc7c06e  tailwindcss" \
+            | sha256sum --check -
+          chmod +x tailwindcss
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+      - run: uv run pytest
+      - run: node --test tests/

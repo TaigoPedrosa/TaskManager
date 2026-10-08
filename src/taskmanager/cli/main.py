@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import logging
 import os
@@ -83,7 +84,6 @@ wave_app = typer.Typer(name="wave", help="Batch-choosing for a dispatch wave")
 verify_app = typer.Typer(name="verify", help="Static and AST verifications")
 audit_app = typer.Typer(name="audit", help="Audit ledger event logs")
 web_app = typer.Typer(name="web", help="Interactive web visualizer and exporter")
-plugin_app = typer.Typer(name="plugin", help="Install and manage harness plugins")
 config_app = typer.Typer(name="config", help="Project configuration (.taskmanager/config.yaml)")
 decision_app = typer.Typer(name="decision", help="Raise and answer decisions")
 job_app = typer.Typer(name="job", help="Landing and sync jobs")
@@ -100,7 +100,6 @@ app.add_typer(wave_app)
 app.add_typer(verify_app)
 app.add_typer(audit_app)
 app.add_typer(web_app)
-app.add_typer(plugin_app)
 app.add_typer(config_app)
 app.add_typer(decision_app)
 app.add_typer(job_app)
@@ -2450,7 +2449,18 @@ def _find_available_port(host: str, starting_port: int, max_attempts: int = 20) 
     )
 
 
-def _run_web_server(host: str, port: int, open_browser: bool, path: Path | None) -> None:
+def _is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _run_web_server(
+    host: str, port: int, open_browser: bool, path: Path | None, expose: bool
+) -> None:
     import threading
     import time
     import webbrowser
@@ -2458,6 +2468,16 @@ def _run_web_server(host: str, port: int, open_browser: bool, path: Path | None)
     import uvicorn
 
     from taskmanager.web.app import create_app
+
+    # The Host pin stops a browser, not a script: any client that reaches the port can send
+    # `Host: localhost` and then add and run a verification command.
+    if not expose and not _is_loopback(host):
+        print(
+            f"[red]--host {escape(host)} serves the estate with no authentication: any machine "
+            "that reaches it can read every node and run commands through its verifications. "
+            "Pass --expose to serve it anyway.[/red]"
+        )
+        raise typer.Exit(code=1)
 
     root = _get_root(path)
     _refuse_pre_lifecycle(root)
@@ -2499,10 +2519,13 @@ def web_callback(
     path: Annotated[
         Path | None, typer.Option("--path", "-C", help="Project root directory")
     ] = None,
+    expose: Annotated[
+        bool, typer.Option("--expose", help="Allow a --host other than loopback")
+    ] = False,
 ) -> None:
     """Interactive web visualizer and dashboard."""
     if ctx.invoked_subcommand is None:
-        _run_web_server(host=host, port=port, open_browser=open_browser, path=path)
+        _run_web_server(host=host, port=port, open_browser=open_browser, path=path, expose=expose)
 
 
 @web_app.command("run")
@@ -2515,9 +2538,12 @@ def web_run(
     path: Annotated[
         Path | None, typer.Option("--path", "-C", help="Project root directory")
     ] = None,
+    expose: Annotated[
+        bool, typer.Option("--expose", help="Allow a --host other than loopback")
+    ] = False,
 ) -> None:
     """Run interactive web server with real-time updates."""
-    _run_web_server(host=host, port=port, open_browser=open_browser, path=path)
+    _run_web_server(host=host, port=port, open_browser=open_browser, path=path, expose=expose)
 
 
 @web_app.command("export")
@@ -2543,61 +2569,6 @@ def web_export(
     print(
         f"[green]Exported static HTML visualizer to[/green] [bold cyan]{exported.resolve()}[/bold cyan]"
     )
-
-
-@app.command("install")
-def cli_install(
-    status: Annotated[
-        bool, typer.Option("--status", "-s", help="Check installation status")
-    ] = False,
-    tool_only: Annotated[
-        bool, typer.Option("--tool-only", help="Install CLI executable only")
-    ] = False,
-    claude_only: Annotated[
-        bool, typer.Option("--claude-only", help="Register Claude Code plugin only")
-    ] = False,
-    path: Annotated[
-        Path | None, typer.Option("--path", "-C", help="TaskManager repository directory")
-    ] = None,
-) -> None:
-    """Install TaskManager globally as an executable CLI and harness plugin."""
-    import shutil
-    import subprocess
-
-    root = _get_root(path, must_exist=False)
-    install_script = root / "install.sh"
-    if not install_script.exists():
-        pkg_root = Path(__file__).resolve().parents[3]
-        if (pkg_root / "install.sh").exists():
-            install_script = pkg_root / "install.sh"
-            root = pkg_root
-
-    if status:
-        if install_script.exists():
-            subprocess.run([str(install_script), "status"], check=False)
-        else:
-            is_installed = shutil.which("tm") is not None
-            print(f"tm in PATH: {is_installed}")
-        return
-
-    if tool_only:
-        subprocess.run(["uv", "tool", "install", "--editable", str(root), "--force"], check=False)
-        print("[green]Installed TaskManager executable tool[/green]")
-        return
-
-    if claude_only:
-        subprocess.run(["claude", "plugin", "marketplace", "add", str(root)], check=False)
-        subprocess.run(["claude", "plugin", "install", "taskmanager@taskmanager"], check=False)
-        print("[green]Registered TaskManager plugin in Claude Code[/green]")
-        return
-
-    if install_script.exists():
-        subprocess.run([str(install_script), "install"], check=False)
-    else:
-        subprocess.run(["uv", "tool", "install", "--editable", str(root), "--force"], check=False)
-        subprocess.run(["claude", "plugin", "marketplace", "add", str(root)], check=False)
-        subprocess.run(["claude", "plugin", "install", "taskmanager@taskmanager"], check=False)
-        print("[green]TaskManager installed successfully[/green]")
 
 
 @db_app.command("migrate")
