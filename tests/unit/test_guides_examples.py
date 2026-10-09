@@ -158,15 +158,19 @@ def test_re_importing_the_untouched_example_changes_nothing(tmp_path: Path) -> N
     assert before == after
 
 
-def _example_test_commands() -> list[tuple[str, str, str]]:
+def _example_checks(label_suffix: str) -> list[tuple[str, str]]:
     doc = yaml.safe_load(_example_document())
     return [
-        (task["target_repo"], v["expected_pattern"], v["expected_pattern"].split()[-2])
+        (task["target_repo"], v["expected_pattern"])
         for plan in doc["plans"]
         for task in plan["tasks"]
         for v in task.get("verifications", [])
-        if v["type"] == "test_command"
+        if v["type"] == "test_command" and v["target_path"].endswith(label_suffix)
     ]
+
+
+def _example_test_commands() -> list[tuple[str, str, str]]:
+    return [(repo, command, command.split()[-2]) for repo, command in _example_checks("-suite")]
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -222,3 +226,44 @@ def test_every_example_test_command_runs_the_ref_it_is_given_in_its_target_repo(
         green = exits["green"] == 0 and exits["origin/main at green"] == 0
         red = exits["red"] != 0 and exits["origin/main at red"] != 0
         assert green and red, (command, exits)
+
+
+def test_every_example_test_command_is_a_suite_or_a_definition_grep() -> None:
+    doc = yaml.safe_load(_example_document())
+    labels = [
+        v["target_path"]
+        for plan in doc["plans"]
+        for task in plan["tasks"]
+        for v in task.get("verifications", [])
+        if v["type"] == "test_command"
+    ]
+    assert sorted(labels) == ["api-suite", "sender-defined", "sender-suite", "templates-suite"]
+
+
+def _run_at(command: str, cwd: Path, ref: str | None) -> int:
+    env = {k: v for k, v in os.environ.items() if k != "TM_VERIFY_REF"}
+    if ref is not None:
+        env["TM_VERIFY_REF"] = ref
+    return subprocess.run(
+        command, shell=True, cwd=cwd, env=env, capture_output=True, check=False
+    ).returncode
+
+
+def test_the_example_s_definition_check_greps_the_ref_it_is_given(tmp_path: Path) -> None:
+    """The check passes only on a ref whose file defines `send`, whatever the working tree holds,
+    and with no ref exported reads origin/main."""
+    [(target_repo, command)] = _example_checks("-defined")
+    repo = tmp_path / target_repo
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    path = "src/notify/email/sender.py"
+    _commit_tests(repo, [path], "def send(message):\n    pass\n", "defined")
+    _commit_tests(repo, [path], "def deliver(message):\n    pass\n", "renamed")
+    _git(repo, "checkout", "-q", "defined")
+
+    assert _run_at(command, tmp_path, "defined") == 0
+    assert _run_at(command, tmp_path, "renamed") != 0
+    _git(repo, "update-ref", "refs/remotes/origin/main", "renamed")
+    assert _run_at(command, tmp_path, None) != 0
+    _git(repo, "update-ref", "refs/remotes/origin/main", "defined")
+    assert _run_at(command, tmp_path, None) == 0

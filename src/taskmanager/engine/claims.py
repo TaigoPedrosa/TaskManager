@@ -53,6 +53,7 @@ from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.graph_reader import read_graph
 from taskmanager.db.job_repo import JobRepository
+from taskmanager.db.node_repo import declared_files_of
 from taskmanager.di.container import create_container
 from taskmanager.engine import git as gitops
 from taskmanager.engine import selection
@@ -69,7 +70,12 @@ from taskmanager.engine.gates import RED_TARGET, clear_red_targets
 from taskmanager.engine.git import GitManager
 from taskmanager.engine.operations import OperationError, Operations
 from taskmanager.engine.routing import model_for
-from taskmanager.engine.snapshot import SnapshotBuilder, roll_up_ancestors, stored_status
+from taskmanager.engine.snapshot import (
+    SnapshotBuilder,
+    roll_up_ancestors,
+    stored_status,
+    writes_migration,
+)
 from taskmanager.engine.stepgraph import Snapshot
 from taskmanager.engine.validation import Refusal, validate
 
@@ -408,7 +414,7 @@ class Claims:
 
     def next_step(self, node: Node, snap: Snapshot) -> tuple[Action | None, str | None]:
         """The action a claim would take now, and the model it would name."""
-        return selection.next_step(node, snap)
+        return selection.next_step(node, snap, self.config.models)
 
     def verify(self, node_id: str, ref: str, repo: str | None = None) -> tuple[bool, str]:
         """The node's verifications at `ref` (a container's: every descendant task's), limited to
@@ -479,7 +485,7 @@ class Claims:
         if job is None or lease is None or lease.ttl_seconds is not None:
             return None
         action = Action.MERGE if job.kind == JobKind.LAND else Action.SYNC
-        model = model_for(action, node, 0)
+        model = model_for(action, node, 0, self.config.models)
         token = uuid.uuid4().hex
         ttl = ttl or self.ttl_for(action)
         if not self.runtime.take_over(node.id, agent, session, ttl, model, token):
@@ -516,7 +522,7 @@ class Claims:
     ) -> ClaimResult:
         claimed = lifecycle.claim(cycle)
         after = self._with_cycle(node, claimed)
-        model = model_for(action, after, lifecycle.fix_round(claimed))
+        model = model_for(action, after, lifecycle.fix_round(claimed), self.config.models)
         lease = Lease(
             task_id=node.id,
             agent_id=agent,
@@ -645,20 +651,20 @@ class Claims:
     def _base_ref(self, node_id: str, repo: str) -> str:
         """The ref `node_id`'s branch is cut from in `repo`, creating each ancestor container
         branch on the way: a node builds on its landing target, never on the top branch past a
-        parent that has not landed. A top branch not on origin yet is cut from the repository's
+        parent that has not landed. A top branch not on its remote yet is cut from the repository's
         default branch, and the first landing on it creates it; with that one missing too, the
         claim is refused, since the landing would have nowhere to push."""
         repo_dir = self.root / repo
         parent = self.ops.landing_parent(self.node(node_id).id)
         if parent is None:
-            top = self.fetched_top(node_id, repo)
-            if not gitops.rev_parse(repo_dir, f"origin/{top}"):
+            top, remote = self.fetched_top(node_id, repo), self.ops.remote(repo)
+            ref = gitops.tracking(remote, top)
+            if not gitops.rev_parse(repo_dir, ref):
+                lands = f"by pushing to {remote}" if remote else f"on {top}"
                 raise OperationError(
-                    f"{repo} has no origin/{top}: tm cuts branches from origin/{top} and lands "
-                    "by pushing to origin",
-                    409,
+                    f"{repo} has no {ref}: tm cuts branches from {ref} and lands {lands}", 409
                 )
-            return f"origin/{top}"
+            return ref
         parent_branch = self.branch_of(parent)
         if not gitops.rev_parse(repo_dir, f"refs/heads/{parent_branch}"):
             gitops.ensure_branch(repo_dir, parent_branch, self._base_ref(parent, repo))
@@ -667,18 +673,19 @@ class Claims:
     def base_of(self, node_id: str, repo: str) -> str:
         """The branch `node_id`'s branch is read against in `repo`: the container branch it
         lands on, else its top as `fetched_top` reads it, which is the default branch the
-        branch was cut from until the first landing creates the top on origin."""
+        branch was cut from until the first landing creates the top."""
         parent = self.ops.landing_parent(node_id)
         return self.branch_of(parent) if parent else self.fetched_top(node_id, repo)
 
     def fetched_top(self, node_id: str, repo: str) -> str:
-        """The branch `node_id`'s chain lands on at the top in `repo`, fetched. One not on origin
-        yet reads as the repository's default branch, which the first landing on it pushes."""
-        repo_dir = self.root / repo
+        """The branch `node_id`'s chain lands on at the top in `repo`, fetched. One that does not
+        exist yet reads as the repository's default branch, which the first landing on it
+        creates."""
+        repo_dir, remote = self.root / repo, self.ops.remote(repo)
         top, default = self.ops.landing_branch(node_id, repo), self.ops.default_branch(repo)
-        gitops.fetch(repo_dir, top)
-        if top != default and not gitops.rev_parse(repo_dir, f"origin/{top}"):
-            gitops.fetch(repo_dir, default)
+        gitops.fetch(repo_dir, remote, top)
+        if top != default and not gitops.rev_parse(repo_dir, gitops.tracking(remote, top)):
+            gitops.fetch(repo_dir, remote, default)
             return default
         return top
 
@@ -722,7 +729,30 @@ class Claims:
 
     def complete(self, node_id: str, agent: str | None = None, token: str | None = None) -> Status:
         node, _ = self._held(node_id, (Status.IMPLEMENTING, Status.FIXING), agent, token)
-        return self._advance(node, Event.COMPLETE, "task complete")
+        return self._advance(self._with_written_migrations(node), Event.COMPLETE, "task complete")
+
+    def _with_written_migrations(self, node: Node) -> Node:
+        """`node` declaring each file under its repository's `migrations` its branch changes: a
+        step that writes a migration makes the node a migration writer from then on, so its fix
+        is re-reviewed and it holds its repository's migration chain."""
+        repo = node.target_repo
+        if self.is_container(node) or repo is None:
+            return node
+        repo_dir = self.root / repo
+        base = self.target_ref(node.id, repo)
+        if not gitops.rev_parse(repo_dir, base):
+            base = self.ops.top_ref(repo, self.ops.default_branch(repo))
+        declared = declared_files_of(node, [])
+        migrations = self.config.repo(repo).migrations
+        written = [
+            f
+            for f in gitops.changed_files(repo_dir, base, self.branch_of(node.id))
+            if f not in declared and writes_migration([f], migrations)
+        ]
+        if not written:
+            return node
+        frontmatter = {**node.frontmatter, "declared_files": [*declared, *written]}
+        return node.model_copy(update={"frontmatter": frontmatter})
 
     def review(
         self,
@@ -1088,7 +1118,7 @@ class Claims:
             repo_dir = self.root / repo
             target, ref = self.target_of(node_id, repo), self.target_ref(node_id, repo)
             if at_top:
-                gitops.fetch(repo_dir, target)
+                gitops.fetch(repo_dir, self.ops.remote(repo), target)
             if gitops.rev_parse(repo_dir, f"refs/heads/{branch}"):
                 if not gitops.is_ancestor(repo_dir, branch, ref):
                     raise OperationError(
@@ -1193,7 +1223,7 @@ class Claims:
                 source_ref = self.target_ref(base, repo)
                 top = self.target_of(base, repo) if source.startswith(TOP) else None
                 if top is not None and (repo, top) not in fetched:
-                    gitops.fetch(repo_dir, top)
+                    gitops.fetch(repo_dir, self.ops.remote(repo), top)
                     fetched.add((repo, top))
                 present = all(
                     gitops.rev_parse(repo_dir, ref)

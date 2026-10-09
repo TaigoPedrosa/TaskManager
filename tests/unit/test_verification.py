@@ -5,7 +5,11 @@ import pytest
 
 from taskmanager.core.enums import VerificationType
 from taskmanager.core.models import NodeVerification
-from taskmanager.engine.verification import VerificationEngine
+from taskmanager.engine.verification import (
+    RETIRED_VERIFICATIONS,
+    VerificationEngine,
+    retired_verification,
+)
 
 
 def test_file_exists_verification(tmp_path: Path) -> None:
@@ -56,103 +60,6 @@ def test_file_absent_verification(tmp_path: Path) -> None:
     assert "File deleted.py still exists" in res_failed.message
 
 
-def test_ast_symbol_verification_function(tmp_path: Path) -> None:
-    source_file = tmp_path / "auth.py"
-    source_file.write_text("def verify_jwt(token: str) -> bool:\n    return True\n")
-
-    ver = NodeVerification(
-        node_id="AUTH-T01",
-        verification_type=VerificationType.SYMBOL_SIGNATURE,
-        target_path="auth.py",
-        expected_pattern="def verify_jwt(token: str) -> bool",
-    )
-
-    engine = VerificationEngine(tmp_path)
-    result = engine.verify_assertion(ver)
-    assert result.passed is True
-    assert "Symbol verify_jwt found" in result.message
-
-
-def test_ast_symbol_verification_async_function(tmp_path: Path) -> None:
-    source_file = tmp_path / "async_service.py"
-    source_file.write_text("async def fetch_user(user_id: str) -> dict:\n    return {}\n")
-
-    ver = NodeVerification(
-        node_id="AUTH-T01",
-        verification_type=VerificationType.SYMBOL_SIGNATURE,
-        target_path="async_service.py",
-        expected_pattern="async def fetch_user(user_id: str) -> dict",
-    )
-
-    engine = VerificationEngine(tmp_path)
-    result = engine.verify_assertion(ver)
-    assert result.passed is True
-    assert "Symbol fetch_user found" in result.message
-
-
-def test_ast_symbol_verification_class(tmp_path: Path) -> None:
-    source_file = tmp_path / "models.py"
-    source_file.write_text("class TokenVerifier:\n    pass\n")
-
-    ver = NodeVerification(
-        node_id="AUTH-T01",
-        verification_type=VerificationType.SYMBOL_SIGNATURE,
-        target_path="models.py",
-        expected_pattern="class TokenVerifier:",
-    )
-
-    engine = VerificationEngine(tmp_path)
-    result = engine.verify_assertion(ver)
-    assert result.passed is True
-    assert "Symbol TokenVerifier found" in result.message
-
-
-def test_ast_symbol_missing_and_syntax_error(tmp_path: Path) -> None:
-    source_file = tmp_path / "broken.py"
-    source_file.write_text("def valid_function(): pass\n")
-
-    engine = VerificationEngine(tmp_path)
-
-    ver_missing = NodeVerification(
-        node_id="AUTH-T01",
-        verification_type=VerificationType.SYMBOL_SIGNATURE,
-        target_path="broken.py",
-        expected_pattern="def missing_function()",
-    )
-    result_missing = engine.verify_assertion(ver_missing)
-    assert result_missing.passed is False
-    assert "Symbol missing_function not found" in result_missing.message
-
-    source_file.write_text("def broken_syntax(:\n")
-    result_syntax = engine.verify_assertion(ver_missing)
-    assert result_syntax.passed is False
-    assert "Syntax error in broken.py" in result_syntax.message
-
-    ver_no_pattern = NodeVerification(
-        node_id="AUTH-T01",
-        verification_type=VerificationType.SYMBOL_SIGNATURE,
-        target_path="broken.py",
-        expected_pattern=None,
-    )
-    source_file.write_text("x = 1\n")
-    result_no_pattern = engine.verify_assertion(ver_no_pattern)
-    assert result_no_pattern.passed is False
-    assert "No expected symbol pattern" in result_no_pattern.message
-
-
-def test_ast_symbol_missing_source_file(tmp_path: Path) -> None:
-    engine = VerificationEngine(tmp_path)
-    ver = NodeVerification(
-        node_id="AUTH-T01",
-        verification_type=VerificationType.SYMBOL_SIGNATURE,
-        target_path="does_not_exist.py",
-        expected_pattern="def missing()",
-    )
-    result = engine.verify_assertion(ver)
-    assert result.passed is False
-    assert "File does_not_exist.py missing" in result.message
-
-
 def test_test_command_verification(tmp_path: Path) -> None:
     engine = VerificationEngine(tmp_path)
 
@@ -175,31 +82,6 @@ def test_test_command_verification(tmp_path: Path) -> None:
     assert res_fail.passed is False
 
 
-def test_ast_export_verification(tmp_path: Path) -> None:
-    source_file = tmp_path / "exports.py"
-    source_file.write_text('__all__ = ["PublicService"]\nclass PublicService: pass\n')
-
-    engine = VerificationEngine(tmp_path)
-    ver = NodeVerification(
-        node_id="AUTH-T01",
-        verification_type=VerificationType.AST_EXPORT,
-        target_path="exports.py",
-        expected_pattern="PublicService",
-    )
-    result = engine.verify_assertion(ver)
-    assert result.passed is True
-    assert "Export PublicService found" in result.message
-
-    ver_missing = NodeVerification(
-        node_id="AUTH-T01",
-        verification_type=VerificationType.AST_EXPORT,
-        target_path="exports.py",
-        expected_pattern="PrivateService",
-    )
-    result_missing = engine.verify_assertion(ver_missing)
-    assert result_missing.passed is False
-
-
 def test_verify_all(tmp_path: Path) -> None:
     (tmp_path / "exists.py").write_text("x = 1\n")
     engine = VerificationEngine(tmp_path)
@@ -219,73 +101,6 @@ def test_verify_all(tmp_path: Path) -> None:
     assert len(results) == 2
     assert results[0].passed is True
     assert results[1].passed is False
-
-
-def test_ast_symbol_verification_annotated_field(tmp_path: Path) -> None:
-    source_file = tmp_path / "schemas.py"
-    source_file.write_text("class OpsTenantDetailOut(BaseModel):\n    campaigns_in_use: int\n")
-
-    ver = NodeVerification(
-        node_id="AUTH-T01",
-        verification_type=VerificationType.SYMBOL_SIGNATURE,
-        target_path="schemas.py",
-        expected_pattern="campaigns_in_use: int",
-    )
-
-    engine = VerificationEngine(tmp_path)
-    result = engine.verify_assertion(ver)
-    assert result.passed is True
-    assert "Symbol campaigns_in_use found" in result.message
-
-
-def test_ast_symbol_verification_plain_assignment(tmp_path: Path) -> None:
-    source_file = tmp_path / "settings.py"
-    source_file.write_text("OPS_ORIGIN = 'https://ops.example'\n")
-
-    ver = NodeVerification(
-        node_id="AUTH-T01",
-        verification_type=VerificationType.SYMBOL_SIGNATURE,
-        target_path="settings.py",
-        expected_pattern="OPS_ORIGIN",
-    )
-
-    engine = VerificationEngine(tmp_path)
-    result = engine.verify_assertion(ver)
-    assert result.passed is True
-
-
-def test_ast_symbol_verification_absent_field_still_fails(tmp_path: Path) -> None:
-    source_file = tmp_path / "schemas.py"
-    source_file.write_text("class OpsTenantDetailOut(BaseModel):\n    slug: str\n")
-
-    ver = NodeVerification(
-        node_id="AUTH-T01",
-        verification_type=VerificationType.SYMBOL_SIGNATURE,
-        target_path="schemas.py",
-        expected_pattern="campaigns_in_use: int",
-    )
-
-    engine = VerificationEngine(tmp_path)
-    result = engine.verify_assertion(ver)
-    assert result.passed is False
-
-
-def test_ast_symbol_verification_refuses_a_non_python_target(tmp_path: Path) -> None:
-    source_file = tmp_path / "themeChoice.ts"
-    source_file.write_text("export const themeChoice = 'dark';\n")
-
-    ver = NodeVerification(
-        node_id="AUTH-T01",
-        verification_type=VerificationType.SYMBOL_SIGNATURE,
-        target_path="themeChoice.ts",
-        expected_pattern="themeChoice",
-    )
-
-    engine = VerificationEngine(tmp_path)
-    result = engine.verify_assertion(ver)
-    assert result.passed is False
-    assert "parses Python" in result.message
-    assert "test_command" in result.message
 
 
 # -- git-ref resolution -----------------------------------------------------------------------
@@ -416,20 +231,6 @@ def test_repo_prefixed_path_is_stripped(git_repo: Path, tmp_path: Path) -> None:
     assert result.passed is True
 
 
-def test_symbol_signature_reads_content_from_origin_main(git_repo: Path, tmp_path: Path) -> None:
-    (git_repo / "committed.py").write_text("garbage that is not what origin/main has\n")
-
-    engine = VerificationEngine(tmp_path)
-    ver = NodeVerification(
-        node_id="T1",
-        verification_type=VerificationType.SYMBOL_SIGNATURE,
-        target_path="committed.py",
-        expected_pattern="def committed_symbol()",
-    )
-    result = engine.verify_assertion(ver, target_repo="myrepo")
-    assert result.passed is True
-
-
 def test_test_command_reads_the_ref_from_tm_verify_ref(git_repo: Path, tmp_path: Path) -> None:
     _git(git_repo, "checkout", "-q", "-b", "feature")
     _commit(git_repo, "feature_only.py", "x = 1\n")
@@ -485,3 +286,25 @@ def test_no_target_repo_keeps_the_working_tree_fallback(git_repo: Path, tmp_path
     result = engine.verify_assertion(ver)
     assert result.passed is True
     assert result.message == "File exists"
+
+
+@pytest.mark.parametrize("v_type", sorted(RETIRED_VERIFICATIONS))
+def test_a_retired_type_fails_naming_the_test_command_idiom(
+    git_repo: Path, tmp_path: Path, v_type: VerificationType
+) -> None:
+    (git_repo / "committed.py").write_text("def committed_symbol(): pass\n")
+    engine = VerificationEngine(tmp_path)
+    ver = NodeVerification(
+        node_id="T1",
+        verification_type=v_type,
+        target_path="myrepo/committed.py",
+        expected_pattern="committed_symbol",
+    )
+
+    at_ref = engine.verify_assertion(ver, target_repo="myrepo")
+    in_tree = engine.verify_assertion(ver)
+
+    for result in (at_ref, in_tree):
+        assert result.passed is False
+        assert result.message == retired_verification(v_type)
+    assert '"${TM_VERIFY_REF:-origin/main}"' in at_ref.message

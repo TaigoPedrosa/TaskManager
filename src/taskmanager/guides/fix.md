@@ -10,7 +10,7 @@ A dispatcher's workflow usually claims the step for you and says so in the promp
 tm task start <node-id> --agent <name> --session <id> --worktree-dir <dir> --yaml
 ```
 
-`action: fix` sets the node to `FIXING`, locks its declared files again, names the `model` family, and hands back a worktree of the node's existing branch with every earlier commit on it: `worktree` for a task, and `worktrees`, one per repository, for a plan or spec whose branch spans several. Nothing is cut a second time, with one exception: a plan or spec whose review ran on its landed target has a branch carrying nothing that target lacks, so tm sets it aside as `tm/<node-id>@<n>` and cuts the fix from the target, on top of what landed. The lease is held under `<name>` and the claim prints its `token`; the verbs closing the step pass both back with `--agent <name> --token <token>`, and a workflow's prompt carries them.
+`action: fix` sets the node to `FIXING`, locks its declared files again, names the `model` id, and hands back a worktree of the node's existing branch with every earlier commit on it: `worktree` for a task, and `worktrees`, one per repository, for a plan or spec whose branch spans several. Nothing is cut a second time, with one exception: a plan or spec whose review ran on its landed target has a branch carrying nothing that target lacks, so tm sets it aside as `tm/<node-id>@<n>` and cuts the fix from the target, on top of what landed. The lease is held under `<name>` and the claim prints its `token`; the verbs closing the step pass both back with `--agent <name> --token <token>`, and a workflow's prompt carries them.
 
 What you answer is the node's `outcome`, printed by `tm task get <node-id> --yaml`:
 

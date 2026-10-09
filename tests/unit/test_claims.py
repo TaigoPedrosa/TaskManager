@@ -74,12 +74,12 @@ def test_an_implement_claim_cuts_the_branch_from_origin_main_and_locks_declared_
     tmp_path: Path,
 ) -> None:
     claims = make_estate(tmp_path, config=gated("api"))
-    add(claims, "T1", files=["api/app.py"], models=["claude-opus-4", "claude-sonnet-4"])
+    add(claims, "T1", files=["api/app.py"], models=["claude-sonnet-4", "claude-opus-4"])
 
     result = claims.start("T1", "agent-1", "s1")
 
     assert result.action == Action.IMPLEMENT
-    assert result.model == "sonnet"
+    assert result.model == "claude-sonnet-4"
     assert (result.branch, result.base, result.repos) == ("tm/T1", "main", ["api"])
     assert result.worktree is not None
     assert result.worktrees == {"api": result.worktree}
@@ -95,7 +95,7 @@ def test_an_implement_claim_cuts_the_branch_from_origin_main_and_locks_declared_
     assert (lease.action, lease.ttl_seconds, lease.model) == (
         Action.IMPLEMENT,
         claims.ttl_for(Action.IMPLEMENT),
-        "sonnet",
+        "claude-sonnet-4",
     )
     assert claims.runtime.get_conflicting_tasks(["api:api/app.py"])
 
@@ -133,7 +133,10 @@ def test_an_implement_claim_resumes_an_existing_branch_and_a_fix_reuses_its_work
     assert git(Path(fix.worktree), "rev-parse", "HEAD") == earlier
 
 
-@pytest.mark.parametrize(("review_cycles", "model"), [(1, "sonnet"), (2, "sonnet"), (3, "opus")])
+@pytest.mark.parametrize(
+    ("review_cycles", "model"),
+    [(1, "claude-opus-5-5"), (2, "claude-opus-5-5"), (3, "claude-fable-5-1")],
+)
 def test_a_container_fix_is_routed_by_the_one_based_review_round_it_answers(
     tmp_path: Path, review_cycles: int, model: str
 ) -> None:
@@ -147,7 +150,7 @@ def test_a_container_fix_is_routed_by_the_one_based_review_round_it_answers(
         status=Status.REVIEWED,
         outcome=Outcome.REJECT,
         review_cycles=review_cycles,
-        models=["claude-sonnet-4"],
+        models=["claude-opus-5-5", "claude-fable-5-1"],
     )
 
     result = claims.start("P", "fixer", "s1")
@@ -333,7 +336,11 @@ def test_a_review_verdict_is_refused_until_the_review_section_changes(tmp_path: 
     add(claims, "T1", status=Status.IMPLEMENTED)
 
     result = claims.start("T1", "reviewer", "s1")
-    assert (result.action, result.model, result.worktree) == (Action.REVIEW, "sonnet", None)
+    assert (result.action, result.model, result.worktree) == (
+        Action.REVIEW,
+        "claude-sonnet-5-5",
+        None,
+    )
     with pytest.raises(OperationError, match="unchanged since the claim"):
         claims.review("T1", approve=True)
 
@@ -569,7 +576,7 @@ def test_a_merge_claim_starts_a_landing_job_and_returns_at_once(tmp_path: Path) 
 
     result = claims.start("T1", "merger", "s1")
 
-    assert (result.action, result.job, result.model) == (Action.MERGE, "job-1", "sonnet")
+    assert (result.action, result.job, result.model) == (Action.MERGE, "job-1", "claude-sonnet-5-5")
     assert landing.started == ["T1"]
     assert stored(claims, "T1").status == Status.MERGING
     lease = claims.runtime.get_lease("T1")
@@ -609,7 +616,7 @@ def test_a_landing_waiting_for_an_agent_is_handed_to_the_next_claimant(tmp_path:
     assert (lease.agent_id, lease.ttl_seconds, lease.model) == (
         "agent-2",
         claims.ttl_for(Action.MERGE),
-        "sonnet",
+        "claude-sonnet-5-5",
     )
     assert claims.start("T1", "agent-3", "s3").action == Action.BLOCKED
 

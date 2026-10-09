@@ -59,12 +59,11 @@ from taskmanager.engine.git import GitManager
 from taskmanager.engine.selection import ordered_repos
 from taskmanager.engine.snapshot import (
     SnapshotBuilder,
+    is_sensitive,
     node_busy,
     roll_up_ancestors,
-    sensitive_areas,
     stored_status,
     with_tops,
-    writes_migration,
 )
 from taskmanager.engine.stepgraph import Snapshot
 from taskmanager.engine.validation import moved_tops, retargets, validate
@@ -122,6 +121,7 @@ def child_defaults(
     parent: Node | None,
     verifications: Sequence[NodeVerification] = (),
     *,
+    config: ProjectConfig,
     review: bool | None = None,
     fix: bool | None = None,
     merge: Merge | None = None,
@@ -135,7 +135,7 @@ def child_defaults(
         own, lands_on = child.kind == NodeKind.TASK, Merge.SPEC
     else:
         files = declared_files_of(child, list(verifications))
-        own, lands_on = bool(sensitive_areas(child)) or writes_migration(files), Merge.PARENT
+        own, lands_on = is_sensitive(child, files, config), Merge.PARENT
     return child.model_copy(
         update={
             "review": own if review is None else review,
@@ -195,13 +195,15 @@ class GitBranchFacts:
 
     def _ref(self, name: str | None, repo: Path, target: str, top: str) -> str:
         # A container branch not yet cut in this repository would be cut from its own base, and
-        # a top branch not yet on origin from its repository's default branch.
+        # a top branch not yet on its remote from its repository's default branch.
         while not target.startswith(TOP):
             branch = self._branch(target)
             if self._has(repo, f"refs/heads/{branch}"):
                 return branch
             target = landing_target(self.tree, target)
-        tops = (f"origin/{top}", f"origin/{self._branches.default_branch(name)}")
+        remote = self._branches.remote(name)
+        default = self._branches.default_branch(name)
+        tops = (gitops.tracking(remote, top), gitops.tracking(remote, default))
         return next((ref for ref in tops if self._has(repo, ref)), top)
 
     def branch_exists(self, node_id: str) -> bool:
@@ -230,6 +232,7 @@ def validated_write(
     snapshots: SnapshotBuilder,
     touched: set[str],
     prefix: str = "Nothing changed: ",
+    restoring: bool = False,
 ) -> Iterator[None]:
     """One transaction whose result is checked against every write rule before it commits.
 
@@ -244,7 +247,9 @@ def validated_write(
         scope = {n for n in touched if n in after.nodes}
         for node_id in list(scope):
             scope.update(after.children(node_id))
-        refusals = validate(before, after, scope, GitBranchFacts(root, node_repo, before), root)
+        refusals = validate(
+            before, after, scope, GitBranchFacts(root, node_repo, before), root, restoring
+        )
         if refusals:
             code = 409 if any(r.rule in _CONFLICT_RULES for r in refusals) else 400
             raise OperationError(prefix + "; ".join(r.message for r in refusals), code)
@@ -312,14 +317,36 @@ class Operations:
         land_on = spec.frontmatter.get("land_on") if spec is not None else None
         if land_on:
             return str(land_on)
-        if repo is None:
-            node = self.node_repo.get_node(node_id)
-            own = node.target_repo if node is not None else None
-            repo = own or min(self.repos_of(node_id), default=None)
-        return self.default_branch(repo)
+        return self.default_branch(self._own_repo(node_id, repo))
+
+    def _own_repo(self, node_id: str, repo: str | None) -> str | None:
+        """`repo`, or with none named, the node's own: its target_repo, else a container's first
+        repository by name."""
+        if repo is not None:
+            return repo
+        node = self.node_repo.get_node(node_id)
+        own = node.target_repo if node is not None else None
+        return own or min(self.repos_of(node_id), default=None)
 
     def default_branch(self, repo: str | None) -> str:
         return ConfigStore(self._project_root()).branches().default_branch(repo)
+
+    def remote(self, repo: str | None) -> str | None:
+        """`repos.<repo>.remote`: every fetch, push and remote-tracking ref reads the remote here.
+        A remote set in the config that `repo` does not have is refused naming the key; the
+        default is not checked, and a clone without it fails on its missing ref."""
+        root = self._project_root()
+        config = ConfigStore(root).branches().repo(repo)
+        if "remote" in config.model_fields_set:
+            missing = gitops.missing_remote(root / (repo or "."), repo, config.remote)
+            if missing is not None:
+                raise OperationError(missing, 409)
+        return config.remote
+
+    def top_ref(self, repo: str | None, branch: str) -> str:
+        """Where a top branch is read in `repo`: `<remote>/<branch>`, or the local branch in a
+        repository with no remote."""
+        return gitops.tracking(self.remote(repo), branch)
 
     def check_default_branches(self, before: ProjectConfig, after: ProjectConfig) -> None:
         """Refuses moving a repository's default branch from `before` to `after` where the same
@@ -348,10 +375,13 @@ class Operations:
         return self.branch_of(parent) if parent else self.landing_branch(node_id, repo)
 
     def target_ref(self, node_id: str, repo: str | None = None) -> str:
-        """The ref `node_id`'s landing target is read at: a top branch only through its fetched
-        `origin/` ref; container branches are local refs in the shared clones."""
+        """The ref `node_id`'s landing target is read at: a top branch through `top_ref`;
+        container branches are local refs in the shared clones."""
         parent = self.landing_parent(node_id)
-        return self.branch_of(parent) if parent else f"origin/{self.landing_branch(node_id, repo)}"
+        if parent:
+            return self.branch_of(parent)
+        own = self._own_repo(node_id, repo)
+        return self.top_ref(own, self.landing_branch(node_id, own))
 
     def counted_descendants(self, node_id: str) -> list[str]:
         """The descendants a container still counts: a set-aside node never lands, so neither it
@@ -546,6 +576,7 @@ class Operations:
                 frontmatter=_land_on(land_on),
             ),
             parent,
+            config=self.rules(),
             review=review,
             fix=fix,
             merge=None if merge is None else parse_merge(merge),
@@ -619,6 +650,7 @@ class Operations:
                 target_repo=repo,
             ),
             parent,
+            config=self.rules(),
             review=review,
             fix=fix,
             merge=None if merge is None else parse_merge(merge),
@@ -1200,6 +1232,9 @@ class Operations:
 
     def _project_root(self) -> Path:
         return self.node_repo.db.taskmanager_dir.parent
+
+    def rules(self) -> ProjectConfig:
+        return ConfigStore(self._project_root()).rules()
 
     def attach(
         self,

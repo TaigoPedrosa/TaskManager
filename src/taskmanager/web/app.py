@@ -51,6 +51,7 @@ from taskmanager.engine.operations import OperationError, Operations
 from taskmanager.engine.selection import gated_repos
 from taskmanager.engine.simulate import simulate
 from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder, stored_status
+from taskmanager.engine.verification import RETIRED_VERIFICATIONS
 from taskmanager.web.bodies import BodyRepos, attachments_with_size, build_bodies, lease_dict
 from taskmanager.web.live import LiveHub
 from taskmanager.web.rows import (
@@ -679,7 +680,9 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             "condition_stages": [s.value for s in ConditionStage],
             "outcomes": [o.value for o in Outcome],
             "decision_states": list(_DECISION_TAB_STATUS),
-            "verification_types": [t.value for t in VerificationType],
+            "verification_types": [
+                t.value for t in VerificationType if t not in RETIRED_VERIFICATIONS
+            ],
             "models": sorted({m for n in all_nodes for m in n.acceptable_models}),
             "repos": sorted({n.target_repo for n in all_nodes if n.target_repo}),
             "specs": [
@@ -740,6 +743,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             repo_order=project.repo_order,
             cached_conditions=cached_conditions,
             gated=gated_repos(project),
+            models=project.models,
         )
         # What a wave row draws beyond the simulator's own fields: a held node's status and
         # title, and the live lease an in-flight step runs under.

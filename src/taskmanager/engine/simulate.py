@@ -19,6 +19,7 @@ from taskmanager.core.models import Node
 from taskmanager.core.rollup import rollup
 from taskmanager.core.status import IN_STEP, Action, Event, Status
 from taskmanager.engine import selection
+from taskmanager.engine.config import ModelsConfig
 from taskmanager.engine.routing import model_for
 from taskmanager.engine.snapshot import apply_cycle, cycle_in
 from taskmanager.engine.stepgraph import SnapNode, Snapshot
@@ -66,16 +67,18 @@ def simulate(
     repo_order: Sequence[str] = (),
     cached_conditions: Mapping[tuple[str, int], tuple[str, int]] | None = None,
     gated: Collection[str] | None = None,
+    models: ModelsConfig | None = None,
 ) -> list[Wave]:
     """`depth` waves out from `snapshot`, each a `select` over the snapshot the wave before it
     left: `snapshot` itself is read only, never written, and this issues no SQL -- every wave
     after the first reads a snapshot this function built in memory, not the database."""
     caps = Caps()
+    models = models or ModelsConfig()
     snap = snapshot
     waves: list[Wave] = []
     for _ in range(depth):
         snap, wave = _advance(
-            snap, size, max_strong, specs, caps, repo_order, cached_conditions, gated
+            snap, size, max_strong, specs, caps, repo_order, cached_conditions, gated, models
         )
         waves.append(wave)
     return waves
@@ -90,15 +93,21 @@ def _advance(
     repo_order: Sequence[str],
     cached_conditions: Mapping[tuple[str, int], tuple[str, int]] | None,
     gated: Collection[str] | None,
+    models: ModelsConfig,
 ) -> tuple[Snapshot, Wave]:
     data = snap.graph_data()
     blocked_reason = partial(
         selection.blocked_reason, repo_order=repo_order, cached_conditions=cached_conditions
     )
     found, candidate_held = selection.candidates(
-        snap, specs, repo_order=repo_order, blocked_reason=blocked_reason, gated=gated
+        snap,
+        specs,
+        repo_order=repo_order,
+        models=models,
+        blocked_reason=blocked_reason,
+        gated=gated,
     )
-    result = selection.select(found, snap, size, max_strong)
+    result = selection.select(found, snap, size, max_strong, strong=models.strong)
     cand_by_id = {c.node.id: c for c in found}
 
     new_nodes = dict(snap.nodes)
@@ -154,7 +163,7 @@ def _advance(
     for node_id in in_flight_ids:
         node = data.nodes[node_id]
         action = _ACTION_OF_STATUS[Status(node.status)]
-        model = model_for(action, node, fix_round(cycle_in(snap, node)))
+        model = model_for(action, node, fix_round(cycle_in(snap, node)), models)
         before, after = settle(node, action)
         entries.append(
             WaveEntry(
@@ -172,7 +181,7 @@ def _advance(
 
     _roll_up(new_nodes, new_data_nodes, snap, changed)
     new_data = replace(data, nodes=new_data_nodes, leases=new_leases, jobs=new_jobs)
-    new_snap = Snapshot(nodes=new_nodes, edges=snap.edges, data=new_data)
+    new_snap = Snapshot(nodes=new_nodes, edges=snap.edges, data=new_data, config=snap.config)
     return new_snap, Wave(entries=entries, held=[*candidate_held, *result.held])
 
 

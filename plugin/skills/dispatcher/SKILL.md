@@ -49,7 +49,7 @@ If the harness demands a permission for that mechanism which the session cannot 
 
 ## The shape of it
 
-`tm wave discover --session <id> --slots <n> --max-strong <n>` offers what is claimable; `acceptable_models` and `review_models` route each step, and tm prints the model family with every claim, which the workflow maps to a model id through its `models` argument; the brief is `tm render <task-id> --view subagent`, with nothing added to it. `tm run list --yaml` is what is in flight. `tm task defer`, `tm task supersede` and `tm task reopen` are how a plan changes shape.
+`tm wave discover --session <id> --slots <n> --max-strong <n>` offers what is claimable; `acceptable_models` and `review_models` route each step, and tm prints the model id with every claim, which the workflow runs the agent on; the brief is `tm render <task-id> --view subagent`, with nothing added to it. `tm run list --yaml` is what is in flight. `tm task defer`, `tm task supersede` and `tm task reopen` are how a plan changes shape.
 
 ## Shared outputs and contract decisions
 

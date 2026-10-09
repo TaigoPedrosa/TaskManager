@@ -6,7 +6,14 @@ from pathlib import Path
 from typing import Any, Final, Literal, NamedTuple
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+)
 
 from taskmanager.core.enums import EmbeddingProviderType
 from taskmanager.core.status import Action
@@ -16,6 +23,45 @@ DEFAULT_KEY_ENV: Final = "TASKMANAGER_OPENAI_API_KEY"
 # Where a chain lands at the top when neither its spec's `land_on` nor its repository's
 # `default_branch` names a branch.
 DEFAULT_BRANCH: Final = "main"
+# The remote a repository fetches from and lands on when `repos.<repo>.remote` is not set.
+DEFAULT_REMOTE: Final = "origin"
+# Manifests and lockfiles nearly every task re-pins, matched by file name: locking them would
+# serialize every task in a repository, so a conflict on one is resolved when the work lands, by
+# keeping the newest pin and regenerating the lockfile.
+UNLOCKED_FILES: Final = (
+    "pyproject.toml",
+    "uv.lock",
+    "package.json",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "Cargo.toml",
+    "Cargo.lock",
+    "go.mod",
+    "go.sum",
+    "Gemfile",
+    "Gemfile.lock",
+    "build.gradle",
+    "build.gradle.kts",
+)
+# Globs over repository-relative paths. Alembic, Django, Prisma and most others write under a
+# `migrations` directory, EF Core under `Migrations`, Rails `db/migrate`, Flyway `db/migration`,
+# Liquibase `db/changelog`. Too broad only serializes more writers, which is safe.
+MIGRATIONS: Final = (
+    "**/migrations/**",
+    "**/Migrations/**",
+    "**/alembic/versions/**",
+    "**/db/migrate/**",
+    "**/db/migration/**",
+    "**/db/changelog/**",
+)
+# What a `sensitive:` key may name: a fix touching one of these gets one review scoped to its
+# findings before it lands.
+SENSITIVE_AREAS: Final = ("tenant", "rls", "crypto", "migration")
+# The ids a step runs on when a node lists none, and what a merge or sync runs on.
+DEFAULT_MODEL: Final = "claude-sonnet-5-5"
+# The ids `--max-strong` counts.
+STRONG_MODELS: Final = ("claude-opus-5-5", "claude-fable-5-1")
 
 KEYS: Final = (
     "embeddings.provider",
@@ -41,6 +87,10 @@ KEYS: Final = (
     "codegraph.cache_commits",
     "web.archive_after_days",
     "review.blind",
+    "sensitive_areas",
+    "models.default",
+    "models.merge",
+    "models.strong",
 )
 
 # The dispatch loop's typical target, printed by `tm guide dispatch`: a wakeup every tick_min-
@@ -60,7 +110,7 @@ _DISPATCH_BOUNDS: Final = (
 
 # Keys whose value is a whole mapping or list: stored and set as one value, never split into
 # dotted keys, and parsed from YAML when set from the command line.
-_WHOLE: Final = frozenset({"lease_ttl", "repos", "repo_order"})
+_WHOLE: Final = frozenset({"lease_ttl", "repos", "repo_order", "sensitive_areas", "models.strong"})
 
 _GATE_NAMES: Final = ("main", "parent")
 # What a dotted key may name below `repos.<repo>`; a write through one merges into the stored
@@ -71,14 +121,21 @@ _REPO_LEAVES: Final = (
     *(
         f"gates.{gate}.{field}"
         for gate in _GATE_NAMES
-        for field in ("command", "junit", "tests_ran", "timeout")
+        for field in ("command", "junit", "tests_ran", "failing_pattern", "timeout")
     ),
 )
-_REPO_MAPPINGS: Final = ("gates", *(f"gates.{gate}" for gate in _GATE_NAMES))
+_REPO_MAPPINGS: Final = (
+    "gates",
+    *(f"gates.{gate}" for gate in _GATE_NAMES),
+    "unlocked_files",
+    "migrations",
+    # YAML, so `null` reads as a repository with no remote.
+    "remote",
+)
 _VALID: Final = ", ".join(
     (
         *KEYS,
-        "repos.<repo>[.default_branch|.gates[.<main|parent>[.command|.junit|.tests_ran|.timeout]]|.after_land]",
+        "repos.<repo>[.default_branch|.gates[.<main|parent>[.command|.junit|.tests_ran|.failing_pattern|.timeout]]|.after_land|.unlocked_files|.migrations|.remote]",
     )
 )
 
@@ -131,11 +188,13 @@ class Gate(BaseModel):
     command: str = Field(min_length=1)
     junit: str | None = None
     tests_ran: str | None = None
+    # Matched line by line over the full output; each match's one group is a failing test's id.
+    failing_pattern: str | None = None
     timeout: int = Field(default=3600, gt=0)
 
-    @field_validator("tests_ran")
+    @field_validator("tests_ran", "failing_pattern")
     @classmethod
-    def _captures_one_count(cls, value: str | None) -> str | None:
+    def _captures_one_group(cls, value: str | None, info: ValidationInfo) -> str | None:
         if value is None:
             return value
         try:
@@ -143,7 +202,8 @@ class Gate(BaseModel):
         except re.error as exc:
             raise ValueError(f"'{value}' is not a regular expression: {exc}") from exc
         if groups != 1:
-            raise ValueError(f"'{value}' must capture the test count in one group, not {groups}")
+            what = "the test count" if info.field_name == "tests_ran" else "a failing test's id"
+            raise ValueError(f"'{value}' must capture {what} in one group, not {groups}")
         return value
 
 
@@ -151,17 +211,29 @@ class RepoConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     default_branch: str = DEFAULT_BRANCH
+    # None: the repository has no remote, so claims cut from and landings move its local
+    # branches, and nothing fetches or pushes.
+    remote: str | None = DEFAULT_REMOTE
     # A command run in the landing worktree after a container's push to its spec's target, with
     # {target}, {branch}, {node} and {repo} filled in; its exit never undoes the landing.
     # Left out of the stored file while unset, so no repository carries an empty hook.
     after_land: str | None = Field(default=None, min_length=1, exclude_if=lambda v: v is None)
     gates: dict[Literal["main", "parent"], Gate] = Field(default_factory=dict)
+    unlocked_files: list[str] = Field(default_factory=lambda: list(UNLOCKED_FILES))
+    migrations: list[str] = Field(default_factory=lambda: list(MIGRATIONS))
 
     @field_validator("default_branch")
     @classmethod
     def _is_a_branch_name(cls, value: str) -> str:
         if not valid_branch(value):
             raise ValueError(f"'{value}' is not a branch name git accepts")
+        return value
+
+    @field_validator("remote")
+    @classmethod
+    def _is_a_remote_name(cls, value: str | None) -> str | None:
+        if value is not None and not valid_branch(value):
+            raise ValueError(f"'{value}' is not a remote name git accepts")
         return value
 
 
@@ -195,6 +267,14 @@ class ReviewConfig(BaseModel):
     blind: bool = True
 
 
+class ModelsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    default: str = Field(default=DEFAULT_MODEL, min_length=1)
+    merge: str = Field(default=DEFAULT_MODEL, min_length=1)
+    strong: list[str] = Field(default_factory=lambda: list(STRONG_MODELS))
+
+
 class ProjectConfig(BaseModel):
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
     worktree_dir: str = Field(default=".worktrees", min_length=1)
@@ -211,6 +291,8 @@ class ProjectConfig(BaseModel):
     codegraph: CodegraphConfig = Field(default_factory=CodegraphConfig)
     web: WebConfig = Field(default_factory=WebConfig)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
+    sensitive_areas: list[str] = Field(default_factory=lambda: list(SENSITIVE_AREAS))
+    models: ModelsConfig = Field(default_factory=ModelsConfig)
 
     @field_validator("lease_ttl")
     @classmethod
@@ -231,9 +313,16 @@ class ProjectConfig(BaseModel):
             return self.lease_ttl if action == Action.IMPLEMENT else LEASE_TTL_DEFAULTS[action]
         return self.lease_ttl.get(action, LEASE_TTL_DEFAULTS[action])
 
-    def default_branch(self, repo: str | None) -> str:
+    def repo(self, repo: str | None) -> RepoConfig:
+        """`repo`'s settings; a repository with no entry, or none named, has every default."""
         found = self.repos.get(repo) if repo is not None else None
-        return found.default_branch if found is not None else DEFAULT_BRANCH
+        return found if found is not None else RepoConfig()
+
+    def default_branch(self, repo: str | None) -> str:
+        return self.repo(repo).default_branch
+
+    def remote(self, repo: str | None) -> str | None:
+        return self.repo(repo).remote
 
 
 def moved_defaults(before: ProjectConfig, after: ProjectConfig) -> list[str]:
@@ -264,7 +353,14 @@ def _repo_key(key: str) -> RepoKey | None:
     rest = key.removeprefix("repos.")
     below = next((k for k in (*_REPO_LEAVES, *_REPO_MAPPINGS) if rest.endswith(f".{k}")), None)
     repo = rest.removesuffix(f".{below}") if below else rest
-    if not repo or {"gates", "default_branch", "after_land"} & set(repo.split(".")):
+    if not repo or {
+        "gates",
+        "default_branch",
+        "after_land",
+        "unlocked_files",
+        "migrations",
+        "remote",
+    } & set(repo.split(".")):
         return None
     return RepoKey(repo, tuple(below.split(".")) if below else ())
 
@@ -493,6 +589,13 @@ class ConfigStore:
     def branches(self) -> ProjectConfig:
         """Only `repos` resolved: a reader of default branches needs no other key's read."""
         return ProjectConfig(repos=self.resolve("repos").value)
+
+    def rules(self) -> ProjectConfig:
+        """`repos` and `sensitive_areas` resolved: what a snapshot's rules read."""
+        return ProjectConfig(
+            repos=self.resolve("repos").value,
+            sensitive_areas=self.resolve("sensitive_areas").value,
+        )
 
     def document(self) -> dict[str, Any] | None:
         """The stored keys as a nested mapping, or None when nothing was ever set."""

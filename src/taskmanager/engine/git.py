@@ -24,7 +24,7 @@ class GitManager:
     def create_worktree(
         self, branch_name: str, worktree_path: Path, base_ref: str = "HEAD"
     ) -> Path:
-        """`--no-track`: a branch cut from `origin/<target>` would otherwise push to `<target>`.
+        """`--no-track`: a branch cut from `<remote>/<target>` would otherwise push to `<target>`.
 
         Returns the worktree actually in use, which is `worktree_path` on a fresh checkout but
         the branch's existing worktree when one is already checked out elsewhere: `git worktree
@@ -138,8 +138,30 @@ def diff_quiet(repo: Path, base: str, branch: str) -> bool:
     return _git(repo, "diff", "--quiet", f"{base}...{branch}").returncode == 0
 
 
-def fetch(repo: Path, branch: str) -> bool:
-    return _git(repo, "fetch", "-q", "origin", branch).returncode == 0
+def changed_files(repo: Path, base: str, branch: str) -> list[str]:
+    """Every file `branch` changes against its merge base with `base`; none on a git error."""
+    res = _git(repo, "diff", "--name-only", f"{base}...{branch}")
+    return res.stdout.split("\n")[:-1] if res.returncode == 0 else []
+
+
+def tracking(remote: str | None, branch: str) -> str:
+    """Where `branch` is read: its remote-tracking ref, or with no remote the local branch."""
+    return f"{remote}/{branch}" if remote else branch
+
+
+def missing_remote(repo_dir: Path, repo: str | None, remote: str | None) -> str | None:
+    """Why `repos.<repo>.remote` cannot be used in `repo_dir`, or None when it can."""
+    if remote is None or _git(repo_dir, "remote", "get-url", remote).returncode == 0:
+        return None
+    return (
+        f"repos.{repo or '.'}.remote names '{remote}', which {repo_dir} has no remote of: set it "
+        f"to one `git -C {repo_dir} remote -v` lists, or to null for a repository with no remote"
+    )
+
+
+def fetch(repo: Path, remote: str | None, branch: str) -> bool:
+    """With no remote the local branch is the one read, so there is nothing to fetch."""
+    return remote is None or _git(repo, "fetch", "-q", remote, branch).returncode == 0
 
 
 @cache
@@ -157,7 +179,7 @@ def ensure_branch(repo: Path, branch: str, base: str) -> bool:
 
     One `update-ref` with an empty old value, so of two claims creating the same branch at once
     exactly one creates it and the other reads False. A bare ref carries no upstream, so a bare
-    `git push` from a branch cut from `origin/<target>` never targets the deploying `<target>`.
+    `git push` from a branch cut from `<remote>/<target>` never targets the deploying `<target>`.
     """
     ref = f"refs/heads/{branch}"
     sha = _run(repo, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}")
@@ -187,16 +209,32 @@ def update_ref_cas(repo: Path, ref: str, new: str, old: str) -> bool:
     return _git(repo, "update-ref", ref, new, old).returncode == 0
 
 
-def ls_remote(repo: Path, ref: str) -> tuple[str, subprocess.CompletedProcess[str]]:
-    """The sha `origin` holds for `ref` ("" when it cannot be read), and the run that read it."""
-    res = _git(repo, "ls-remote", "origin", ref)
+def ls_remote(
+    repo: Path, remote: str | None, ref: str
+) -> tuple[str, subprocess.CompletedProcess[str]]:
+    """The sha `remote` (with none, `repo` itself) holds for `ref` ("" when it cannot be read),
+    and the run that read it."""
+    res = _git(repo, "ls-remote", remote or ".", ref)
     fields = res.stdout.split()
     return (fields[0] if res.returncode == 0 and fields else ""), res
 
 
-def push(worktree: Path, target: str) -> subprocess.CompletedProcess[str]:
-    """Never forced: a push refused because the target moved is merged in by the caller."""
-    return _git(worktree, "push", "-q", "origin", f"HEAD:refs/heads/{target}")
+def push(worktree: Path, remote: str | None, target: str) -> subprocess.CompletedProcess[str]:
+    """Never forced: a push refused because the target moved is merged in by the caller.
+
+    With no remote the repository receives its own push: `updateInstead` moves a target checked
+    out in a clean worktree along with its files, and refuses one with uncommitted changes.
+    """
+    if remote is not None:
+        return _git(worktree, "push", "-q", remote, f"HEAD:refs/heads/{target}")
+    return _git(
+        worktree,
+        "push",
+        "-q",
+        "--receive-pack=git -c receive.denyCurrentBranch=updateInstead receive-pack",
+        ".",
+        f"HEAD:refs/heads/{target}",
+    )
 
 
 def add_detached_worktree(repo: Path, path: Path, commit: str) -> None:

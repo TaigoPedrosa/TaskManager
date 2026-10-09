@@ -1,5 +1,5 @@
 import json
-from collections.abc import Generator
+from collections.abc import Collection, Generator
 from contextlib import contextmanager
 from typing import Any
 
@@ -106,15 +106,10 @@ def locked_key(repo: str | None, path: str) -> str:
     return f"{repo or ''}:{path}"
 
 
-# Every Python task pins or re-locks its dependencies, so locking these would serialize every
-# task in a repository; a conflict on them is resolved when the work lands, by keeping the newest
-# pin and regenerating the lockfile.
-UNLOCKED_FILES = frozenset({"pyproject.toml", "uv.lock"})
-
-
-def is_locked_path(path: str) -> bool:
-    """False for a manifest or lockfile no claim locks and no batch keeps disjoint."""
-    return path.rsplit("/", 1)[-1] not in UNLOCKED_FILES
+def is_locked_path(path: str, unlocked: Collection[str]) -> bool:
+    """False for a file its repository's `unlocked_files` names: no claim locks it and no batch
+    keeps it disjoint."""
+    return path.rsplit("/", 1)[-1] not in unlocked
 
 
 class NodeRepository:

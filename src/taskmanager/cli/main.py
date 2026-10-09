@@ -95,7 +95,7 @@ task_app = typer.Typer(name="task", help="Manage tasks")
 section_app = typer.Typer(name="section", help="Manage node sections")
 run_app = typer.Typer(name="run", help="Execution coordination and leases")
 wave_app = typer.Typer(name="wave", help="Batch-choosing for a dispatch wave")
-verify_app = typer.Typer(name="verify", help="Static and AST verifications")
+verify_app = typer.Typer(name="verify", help="Machine checks of a task's deliverable")
 audit_app = typer.Typer(name="audit", help="Audit ledger event logs")
 web_app = typer.Typer(name="web", help="Interactive web visualizer and exporter")
 config_app = typer.Typer(name="config", help="Project configuration (.taskmanager/config.yaml)")
@@ -1723,7 +1723,8 @@ def wave_discover(
         int, typer.Option("--slots", help="Total concurrent slots this session may hold")
     ] = 9,
     max_strong: Annotated[
-        int, typer.Option("--max-strong", help="Cap on opus/fable leases for this session")
+        int,
+        typer.Option("--max-strong", help="Cap on leases on a models.strong id for this session"),
     ] = 5,
     spec: Annotated[
         list[str] | None,
@@ -1869,8 +1870,8 @@ def verify_run(
             "--ref",
             help=(
                 "Git ref to check the task's path verifications against (e.g. tm/<task-id>), "
-                "read as-is with no fetch. Default: origin/<the branch the task's chain lands "
-                "on>, fetched first. Exported to a test_command as TM_VERIFY_REF either way."
+                "read as-is with no fetch. Default: <remote>/<the branch the task's chain lands "
+                "on>, fetched first, or that local branch with no remote. Exported to a test_command as TM_VERIFY_REF either way."
             ),
         ),
     ] = None,

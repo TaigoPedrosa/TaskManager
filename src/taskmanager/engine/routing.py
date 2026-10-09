@@ -1,48 +1,31 @@
-"""Which model family runs a step. tm names it at claim; the workflow maps a family to a model id."""
+"""Which model id runs a step. tm names it at claim, from the node's own model lists, which the
+owner orders cheapest first; any string is a model id, of any vendor."""
 
 from taskmanager.core.enums import CONTAINERS
 from taskmanager.core.models import Node
 from taskmanager.core.status import Action, Outcome
-
-# Cheapest first: `_families` sorts by this order, so [0] is the cheapest and [-1] the strongest.
-FAMILIES = ("haiku", "sonnet", "opus", "fable")
-STRONG = frozenset({"opus", "fable"})
+from taskmanager.engine.config import ModelsConfig
 
 
-def family(model_id: str) -> str | None:
-    lowered = model_id.lower()
-    return next((name for name in FAMILIES if name in lowered), None)
-
-
-def _families(model_ids: list[str]) -> list[str]:
-    found = {name for model_id in model_ids if (name := family(model_id)) is not None}
-    return sorted(found, key=FAMILIES.index)
-
-
-def _at_least_opus(families: list[str]) -> str:
-    strongest = families[-1] if families else "opus"
-    return strongest if strongest in STRONG else "opus"
-
-
-def model_for(action: Action, node: Node, fix_round: int) -> str:
-    families = _families(node.acceptable_models)
-    review_families = _families([str(m) for m in node.frontmatter.get("review_models") or []])
-    container = node.kind in CONTAINERS
+def model_for(action: Action, node: Node, fix_round: int, models: ModelsConfig) -> str:
+    acceptable = node.acceptable_models
+    reviewers = [str(m) for m in node.frontmatter.get("review_models") or []]
+    cheapest = acceptable[0] if acceptable else models.default
+    strongest = acceptable[-1] if acceptable else models.default
     if action == Action.IMPLEMENT:
-        return families[0] if families else "sonnet"
+        return cheapest
     if action == Action.REVIEW:
-        if review_families:
-            return review_families[0]
+        if reviewers:
+            return reviewers[0]
         # A container review is a branch review.
-        return _at_least_opus(families) if container else "sonnet"
+        return strongest if node.kind in CONTAINERS else cheapest
     if action == Action.FIX:
         if node.fix_for == Outcome.MERGE_FAILED:
-            return "sonnet"
+            return models.merge
         # fix_round is the 1-based review round the fix answers; only a container reaches 3.
-        if fix_round >= 3:
-            return _at_least_opus(families)
-        implementer = families[0] if families else "sonnet"
-        return implementer if implementer in STRONG else "sonnet"
+        if fix_round >= 3 or cheapest not in models.strong:
+            return strongest
+        return cheapest
     if action in (Action.MERGE, Action.SYNC):
-        return "sonnet"
+        return models.merge
     raise ValueError(f"no model runs a {action} step")

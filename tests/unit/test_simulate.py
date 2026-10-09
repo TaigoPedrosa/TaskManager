@@ -222,7 +222,7 @@ def test_wave_entry_carries_id_title_kind_action_model_repos_and_status(estate: 
     entry = action_of(waves[0], "T1")
 
     assert (entry.id, entry.title, entry.kind, entry.repos) == ("T1", "T1", NodeKind.TASK, ["api"])
-    assert (entry.action, entry.model) == (Action.IMPLEMENT, "sonnet")
+    assert (entry.action, entry.model) == (Action.IMPLEMENT, "claude-sonnet-5-5")
     assert (entry.status_before, entry.status_after) == (Status.READY, Status.IMPLEMENTED)
 
 
