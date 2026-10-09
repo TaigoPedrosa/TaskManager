@@ -39,6 +39,7 @@ KEYS: Final = (
     "dispatch.wave_size",
     "dispatch.tick_budget",
     "codegraph.cache_commits",
+    "review.blind",
 )
 
 # The dispatch loop's typical target, printed by `tm guide dispatch`: a wakeup every tick_min-
@@ -179,6 +180,13 @@ class CodegraphConfig(BaseModel):
     cache_commits: int = Field(default=3, ge=1)
 
 
+class ReviewConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # A review brief leaves out the implementer's report, so the review is a second opinion.
+    blind: bool = True
+
+
 class ProjectConfig(BaseModel):
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
     worktree_dir: str = Field(default=".worktrees", min_length=1)
@@ -193,6 +201,7 @@ class ProjectConfig(BaseModel):
     repos: dict[str, RepoConfig] = Field(default_factory=dict)
     dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
     codegraph: CodegraphConfig = Field(default_factory=CodegraphConfig)
+    review: ReviewConfig = Field(default_factory=ReviewConfig)
 
     @field_validator("lease_ttl")
     @classmethod

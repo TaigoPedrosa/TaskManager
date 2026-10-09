@@ -24,7 +24,7 @@ What this review covers follows from the status it was claimed from, which `tm t
 tm render <node-id> --view subagent
 ```
 
-That is the brief the implementer was given, and the only standard you review against. `tm task get <node-id> --yaml` names the node's `target_repo`, `declared_files` and flags. For a plan or spec the brief also lists every child whose own review rejected, with its `:review`: those children landed on this branch unfixed, and this review is where their findings get fixed.
+That is the brief the implementer was given, and the only standard you review against. While the project's `review.blind` config key is on, its default, a review's brief leaves out the implementer's `:report`, so the review is a second opinion rather than a confirmation; `tm config set review.blind false` puts it back. Read `tm section get <node-id>:report` only after your findings are written, to judge the discrepancies it records; a re-review reads the fixer's latest entry as part of its scope. `tm task get <node-id> --yaml` names the node's `target_repo`, `declared_files` and flags. For a plan or spec the brief also lists every child whose own review rejected, with its `:review`: those children landed on this branch unfixed, and this review is where their findings get fixed.
 
 ## 3. Read the branch
 
