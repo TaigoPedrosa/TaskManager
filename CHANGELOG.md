@@ -39,6 +39,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   dispatcher reports and stops when nothing is claimable or in flight, a question that holds work
   is a decision, and comment, test-name and review-format rules belong in a project's own guide
   addendum (`tm section set guide:<topic>`).
+- `tm import`, `tm task update --repo` and the web refuse a `target_repo` that is not a git
+  working tree under the tm root, and name the repositories that are, `.` for the root itself.
+  A node already stored with one, as `tm restore` brings back, is left as it is.
+- `tm wave discover` and the web's waves hold a node whose repository has no main gate, naming
+  the `tm config set repos.<repo>.gates.main.command` that clears it, instead of running its
+  implement and review only to stop at its landing.
 
 ### Removed
 

@@ -48,6 +48,7 @@ def discover(
         repo_order=claims.config.repo_order,
         next_step=claims.next_step,
         blocked_reason=claims.blocked_reason,
+        gated=selection.gated_repos(claims.config),
     )
     result = selection.select(found, snap, free, strong_free, exclude or [], hold_merge or [])
     payload = json.dumps(
