@@ -751,12 +751,30 @@ _SET_OPTION = typer.Option(
 )
 
 
+_FIELD_OPTIONS: dict[str, str] = {
+    "target_repo": "--repo",
+    "title": "--title",
+    "priority": "--priority",
+    "ordinal": "--order",
+    "acceptable_models": "--models",
+    "review": "--review/--no-review",
+    "fix": "--fix/--no-fix",
+    "merge": "--merge",
+    "requires": "--requires",
+    "land_order": "--land-order",
+}
+
+
 def _frontmatter_pairs(pairs: list[str] | None) -> dict[str, Any]:
     frontmatter: dict[str, Any] = {}
     for pair in pairs or []:
         key, sep, raw = pair.partition("=")
         if not sep or not key:
             raise typer.BadParameter(f"--set takes key=value, got '{pair}'")
+        if key in Node.model_fields:
+            # A frontmatter key named like a field is stored beside the field and never read.
+            how = f"set it with {_FIELD_OPTIONS[key]}" if key in _FIELD_OPTIONS else "tm sets it"
+            raise typer.BadParameter(f"{key} is a node field, not frontmatter: {how}")
         try:
             frontmatter[key] = json.loads(raw)
         except ValueError:
