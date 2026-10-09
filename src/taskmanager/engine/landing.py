@@ -359,22 +359,29 @@ class Landing:
         return self._succeed(job, report)
 
     def _succeed(self, job: Job, report: str) -> JobState:
-        if not self._end(job, JobState.SUCCEEDED, verify=report):
-            return self._state(job)
         summary = f"{job.repo}: landed on {job.target}\n{report}"
         repos = self.claims.repos_of(job.node_id)
         later = repos[repos.index(job.repo) + 1 :] if job.repo in repos else []
-        if not later:
-            self.claims.landed(job.node_id, summary)
-            return JobState.SUCCEEDED
-        # One landing job per repository, in order, under the same lease; a pushed target is
-        # never rolled back, so a later repository's failure leaves this one landed.
-        following = self._new_job(
-            JobKind.LAND, job.node_id, later[0], self.claims.target_of(job.node_id, later[0]), {}
-        )
-        job.result["next"] = following.id
-        self.jobs.set_state(job, {JobState.SUCCEEDED})
-        self.claims.note(job.node_id, "merge", summary)
+        # The job's SUCCEEDED and the node's result commit together: a reader polling the job
+        # never sees it succeeded on a node that has not moved, and a crash leaves neither.
+        with self.claims.nodes.transaction():
+            if not self._end(job, JobState.SUCCEEDED, verify=report):
+                return self._state(job)
+            if not later:
+                self.claims.landed(job.node_id, summary)
+                return JobState.SUCCEEDED
+            # One landing job per repository, in order, under the same lease; a pushed target
+            # is never rolled back, so a later repository's failure leaves this one landed.
+            following = self._new_job(
+                JobKind.LAND,
+                job.node_id,
+                later[0],
+                self.claims.target_of(job.node_id, later[0]),
+                {},
+            )
+            job.result["next"] = following.id
+            self.jobs.set_state(job, {JobState.SUCCEEDED})
+            self.claims.note(job.node_id, "merge", summary)
         # The next repository runs as its own job, so whatever stops it is ended against it,
         # not against this one, which has already succeeded.
         if not self.detach:
