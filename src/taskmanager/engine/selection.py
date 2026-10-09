@@ -14,6 +14,7 @@ from taskmanager.core.enums import CONTAINERS, NodeKind
 from taskmanager.core.lifecycle import LifecycleError, claim, fix_round, next_action
 from taskmanager.core.models import Node
 from taskmanager.core.status import (
+    EXITS,
     IN_STEP,
     Action,
     ConditionStage,
@@ -103,9 +104,26 @@ def _conflicts(files: list[str], snap: Snapshot) -> dict[str, str]:
     return SnapshotBuilder.conflicts(files, snap)
 
 
+def _set_aside_ancestor(snap: Snapshot, node_id: str) -> str | None:
+    """The nearest ancestor in an exit status: setting a spec or plan aside sets aside its whole
+    subtree without rewriting any descendant's own status, so reopening it restores them all."""
+    visited: set[str] = set()
+    parent = snap.parent(node_id)
+    while parent is not None and parent not in visited:
+        if snap.status(parent) in EXITS:
+            return parent
+        visited.add(parent)
+        parent = snap.parent(parent)
+    return None
+
+
 def blocked_reason_before_condition(node: Node, snap: Snapshot) -> str | None:
     """The claimability checks a condition's command must never wait behind: a live job, a held
-    lease, an open decision or an unsatisfied edge. None when none of these blocks `node`."""
+    lease, an open decision, an unsatisfied edge or a set-aside ancestor. None when none of these
+    blocks `node`."""
+    aside = _set_aside_ancestor(snap, node.id)
+    if aside is not None:
+        return f"under {aside} ({snap.status(aside)})"
     data = snap.graph_data()
     live = [j for j in data.jobs.get(node.id, []) if j.state in _LIVE_JOBS]
     if live:
