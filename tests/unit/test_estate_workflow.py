@@ -99,13 +99,14 @@ def test_an_import_naming_an_unknown_dependency_writes_nothing(db: DatabaseManag
     repo = NodeRepository(db)
     importer = BulkImporter(repo)
     doc = {
+        "spec": {"id": "S", "title": "S"},
         "plans": [
             {
                 "id": "P",
                 "title": "P",
                 "tasks": [{"id": "P-1", "title": "a", "depends_on": ["nope"]}],
             }
-        ]
+        ],
     }
     with pytest.raises(ValueError, match="nothing written"):
         importer.import_dict(doc)
@@ -117,6 +118,7 @@ def test_importing_the_same_document_twice_changes_nothing(db: DatabaseManager) 
     repo = NodeRepository(db)
     importer = BulkImporter(repo)
     doc = {
+        "spec": {"id": "S", "title": "S"},
         "plans": [
             {
                 "id": "P",
@@ -129,7 +131,7 @@ def test_importing_the_same_document_twice_changes_nothing(db: DatabaseManager) 
                     }
                 ],
             }
-        ]
+        ],
     }
     importer.import_dict(doc)
     importer.import_dict(doc)
@@ -595,6 +597,7 @@ def test_a_section_needs_its_node_and_a_frontmatter_key_can_be_set(tmp_path: Pat
 def test_next_returns_a_batch_whose_tasks_share_no_file(tmp_path: Path) -> None:
     runner.invoke(app, ["init", "-C", str(tmp_path)])
     doc = {
+        "spec": {"id": "S", "title": "S"},
         "plans": [
             {
                 "id": "P",
@@ -604,7 +607,7 @@ def test_next_returns_a_batch_whose_tasks_share_no_file(tmp_path: Path) -> None:
                     for n, f in (("a", "x"), ("b", "x"), ("c", "y"))
                 ],
             }
-        ]
+        ],
     }
     f = tmp_path / "doc.json"
     f.write_text(json.dumps(doc))
@@ -704,9 +707,10 @@ def test_reimporting_a_document_keeps_the_progress_it_does_not_state(db: Databas
     importer = BulkImporter(repo)
     importer.import_dict(
         {
+            "spec": {"id": "S", "title": "S"},
             "plans": [
                 {"id": "P", "title": "P", "tasks": [{"id": "P-1", "title": "a", "priority": 70}]}
-            ]
+            ],
         }
     )
     node = repo.get_node("P-1")
@@ -728,13 +732,14 @@ def test_reimporting_a_document_keeps_the_progress_it_does_not_state(db: Databas
 
     importer.import_dict(
         {
+            "spec": {"id": "S", "title": "S"},
             "plans": [
                 {
                     "id": "P",
                     "title": "P",
                     "tasks": [{"id": "P-1", "title": "a", "status": "COMPLETED", "priority": 20}],
                 }
-            ]
+            ],
         }
     )
     stated = repo.get_node("P-1")
@@ -753,13 +758,14 @@ def test_a_document_that_states_checks_replaces_them_and_verify_can_list_and_rem
         f.write_text(
             json.dumps(
                 {
+                    "spec": {"id": "S", "title": "S"},
                     "plans": [
                         {
                             "id": "P",
                             "title": "P",
                             "tasks": [{"id": "P-1", "title": "a", "verifications": [check]}],
                         }
-                    ]
+                    ],
                 }
             )
         )

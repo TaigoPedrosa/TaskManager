@@ -280,7 +280,13 @@ def _import(root: Path, tmp_path: Path, checks: list[dict[str, str]]) -> str:
     doc = tmp_path / "doc.json"
     task = {"id": "P-1", "title": "a", "target_repo": "app", "verifications": checks}
     doc.write_text(
-        json.dumps({"plans": [{"id": "P", "title": "P", "tasks": [task]}]}), encoding="utf-8"
+        json.dumps(
+            {
+                "spec": {"id": "S", "title": "S"},
+                "plans": [{"id": "P", "title": "P", "tasks": [task]}],
+            }
+        ),
+        encoding="utf-8",
     )
     result = runner.invoke(app, ["import", "-f", str(doc), "-C", str(root)])
     return "" if result.exit_code == 0 else result.output

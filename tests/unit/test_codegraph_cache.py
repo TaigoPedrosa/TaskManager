@@ -133,7 +133,13 @@ def _import(estate: Path, checks: list[dict[str, str]]) -> Result:
     doc = estate.parent / "doc.json"
     task = {"id": "P-1", "title": "a", "verifications": checks}
     doc.write_text(
-        json.dumps({"plans": [{"id": "P", "title": "P", "tasks": [task]}]}), encoding="utf-8"
+        json.dumps(
+            {
+                "spec": {"id": "S", "title": "S"},
+                "plans": [{"id": "P", "title": "P", "tasks": [task]}],
+            }
+        ),
+        encoding="utf-8",
     )
     return runner.invoke(app, ["import", "-f", str(doc), "-C", str(estate)])
 

@@ -7,10 +7,12 @@ For the agent authoring new work: turn an intent into a document `tm import` acc
 One YAML file (`--format json` and `markdown` parse the same shape). A `spec` is the standing intent, a `plan` is a shippable slice of it, a `task` is one agent's unit of work.
 
 ```
-spec:     one, optional; omit it to add plans under a spec already in the database
+spec:     one; required for any plan not already under a spec
 plans:    a list; each carries its own tasks
   tasks:  a list; also allowed at top level, where the tasks hang off the spec
 ```
+
+To add plans under a spec already in the database, write `spec: {id: <spec-id>}`: a spec named by its id alone keeps its title, its other fields and its sections, and the plans land under it. Without `spec:`, a plan already under a spec stays there, and a document holding any other plan is refused, since that plan would belong to no spec.
 
 Every node takes the fields below; `verifications` and `target_repo` act only on tasks, and `land_order` only on plans and specs.
 

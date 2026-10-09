@@ -152,7 +152,7 @@ class BulkImporter:
             )
             raise ValueError(f"{REFUSED}duplicate id {detail}")
 
-    def import_dict(self, data: dict[str, Any]) -> Imported:
+    def import_dict(self, data: dict[str, Any], *, restoring: bool = False) -> Imported:
         self._refuse_unknown_keys(data)
         self._refuse_duplicate_ids(data)
         nodes: list[Node] = []
@@ -215,6 +215,19 @@ class BulkImporter:
             take(task_data, NodeKind.TASK, spec)
         for dec_data in data.get("decisions", []):
             take(dec_data, NodeKind.DECISION, None)
+        # An export carries a plan stored under no spec as it is, so a restore takes it back.
+        unplaced = (
+            sorted(
+                p["id"] for p in data.get("plans", []) if not self.node_repo.get_parent_ids(p["id"])
+            )
+            if spec is None and not restoring
+            else []
+        )
+        if unplaced:
+            raise ValueError(
+                f"{REFUSED}plans {unplaced} would belong to no spec; "
+                "name the spec they go under with `spec: {id: <spec-id>}`"
+            )
 
         known = {n.id for n in nodes}
         unknown = sorted(
