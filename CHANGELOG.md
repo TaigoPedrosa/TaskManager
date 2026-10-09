@@ -5,10 +5,68 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-10-09
+
+### Upgrading
+
+- 0.3.8 adds state migrations 4 and 5: `state.db` moves from schema 3 to schema 5, and every
+  command that opens an older estate refuses, naming `tm db migrate`. After installing 0.3.8, run
+  `tm db migrate` once in each existing project; it backs `state.db` up first.
+- Migration 4 rewrites a node's `merge: main` to `merge: spec`. Migration 5 adds
+  `nodes.on_target` and puts on its target every plan or spec past its landing.
+- `tm export` writes format 5, which an older tm does not restore. `tm restore` still reads the
+  older formats, and a format 1 or 2 export's `merge: main` as `spec`.
+- A verification of type `symbol_signature` or `ast_export` now fails: rewrite it as a
+  `test_command`.
+
 ### Added
 
+- `install.sh` installs, reports on and uninstalls `tm` and the Claude Code plugin at one version,
+  from a git ref or a checkout; `install.sh status` exits non-zero when they differ. The README,
+  the skills, `tm doctor` and the guides send every user to it and name no version tag.
+- `tm init` walks repositories, default branches, the worktree directory, gates and estate
+  tracking at a terminal, re-runnably, with `--yes` and flags for scripts, and ends with
+  `tm doctor`.
+- `tm doctor` reports what `tm` needs and recommends codegraph.
+- `/taskmanager:init` turns a tracker item, a file or the user's words into a spec ready for
+  design; `/taskmanager:design` settles its open questions as decisions and ends on an approval
+  decision; `/taskmanager:plan` imports an approved design as plans and tasks whose verifications
+  fail before the work.
+- `tm guide intake` turns an outside request, or a defect against landed work, into specs, tasks
+  and decisions.
+- A spec's `land_on` names the branch its chain lands on, else `repos.<repo>.default_branch`.
+  The CLI and the web set it, every Lands line names the branch, and a top landing merges, gates,
+  pushes and verifies on that branch, creating it on the remote when absent.
+- `repos.<repo>.remote` names the remote every fetch, push and tracking ref reads; `null` lands
+  on the local branch.
+- A claim names the model id it runs on, from the node's own lists or `models.default` and
+  `models.merge`; `--max-strong` counts `models.strong`, and `tm-wave` runs the claimed id as
+  given.
+- A gate's `failing_pattern` names its failing tests, so attribution works with any runner, and
+  a gate that exits 0 with no test report, zero tests or no `tests_ran` count stops the landing as
+  no tests.
+- `repos.<repo>.after_land` runs once a container's landing pushes to its spec's target, and
+  `:merge` records it.
+- `repos.<repo>.unlocked_files`, `repos.<repo>.migrations` and `sensitive_areas` come from config,
+  with defaults across ecosystems.
+- A claim seeds its worktree's codegraph index, prints its codegraph lines under a `codegraph`
+  key, and names the declared symbols that reach another lease's files; implement and fix briefs
+  carry them, and the implement, fix, review and plan guides say how to use codegraph when it is
+  on PATH and the repository is indexed.
+- A `codegraph_query` verification runs a real query over the ref's tree and fails when it cannot
+  run. `tm verify add` takes `--query-json`, and the cache keeps `codegraph.cache_commits`
+  commits.
+- Web: specs completed longer ago than `web.archive_after_days` leave every count and the Waves
+  view; the toolbar's Archive toggle shows only them, kept in the URL as `?archive=1`.
+- A review brief leaves out the implementer's report unless `review.blind` is false.
+- Every listing command and `get` take `--json` and `--yaml`, and `tm job list` and
+  `tm --version` exist.
+- A superseded node names its replacement in `tm task get`, `tm render` and the web, and counts as
+  completed once that is.
+- `tm task add` takes `--repo`.
 - CI on GitHub Actions runs the lint, format, type and test gates on every push and on pull
-  requests to `main`.
+  requests to `main`, and an install job runs `install.sh` install, status, re-install and
+  uninstall in a scratch `HOME`.
 - `CONTRIBUTING.md`, `SECURITY.md`, this changelog, issue templates and a pull request template.
 - The Gemini CLI extension loads `GEMINI.md`, which tells an agent how to get `tm` and which
   `tm guide` topic to read.
@@ -17,15 +75,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - The plugin's skills give the command that installs `tm`, and tell an agent to stop when `tm` is
   not on PATH.
 - `tm config set`, `get` and `unset` take dotted keys under `repos`:
-  `repos.<repo>.gates.<main|parent>[.command|.junit|.timeout]`, `repos.<repo>.gates`,
-  `repos.<repo>.default_branch` and `repos.<repo>`. Each merges into the stored mapping; the
+  `repos.<repo>.gates.<main|parent>[.command|.junit|.tests_ran|.failing_pattern|.timeout]`,
+  `repos.<repo>.gates`, `repos.<repo>.default_branch`, `.after_land`, `.unlocked_files`,
+  `.migrations`, `.remote` and `repos.<repo>`. Each merges into the stored mapping; the
   repository at the tm root is `.`, as in `repos...gates.main.command`.
 - A lease records the worktree its claim cut, so `tm run list` shows it.
 
 ### Changed
 
 - TaskManager is released under the MIT license, declared in the wheel metadata and in every
-  plugin manifest.
+  plugin manifest, which also link the repository and name the license holder.
 - `/taskmanager:tm` only runs a `tm` command: invoking it no longer opts the session into the
   Workflow tool, a self-paced loop or any other tool.
 - The plugin lives under `plugin/`, so installing it copies its skills, commands, agent and
@@ -33,33 +92,63 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - The dispatch guide and the dispatcher skill run the workflow as `taskmanager:tm-wave`, or by
   `scriptPath` at the plugin's `workflows/tm-wave.js`.
 - `tm-wave` runs its commands on the plugin's `taskmanager:tm-op` agent, then on `tm-op`, before
-  the generic agent, and maps model families to `claude-haiku-4-5-20251001`,
-  `claude-sonnet-5-5`, `claude-opus-5-5` and `claude-fable-5-1` by default.
-- The shipped dispatch, fix and review guides and the `tm-wave` briefs carry no house style: a
-  dispatcher reports and stops when nothing is claimable or in flight, a question that holds work
-  is a decision, and comment, test-name and review-format rules belong in a project's own guide
-  addendum (`tm section set guide:<topic>`).
+  the generic agent. Its `models` argument aliases the id a claim names, and the family names
+  `haiku`, `sonnet`, `opus` and `fable` still resolve to `claude-haiku-4-5-20251001`,
+  `claude-sonnet-5-5`, `claude-opus-5-5` and `claude-fable-5-1`.
+- The shipped guides, the worked example, CLI help and the `tm-wave` briefs name no stack and
+  carry no house style: a dispatcher reports and stops when nothing is claimable or in flight, a
+  question that holds work is a decision, and comment, test-name and review-format rules belong in
+  a project's own guide addendum (`tm section set guide:<topic>`).
+- `merge` is `parent` or `spec`; every path refuses `main`.
+- Every chain ends at its target branch and meets within it. A dependency or migration link across
+  targets is refused where it is written, while both ends still land, and `tm config` refuses
+  moving a repository's default branch while that would split a chain.
+- A claim names each repository's base, the default branch until the remote has the target, and
+  a run with no `--ref` reads the branch the task lands on.
 - `tm import`, `tm task update --repo` and the web refuse a `target_repo` that is not a git
   working tree under the tm root, and name the repositories that are, `.` for the root itself.
   A node already stored with one, as `tm restore` brings back, is left as it is.
-- `tm wave discover` and the web's waves hold a node whose repository has no main gate, naming
-  the `tm config set repos.<repo>.gates.main.command` that clears it, instead of running its
-  implement and review only to stop at its landing.
+- `tm wave discover`, the web's waves and a claim hold a node whose repository has no main gate,
+  naming the `tm config set repos.<repo>.gates.main.command` that clears it, instead of running
+  its implement and review only to stop at its landing.
+- Discovery and claims hold a node under a deferred, abandoned or superseded ancestor.
+- Sections other than `:report`, `:review` and `:merge` are rewritten whole, and a finding seen on
+  two nodes becomes a guide rule.
+- Reviews prove behaviour by breaking it and name their searches, and a fix watches its test go red
+  first. `tm guide plan` states the bug-fix reproduction rule with its revert half.
+- CLI errors go to stderr naming their fix, and every command has help. A heartbeat checks its
+  lease's agent and token.
 
 ### Removed
 
 - The design notes and implementation plans under `docs/superpowers/`.
 - The `/docs` and `/redoc` API pages on `tm web`.
-- `tm install`, the empty `tm plugin` group and `install.sh`: the README's install commands
-  replace them.
+- `tm install` and the empty `tm plugin` group: `install.sh` replaces them.
 - The unused copy of the skills under `src/taskmanager/skills`.
+- The `symbol_signature` and `ast_export` verification types: every write refuses them, naming the
+  `test_command` grep idiom.
 
 ### Fixed
 
 - A plan or spec reviewed after its landing keeps its dependents claimable, and its migration
-  writers out of the chain, from its landing until a write moves it back before landing.
-  `state.db` moves to schema 5: run `tm db migrate`. `tm export` writes format 4, which carries
-  that fact through `tm restore`; an older tm does not restore it.
+  writers out of the chain, from its landing until a write moves it back before landing. A child
+  moved or imported under a container takes every ancestor off its target. `tm export` and
+  `tm restore` carry that fact.
+- `tm export` and `tm restore` round-trip an estate exactly: in-step nodes at their
+  `claimed_from`, supersedes edges, ordinals, a completed spec's completion time, and the config
+  without machine-local values.
+- A landing job's `SUCCEEDED` commits with its node's landed status or merge note, so no reader
+  sees one without the other.
+- A landing stopped for no tests resumes at the gate, and a handed-over landing resumes once its
+  merge is committed, whatever untracked files its worktree holds.
+- Every excluded node reserves its declared files, whatever spec the discover is scoped to, so a
+  parallel run cannot claim over them.
+- `tm import` refuses bad input without a traceback, and refuses plans it cannot place under a
+  spec.
+- `tm task add` and `update` refuse a `--set` key that names a node field, naming only options the
+  running command accepts.
+- The config store saves only the values someone set, so `tm init` sets an unset default branch.
+- A gate's cached baseline reruns when its `failing_pattern` changes.
 - `tm web --host` takes an IPv6 address: it found no free port for one, and printed its URL
   without brackets.
 - A gate command may hold braces of its own (`${HOME}`, `awk '{print $1}'`, `find -exec {} +`):
@@ -70,9 +159,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   the repository.
 - A claim in a repository with no `origin/<default branch>` is refused, naming it, instead of
   failing at landing. A landing with no main gate names the command that sets one.
-- An implement or fix worktree is removed once its node is `COMPLETED`, unless it holds
-  uncommitted work. The `tm/<id>` branch stays.
+- An implement or fix worktree is removed once its node is `COMPLETED` by any write, unless it
+  holds uncommitted work. The `tm/<id>` branch stays.
 - A task whose `target_repo` is `.` gets the worktree `<worktree_dir>/<id>`, not `.-<id>`.
+- Web: a refused dialog write puts focus back on the field to correct, its refusal toast stays in
+  the dialog's Tab cycle and cuts its text at three lines.
+- The CI script-test gate runs the quoted test glob, which Node 22 reads as files.
 
 ### Security
 
@@ -311,7 +403,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - A web visualizer with a live socket, and a static exporter.
 - The taskmanager and dispatcher skills, packaged as a Claude Code plugin.
 
-[Unreleased]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.7...HEAD
+[Unreleased]: https://github.com/TaigoPedrosa/TaskManager/compare/c804a97...HEAD
+[0.3.8]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.7...c804a97
 [0.3.7]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.4...v0.3.5
