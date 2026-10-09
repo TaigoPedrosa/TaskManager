@@ -57,7 +57,7 @@ Say in the review that you executed it, and where.
 - **A plan's or spec's review** runs once, on its landed target. It reads the whole landing against the brief, and for what is true only between its children: a producer nobody calls, a column only ever written as null, two halves that do not join.
 - **A re-review** is scoped to the open findings of a sensitive fix: each finding in `:review` not yet recorded as closed, checked against the fix commits and the fixer's latest `:report` entry, and, when the last landing failed, the failure the latest `:merge` entry names. Establish each closure by making it fail. It never widens: no fresh read of the rest of the diff and no new finding outside those; anything else you notice goes in the report.
 
-A diff that edits a file missing from `declared_files`, a test that selects another file's markup by class, and anything the diff left without a reader (a file, symbol, field, or a computation or load whose only consumer it removed) are each a finding.
+A diff that edits a file missing from `declared_files`, a test that selects another file's markup by class, and anything the diff left without a reader (a file, symbol, field, or a computation or load whose only consumer it removed) are each a finding. So is a defect in code the diff leaves unchanged but makes reachable; mark it as reached through the diff.
 
 ## 4. Run the checks
 
@@ -73,6 +73,8 @@ A test that fails on the branch rejects the node, whichever task declared the te
 
 Run every check the acceptance lists. A check you could not run is named in the findings as not run, and the node is not approved over it. A test that only searches source text is not evidence for an acceptance line about behaviour; name it in the findings.
 
+Every acceptance line about behaviour is proven by breaking it: in your detached worktree, change the production line that makes it true, run its test, watch it go red, then restore the line. Choose what to break from the acceptance, never from the tests. A limit is broken from both sides; two paths the acceptance names separately are broken one at a time, and each break turns only its own test red. An acceptance line no break turns red is a finding. Name each break and the test it turned red in the review.
+
 A UI node's behaviour lines are checked by driving them in the running app: the write and its feedback, the focus after it, the keyboard route, a live update mid-edit, a reload. A screenshot beside the frame shows the look and proves none of them.
 
 ## 5. Write the findings
@@ -86,7 +88,7 @@ tm section set <node-id>:review --file <path> --header "## Review"
 
 `tm section get` writes the header to stderr and the content alone to stdout, so `> <path>` captures content only and the round trip above never folds the header back in.
 
-Number the findings, because the fix answers them by number, and record each earlier finding as closed or still open. Each one names where it is and what breaks; cite a symbol rather than a line number wherever you can. With nothing open, write that: tm refuses a verdict over an unchanged `:review`.
+Number the findings, because the fix answers them by number, and record each earlier finding as closed or still open. Each one names where it is and what breaks; cite a symbol rather than a line number wherever you can. A finding states what was read; a derived claim is not a finding until it is read. A claim that something is absent (no caller, no other reader, no test) names the search that would have found it: the command, the path and pattern, and the range it covered. A finding a written rule would have prevented quotes that rule, or proposes the missing line and the guide it belongs in. With nothing open, write that: tm refuses a verdict over an unchanged `:review`.
 
 ## 6. Close the step
 
@@ -109,7 +111,7 @@ The verdict, the numbered findings, the `tm verify run` exit code with the rows 
 
 ## Never
 
-- Never edit code, tests, fixtures or configuration — not even a one-line fix you can see.
+- Never edit code, tests, fixtures or configuration — not even a one-line fix you can see. A break made in your detached worktree to prove an acceptance line is restored, never committed, and goes when the worktree does.
 - Never approve with a finding still open, and never merge or push anything.
 - Never widen a re-review past the findings still open.
 - Never close the step without writing `:review` first.

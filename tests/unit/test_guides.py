@@ -276,6 +276,45 @@ def test_review_guide_says_a_reviewer_raises_a_ruling_instead_of_rejecting() -> 
     assert "raises it instead of rejecting" in _guide_text("review")
 
 
+def test_review_guide_proves_each_behaviour_line_by_breaking_it_from_the_acceptance(
+    rendered: Callable[[str], str],
+) -> None:
+    text = rendered("review")
+    checks, never = text.split("## 5. Write the findings", 1)[0], text.split("## Never", 1)[1]
+    assert "Every acceptance line about behaviour is proven by breaking it" in checks
+    assert "Choose what to break from the acceptance, never from the tests" in checks
+    assert "A limit is broken from both sides" in checks
+    assert "each break turns only its own test red" in checks
+    assert "An acceptance line no break turns red is a finding" in checks
+    assert "restored, never committed" in never
+
+
+def test_review_guide_counts_a_defect_the_diff_makes_reachable(
+    rendered: Callable[[str], str],
+) -> None:
+    branch = rendered("review").split("## 3. Read the branch", 1)[1].split("## 4.", 1)[0]
+    assert "a defect in code the diff leaves unchanged but makes reachable" in branch
+
+
+def test_review_guide_findings_are_read_and_name_their_search_and_rule(
+    rendered: Callable[[str], str],
+) -> None:
+    findings = rendered("review").split("## 5. Write the findings", 1)[1].split("## 6.", 1)[0]
+    assert "a derived claim is not a finding until it is read" in findings
+    assert "A claim that something is absent" in findings
+    assert "names the search that would have found it" in findings
+    assert "quotes that rule, or proposes the missing line" in findings
+
+
+def test_fix_guide_watches_a_finding_s_test_go_red_and_names_its_searches(
+    rendered: Callable[[str], str],
+) -> None:
+    fix = rendered("fix").split("## 2. Fix exactly the findings", 1)[1].split("## 3.", 1)[0]
+    assert "watch it fail for the reason the finding names, then fix and watch it pass" in fix
+    assert "a derived claim refutes nothing until it is read" in fix
+    assert "names the search that would have found it" in fix
+
+
 def test_dispatch_guide_names_every_argument_tm_wave_reads() -> None:
     read = set(re.findall(r"\bA\.([A-Za-z]+)", WORKFLOW.read_text(encoding="utf-8")))
     assert read, "no argument found in the workflow script"
