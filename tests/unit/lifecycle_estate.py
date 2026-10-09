@@ -108,7 +108,7 @@ def make_estate(
     root.mkdir()
     for name in repos:
         make_repo(root, name)
-    cfg = config or ProjectConfig()
+    cfg = config or gated(*repos)
     tm_dir = root / ".taskmanager"
     tm_dir.mkdir()
     (tm_dir / "config.yaml").write_text(
