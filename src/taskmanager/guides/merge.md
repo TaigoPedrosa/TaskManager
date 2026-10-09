@@ -8,9 +8,9 @@ tm lands every node itself, as a job, one repository at a time in the node's lan
 
 1. **Already landed?** A branch that is already on its target, or adds nothing to it, skips straight to the verification.
 2. **Landing conditions.** An unmet `landing` condition ends the job; the node waits on it.
-3. **Build.** A fresh merge worktree cut from the target (`origin/<target>` when it is the branch the node's spec lands on, or the container branch), and `git merge --no-ff` of the node's branch with the subject `merge(<node-id>): land <branch> on <target>`. A spec's target that origin does not have yet is cut from the repository's `default_branch`.
+3. **Build.** A fresh merge worktree cut from the target (`<remote>/<target>` when it is the branch the node's spec lands on, or the container branch), and `git merge --no-ff` of the node's branch with the subject `merge(<node-id>): land <branch> on <target>`. A spec's target that its remote does not have yet is cut from the repository's `default_branch`.
 4. **Gate.** On a container branch: the node's own verifications, then the repository's `parent` gate when one is configured. On the spec's target: the repository's `main` gate, whatever the target is named, and when it is red, the same gate on the untouched target, cached per target commit, to attribute the red.
-5. **Push.** To the spec's target: re-read the remote, merge it in again and re-gate if it moved, push `HEAD:<target>`, never force; a target origin does not have yet is created by this push. To a container branch: a compare-and-swap of the local ref.
+5. **Push.** To the spec's target: re-read the remote, merge it in again and re-gate if it moved, push `HEAD:<target>`, never force; a target its remote does not have yet is created by this push. In a repository with no remote, the push moves the local target branch. To a container branch: a compare-and-swap of the local ref.
 6. **Verify.** The node's verifications at the target; a red here is the node's own defect.
 7. **Complete.** The merge worktree is removed and the node is `COMPLETED`, or `LANDED` when it is a plan or spec with review on: its one review reads what landed.
 
@@ -19,7 +19,7 @@ A sync merges a target into a container branch the same way, under that branch's
 | Stopped for | What it needs |
 |:--|:--|
 | `conflict` | resolve the merge in the job's worktree and commit it, then resume |
-| `unattributed` | the tip and the untouched target are both red and no report names the failures: read both outputs; if the tip adds a failure, record an own defect, and if it adds none, resume with `--push` |
+| `unattributed` | the tip and the untouched target are both red and neither a report nor the gate's `failing_pattern` names the failures: read both outputs; if the tip adds a failure, record an own defect, and if it adds none, resume with `--push` |
 | `push_failed` | three failed tries. A push to the spec's target records each in `result.push_errors` with its command, exit code and stderr: an `ls-remote` with no answer is the network or the remote, a refused `push` a permission, a protection rule or a hook. A container branch, moved by a landing or a sync, records none: it moved under each of three compare-and-swaps, so other landings or syncs onto it kept moving it. Report it, resume only once the cause is gone, and never force |
 | `no gate` | the repository has no `main` gate, which every landing on a spec's target needs: report it; the owner sets it with `tm config set repos.<repo>.gates.main.command "<command>"` |
 | `no tests` | the test gate exited 0 but ran no tests: its test report is missing or holds 0 tests, or its `tests_ran` pattern never matched the output or captured 0. `result.detail` names the report or the pattern, and the count. Report it; the owner fixes the gate, then resume |
