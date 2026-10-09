@@ -65,6 +65,7 @@ _GATE_NAMES: Final = ("main", "parent")
 # `repos` mapping. The mapping-valued ones, the repository's whole entry included, take YAML.
 _REPO_LEAVES: Final = (
     "default_branch",
+    "after_land",
     *(
         f"gates.{gate}.{field}"
         for gate in _GATE_NAMES
@@ -75,7 +76,7 @@ _REPO_MAPPINGS: Final = ("gates", *(f"gates.{gate}" for gate in _GATE_NAMES))
 _VALID: Final = ", ".join(
     (
         *KEYS,
-        "repos.<repo>[.default_branch|.gates[.<main|parent>[.command|.junit|.tests_ran|.timeout]]]",
+        "repos.<repo>[.default_branch|.gates[.<main|parent>[.command|.junit|.tests_ran|.timeout]]|.after_land]",
     )
 )
 
@@ -148,6 +149,10 @@ class RepoConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     default_branch: str = DEFAULT_BRANCH
+    # A command run in the landing worktree after a container's push to its spec's target, with
+    # {target}, {branch}, {node} and {repo} filled in; its exit never undoes the landing.
+    # Left out of the stored file while unset, so no repository carries an empty hook.
+    after_land: str | None = Field(default=None, min_length=1, exclude_if=lambda v: v is None)
     gates: dict[Literal["main", "parent"], Gate] = Field(default_factory=dict)
 
     @field_validator("default_branch")
@@ -241,7 +246,7 @@ def _repo_key(key: str) -> RepoKey | None:
     rest = key.removeprefix("repos.")
     below = next((k for k in (*_REPO_LEAVES, *_REPO_MAPPINGS) if rest.endswith(f".{k}")), None)
     repo = rest.removesuffix(f".{below}") if below else rest
-    if not repo or {"gates", "default_branch"} & set(repo.split(".")):
+    if not repo or {"gates", "default_branch", "after_land"} & set(repo.split(".")):
         return None
     return RepoKey(repo, tuple(below.split(".")) if below else ())
 

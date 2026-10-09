@@ -36,6 +36,8 @@ PUSH_TRIES = 3
 PUSH_PAUSE_SECONDS = 5
 PUSH_ERROR_LINES = 5
 LOCK_WAIT_SECONDS = 120
+# ponytail: one fixed limit for every after_land hook; a repos.<repo> key if a hook needs longer.
+AFTER_LAND_TIMEOUT_SECONDS = 600
 LIVE = frozenset({JobState.RUNNING, JobState.NEEDS_AGENT})
 _logger = logging.getLogger(__name__)
 
@@ -320,10 +322,32 @@ class Landing:
                     return self._state(job)
                 run = gitops.push(worktree, job.target)
                 if run.returncode == 0:
+                    self._after_land(job, worktree)
                     return "verify"
             job.result["push_tries"] = tries + 1
             job.result.setdefault("push_errors", []).append(_git_failure(run))
         return self._needs_agent(job, "push_failed")
+
+    def _after_land(self, job: Job, worktree: Path) -> None:
+        """The repository's `after_land` hook, for a container's push only: the push already
+        happened, so a red hook is recorded and the landing goes on."""
+        repo_config = self.config.repos.get(job.repo)
+        hook = repo_config.after_land if repo_config is not None else None
+        if hook is None or not self.claims.is_container(self.claims.node(job.node_id)):
+            return
+        command = gates.render(
+            hook,
+            target=job.target,
+            branch=self.claims.branch_of(job.node_id),
+            node=job.node_id,
+            repo=job.repo,
+        )
+        run = gates.run_gate(command, worktree, AFTER_LAND_TIMEOUT_SECONDS, None)
+        self.claims.note(
+            job.node_id,
+            "merge",
+            f"{job.repo}: after_land `{command}` exited {run.exit_code}\n{run.tail}".rstrip(),
+        )
 
     def _move_branch(self, job: Job, worktree: Path, done: str) -> str | JobState:
         """Moves a local container branch to the worktree's HEAD by compare-and-swap, under the
