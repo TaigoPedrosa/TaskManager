@@ -13,7 +13,13 @@ _GRANT = re.compile(
     r"opt[- ]?in|consent|authori[sz]|permission|on the user's behalf|mandatory", re.IGNORECASE
 )
 _UNEXPOSED_TOOLS = ("ScheduleWakeup",)
-_RUNS = {"board": "tm web", "init": "tm doctor", "task": "tm task start", "tm": "tm $ARGUMENTS"}
+_RUNS = {
+    "board": "tm web",
+    "init": "tm doctor",
+    "plan": "tm decision list",
+    "task": "tm task start",
+    "tm": "tm $ARGUMENTS",
+}
 
 
 def _parse(path: Path) -> tuple[str, str]:
