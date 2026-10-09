@@ -1,4 +1,5 @@
 import json
+import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -7,7 +8,6 @@ import httpx
 import pytest
 from typer.testing import CliRunner
 
-from taskmanager import __version__
 from taskmanager.cli.main import app
 from taskmanager.core.enums import (
     EmbeddingProviderType,
@@ -516,9 +516,10 @@ def test_a_missing_sentence_transformers_prints_the_install_hint(
     code, out = _cli(project, "index")
     assert code == 1 and "Traceback" not in out
     assert (
-        "sentence-transformers is not installed: uv tool install --reinstall "
-        f"'taskmanager[local-embeddings] @ git+https://github.com/TaigoPedrosa/TaskManager@v{__version__}'"
+        "sentence-transformers is not installed: "
+        f"uv pip install --python {shlex.quote(sys.executable)} 'sentence-transformers>=3.4.0'"
     ) in out
+    assert "uv tool install" not in out
     assert _cli(project, "index", "--status")[0] == 0
 
 

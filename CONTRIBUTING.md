@@ -6,7 +6,11 @@ macOS or Linux, with [uv](https://docs.astral.sh/uv/) (it fetches Python 3.14), 
 
 ```bash
 uv sync
+./install.sh --from .
 ```
+
+`./install.sh --from .` installs `tm` and the plugin from the checkout, the way a user gets them
+from `main`; `./install.sh status` reports both.
 
 The stylesheet test rebuilds `src/taskmanager/web/static/tailwind.css` with the Tailwind
 standalone CLI v3.4.19 and fails without it. The README's "Rebuilding the web stylesheet" shows

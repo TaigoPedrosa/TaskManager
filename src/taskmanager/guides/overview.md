@@ -156,7 +156,7 @@ An estate written by 0.2 or earlier is not migrated. It is archived, and only th
 1. Stop every dispatcher, and wait until `tm run list --yaml` shows no lease.
 2. With the old version still installed, `tm export <export dir>` and commit the export: that snapshot is the archive of record.
 3. Author the re-import: `tm import` documents holding only the specs, plans, tasks and open decisions still in flight, each with its sections, verifications, edges, flags, conditions and `requires` in this version's shape. Completed work is not re-imported, and edges to it are dropped, because it has landed on its target. A task whose branch `tm/<id>` already exists resumes on it at its next implement.
-4. Install this version of the plugin and of `tm`, and replace any copy of the old `tm-wave` script a session keeps.
+4. Install this version of the plugin and of `tm` with `install.sh` (`curl -fsSL https://raw.githubusercontent.com/TaigoPedrosa/TaskManager/main/install.sh | bash`), and replace any copy of the old `tm-wave` script a session keeps.
 5. `tm init --archive` moves the old files to `.taskmanager/archive-<timestamp>/` and creates the new estate. Configure each repository's landing gate, `tm config set repos.<repo>.gates.main '{command: <template>, junit: <glob>, timeout: <seconds>}'`, and the landing order with `tm config set repo_order '[<repo>, ...]'`.
 6. `tm import --format yaml -f <document>` for each document; `tm wave discover --session <id> --slots <n> --max-strong <n>` shows what is claimable, for the owner to check.
 7. Write the project's own conventions back into its guide addendum: `tm spec add 'Project guide' --slug guide` once, then `tm section set guide:<topic> --file <path>` for each topic the old estate carried one for.

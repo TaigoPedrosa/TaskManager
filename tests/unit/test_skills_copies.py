@@ -5,7 +5,9 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
-INSTALL = "uv tool install git+https://github.com/TaigoPedrosa/TaskManager@v"
+INSTALL = (
+    "curl -fsSL https://raw.githubusercontent.com/TaigoPedrosa/TaskManager/main/install.sh | bash"
+)
 PLUGIN_PARTS = {".claude-plugin", "agents", "commands", "skills", "workflows"}
 
 
