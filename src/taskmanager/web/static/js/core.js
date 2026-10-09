@@ -56,6 +56,7 @@ const specFilterEl = document.getElementById('spec-filter');
 const phaseFilterEl = document.getElementById('phase-filter');
 const scoreFilterEl = document.getElementById('score-filter');
 const clearFiltersBtn = document.getElementById('clear-filters-btn');
+const archiveBtn = document.getElementById('archive-btn');
 const toolbarEl = document.getElementById('toolbar');
 const filtersToggleBtn = document.getElementById('filters-toggle-btn');
 const filtersPanel = document.getElementById('filters-panel');

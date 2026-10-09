@@ -345,7 +345,8 @@ function emptyPaneState() {
   if (!isStaticMode && socketLost) return paneState('error', 'Could not reach the server.', retryConnection);
   if (!storeAnswered && storeError) return paneState('error', storeError, retryConnection);
   if (!storeAnswered) return paneState('loading');
-  return paneState('empty', 'No specs, plans or tasks match.');
+  const archiveOnly = filters.archived && !anyFilterActive() && filters.q === '';
+  return paneState('empty', archiveOnly ? 'No archived specs.' : 'No specs, plans or tasks match.');
 }
 
 function progressCount(p) {
