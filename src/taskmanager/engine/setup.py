@@ -32,15 +32,17 @@ def discover_repos(root: Path) -> list[str]:
     return sorted(p.name for p in root.iterdir() if (p / ".git").exists())
 
 
-def origin_head(repo: Path) -> str:
+def remote_head(repo: Path, remote: str | None) -> str:
+    """The branch `remote`'s HEAD names, or with no remote the one checked out in `repo`."""
+    ref = f"refs/remotes/{remote}/HEAD" if remote else "HEAD"
     res = subprocess.run(
-        ["git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+        ["git", "symbolic-ref", "--quiet", "--short", ref],
         cwd=repo,
         capture_output=True,
         text=True,
         check=False,
     )
-    branch = res.stdout.strip().removeprefix("origin/")
+    branch = res.stdout.strip().removeprefix(f"{remote}/" if remote else "")
     return branch if res.returncode == 0 and branch else DEFAULT_BRANCH
 
 
@@ -98,7 +100,8 @@ def _has_default_branch(store: ConfigStore, repo: str) -> bool:
 def _default_branches(root: Path, store: ConfigStore, repos: list[str], ask: Ask) -> None:
     for repo in repos:
         if not _has_default_branch(store, repo):
-            branch = ask(f"default branch ({repo})", origin_head(root / repo))
+            found = remote_head(root / repo, store.branches().remote(repo))
+            branch = ask(f"default branch ({repo})", found)
             store.set(f"repos.{repo}.default_branch", branch)
 
 
@@ -112,9 +115,11 @@ def _worktree_dir(root: Path, store: ConfigStore, flags: Flags, ask: Ask | None)
 def _gates(root: Path, store: ConfigStore, repos: list[str], flags: Flags, ask: Ask | None) -> None:
     _require_repos(root, list(flags.gates))
     for repo, command in flags.gates.items():
-        # Without a prompt the default-branch step never runs, so a gate's repo takes origin/HEAD.
+        # Without a prompt the default-branch step never runs, so a gate's repo takes its
+        # remote's HEAD.
         if not _has_default_branch(store, repo):
-            store.set(f"repos.{repo}.default_branch", origin_head(root / repo))
+            head = remote_head(root / repo, store.branches().remote(repo))
+            store.set(f"repos.{repo}.default_branch", head)
         store.set(f"repos.{repo}.gates.main.command", command)
     if ask is None:
         return

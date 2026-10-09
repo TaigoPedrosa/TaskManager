@@ -12,7 +12,8 @@ from taskmanager.core.enums import NodeKind, VerificationType
 from taskmanager.core.lifecycle import REOPENABLE
 from taskmanager.core.status import EXITS, IN_STEP, ON_TARGET, Merge, Status
 from taskmanager.engine.chains import TOP, landing_target, target
-from taskmanager.engine.git import valid_branch
+from taskmanager.engine.config import ProjectConfig
+from taskmanager.engine.git import tracking, valid_branch
 from taskmanager.engine.snapshot import ORIGIN_MAIN
 from taskmanager.engine.stepgraph import (
     SnapNode,
@@ -102,7 +103,7 @@ def _flags(after: Snapshot, n: SnapNode) -> list[Refusal]:
                 f"{', '.join(areas)}",
             )
         )
-    refusals += _origin_main(n)
+    refusals += _origin_main(n, after.config)
     if n.land_on is not None and n.kind != NodeKind.SPEC:
         refusals.append(
             Refusal(
@@ -119,9 +120,10 @@ def _flags(after: Snapshot, n: SnapNode) -> list[Refusal]:
     return refusals
 
 
-def _origin_main(n: SnapNode) -> list[Refusal]:
+def _origin_main(n: SnapNode, config: ProjectConfig) -> list[Refusal]:
     on_parent = n.merge == Merge.PARENT
-    if not (n.literal_origin_main and (on_parent or f"origin/{n.top}" != ORIGIN_MAIN)):
+    top = tracking(config.remote(n.repo), n.top)
+    if not (n.literal_origin_main and (on_parent or top != ORIGIN_MAIN)):
         return []
     where = "its parent's branch" if on_parent else f"its target {n.top}"
     return [
@@ -216,7 +218,7 @@ def moved_tops(before: Snapshot, after: Snapshot) -> list[Refusal]:
         and (old := before.nodes.get(n.id)) is not None
         and old.top != n.top
     ]
-    refusals = [refusal for n in moved for refusal in _origin_main(n)]
+    refusals = [refusal for n in moved for refusal in _origin_main(n, after.config)]
     crossed = _crossings(after)
     already = _crossings(before).keys()
     return refusals + [crossed[k] for k in sorted(crossed.keys() - already)]

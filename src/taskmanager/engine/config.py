@@ -23,6 +23,8 @@ DEFAULT_KEY_ENV: Final = "TASKMANAGER_OPENAI_API_KEY"
 # Where a chain lands at the top when neither its spec's `land_on` nor its repository's
 # `default_branch` names a branch.
 DEFAULT_BRANCH: Final = "main"
+# The remote a repository fetches from and lands on when `repos.<repo>.remote` is not set.
+DEFAULT_REMOTE: Final = "origin"
 # Manifests and lockfiles nearly every task re-pins, matched by file name: locking them would
 # serialize every task in a repository, so a conflict on one is resolved when the work lands, by
 # keeping the newest pin and regenerating the lockfile.
@@ -127,11 +129,13 @@ _REPO_MAPPINGS: Final = (
     *(f"gates.{gate}" for gate in _GATE_NAMES),
     "unlocked_files",
     "migrations",
+    # YAML, so `null` reads as a repository with no remote.
+    "remote",
 )
 _VALID: Final = ", ".join(
     (
         *KEYS,
-        "repos.<repo>[.default_branch|.gates[.<main|parent>[.command|.junit|.tests_ran|.failing_pattern|.timeout]]|.after_land|.unlocked_files|.migrations]",
+        "repos.<repo>[.default_branch|.gates[.<main|parent>[.command|.junit|.tests_ran|.failing_pattern|.timeout]]|.after_land|.unlocked_files|.migrations|.remote]",
     )
 )
 
@@ -207,6 +211,9 @@ class RepoConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     default_branch: str = DEFAULT_BRANCH
+    # None: the repository has no remote, so claims cut from and landings move its local
+    # branches, and nothing fetches or pushes.
+    remote: str | None = DEFAULT_REMOTE
     # A command run in the landing worktree after a container's push to its spec's target, with
     # {target}, {branch}, {node} and {repo} filled in; its exit never undoes the landing.
     # Left out of the stored file while unset, so no repository carries an empty hook.
@@ -220,6 +227,13 @@ class RepoConfig(BaseModel):
     def _is_a_branch_name(cls, value: str) -> str:
         if not valid_branch(value):
             raise ValueError(f"'{value}' is not a branch name git accepts")
+        return value
+
+    @field_validator("remote")
+    @classmethod
+    def _is_a_remote_name(cls, value: str | None) -> str | None:
+        if value is not None and not valid_branch(value):
+            raise ValueError(f"'{value}' is not a remote name git accepts")
         return value
 
 
@@ -307,6 +321,9 @@ class ProjectConfig(BaseModel):
     def default_branch(self, repo: str | None) -> str:
         return self.repo(repo).default_branch
 
+    def remote(self, repo: str | None) -> str | None:
+        return self.repo(repo).remote
+
 
 def moved_defaults(before: ProjectConfig, after: ProjectConfig) -> list[str]:
     """Each repository whose default branch differs from `before` to `after`, by name."""
@@ -336,9 +353,14 @@ def _repo_key(key: str) -> RepoKey | None:
     rest = key.removeprefix("repos.")
     below = next((k for k in (*_REPO_LEAVES, *_REPO_MAPPINGS) if rest.endswith(f".{k}")), None)
     repo = rest.removesuffix(f".{below}") if below else rest
-    if not repo or {"gates", "default_branch", "after_land", "unlocked_files", "migrations"} & set(
-        repo.split(".")
-    ):
+    if not repo or {
+        "gates",
+        "default_branch",
+        "after_land",
+        "unlocked_files",
+        "migrations",
+        "remote",
+    } & set(repo.split(".")):
         return None
     return RepoKey(repo, tuple(below.split(".")) if below else ())
 

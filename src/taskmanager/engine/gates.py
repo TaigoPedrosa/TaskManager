@@ -19,6 +19,7 @@ from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.engine import git as gitops
+from taskmanager.engine.config import DEFAULT_REMOTE, ConfigStore
 
 # The baseline cache stores this type; re-exported so callers share the one definition.
 __all__ = ["GateRun"]
@@ -161,12 +162,14 @@ def red_target_cleared(
     target: str,
     *,
     remote: bool,
+    remote_name: str | None = DEFAULT_REMOTE,
 ) -> bool:
-    """What a landing parked on a red target waits on: the target (a top branch read on origin
-    when `remote`, else a local container branch) moved past `sha`, and the baseline at the new
-    sha, if one ran, no longer fails the parked set. An unreadable target is not cleared."""
+    """What a landing parked on a red target waits on: the target (a top branch read on
+    `remote_name`, or locally in a repository with none, when `remote`; else a local container
+    branch) moved past `sha`, and the baseline at the new sha, if one ran, no longer fails the
+    parked set. An unreadable target is not cleared."""
     current = (
-        gitops.ls_remote(repo_dir, f"refs/heads/{target}")[0]
+        gitops.ls_remote(repo_dir, remote_name, f"refs/heads/{target}")[0]
         if remote
         else gitops.rev_parse(repo_dir, f"refs/heads/{target}")
     )
@@ -209,10 +212,12 @@ def main(argv: list[str] | None = None) -> int:
     red.add_argument("--template-hash", required=True)
     red.add_argument("--target", default="main")
     read = red.add_mutually_exclusive_group()
-    read.add_argument("--remote", action="store_true", help="read the target on origin")
+    read.add_argument(
+        "--remote", action="store_true", help="read the target on the repository's remote"
+    )
     read.add_argument("--local", action="store_true", help="read the target in the clone")
     args = parser.parse_args(argv)
-    # A condition stored by a tm that named neither flag read only `main`, and read it on origin.
+    # A condition stored by a tm that named neither flag read only `main`, on its remote.
     remote = args.remote or (not args.local and args.target == "main")
     cache = CacheRepository(DatabaseManager(args.root / ".taskmanager"))
     cleared = red_target_cleared(
@@ -223,6 +228,7 @@ def main(argv: list[str] | None = None) -> int:
         args.template_hash,
         args.target,
         remote=remote,
+        remote_name=ConfigStore(args.root).branches().remote(args.repo),
     )
     return 0 if cleared else 1
 
