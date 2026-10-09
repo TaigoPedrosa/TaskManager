@@ -3,6 +3,9 @@ from pathlib import Path
 
 import pytest
 from test_plugin_init import DENIED as INIT_DENIED
+from typer.testing import CliRunner
+
+from taskmanager.cli.main import app
 
 PLUGIN = Path(__file__).resolve().parents[2] / "plugin"
 COMMAND = PLUGIN / "commands" / "plan.md"
@@ -37,6 +40,7 @@ CHECKLIST_ITEMS = {
     "joined verification": r"joined verification on a reviewed plan",
     "overview": r"plan's `overview`",
     "write paths": r"invariant names every write path",
+    "reproduction": r"bug fix replays its reproduction",
     "config key": r"Limits name a config key",
     "design frame": r"design frame `requires`",
     "migration": r"migration is marked sensitive",
@@ -127,14 +131,24 @@ def test_plan_checklist_names_the_item_and_its_guide_section(item: str) -> None:
     assert re.search(r"\(`tm guide plan` §\d+", line), line
 
 
-def test_plan_checklist_states_the_reproduction_rule_without_a_guide_citation() -> None:
-    text = CHECKLIST.read_text(encoding="utf-8")
+def test_plan_checklist_reproduction_item_carries_the_revert_half() -> None:
     line = next(
-        (line for line in text.splitlines() if "bug fix replays its reproduction" in line), ""
+        line
+        for line in CHECKLIST.read_text(encoding="utf-8").splitlines()
+        if "bug fix replays its reproduction" in line
     )
-    assert "runs the reproduction the defect was reported with" in line
-    assert "tm guide plan" not in line
-    assert "that section is the rule" not in text
+    assert "fails when the fix is reverted" in line
+
+
+def test_guide_plan_states_the_bug_fix_reproduction_rule_in_section_8(tmp_path: Path) -> None:
+    runner = CliRunner()
+    assert runner.invoke(app, ["init", "-C", str(tmp_path)]).exit_code == 0
+    result = runner.invoke(app, ["guide", "plan", "-C", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    section = _section(result.stdout, "Write the review into the node")
+    rule = next((line for line in section.splitlines() if "bug fix" in line), "")
+    assert "replays the reproduction the defect was reported with" in rule
+    assert "fails when the fix is reverted" in rule
 
 
 def test_plan_skill_writes_its_document_to_scratch_never_a_markdown_file_in_the_repo() -> None:
