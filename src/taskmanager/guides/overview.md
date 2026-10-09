@@ -12,6 +12,17 @@ Every repository a task names in `target_repo` needs a `main` gate, the command 
 
 "The owner" in these guides is whoever runs the project: the person who answers its decisions, configures its gates and keeps its guide addendum. The addendum is a section per topic on a spec with the id `guide`, created once with `tm spec add 'Project guide' --slug guide`, then written with `tm section set guide:<topic> --file <path>`; `tm guide <topic>` prints it after the built-in text.
 
+## From a source to dispatch
+
+A piece of work goes through four steps, the last three as skills of the TaskManager plugin:
+
+1. `tm init` prepares the project: the estate, the repositories and their gates.
+2. `/taskmanager:init` starts a piece of work, turning its source into a spec: what was asked, the repos, the landing branch, and the open questions as decisions.
+3. `/taskmanager:design` settles those decisions and writes the design into the spec's `design` section, ending on an approval decision.
+4. `/taskmanager:plan` turns the approved design into plans and tasks with `tm import`, as `tm guide plan` describes, each proved by a verification that fails before the work.
+
+Then dispatch, as `tm guide dispatch` describes.
+
 ## The cycle
 
 Every task, plan and spec stores one status: its position in this cycle. Everything else a reader sees (blocked, waiting, stale) is worked out from the graph, the leases and the jobs, and is never stored.

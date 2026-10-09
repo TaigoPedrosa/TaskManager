@@ -7,4 +7,5 @@ Follow the `init` skill with `$ARGUMENTS` as the source: a reference to a tracke
 document, or the user's own description of the work. With no arguments, ask the user for the source.
 
 It starts with `tm doctor`, and runs `tm init` with the user first when the project has no estate.
-It ends with the spec id, the repos, the landing branch and the open questions verbatim.
+It ends with the spec id, the repos, the landing branch, the open questions verbatim, and
+`/taskmanager:design <spec-id>` as the next stage.
