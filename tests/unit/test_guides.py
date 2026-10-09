@@ -345,9 +345,11 @@ DOCS = (
     "README.md",
     "plugin/agents/tm-op.md",
     "plugin/commands/board.md",
+    "plugin/commands/init.md",
     "plugin/commands/task.md",
     "plugin/commands/tm.md",
     "plugin/skills/dispatcher/SKILL.md",
+    "plugin/skills/init/SKILL.md",
     "plugin/skills/taskmanager/SKILL.md",
 )
 
