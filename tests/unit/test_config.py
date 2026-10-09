@@ -246,12 +246,7 @@ def test_whole_valued_keys_are_set_as_yaml_and_stored_nested(root: Path) -> None
         "lease_ttl": {"review": 1800},
         "max_fix_rounds": {"container": 4},
         "repo_order": ["core", "api", "web"],
-        "repos": {
-            "core": {
-                "default_branch": "main",
-                "gates": {"main": {"command": "make ci", "junit": "out/*.xml", "timeout": 3600}},
-            }
-        },
+        "repos": {"core": {"gates": {"main": {"command": "make ci", "junit": "out/*.xml"}}}},
     }
     project = store.project()
     assert project.lease_ttl_for(Action.REVIEW) == 1800
@@ -260,6 +255,17 @@ def test_whole_valued_keys_are_set_as_yaml_and_stored_nested(root: Path) -> None
     assert project.repos == {
         "core": RepoConfig(gates={"main": Gate(command="make ci", junit="out/*.xml")})
     }
+
+
+def test_set_under_a_repo_stores_no_defaults_and_reads_them_back(root: Path) -> None:
+    store = ConfigStore(root)
+    store.set("repos.core.gates.main.command", "make ci")
+
+    assert yaml.safe_load(store.path.read_text()) == {
+        "repos": {"core": {"gates": {"main": {"command": "make ci"}}}}
+    }
+    assert store.resolve("repos.core.default_branch") == Resolved("main", "config")
+    assert store.resolve("repos.core.gates.main.timeout") == Resolved(3600, "config")
 
 
 @pytest.mark.parametrize(

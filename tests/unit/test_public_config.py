@@ -19,11 +19,12 @@ from taskmanager.engine.landing import Landing
 TRUE = Gate(command="true", timeout=60)
 
 
-def gate(command: str, junit: str | None = None, timeout: int = 3600) -> dict[str, Any]:
-    return {"command": command, "junit": junit, "timeout": timeout}
+def gate(command: str, junit: str | None = None, timeout: int | None = None) -> dict[str, Any]:
+    fields = {"command": command, "junit": junit, "timeout": timeout}
+    return {k: v for k, v in fields.items() if v is not None}
 
 
-WEB = {"web": {"default_branch": "main", "gates": {"main": gate("make web")}}}
+WEB = {"web": {"gates": {"main": gate("make web")}}}
 
 
 def tm(root: Path, *args: str) -> tuple[int, str]:
@@ -48,25 +49,25 @@ def stored_repos(root: Path) -> dict[str, Any]:
         (
             "repos.app.gates.main.command",
             "true",
-            {"default_branch": "main", "gates": {"main": gate("true")}},
+            {"gates": {"main": gate("true")}},
         ),
         (
             "repos.app.gates.parent.command",
             "make lint",
-            {"default_branch": "main", "gates": {"parent": gate("make lint")}},
+            {"gates": {"parent": gate("make lint")}},
         ),
         (
             "repos.app.gates.main",
             "{command: 'cd {worktree} && make', timeout: 60}",
-            {"default_branch": "main", "gates": {"main": gate("cd {worktree} && make", None, 60)}},
+            {"gates": {"main": gate("cd {worktree} && make", None, 60)}},
         ),
         (
             "repos.app.gates",
             "{parent: {command: lint}}",
-            {"default_branch": "main", "gates": {"parent": gate("lint")}},
+            {"gates": {"parent": gate("lint")}},
         ),
-        ("repos.app.default_branch", "trunk", {"default_branch": "trunk", "gates": {}}),
-        ("repos.app", "{default_branch: trunk}", {"default_branch": "trunk", "gates": {}}),
+        ("repos.app.default_branch", "trunk", {"default_branch": "trunk"}),
+        ("repos.app", "{default_branch: trunk}", {"default_branch": "trunk"}),
     ],
 )
 def test_a_dotted_repos_key_merges_into_the_stored_mapping(
@@ -88,7 +89,7 @@ def test_every_gate_field_is_set_on_its_own_and_read_back(root: Path) -> None:
     full = gate("make ci", "out/*.xml", 90)
     assert stored_repos(root) == {
         **WEB,
-        "app": {"default_branch": "main", "gates": {"main": full, "parent": full}},
+        "app": {"gates": {"main": full, "parent": full}},
     }
     assert ConfigStore(root).project().repos["app"].gates["main"] == Gate(
         command="make ci", junit="out/*.xml", timeout=90
@@ -98,7 +99,7 @@ def test_every_gate_field_is_set_on_its_own_and_read_back(root: Path) -> None:
 def test_the_repository_at_the_tm_root_is_named_dot_in_a_dotted_key(root: Path) -> None:
     assert tm(root, "config", "set", "repos...gates.main.command", "true")[0] == 0
 
-    assert stored_repos(root)["."] == {"default_branch": "main", "gates": {"main": gate("true")}}
+    assert stored_repos(root)["."] == {"gates": {"main": gate("true")}}
     assert tm(root, "config", "get", "repos...gates.main.command") == (0, "true\n")
     assert tm(root, "config", "unset", "repos..")[0] == 0
     assert stored_repos(root) == WEB
@@ -109,19 +110,18 @@ def test_a_dotted_key_reads_a_repository_with_no_entry_as_the_defaults(root: Pat
     assert tm(root, "config", "get", "repos.app.gates.main.command") == (0, "\n")
 
 
-APP = {"app": {"default_branch": "main", "gates": {"main": gate("x")}}}
-WEB_GATELESS = {"web": {"default_branch": "main", "gates": {}}}
+APP = {"app": {"gates": {"main": gate("x")}}}
 
 
 @pytest.mark.parametrize(
     ("key", "left"),
     [
         ("repos.web.gates.main.junit", {**WEB, **APP}),
-        ("repos.web.gates.main", {**WEB_GATELESS, **APP}),
-        ("repos.web.gates", {**WEB_GATELESS, **APP}),
+        ("repos.web.gates.main", {"web": {"gates": {}}, **APP}),
+        ("repos.web.gates", {"web": {}, **APP}),
         (
             "repos.app",
-            {"web": {"default_branch": "main", "gates": {"main": gate("make web", "j")}}},
+            {"web": {"gates": {"main": gate("make web", "j")}}},
         ),
     ],
 )
@@ -186,7 +186,7 @@ def test_a_whole_repos_value_that_keeps_every_repository_is_written(root: Path) 
 
     assert code == 0, out
     assert set(stored_repos(root)) == {"web", "app"}
-    assert stored_repos(root)["web"]["gates"] == {}
+    assert stored_repos(root)["web"] == {}
 
 
 def test_a_gate_command_keeps_every_brace_that_names_no_placeholder() -> None:
