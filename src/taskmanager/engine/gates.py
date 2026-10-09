@@ -1,4 +1,4 @@
-"""Gate commands, the failing set a JUnit report names, whether a green run ran any test, and the
+"""Gate commands, the failing set a JUnit report or a failing_pattern names, whether a green run ran any test, and the
 attribution of a red tip."""
 
 import argparse
@@ -61,6 +61,12 @@ def _failing(reports: list[Path]) -> frozenset[str]:
     return frozenset(failing)
 
 
+def _matched(output: str, failing_pattern: str | None) -> frozenset[str]:
+    if not failing_pattern:
+        return frozenset()
+    return frozenset(m[1] for m in re.finditer(failing_pattern, output, re.MULTILINE) if m[1])
+
+
 def _count(reports: list[Path]) -> int:
     return sum(1 for report in reports for _ in ET.parse(report).getroot().iter("testcase"))
 
@@ -92,6 +98,7 @@ def run_gate(
     timeout: int,
     junit_glob: str | None,
     tests_ran: str | None = None,
+    failing_pattern: str | None = None,
 ) -> GateRun:
     # A report an earlier run left in this worktree would be read as this run's.
     for stale in _reports(cwd, junit_glob):
@@ -118,8 +125,11 @@ def run_gate(
         failing = _failing(reports) if reports else None
     except ET.ParseError:
         failing = None
+    matched = _matched(output, failing_pattern)
+    if matched:
+        failing = (failing or frozenset()) | matched
     if proc.returncode != 0 and not failing:
-        # A red run whose report names no failure failed where the report does not look (a
+        # A red run whose report and pattern name no failure failed where neither looks (a
         # build, a crash), so its set says nothing about which tests broke.
         failing = None
     no_tests = (
