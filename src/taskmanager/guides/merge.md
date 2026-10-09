@@ -34,6 +34,13 @@ tm config set repos.<repo>.gates.main.tests_ran "<a pattern whose one group capt
 
 A gate that declares neither is judged by its exit code alone.
 
+After a plan's or spec's push to the spec's target, tm runs the repository's `after_land` command in the merge worktree, when one is set, with `{target}`, `{branch}`, `{node}` and `{repo}` filled in. Its exit and output go to the node's `:merge`; the push stands whatever it exits, and a task's landing never runs it. tm calls no git provider itself, so opening a pull or merge request is a hook such as:
+
+```
+tm config set repos.<repo>.after_land "gh pr create --base main --head {target} --fill"
+tm config set repos.<repo>.after_land "glab mr create --target-branch main --source-branch {target} --fill --yes"
+```
+
 ## 1. Take the job
 
 A dispatcher's workflow usually hands you the job and says so in the prompt. On your own, claim the stopped node, which hands you the job and its lease:
