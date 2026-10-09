@@ -2294,11 +2294,11 @@ class _RefusingImporter:
         self._importer = importer
         self._source = source
 
-    def import_dict(self, data: Any) -> Imported:
+    def import_dict(self, data: Any, *, restoring: bool = False) -> Imported:
         if not isinstance(data, dict):
             _refuse_import(self._source, "the document is not a mapping")
         try:
-            return self._importer.import_dict(data)
+            return self._importer.import_dict(data, restoring=restoring)
         except ValueError as exc:
             _refuse_import(self._source, str(exc))
         except (KeyError, TypeError, AttributeError) as exc:
@@ -2599,11 +2599,11 @@ def restore_cmd(
         for n in nodes_of(first):
             for edges in ("depends_on", "supersedes"):
                 n[edges] = [d for d in n.get(edges, []) if d in own]
-        importer.import_dict(first)
+        importer.import_dict(first, restoring=True)
     if decisions_doc is not None:
-        importer.import_dict(decisions_doc)
+        importer.import_dict(decisions_doc, restoring=True)
     for doc in [*plan_docs, *spec_docs]:
-        importer.import_dict(doc)
+        importer.import_dict(doc, restoring=True)
     ledger = container.get(LedgerRepository)
     for node_id, at in sorted(completed_at.items()):
         ledger.append(

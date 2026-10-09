@@ -39,7 +39,14 @@ def root(tmp_path: Path) -> Path:
 def import_task(root: Path, repo: str) -> tuple[int, str]:
     doc = root.parent / "plan.json"
     task = {"id": "P-T", "title": "t", "target_repo": repo}
-    doc.write_text(json.dumps({"plans": [{"id": "P", "title": "P", "tasks": [task]}]}))
+    doc.write_text(
+        json.dumps(
+            {
+                "spec": {"id": "S", "title": "S"},
+                "plans": [{"id": "P", "title": "P", "tasks": [task]}],
+            }
+        )
+    )
     return tm(root, "import", "-f", str(doc))
 
 

@@ -355,7 +355,9 @@ def test_bulk_importer_reimport_without_title_keeps_existing_title(tmp_path: Pat
     repo = NodeRepository(db)
     importer = BulkImporter(repo)
 
-    importer.import_dict({"plans": [{"id": "AUTH-P1", "title": "Token Plan"}]})
+    importer.import_dict(
+        {"spec": {"id": "S", "title": "S"}, "plans": [{"id": "AUTH-P1", "title": "Token Plan"}]}
+    )
 
     importer.import_dict({"plans": [{"id": "AUTH-P1", "tasks": [{"id": "AUTH-T1", "title": "x"}]}]})
 
