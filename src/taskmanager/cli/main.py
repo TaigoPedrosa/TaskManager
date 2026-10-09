@@ -2337,7 +2337,8 @@ def _codegraph_blocks() -> dict[str, str]:
 
 
 def _codegraph_ready(root: Path) -> bool:
-    ok = {fact.name for fact in _doctor_facts(root) if fact.ok}
+    with _user_errors():
+        ok = {fact.name for fact in doctor.codegraph_facts(root) if fact.ok}
     return "codegraph" in ok and any(name.startswith("codegraph index") for name in ok)
 
 

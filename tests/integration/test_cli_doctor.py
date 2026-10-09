@@ -133,3 +133,22 @@ def test_doctor_with_the_plugin_at_another_version_prints_the_install_sh_fix(
     assert plugin.startswith("plugin: 0.0.1 (required) -> tm is ")
     assert plugin.endswith(f"; reinstall both: {INSTALL}")
     assert "install.sh" in INSTALL
+
+
+def test_guide_with_codegraph_ready_appends_its_block_without_running_claude(
+    project: Path, bin_dir: Path
+) -> None:
+    _tool(bin_dir, "git", "git version 2.55.0")
+    _tool(bin_dir, "codegraph", "1.6.0")
+    (project / ".codegraph").mkdir()
+    (project / ".codegraph" / "codegraph.db").touch()
+    ran = bin_dir.parent / "claude-ran"
+    claude = bin_dir / "claude"
+    claude.write_text(f"#!/bin/sh\n: > '{ran}'\necho '[]'\n", encoding="utf-8")
+    claude.chmod(0o755)
+
+    res = runner.invoke(app, ["guide", "implement", "-C", str(project)])
+
+    assert res.exit_code == 0, res.output
+    assert "codegraph" in res.stdout.split("\n\n---\n\n")[1]
+    assert not ran.exists(), "tm guide ran `claude`"

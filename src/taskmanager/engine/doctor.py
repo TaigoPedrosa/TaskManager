@@ -115,17 +115,19 @@ def _index(root: Path, repo: str) -> Fact:
     )
 
 
+def _codegraph(root: Path, git: bool) -> list[Fact]:
+    # Reading the configured repositories validates their branch names with git.
+    indexes = [_index(root, repo) for repo in _repos(root)] if git else []
+    return [_tool("codegraph", False, CODEGRAPH_INSTALL), *indexes]
+
+
+def codegraph_facts(root: Path) -> list[Fact]:
+    return _codegraph(root, shutil.which("git") is not None)
+
+
 def facts(root: Path) -> list[Fact]:
     git = _tool("git", True, GIT_INSTALL)
-    # Reading the configured repositories validates their branch names with git.
-    indexes = [_index(root, repo) for repo in _repos(root)] if git.ok else []
-    return [
-        git,
-        _python(),
-        _plugin(),
-        _tool("codegraph", False, CODEGRAPH_INSTALL),
-        *indexes,
-    ]
+    return [git, _python(), _plugin(), *_codegraph(root, git.ok)]
 
 
 def exit_code(found: list[Fact]) -> int:
