@@ -6,6 +6,7 @@ than in the agent's terminal.
 
 import re
 import shlex
+import subprocess
 from collections.abc import Callable
 from importlib.resources import files
 from pathlib import Path
@@ -1014,9 +1015,9 @@ BRIEF_RULES = [
     pytest.param(
         "overview",
         "# How TaskManager works",
-        "After `tm init`, give every repository a task names in `target_repo` a `main` gate, the "
-        "command tm runs on the merged tip before it pushes: `tm config set "
-        'repos.<repo>.gates.main.command "<command>"`. It gates every landing on a spec\'s target '
+        "Every repository a task names in `target_repo` needs a `main` gate, the command tm runs "
+        "on the merged tip before it pushes; outside `tm init`, `tm config set "
+        'repos.<repo>.gates.main.command "<command>"` sets one. It gates every landing on a spec\'s target '
         "branch, whatever that branch is named; without one, every such landing stops with "
         "`no gate`.",
         id="overview:main-gate",
@@ -1116,19 +1117,34 @@ def test_overview_runbook_and_merge_guide_drop_the_gate_forms_tm_refuses(
     assert "Apply the project's prepared guide addendum" not in text
 
 
-def _readme_quickstart() -> list[str]:
-    section = _doc_text("README.md").split("## Quickstart\n", 1)[1].split("\n## ", 1)[0]
-    block = section.split("```bash\n", 1)[1].split("```", 1)[0]
-    return [line.split("#", 1)[0].strip() for line in block.splitlines()]
+def _readme_quickstart() -> str:
+    return _doc_text("README.md").split("## Quickstart\n", 1)[1].split("\n## ", 1)[0]
 
 
-def test_readme_quickstart_gate_line_is_one_tm_config_set_accepts(tmp_path: Path) -> None:
-    line = next(ln for ln in _readme_quickstart() if ln.startswith("tm config set "))
+def test_readme_quickstart_sets_up_with_tm_init_alone() -> None:
+    block = _readme_quickstart().split("```bash\n", 1)[1].split("```", 1)[0]
+    lines = [line.split("#", 1)[0].strip() for line in block.splitlines()]
+    assert "tm init" in lines
+    assert not [line for line in lines if line.startswith("tm config set ")]
+
+
+def test_readme_quickstart_script_line_sets_the_gate(tmp_path: Path) -> None:
+    line = next(
+        m.group(1) for m in _SPAN.finditer(_readme_quickstart()) if "tm init --yes" in m.group(1)
+    )
     args = shlex.split(line.replace("<your test command>", "true"))[1:]
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     runner = CliRunner()
-    assert runner.invoke(app, ["init", "-C", str(tmp_path)]).exit_code == 0
     result = runner.invoke(app, [*args, "-C", str(tmp_path)])
     assert result.exit_code == 0, result.output
     got = runner.invoke(app, ["config", "get", "repos...gates.main.command", "-C", str(tmp_path)])
     assert got.exit_code == 0, got.output
     assert got.stdout.strip() == "true"
+
+
+def test_overview_names_tm_init_yes_and_every_init_flag(rendered: Callable[[str], str]) -> None:
+    text = rendered("overview")
+    _, init, _ = _resolve(["init"])
+    flags = {f for f in _accepted_flags(init) if f.startswith("--")} - {"--help", "--path"}
+    assert "`tm init --yes`" in text
+    assert [f for f in sorted(flags) if not re.search(re.escape(f) + r"(?![\w-])", text)] == []
