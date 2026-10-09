@@ -751,11 +751,22 @@ _SET_OPTION = typer.Option(
 )
 
 
-_FIELD_OPTIONS: dict[str, str] = {
+_ADD_FIELD_OPTIONS: dict[str, str] = {
+    "target_repo": "--repo",
+    "title": "the TITLE argument",
+    "priority": "--priority",
+    "ordinal": "--order",
+    "acceptable_models": "--models",
+    "review": "--review/--no-review",
+    "fix": "--fix/--no-fix",
+    "merge": "--merge",
+    "requires": "--requires",
+}
+
+_UPDATE_FIELD_OPTIONS: dict[str, str] = {
     "target_repo": "--repo",
     "title": "--title",
     "priority": "--priority",
-    "ordinal": "--order",
     "acceptable_models": "--models",
     "review": "--review/--no-review",
     "fix": "--fix/--no-fix",
@@ -765,7 +776,7 @@ _FIELD_OPTIONS: dict[str, str] = {
 }
 
 
-def _frontmatter_pairs(pairs: list[str] | None) -> dict[str, Any]:
+def _frontmatter_pairs(pairs: list[str] | None, options: dict[str, str]) -> dict[str, Any]:
     frontmatter: dict[str, Any] = {}
     for pair in pairs or []:
         key, sep, raw = pair.partition("=")
@@ -773,7 +784,12 @@ def _frontmatter_pairs(pairs: list[str] | None) -> dict[str, Any]:
             raise typer.BadParameter(f"--set takes key=value, got '{pair}'")
         if key in Node.model_fields:
             # A frontmatter key named like a field is stored beside the field and never read.
-            how = f"set it with {_FIELD_OPTIONS[key]}" if key in _FIELD_OPTIONS else "tm sets it"
+            if key in options:
+                how = f"set it with {options[key]}"
+            elif key in _ADD_FIELD_OPTIONS or key in _UPDATE_FIELD_OPTIONS:
+                how = "this command has no option for it"
+            else:
+                how = "tm sets it"
             raise typer.BadParameter(f"{key} is a node field, not frontmatter: {how}")
         try:
             frontmatter[key] = json.loads(raw)
@@ -813,7 +829,7 @@ def task_add(
     """Create a task under a plan."""
     root = _get_root(path)
     ops = _get_container(root).get(Operations)
-    frontmatter = _frontmatter_pairs(set_frontmatter)
+    frontmatter = _frontmatter_pairs(set_frontmatter, _ADD_FIELD_OPTIONS)
     with _refusing():
         task_id = ops.add_task(
             title,
@@ -986,7 +1002,7 @@ def task_update(
     """Change a node's title, priority, models, repository, flags or frontmatter."""
     root = _get_root(path)
     ops = _get_container(root).get(Operations)
-    frontmatter_set = _frontmatter_pairs(set_frontmatter)
+    frontmatter_set = _frontmatter_pairs(set_frontmatter, _UPDATE_FIELD_OPTIONS)
     with _refusing():
         changed = ops.update_node(
             task_id,

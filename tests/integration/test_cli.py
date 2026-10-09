@@ -545,6 +545,23 @@ def test_set_refuses_a_key_that_names_a_node_field(tmp_path: Path) -> None:
     assert res.exit_code != 0
     assert "tm sets it" in res.stderr
 
+    res = runner.invoke(app, ["task", "update", "S1-P1-t1", "--set", "ordinal=3", "--path", root])
+    assert res.exit_code != 0
+    assert "--order" not in res.stderr
+    assert "this command has no option for it" in res.stderr
+
+    for key, named, absent in [
+        ("title=x", "TITLE argument", "--title"),
+        ("land_order=a", "this command has no option for it", "--land-order"),
+    ]:
+        res = runner.invoke(
+            app,
+            ["task", "add", "V", "--plan", "S1-P1", "--slug", "t3", "--set", key, "--path", root],
+        )
+        assert res.exit_code != 0
+        assert named in res.stderr
+        assert absent not in res.stderr
+
     res = runner.invoke(
         app,
         [
