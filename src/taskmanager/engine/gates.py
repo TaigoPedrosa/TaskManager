@@ -19,7 +19,7 @@ from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.engine import git as gitops
-from taskmanager.engine.config import DEFAULT_REMOTE, ConfigStore
+from taskmanager.engine.config import DEFAULT_REMOTE, ConfigStore, Gate
 
 # The baseline cache stores this type; re-exported so callers share the one definition.
 __all__ = ["GateRun"]
@@ -42,9 +42,11 @@ def render(template: str, **values: str) -> str:
     )
 
 
-def template_hash(template: str) -> str:
-    """The baseline cache key: the template, so every node shares one baseline per sha."""
-    return hashlib.sha256(template.encode()).hexdigest()[:16]
+def template_hash(gate: Gate) -> str:
+    """The baseline cache key: every gate field a run's result is read with, unrendered, so every
+    node shares one baseline per sha and a changed report, count or pattern runs it again."""
+    fields = gate.model_dump_json(include={"command", "junit", "tests_ran", "failing_pattern"})
+    return hashlib.sha256(fields.encode()).hexdigest()[:16]
 
 
 def _reports(cwd: Path, junit_glob: str | None) -> list[Path]:
