@@ -138,6 +138,12 @@ def diff_quiet(repo: Path, base: str, branch: str) -> bool:
     return _git(repo, "diff", "--quiet", f"{base}...{branch}").returncode == 0
 
 
+def changed_files(repo: Path, base: str, branch: str) -> list[str]:
+    """Every file `branch` changes against its merge base with `base`; none on a git error."""
+    res = _git(repo, "diff", "--name-only", f"{base}...{branch}")
+    return res.stdout.split("\n")[:-1] if res.returncode == 0 else []
+
+
 def fetch(repo: Path, branch: str) -> bool:
     return _git(repo, "fetch", "-q", "origin", branch).returncode == 0
 

@@ -25,6 +25,7 @@ from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine.conditions import is_executable
+from taskmanager.engine.config import ProjectConfig
 from taskmanager.engine.operations import (
     OperationError,
     Operations,
@@ -161,6 +162,7 @@ class BulkImporter:
         verifications: dict[str, list[NodeVerification]] = {}
         conditions: dict[str, list[Condition]] = {}
         imported = Imported()
+        config = self.ops.rules()
 
         def take(raw: dict[str, Any], kind: NodeKind, parent: Node | None) -> Node:
             stated = (
@@ -169,7 +171,7 @@ class BulkImporter:
                 else None
             )
             existing = self.node_repo.get_node(raw["id"])
-            node = self._parse_node(raw, kind, existing, parent, stated or ())
+            node = self._parse_node(raw, kind, config, existing, parent, stated or ())
             nodes.append(node)
             (imported.created if existing is None else imported.updated).append(node.id)
             sections.extend(self._parse_sections(node.id, raw.get("sections")))
@@ -346,6 +348,7 @@ class BulkImporter:
     def _parse_node(
         data: dict[str, Any],
         default_kind: NodeKind,
+        config: ProjectConfig,
         existing: Node | None = None,
         parent: Node | None = None,
         verifications: Sequence[NodeVerification] = (),
@@ -420,6 +423,7 @@ class BulkImporter:
             node,
             parent,
             verifications,
+            config=config,
             review=flag("review"),
             fix=flag("fix"),
             merge=merge,

@@ -59,12 +59,11 @@ from taskmanager.engine.git import GitManager
 from taskmanager.engine.selection import ordered_repos
 from taskmanager.engine.snapshot import (
     SnapshotBuilder,
+    is_sensitive,
     node_busy,
     roll_up_ancestors,
-    sensitive_areas,
     stored_status,
     with_tops,
-    writes_migration,
 )
 from taskmanager.engine.stepgraph import Snapshot
 from taskmanager.engine.validation import moved_tops, retargets, validate
@@ -122,6 +121,7 @@ def child_defaults(
     parent: Node | None,
     verifications: Sequence[NodeVerification] = (),
     *,
+    config: ProjectConfig,
     review: bool | None = None,
     fix: bool | None = None,
     merge: Merge | None = None,
@@ -135,7 +135,7 @@ def child_defaults(
         own, lands_on = child.kind == NodeKind.TASK, Merge.SPEC
     else:
         files = declared_files_of(child, list(verifications))
-        own, lands_on = bool(sensitive_areas(child)) or writes_migration(files), Merge.PARENT
+        own, lands_on = is_sensitive(child, files, config), Merge.PARENT
     return child.model_copy(
         update={
             "review": own if review is None else review,
@@ -546,6 +546,7 @@ class Operations:
                 frontmatter=_land_on(land_on),
             ),
             parent,
+            config=self.rules(),
             review=review,
             fix=fix,
             merge=None if merge is None else parse_merge(merge),
@@ -619,6 +620,7 @@ class Operations:
                 target_repo=repo,
             ),
             parent,
+            config=self.rules(),
             review=review,
             fix=fix,
             merge=None if merge is None else parse_merge(merge),
@@ -1200,6 +1202,9 @@ class Operations:
 
     def _project_root(self) -> Path:
         return self.node_repo.db.taskmanager_dir.parent
+
+    def rules(self) -> ProjectConfig:
+        return ConfigStore(self._project_root()).rules()
 
     def attach(
         self,

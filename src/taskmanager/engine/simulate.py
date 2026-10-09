@@ -172,7 +172,7 @@ def _advance(
 
     _roll_up(new_nodes, new_data_nodes, snap, changed)
     new_data = replace(data, nodes=new_data_nodes, leases=new_leases, jobs=new_jobs)
-    new_snap = Snapshot(nodes=new_nodes, edges=snap.edges, data=new_data)
+    new_snap = Snapshot(nodes=new_nodes, edges=snap.edges, data=new_data, config=snap.config)
     return new_snap, Wave(entries=entries, held=[*candidate_held, *result.held])
 
 

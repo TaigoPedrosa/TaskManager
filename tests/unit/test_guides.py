@@ -18,8 +18,8 @@ from typer.testing import CliRunner
 
 from taskmanager.cli.main import _guide_topics, app
 from taskmanager.core.status import Merge
+from taskmanager.engine.config import MIGRATIONS, SENSITIVE_AREAS
 from taskmanager.engine.snapshot import writes_migration
-from taskmanager.engine.validation import SENSITIVE_AREAS
 
 REQUIRED_TOPICS = {"implement", "review", "fix", "merge", "overview"}
 COMMAND_FLOOR = 40
@@ -890,9 +890,10 @@ def test_plan_guide_shows_the_sensitive_key_with_every_area_tm_accepts_and_the_m
     line = next(ln for ln in rendered("plan").splitlines() if ln.startswith("- `sensitive`:"))
     assert [area for area in SENSITIVE_AREAS if f"`{area}`" not in line] == []
     assert "`sensitive: [tenant, rls]`" in line
-    marker = re.search(r"a path under `([^`]+)` in its `declared_files`, is sensitive", line)
+    marker = re.search(r"globs \(`([^`]+)` among them unless set\)", line)
     assert marker is not None, line
-    assert writes_migration([f"api/{marker.group(1)}0001_tenants.py"])
+    assert marker.group(1) in MIGRATIONS
+    assert writes_migration(["api/migrations/0001_tenants.py"], [marker.group(1)])
 
 
 def test_dispatch_guide_offers_a_landed_node_s_review(rendered: Callable[[str], str]) -> None:
