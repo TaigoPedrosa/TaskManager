@@ -1,5 +1,8 @@
 import sys
 import time
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -19,12 +22,14 @@ from lifecycle_estate import (
 )
 
 from taskmanager.core.enums import NodeKind, VerificationType
-from taskmanager.core.models import Condition, NodeVerification
+from taskmanager.core.models import Condition, Job, NodeVerification
 from taskmanager.core.status import Action, ConditionStage, JobState, Merge, Outcome, Status
 from taskmanager.engine.claims import Claims
 from taskmanager.engine.config import Gate, ProjectConfig, RepoConfig
 from taskmanager.engine.landing import Landing
 from taskmanager.engine.operations import OperationError
+
+Seen = tuple[dict[str, JobState], Status, str]
 
 TRUE = Gate(command="true", junit=None, timeout=60)
 
@@ -312,6 +317,106 @@ def test_a_landing_killed_after_its_push_is_swept_back_and_the_next_completes_wi
     assert stored(claims, "T1").status == Status.COMPLETED
     git(api, "fetch", "-q", "origin")
     assert merges_of(api, "T1") == 1
+
+
+@contextmanager
+def watching(
+    claims: Claims, landing: Landing, monkeypatch: pytest.MonkeyPatch, node_id: str
+) -> Iterator[list[Seen]]:
+    """What another connection reads after every job state write: the landing's own thread
+    would see its uncommitted writes, which no other reader can."""
+    seen: list[Seen] = []
+    end = landing._end
+
+    def read() -> Seen:
+        jobs = {j.id: j.state for j in claims.jobs.for_node(node_id)}
+        return jobs, stored(claims, node_id).status, section(claims, node_id, "merge")
+
+    with ThreadPoolExecutor(max_workers=1) as reader:
+
+        def observed(job: Job, state: JobState, **result: object) -> bool:
+            ended = end(job, state, **result)
+            seen.append(reader.submit(read).result())
+            return ended
+
+        monkeypatch.setattr(landing, "_end", observed)
+        yield seen
+        seen.append(reader.submit(read).result())
+
+
+def test_succeed_writes_the_node_completed_no_later_than_the_job_reads_succeeded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claims, landing = estate_with(tmp_path, TRUE)
+    reviewed_task(claims)
+
+    with watching(claims, landing, monkeypatch, "T1") as seen:
+        job_id, state = land(claims, landing)
+
+    assert state == JobState.SUCCEEDED
+    first = next(s for s in seen if s[0][job_id] == JobState.SUCCEEDED)
+    assert first[1] == Status.COMPLETED
+
+
+def test_succeed_writes_the_merge_note_and_next_job_no_later_than_the_first_repository_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gates = {repo: RepoConfig(gates={"main": TRUE}) for repo in ("api", "web")}
+    claims = make_estate(tmp_path, repos=("api", "web"), config=ProjectConfig(repos=gates))
+    landing = attach_landing(claims)
+    add(claims, "P", NodeKind.PLAN, status=Status.REVIEWED, outcome=Outcome.APPROVE)
+    add(claims, "A", parent="P", repo="api", merge=Merge.PARENT, status=Status.COMPLETED)
+    add(claims, "W", parent="P", repo="web", merge=Merge.PARENT, status=Status.COMPLETED)
+    on_branch(claims.root / "api", "tm/P", "a.py", "a = 1\n")
+    on_branch(claims.root / "web", "tm/P", "w.py", "w = 1\n")
+
+    with watching(claims, landing, monkeypatch, "P") as seen:
+        job_id, state = land(claims, landing, "P")
+
+    assert state == JobState.SUCCEEDED
+    jobs, _, merge = next(s for s in seen if s[0][job_id] == JobState.SUCCEEDED)
+    assert len(jobs) == 2
+    assert "api: landed on main" in merge
+    assert stored(claims, "P").status == Status.COMPLETED
+
+
+def test_succeed_writes_nothing_when_the_job_moved_before_it_ends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claims, landing = estate_with(tmp_path, TRUE)
+    reviewed_task(claims)
+    verify = claims.verify
+
+    def expiring(node_id: str, ref: str, repo: str | None) -> tuple[bool, str]:
+        for job in claims.jobs.for_node(node_id):
+            claims.jobs.set_state(job.model_copy(update={"state": JobState.EXPIRED}))
+        return verify(node_id, ref, repo)
+
+    monkeypatch.setattr(claims, "verify", expiring)
+    job_id, state = land(claims, landing)
+
+    assert state == JobState.EXPIRED
+    assert stored(claims, "T1").status == Status.MERGING
+    assert section(claims, "T1", "merge") == ""
+    assert [j.id for j in claims.jobs.for_node("T1")] == [job_id]
+
+
+def test_succeed_writes_neither_when_the_node_refuses_to_land(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claims, landing = estate_with(tmp_path, TRUE)
+    reviewed_task(claims)
+
+    def refused(node_id: str, report: str) -> Status:
+        raise OperationError(f"{node_id} cannot land", 409)
+
+    monkeypatch.setattr(claims, "landed", refused)
+    job_id, state = land(claims, landing)
+
+    assert state == JobState.NEEDS_AGENT
+    job = claims.jobs.get(job_id)
+    assert job is not None and job.result["reason"] == "error"
+    assert stored(claims, "T1").status == Status.MERGING
 
 
 def test_the_module_entry_point_runs_a_landing_as_a_detached_process(tmp_path: Path) -> None:
