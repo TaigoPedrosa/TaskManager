@@ -88,7 +88,7 @@ Report, in this order:
 - the validated repos;
 - the landing branch, and whether it exists already;
 - every open question verbatim, with its decision id, and the ones the code answered with their `file:line`;
-- the next stage: design. Brainstorm the approach with the user, then write the plan as `tm guide plan` describes.
+- the next stage: `/taskmanager:design <spec-id>`, which settles the open questions and writes the design into the spec.
 
 ## Re-running
 

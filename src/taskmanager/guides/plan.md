@@ -126,6 +126,7 @@ One agent, one sitting, one branch: an objective of a sentence, acceptance of a 
 - **`review_models` is who runs it.** Set it wherever checking is harder than writing.
 - **A landing precondition is an edge or a condition, never a sentence.** Written into `acceptance` it reads as a review check, passes review, and is found only when the landing is already under way.
 - An acceptance that something is left unchanged names its measurement: the file's bytes or sha256 before and after, never a field or two read back.
+- A bug fix's first acceptance line replays the reproduction the defect was reported with, expects the corrected result, and fails when the fix is reverted.
 - An invariant or a refusal in acceptance names where it holds: the one function every write or command passes through, or each path by name, with a check for each. An invariant over two fields (a status and a flag, a default and every path that creates the node) names the writes of both fields, not only the one the task touches. A changed shape names every caller.
 - A limit or default a spec states that a tm config key covers is written as the project's key, never a number.
 - An acceptance that one thing matches another ("matches `tm wave discover`", "byte-identical to before") lists every input the reference reads (conditions, locks, config keys such as `repo_order`) and has a test holding each.
