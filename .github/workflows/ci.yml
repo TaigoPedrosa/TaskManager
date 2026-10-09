@@ -37,3 +37,47 @@ jobs:
       # Node 22 reads a directory argument to --test as a module path; the quoted glob runs the
       # same files on every Node version.
       - run: node --test 'tests/**/*.test.mjs'
+
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      # The real Claude Code CLI, not the integration test's stub: its plugin marketplace and
+      # install commands work in an empty profile without a login. Pinned so a CLI release cannot
+      # turn the job red on its own.
+      - run: npm install -g @anthropic-ai/claude-code@2.1.295
+      - name: Point HOME, the uv tool dirs and the Claude profile at a scratch dir
+        run: |
+          scratch="$RUNNER_TEMP/scratch"
+          mkdir -p "$scratch/home"
+          {
+            echo "HOME=$scratch/home"
+            echo "UV_TOOL_DIR=$scratch/uv-tools"
+            echo "UV_TOOL_BIN_DIR=$scratch/uv-bin"
+            echo "UV_CACHE_DIR=$scratch/uv-cache"
+            echo "CLAUDE_CONFIG_DIR=$scratch/claude"
+            echo "XDG_CONFIG_HOME=$scratch/xdg/config"
+            echo "XDG_DATA_HOME=$scratch/xdg/data"
+            echo "XDG_CACHE_HOME=$scratch/xdg/cache"
+            echo "XDG_STATE_HOME=$scratch/xdg/state"
+          } >> "$GITHUB_ENV"
+          echo "$scratch/uv-bin" >> "$GITHUB_PATH"
+      - run: ./install.sh install --from "$GITHUB_WORKSPACE"
+      - name: tm --version equals the marketplace version
+        run: |
+          want=$(jq -r '.plugins[] | select(.name == "taskmanager") | .version' .claude-plugin/marketplace.json)
+          got=$(tm --version | awk '{print $NF}')
+          [ "$got" = "$want" ] || { echo "tm $got, marketplace $want" >&2; exit 1; }
+      - run: ./install.sh status
+      - run: ./install.sh install --from "$GITHUB_WORKSPACE"
+      - run: ./install.sh uninstall
+      - name: status exits non-zero once uninstalled
+        run: |
+          if ./install.sh status; then
+            echo "status exited 0 after uninstall" >&2
+            exit 1
+          fi
