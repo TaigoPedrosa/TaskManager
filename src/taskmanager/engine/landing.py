@@ -277,7 +277,9 @@ class Landing:
             gate = self._gate_config(job.repo, "parent")
             if gate is None:
                 return "push"
-        tip = gates.run_gate(self._render(gate, job, worktree), worktree, gate.timeout, gate.junit)
+        tip = self._run_gate(gate, job, worktree)
+        if tip.no_tests:
+            return self._no_tests(job, tip)
         if tip.exit_code == 0:
             return "push"
         base = self._baseline(job, gate)
@@ -422,9 +424,9 @@ class Landing:
                 gate = self._gate_config(job.repo, "parent")
                 if gate is not None:
                     worktree = Path(self._require_worktree(job))
-                    run = gates.run_gate(
-                        self._render(gate, job, worktree), worktree, gate.timeout, gate.junit
-                    )
+                    run = self._run_gate(gate, job, worktree)
+                    if run.no_tests:
+                        return self._no_tests(job, run)
                     if run.exit_code != 0:
                         return self._needs_agent(job, "red", tip=run.tail)
                 job.step = "push"
@@ -612,9 +614,7 @@ class Landing:
             worktree = self._worktree_path(job, "base")
             gitops.add_detached_worktree(self._dir(job), worktree, sha)
             try:
-                run = gates.run_gate(
-                    self._render(gate, job, worktree), worktree, gate.timeout, gate.junit
-                )
+                run = self._run_gate(gate, job, worktree)
             finally:
                 GitManager(self._dir(job)).remove_worktree(worktree, force=True)
             self.cache.put_baseline(job.repo, sha, key, run)
@@ -646,6 +646,21 @@ class Landing:
     def _gate_config(self, repo: str, which: Literal["main", "parent"]) -> Gate | None:
         repo_config = self.config.repos.get(repo)
         return repo_config.gates.get(which) if repo_config is not None else None
+
+    def _run_gate(self, gate: Gate, job: Job, worktree: Path) -> GateRun:
+        return gates.run_gate(
+            self._render(gate, job, worktree), worktree, gate.timeout, gate.junit, gate.tests_ran
+        )
+
+    def _no_tests(self, job: Job, run: GateRun) -> JobState:
+        return self._needs_agent(
+            job,
+            "no tests",
+            detail=f"the test gate exited 0 but {run.no_tests}: a gate that ran no tests is not "
+            f"green (fix the gate's command, report or tests_ran in repos.{job.repo}.gates, then "
+            f"`tm job resume {job.id}`)",
+            tip=run.tail,
+        )
 
     def _render(self, gate: Gate, job: Job, worktree: Path) -> str:
         return gates.render(

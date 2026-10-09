@@ -209,6 +209,8 @@ class GateRun:
     exit_code: int
     failing: frozenset[str] | None
     tail: str
+    # Why a run that exited 0 still ran no tests; the baseline cache does not store it.
+    no_tests: str | None = None
 
 
 class FileLock(BaseModel):
