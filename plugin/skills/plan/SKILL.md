@@ -21,6 +21,8 @@ tm decision list --yaml
 tm decision get <decision-id> --yaml
 ```
 
+A `change` answer makes the design skill raise the question again, so the spec can hold several; the gate is the one raised last, the highest `decision-D<n>` among them, and the earlier ones are history.
+
 Go on only when that decision is `ANSWERED` and its `answer.option` is `approve`. Otherwise stop and name it: the decision id, its question, and its state (open, answered with another option, withdrawn, or not raised at all, in which case the next stage is `/taskmanager:design`). An answer that asks for changes sends the work back to design; nothing here edits the `design` section.
 
 Also stop while any other decision blocking the spec is open: list each one with its id.

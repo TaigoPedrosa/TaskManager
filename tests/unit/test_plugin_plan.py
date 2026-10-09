@@ -37,14 +37,25 @@ CHECKLIST_ITEMS = {
     "joined verification": r"joined verification on a reviewed plan",
     "overview": r"plan's `overview`",
     "write paths": r"invariant names every write path",
-    "reproduction": r"bug fix replays its reproduction",
     "config key": r"Limits name a config key",
     "design frame": r"design frame `requires`",
     "migration": r"migration is marked sensitive",
 }
 
 # Package managers on top of the init skill's trackers, languages, test runners and editors.
-DENIED = (*INIT_DENIED, "npm", "yarn", "pnpm", "pip", "poetry", "uv", "maven", "gradle")
+DENIED = (
+    *INIT_DENIED,
+    "npm",
+    "yarn",
+    "pnpm",
+    "pip",
+    "poetry",
+    "uv",
+    "maven",
+    "gradle",
+    "cargo",
+    "bundler",
+)
 
 
 def _frontmatter(text: str) -> dict[str, str]:
@@ -67,6 +78,7 @@ def test_the_plan_skill_gates_on_design_approval_and_proves_its_verifications() 
     gate = _section(text, "Gate")
     assert "approve the design" in gate
     assert "Approve the design of <spec-id>?" in gate
+    assert "the one raised last, the highest `decision-D<n>`" in gate
     assert "`ANSWERED` and its `answer.option` is `approve`" in gate
     assert "stop and name it" in gate
     prove = _section(text, "Prove")
@@ -113,6 +125,16 @@ def test_plan_checklist_names_the_item_and_its_guide_section(item: str) -> None:
         "",
     )
     assert re.search(r"\(`tm guide plan` §\d+", line), line
+
+
+def test_plan_checklist_states_the_reproduction_rule_without_a_guide_citation() -> None:
+    text = CHECKLIST.read_text(encoding="utf-8")
+    line = next(
+        (line for line in text.splitlines() if "bug fix replays its reproduction" in line), ""
+    )
+    assert "runs the reproduction the defect was reported with" in line
+    assert "tm guide plan" not in line
+    assert "that section is the rule" not in text
 
 
 def test_plan_skill_writes_its_document_to_scratch_never_a_markdown_file_in_the_repo() -> None:
