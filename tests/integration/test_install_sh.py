@@ -293,17 +293,61 @@ def test_uninstall_removes_tm_the_plugin_and_the_gemini_link_and_nothing_else(
     assert status.returncode != 0
 
 
-def test_install_without_a_gemini_extensions_dir_links_nothing(
+def test_install_creates_the_gemini_extensions_dir_and_uninstall_removes_only_what_it_made(
     tmp_path: Path, uv_cache: Path
 ) -> None:
     scratch = scratch_env(tmp_path, uv_cache)
+    gemini = scratch.home / ".gemini"
+    gemini.mkdir()
+
+    for _ in range(2):
+        res = install_sh(scratch, "--from", str(REPO))
+        assert res.returncode == 0, res.stdout + res.stderr
+        assert scratch.gemini_link.resolve() == REPO
+        assert (gemini / "extensions" / ".taskmanager-created").is_file()
+    assert "does not exist" not in res.stdout
+
+    gone = install_sh(scratch, "uninstall")
+
+    assert gone.returncode == 0, gone.stdout + gone.stderr
+    assert gemini.is_dir()
+    assert not (gemini / "extensions").exists()
+
+
+def test_install_over_an_existing_gemini_extensions_dir_writes_no_marker_and_keeps_it(
+    tmp_path: Path, uv_cache: Path
+) -> None:
+    scratch = scratch_env(tmp_path, uv_cache)
+    extensions = scratch.home / ".gemini" / "extensions"
+    extensions.mkdir(parents=True)
+
+    for _ in range(2):
+        res = install_sh(scratch, "--from", str(REPO))
+        assert res.returncode == 0, res.stdout + res.stderr
+        assert scratch.gemini_link.resolve() == REPO
+        assert not (extensions / ".taskmanager-created").exists()
+
+    gone = install_sh(scratch, "uninstall")
+
+    assert gone.returncode == 0, gone.stdout + gone.stderr
+    assert extensions.is_dir()
+    assert not scratch.gemini_link.is_symlink()
+
+
+def test_uninstall_keeps_a_created_gemini_extensions_dir_holding_another_file(
+    tmp_path: Path, uv_cache: Path
+) -> None:
+    scratch = scratch_env(tmp_path, uv_cache)
+    extensions = scratch.home / ".gemini" / "extensions"
     (scratch.home / ".gemini").mkdir()
-
     res = install_sh(scratch, "--from", str(REPO))
-
     assert res.returncode == 0, res.stdout + res.stderr
-    assert "gemini: skipped, ~/.gemini/extensions does not exist" in res.stdout
-    assert not (scratch.home / ".gemini" / "extensions").exists()
+    (extensions / "other").write_text("x")
+
+    gone = install_sh(scratch, "uninstall")
+
+    assert gone.returncode == 0, gone.stdout + gone.stderr
+    assert sorted(p.name for p in extensions.iterdir()) == ["other"]
 
 
 def test_install_without_claude_installs_tm_and_prints_the_plugin_commands(
