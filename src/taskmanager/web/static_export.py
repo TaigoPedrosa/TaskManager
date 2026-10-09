@@ -8,20 +8,23 @@ read path the live view and `/ws` share -- rather than driving the HTTP app thro
 import base64
 import mimetypes
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from taskmanager.core.enums import NodeKind
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.job_repo import JobRepository
+from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.di.container import create_container
+from taskmanager.engine.archive import archived_specs
 from taskmanager.engine.assets import ASSET_NAME_RE
 from taskmanager.engine.config import ConfigStore
 from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder
 from taskmanager.web.app import VENDOR_DIR, _decision_item
 from taskmanager.web.bodies import BodyRepos, build_bodies
-from taskmanager.web.rows import build_rows, statuses, statuses_hash
+from taskmanager.web.rows import build_rows, rows_in, statuses, statuses_hash
 from taskmanager.web.ui import get_web_html
 
 # Above this, an attachment ships as a name-only link in the static export rather than
@@ -96,11 +99,18 @@ def export_static_html(project_root: Path, output_file: Path) -> Path:
     job_repo = container.get(JobRepository)
     cache = container.get(CacheRepository)
     snapshots = container.get(SnapshotBuilder)
-    condition_ttl = ConfigStore(project_root).project().condition_ttl
+    config = ConfigStore(project_root).project()
+    condition_ttl = config.condition_ttl
 
     view = DisplayView(snapshots, cache, condition_ttl)
-    rows = build_rows(view)
-    entries = statuses(rows)
+    archive = archived_specs(
+        view.snapshot,
+        container.get(LedgerRepository),
+        datetime.now(tz=UTC),
+        config.web.archive_after_days,
+    )
+    rows = build_rows(view, archive.nodes)
+    entries = statuses(rows_in(rows, "exclude"))
     edges = [[source, target, "depends_on"] for source, target in view.snapshot.edges]
 
     repos = BodyRepos(
@@ -124,6 +134,7 @@ def export_static_html(project_root: Path, output_file: Path) -> Path:
     initial_data = {
         "statuses": entries,
         "hash": statuses_hash(entries),
+        "archived_statuses": statuses(rows_in(rows, "only")),
         "rows": rows,
         "edges": edges,
         "bodies": bodies,
