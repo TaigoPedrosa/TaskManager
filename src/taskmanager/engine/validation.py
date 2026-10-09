@@ -21,7 +21,11 @@ from taskmanager.engine.stepgraph import (
     format_cycle,
     migration_writers,
 )
-from taskmanager.engine.verification import codegraph_regex
+from taskmanager.engine.verification import (
+    RETIRED_VERIFICATIONS,
+    codegraph_regex,
+    retired_verification,
+)
 
 _SET_ASIDE_OR_FAILED = EXITS | {Status.FAILED}
 # Work whose code never lands again, so nothing reads where it would.
@@ -290,7 +294,9 @@ def _busy(before: Snapshot, after: Snapshot, n: SnapNode) -> list[Refusal]:
     ]
 
 
-def _codegraph_patterns(before: Snapshot, after: Snapshot, node_id: str) -> list[Refusal]:
+def _new_verifications(
+    before: Snapshot, after: Snapshot, node_id: str, restoring: bool
+) -> list[Refusal]:
     if before.data is None or after.data is None:
         return []
     # Only the write that stores the check is refused, so one already stored never blocks a
@@ -298,7 +304,17 @@ def _codegraph_patterns(before: Snapshot, after: Snapshot, node_id: str) -> list
     stored = {v.id for v in before.data.verifications.get(node_id, ())}
     refusals: list[Refusal] = []
     for v in after.data.verifications.get(node_id, ()):
-        if v.verification_type != VerificationType.CODEGRAPH_QUERY or v.id in stored:
+        if v.id in stored:
+            continue
+        # A restore takes an older export's retired rows back as they were stored; running
+        # one fails it with the same message.
+        if v.verification_type in RETIRED_VERIFICATIONS:
+            if not restoring:
+                refusals.append(
+                    Refusal(node_id, 14, f"{node_id}: {retired_verification(v.verification_type)}")
+                )
+            continue
+        if v.verification_type != VerificationType.CODEGRAPH_QUERY:
             continue
         try:
             codegraph_regex(v.expected_pattern)
@@ -386,6 +402,7 @@ def validate(
     touched: set[str],
     branches: BranchFacts,
     root: Path | None = None,
+    restoring: bool = False,
 ) -> list[Refusal]:
     """`root`, when given, is where each newly stored `target_repo` must be a git working tree."""
     present = {node_id for node_id in touched if node_id in after.nodes}
@@ -409,7 +426,7 @@ def validate(
         refusals += _retarget(before, after, n, branches)
         refusals += _placement(before, after, n)
         refusals += _busy(before, after, n)
-        refusals += _codegraph_patterns(before, after, node_id)
+        refusals += _new_verifications(before, after, node_id, restoring)
         if root is not None:
             refusals += _target_repo(before, n, root)
     # Only the write that draws a wait across targets is refused, never one around it.
