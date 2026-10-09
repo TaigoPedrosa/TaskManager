@@ -133,7 +133,7 @@ def chosen(w: Wave) -> list[tuple[object, object]]:
 
 def test_next_step_of_a_ready_task_is_implement(estate: Estate) -> None:
     node = estate.add("T")
-    assert selection.next_step(node, estate.snap()) == (Action.IMPLEMENT, "sonnet")
+    assert selection.next_step(node, estate.snap()) == (Action.IMPLEMENT, "claude-sonnet-5-5")
 
 
 def test_next_step_of_a_completed_node_is_nothing(estate: Estate) -> None:
@@ -254,7 +254,7 @@ def test_a_migration_writer_holds_its_repository_chain_until_it_lands_on_main(
 def test_slots_strong_slots_exclusions_and_file_overlap_shape_the_wave(estate: Estate) -> None:
     estate.add("T1", frontmatter={"declared_files": ["api/a.py"]}, priority=90)
     estate.add("T2", frontmatter={"declared_files": ["api/a.py"]}, priority=80)
-    estate.add("T3", acceptable_models=["claude-opus-4"], priority=70)
+    estate.add("T3", acceptable_models=["claude-opus-5-5"], priority=70)
     estate.add("T4", priority=60)
     estate.add("T5", priority=50)
     estate.add("T6", priority=40)
@@ -263,7 +263,7 @@ def test_slots_strong_slots_exclusions_and_file_overlap_shape_the_wave(estate: E
 
     assert chosen(w) == [("T1", "implement"), ("T5", "implement")]
     assert "T2: declared_files overlap a node chosen this wave" in w.held
-    assert "T3: no free opus/fable slot" in w.held
+    assert "T3: no free strong-model slot" in w.held
     assert "T4: excluded by args" in w.held
     assert w.waiting_for_slot == 1
 

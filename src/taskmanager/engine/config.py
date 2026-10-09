@@ -56,6 +56,10 @@ MIGRATIONS: Final = (
 # What a `sensitive:` key may name: a fix touching one of these gets one review scoped to its
 # findings before it lands.
 SENSITIVE_AREAS: Final = ("tenant", "rls", "crypto", "migration")
+# The ids a step runs on when a node lists none, and what a merge or sync runs on.
+DEFAULT_MODEL: Final = "claude-sonnet-5-5"
+# The ids `--max-strong` counts.
+STRONG_MODELS: Final = ("claude-opus-5-5", "claude-fable-5-1")
 
 KEYS: Final = (
     "embeddings.provider",
@@ -82,6 +86,9 @@ KEYS: Final = (
     "web.archive_after_days",
     "review.blind",
     "sensitive_areas",
+    "models.default",
+    "models.merge",
+    "models.strong",
 )
 
 # The dispatch loop's typical target, printed by `tm guide dispatch`: a wakeup every tick_min-
@@ -101,7 +108,7 @@ _DISPATCH_BOUNDS: Final = (
 
 # Keys whose value is a whole mapping or list: stored and set as one value, never split into
 # dotted keys, and parsed from YAML when set from the command line.
-_WHOLE: Final = frozenset({"lease_ttl", "repos", "repo_order", "sensitive_areas"})
+_WHOLE: Final = frozenset({"lease_ttl", "repos", "repo_order", "sensitive_areas", "models.strong"})
 
 _GATE_NAMES: Final = ("main", "parent")
 # What a dotted key may name below `repos.<repo>`; a write through one merges into the stored
@@ -246,6 +253,14 @@ class ReviewConfig(BaseModel):
     blind: bool = True
 
 
+class ModelsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    default: str = Field(default=DEFAULT_MODEL, min_length=1)
+    merge: str = Field(default=DEFAULT_MODEL, min_length=1)
+    strong: list[str] = Field(default_factory=lambda: list(STRONG_MODELS))
+
+
 class ProjectConfig(BaseModel):
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
     worktree_dir: str = Field(default=".worktrees", min_length=1)
@@ -263,6 +278,7 @@ class ProjectConfig(BaseModel):
     web: WebConfig = Field(default_factory=WebConfig)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
     sensitive_areas: list[str] = Field(default_factory=lambda: list(SENSITIVE_AREAS))
+    models: ModelsConfig = Field(default_factory=ModelsConfig)
 
     @field_validator("lease_ttl")
     @classmethod

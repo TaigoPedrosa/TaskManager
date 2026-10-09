@@ -1,7 +1,7 @@
 export const meta = {
   name: 'tm-wave',
   description: 'Choose claimable tm nodes, claim each one\'s next step, run it, and stop: tm task start names the step and its model, an agent does it and closes it, a landing runs as a tm job, and the next tick claims the next step',
-  whenToUse: 'Dispatcher tick. args: {session, worktreeDir, specs, slots, maxStrong, maxBatch, exclude, holdMerge, root, tm, agentTypes, reviewerTypes, capabilities, preamble, rulesDir, gateLane, models}. session is required; worktreeDir defaults to the worktree_dir config key; specs defaults to every spec; root defaults to the session cwd and tm to the tm on PATH; agentTypes (repo -> agent type for implement and fix), reviewerTypes ({task, rereview, container} -> agent type), capabilities (agent type -> the requires values it serves), preamble (repo -> a line prepended to its briefs, plus a "default" key) and rulesDir default to none; gateLane (a string, or repo -> text with a "default" key; `{task}` becomes the node id) defaults to none; models (the family tm names on a claim -> model id) overrides the current Claude ids family by family.',
+  whenToUse: 'Dispatcher tick. args: {session, worktreeDir, specs, slots, maxStrong, maxBatch, exclude, holdMerge, root, tm, agentTypes, reviewerTypes, capabilities, preamble, rulesDir, gateLane, models}. session is required; worktreeDir defaults to the worktree_dir config key; specs defaults to every spec; root defaults to the session cwd and tm to the tm on PATH; agentTypes (repo -> agent type for implement and fix), reviewerTypes ({task, rereview, container} -> agent type), capabilities (agent type -> the requires values it serves), preamble (repo -> a line prepended to its briefs, plus a "default" key) and rulesDir default to none; gateLane (a string, or repo -> text with a "default" key; `{task}` becomes the node id) defaults to none; models (model id -> model id) is an alias map applied to the id a claim names, and the family names haiku, sonnet, opus and fable still resolve to the current Claude ids.',
   phases: [
     { title: 'Discover', detail: '`tm wave discover` chooses the batch', model: 'haiku' },
     { title: 'Claim', detail: 'tm task get and tm task start, and a release when a step is left open', model: 'haiku' },
@@ -33,8 +33,11 @@ const HOLD_MERGE = new Set(A.holdMerge || [])
 // The tm root a bare command runs against; a caller with no fixed estate path leaves this out
 // and every op runs from wherever the dispatching session already sits.
 const ROOT = A.root || '.'
-// tm names a family on every claim; this maps it to the id a brief's Model: line carries.
+// tm names a model id on every claim, and the agent runs on it unchanged unless args.models
+// aliases it. A lease taken before tm named ids names a family; those resolve here.
+// ponytail: family aliases kept one release so such leases still dispatch; drop them after.
 const MODEL_ID = { haiku: 'claude-haiku-4-5-20251001', sonnet: 'claude-sonnet-5-5', opus: 'claude-opus-5-5', fable: 'claude-fable-5-1', ...A.models }
+const modelOf = m => Object.hasOwn(MODEL_ID, m) ? MODEL_ID[m] : m
 // repo -> agent type for implement and fix; a repo missing here gets the harness default.
 const AGENT_TYPE = A.agentTypes || {}
 // {task, rereview, container} -> agent type for a first task review, a review after a fix, and a
@@ -96,7 +99,7 @@ async function op(kind, id, cmd, shape, { attempts = 2, long = false, valid = ()
   const timeout = long ? ' Set the Bash tool timeout to 600000 ms: the command waits up to nine minutes.' : ''
   for (let attempt = 0; attempt < attempts; attempt++) {
     const r = await runner(`tm-task: none — command runner for the tm-wave workflow
-Model: ${MODEL_ID.haiku}
+Model: ${modelOf('haiku')}
 Run this exact command once with the Bash tool, changing nothing in it, and run no other command.${timeout}
 
 ( export TM_ROOT=${q(ROOT)}; ${cmd} ); echo "__EXIT:$?"
@@ -232,11 +235,6 @@ async function start(n, trail) {
     await release(n, trail, `its claim printed no step: ${clip(r.text)}`)
     return null
   }
-  if (!Object.hasOwn(MODEL_ID, d.model)) {
-    trail.push(`claim names the model family ${clip(d.model)}, which args.models does not map`)
-    await release(n, trail, 'no model id was known for it', d.token)
-    return null
-  }
   return d
 }
 
@@ -260,7 +258,7 @@ const close = (n, c) => ({
   sync: `${TM} job resume ${c.job} ${owner(n, c.token)}`,
 })[c.action]
 
-const head = (n, c, fam, role) => {
+const head = (n, c, model, role) => {
   const repo = (c.repos || n.repos || [])[0]
   const preamble = PREAMBLE[repo] ?? PREAMBLE.default ?? ''
   const rules = RULES_DIR
@@ -277,14 +275,14 @@ const head = (n, c, fam, role) => {
     ? `, or, when something outside this step must happen first, with ${TM} task release ${n.id} ${owner(n, c.token)} --blocked naming the edge, decision or condition it waits on`
     : ''
   return `${preamble ? preamble + '\n' : ''}tm-task: ${n.id}
-Model: ${MODEL_ID[fam]}
+Model: ${model}
 The tm-wave workflow claimed this ${c.action} step for you: never run tm task start, and never claim or release any other node. Read tm guide ${role} and follow it from the step after its claim. Close the step with ${close(n, c)}${blocked}.
 Brief: tm render ${n.id} --view subagent${codegraph}${rules}${gate}${needs}
 Sections: before any tm section set, tm section get the same key. Append an entry to :report, :review or :merge; rewrite any other section whole, in the present tense, with every sentence it overrides gone.`
 }
 
 async function work(n, c, s, trail) {
-  const fam = c.model
+  const model = modelOf(c.model)
   const repos = c.repos || []
   // A claim's base is a branch name, one per repository in `bases`, since a container's
   // repositories can land on different default branches. A parent's branch is local to the
@@ -334,9 +332,9 @@ async function work(n, c, s, trail) {
       ? `${where}\nFindings: ${s.outcome === 'merge_failed' ? `the landing failure the latest entry of tm section get ${n.id}:merge records` : `every finding in tm section get ${n.id}:review not recorded as closed`}. Fix each one, commit on the branch, and answer each by number in an appended :report entry.`
       : `${where}\nReport: append to tm section ${n.id}:report before your last commit.`
   }
-  const r = await agent(`${head(n, c, fam, c.action)}\n${body}`,
-    { label: `${c.action}:${n.id}`, phase: WORK_PHASE[c.action], model: fam, agentType: pickType(type, n.requires) })
-  trail.push(`${c.action} on ${fam}: ${r === null ? 'the agent died' : clip(r)}`)
+  const r = await agent(`${head(n, c, model, c.action)}\n${body}`,
+    { label: `${c.action}:${n.id}`, phase: WORK_PHASE[c.action], model, agentType: pickType(type, n.requires) })
+  trail.push(`${c.action} on ${model}: ${r === null ? 'the agent died' : clip(r)}`)
   const after = await read(n)
   if (!after || after.status === CLAIMED[c.action]) await release(n, trail, `the ${c.action} step was left open`, c.token)
   return after
@@ -363,13 +361,13 @@ async function land(n, c, trail, handed) {
     if (j.state !== 'needs_agent') return trail.push(`${c.action}: ${j.state}; tm job status ${id} for detail`)
     if (!handed || id !== c.job) return trail.push(`${c.action} stopped for an agent; the next claim hands it over`)
     handed = false
-    const fam = c.model
-    const r = await agent(`${head(n, c, fam, 'merge')}
+    const model = modelOf(c.model)
+    const r = await agent(`${head(n, c, model, 'merge')}
 Job: ${id}, a ${j.kind} of ${j.repo} onto ${j.target}, stopped at ${j.step}
 Worktree: ${j.worktree} — the one tm built for this job. Work only there, and never cd in a Bash command.
 Output: ${TM} job status ${id} prints what stopped it.
 When this node's own change is at fault, close with ${TM} job resume ${id} ${owner(n, c.token)} --own-defect "<the finding, one line>" instead.`,
-      { label: `${c.action}-agent:${n.id}`, phase: 'Land agent', model: fam, agentType: pickType(undefined, n.requires) })
+      { label: `${c.action}-agent:${n.id}`, phase: 'Land agent', model, agentType: pickType(undefined, n.requires) })
     trail.push(`${c.action} agent: ${r === null ? 'died' : clip(r)}`)
     const k = await job(n, id, false)
     // A job resumed and stopped again is parked and counted by tm itself; releasing it too would

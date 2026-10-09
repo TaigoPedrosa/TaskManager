@@ -11,7 +11,6 @@ import json
 
 from taskmanager.engine import selection
 from taskmanager.engine.claims import Claims
-from taskmanager.engine.routing import STRONG
 
 
 def djb2(payload: str) -> int:
@@ -41,16 +40,20 @@ def discover(
         if lease.session_id == session and lease.ttl_seconds is not None
     ]
     free = slots - len(mine)
-    strong_free = max_strong - sum(lease.model in STRONG for lease in mine)
+    strong = claims.config.models.strong
+    strong_free = max_strong - sum(lease.model in strong for lease in mine)
     found, held = selection.candidates(
         snap,
         specs,
         repo_order=claims.config.repo_order,
+        models=claims.config.models,
         next_step=claims.next_step,
         blocked_reason=claims.blocked_reason,
         gated=selection.gated_repos(claims.config),
     )
-    result = selection.select(found, snap, free, strong_free, exclude or [], hold_merge or [])
+    result = selection.select(
+        found, snap, free, strong_free, exclude or [], hold_merge or [], strong
+    )
     payload = json.dumps(
         {
             "chosen": result.chosen,

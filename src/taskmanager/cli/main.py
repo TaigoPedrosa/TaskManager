@@ -1723,7 +1723,8 @@ def wave_discover(
         int, typer.Option("--slots", help="Total concurrent slots this session may hold")
     ] = 9,
     max_strong: Annotated[
-        int, typer.Option("--max-strong", help="Cap on opus/fable leases for this session")
+        int,
+        typer.Option("--max-strong", help="Cap on leases on a models.strong id for this session"),
     ] = 5,
     spec: Annotated[
         list[str] | None,
