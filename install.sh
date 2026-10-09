@@ -70,7 +70,10 @@ else
 fi
 
 PROFILE=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
-GEMINI_LINK=$HOME/.gemini/extensions/taskmanager
+GEMINI_DIR=$HOME/.gemini/extensions
+GEMINI_LINK=$GEMINI_DIR/taskmanager
+# Present only when install made GEMINI_DIR, so uninstall never removes a folder it did not create.
+GEMINI_MARKER=$GEMINI_DIR/.taskmanager-created
 
 has() { command -v "$1" >/dev/null 2>&1; }
 
@@ -163,13 +166,15 @@ install() {
     source=$(gemini_source)
     if [ ! -d "$HOME/.gemini" ]; then
         say "gemini: skipped, ~/.gemini does not exist"
-    elif [ ! -d "$(dirname "$GEMINI_LINK")" ]; then
-        say "gemini: skipped, ~/.gemini/extensions does not exist"
     elif [ -e "$GEMINI_LINK" ] && [ ! -L "$GEMINI_LINK" ]; then
         say "gemini: skipped, $GEMINI_LINK exists and is not a link"
     elif [ -z "$source" ]; then
         say "gemini: skipped, no local copy of the extension (install the plugin or use --from)"
     else
+        if [ ! -d "$GEMINI_DIR" ]; then
+            mkdir "$GEMINI_DIR"
+            : >"$GEMINI_MARKER"
+        fi
         ln -sfn "$source" "$GEMINI_LINK"
         say "gemini: $GEMINI_LINK -> $source"
     fi
@@ -236,6 +241,10 @@ uninstall() {
     fi
     if [ -L "$GEMINI_LINK" ]; then
         rm "$GEMINI_LINK"
+    fi
+    if [ -f "$GEMINI_MARKER" ]; then
+        rm "$GEMINI_MARKER"
+        rmdir "$GEMINI_DIR" 2>/dev/null || true
     fi
     say "uninstalled"
 }
