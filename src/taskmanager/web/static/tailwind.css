@@ -1017,12 +1017,12 @@ video {
   min-width: 0px;
 }
 
-.min-w-\[16px\] {
-  min-width: 16px;
+.min-w-24 {
+  min-width: 6rem;
 }
 
-.min-w-\[6\.5rem\] {
-  min-width: 6.5rem;
+.min-w-\[16px\] {
+  min-width: 16px;
 }
 
 .max-w-2xl {
