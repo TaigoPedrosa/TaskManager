@@ -1,6 +1,7 @@
 """Integration tests for `GET /api/waves`: the wave simulator served from live state."""
 
 import json
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -27,6 +28,8 @@ Web = tuple[TestClient, Path]
 @pytest.fixture
 def web(tmp_path: Path) -> Web:
     DatabaseManager(tmp_path / ".taskmanager").init_all()
+    subprocess.run(["git", "init", "-q", str(tmp_path / "api")], check=True)
+    ConfigStore(tmp_path).set("repos.api.gates.main.command", "true")
     return TestClient(create_app(tmp_path)), tmp_path
 
 

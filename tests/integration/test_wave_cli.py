@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -7,6 +8,13 @@ from taskmanager.cli.main import app
 from taskmanager.engine.discovery import djb2
 
 runner = CliRunner()
+
+
+def gated_core(root: Path) -> None:
+    """The repository `core`, cloned under the root with a main gate, so discovery offers it."""
+    subprocess.run(["git", "init", "-q", str(root / "core")], check=True)
+    gate = ["config", "set", "repos.core.gates.main.command", "true", "--path", str(root)]
+    assert runner.invoke(app, gate).exit_code == 0
 
 
 def test_wave_discover_prints_payload_then_a_matching_check_line(tmp_path: Path) -> None:
@@ -31,9 +39,11 @@ def test_wave_discover_prints_payload_then_a_matching_check_line(tmp_path: Path)
         ],
     )
     # Claimable as `implement` needs a target repository: that's what routes its worktree.
-    runner.invoke(
+    gated_core(tmp_path)
+    updated = runner.invoke(
         app, ["task", "update", "AUTH-USER-T1", "--repo", "core", "--path", str(tmp_path)]
     )
+    assert updated.exit_code == 0, updated.output
 
     res = runner.invoke(
         app,
@@ -87,9 +97,11 @@ def test_wave_discover_lines_prints_the_batch_without_json(tmp_path: Path) -> No
             str(tmp_path),
         ],
     )
-    runner.invoke(
+    gated_core(tmp_path)
+    updated = runner.invoke(
         app, ["task", "update", "AUTH-USER-T1", "--repo", "core", "--path", str(tmp_path)]
     )
+    assert updated.exit_code == 0, updated.output
     args = ["wave", "discover", "--spec", "AUTH", "--session", "sess-1", "--slots", "5"]
     args += ["--max-strong", "2", "--path", str(tmp_path)]
 
@@ -109,6 +121,7 @@ def test_wave_discover_lines_prints_the_batch_without_json(tmp_path: Path) -> No
 
 def test_wave_discover_lines_keeps_a_multiline_held_reason_on_one_line(tmp_path: Path) -> None:
     root = ["--path", str(tmp_path)]
+    subprocess.run(["git", "init", "-q", str(tmp_path / "core")], check=True)
     for args in (
         ["init"],
         ["spec", "add", "Auth Spec", "--slug", "AUTH"],

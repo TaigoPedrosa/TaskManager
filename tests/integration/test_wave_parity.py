@@ -2,6 +2,7 @@
 must agree exactly -- including under a live condition and a container's repository order."""
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,9 @@ def _set_status(root: Path, node_id: str, status: Status) -> None:
 def test_wave_one_matches_discover_under_a_claim_condition_and_a_repo_order(web: Web) -> None:
     client, root = web
     ops = create_container(root).get(Operations)
+    for repo in ("api", "alpha", "zeta"):
+        subprocess.run(["git", "init", "-q", str(root / repo)], check=True)
+        ConfigStore(root).set(f"repos.{repo}.gates.main.command", "true")
 
     held_spec = ops.add_spec("Held", slug="H")
     held_plan = ops.add_plan("Held", held_spec, slug="P", review=False, fix=False)

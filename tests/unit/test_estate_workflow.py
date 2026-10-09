@@ -188,6 +188,7 @@ def test_task_update_changes_only_what_it_is_given(tmp_path: Path) -> None:
     runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "-C", str(tmp_path)])
     runner.invoke(app, ["plan", "add", "P", "--spec", "S1", "--slug", "P1", "-C", str(tmp_path)])
     runner.invoke(app, ["task", "add", "T", "--plan", "S1-P1", "--slug", "t1", "-C", str(tmp_path)])
+    subprocess.run(["git", "init", "-q", str(tmp_path / "web")], check=True)
     res = runner.invoke(
         app,
         [

@@ -63,6 +63,12 @@ def set_status(repo: NodeRepository, node_id: str, status: Status) -> None:
     repo.save_node(node)
 
 
+def name_uncloned_repo(repo: NodeRepository, node_id: str, name: str) -> None:
+    """Stores `name` as a restore does: a write through Operations refuses a repository that is
+    not cloned."""
+    repo.save_node(get(repo, node_id).model_copy(update={"target_repo": name}))
+
+
 def tree(ops: Operations, **plan_flags: object) -> tuple[str, str, str]:
     spec = ops.add_spec("S", slug="S1")
     plan = ops.add_plan("P", spec, slug="P1", **plan_flags)  # type: ignore[arg-type]
@@ -460,7 +466,7 @@ def test_a_plan_whose_repository_is_not_cloned_is_not_read_as_having_nothing_to_
 ) -> None:
     node_repo, _runtime, _ledger, ops = env
     _spec, plan, task = tree(ops)
-    ops.update_node(task, repo="ghost")
+    name_uncloned_repo(node_repo, task, "ghost")
     extra = ops.add_task("Extra", plan, slug="T2")
     set_status(node_repo, task, Status.COMPLETED)
     ops.supersede(extra, task, "none")
@@ -528,7 +534,7 @@ def test_a_set_aside_child_s_repository_does_not_keep_its_plan_from_completing(
     _spec, plan, task = tree(ops)
     ops.update_node(task, repo="core")
     ghost = ops.add_task("Ghost", plan, slug="T2")
-    ops.update_node(ghost, repo="ghost")
+    name_uncloned_repo(node_repo, ghost, "ghost")
     extra = ops.add_task("Extra", plan, slug="T3")
     set_status(node_repo, task, Status.COMPLETED)
     set_status(node_repo, ghost, Status.ABANDONED)
