@@ -533,7 +533,7 @@ class Landing:
                 needs=f"{gates.RED_TARGET}: {job.repo} {red} at {sha[:12]} fails the "
                 f"{len(failing)} test(s) this landing fails",
                 command=gates.red_target_command(
-                    self.root, job.repo, sha, gates.template_hash(gate.command), red, remote=remote
+                    self.root, job.repo, sha, gates.template_hash(gate), red, remote=remote
                 ),
                 stage=ConditionStage.LANDING,
             )
@@ -627,10 +627,10 @@ class Landing:
         return True
 
     def _baseline(self, job: Job, gate: Gate) -> GateRun:
-        """The gate at the untouched target sha, run once per (repo, sha, template): a landing
+        """The gate at the untouched target sha, run once per (repo, sha, gate): a landing
         that finds another's run under way waits for its result instead of running its own."""
         sha = str(job.result["base_sha"])
-        key = gates.template_hash(gate.command)
+        key = gates.template_hash(gate)
         lock = f"baseline/{sha}/{key}"
         deadline = time.monotonic() + gate.timeout + LOCK_WAIT_SECONDS
         while not self.jobs.acquire_branch(job.repo, lock, job.id):

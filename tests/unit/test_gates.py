@@ -8,6 +8,7 @@ from taskmanager.core import models
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.engine import gates
+from taskmanager.engine.config import Gate
 from taskmanager.engine.gates import GateRun
 
 JUNIT = (
@@ -27,8 +28,9 @@ def test_render_quotes_every_value_spliced_into_the_command() -> None:
 
 
 def test_the_template_hash_names_the_template_not_its_rendering() -> None:
-    assert gates.template_hash("make {worktree}") == gates.template_hash("make {worktree}")
-    assert gates.template_hash("make {worktree}") != gates.template_hash("make test {worktree}")
+    make = Gate(command="make {worktree}")
+    assert gates.template_hash(make) == gates.template_hash(Gate(command="make {worktree}"))
+    assert gates.template_hash(make) != gates.template_hash(Gate(command="make test {worktree}"))
 
 
 def test_a_green_gate_with_no_report_has_no_failing_set(tmp_path: Path) -> None:

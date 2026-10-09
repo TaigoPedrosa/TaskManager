@@ -11,6 +11,7 @@ from lifecycle_estate import (
     stored,
 )
 
+from taskmanager.core.models import GateRun
 from taskmanager.core.status import JobState, Outcome, Status
 from taskmanager.engine import gates
 from taskmanager.engine.claims import Claims
@@ -84,6 +85,44 @@ def test_land_with_a_pattern_and_a_new_failure_is_an_own_defect_naming_it(tmp_pa
     job = claims.jobs.get(job_id)
     assert job is not None
     assert "adding pkg/c" in str(job.result)
+
+
+def test_land_after_a_pattern_is_set_reruns_a_baseline_cached_without_it(tmp_path: Path) -> None:
+    gate = printing_gate(tmp_path, FAILING)
+    claims = make_estate(
+        tmp_path, config=ProjectConfig(repos={"api": RepoConfig(gates={"main": gate})})
+    )
+    landing = attach_landing(claims)
+    api = claims.root / "api"
+    sha = push_main(api, "failing.txt", "a b\n")
+    unattributed = GateRun(exit_code=1, failing=None, tail="FAIL")
+    before = gate.model_copy(update={"failing_pattern": None})
+    landing.cache.put_baseline("api", sha, gates.template_hash(before), unattributed)
+    add(claims, "T1", status=Status.REVIEWED, outcome=Outcome.APPROVE, review_cycles=1)
+    on_branch(api, "tm/T1", "feature.py", "x = 1\n")
+    started = claims.start("T1", "merger", "s1")
+    assert started.job is not None, started.reason
+
+    assert landing.run(started.job) == JobState.CONDITION_UNMET
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"command": "make check"},
+        {"junit": "report.xml"},
+        {"tests_ran": r"(\d+) passed"},
+        {"failing_pattern": r"^FAIL (\S+)"},
+    ],
+)
+def test_template_hash_changes_with_each_field_a_run_depends_on(change: dict[str, str]) -> None:
+    gate = Gate(command="make test")
+    assert gates.template_hash(gate) != gates.template_hash(gate.model_copy(update=change))
+
+
+def test_template_hash_ignores_the_timeout() -> None:
+    gate = Gate(command="make test")
+    assert gates.template_hash(gate) == gates.template_hash(gate.model_copy(update={"timeout": 5}))
 
 
 def test_land_with_neither_pattern_nor_report_stops_for_an_agent(tmp_path: Path) -> None:
