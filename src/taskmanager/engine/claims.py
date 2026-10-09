@@ -53,6 +53,7 @@ from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.graph_reader import read_graph
 from taskmanager.db.job_repo import JobRepository
+from taskmanager.db.node_repo import declared_files_of
 from taskmanager.di.container import create_container
 from taskmanager.engine import git as gitops
 from taskmanager.engine import selection
@@ -69,7 +70,12 @@ from taskmanager.engine.gates import RED_TARGET, clear_red_targets
 from taskmanager.engine.git import GitManager
 from taskmanager.engine.operations import OperationError, Operations
 from taskmanager.engine.routing import model_for
-from taskmanager.engine.snapshot import SnapshotBuilder, roll_up_ancestors, stored_status
+from taskmanager.engine.snapshot import (
+    SnapshotBuilder,
+    roll_up_ancestors,
+    stored_status,
+    writes_migration,
+)
 from taskmanager.engine.stepgraph import Snapshot
 from taskmanager.engine.validation import Refusal, validate
 
@@ -722,7 +728,30 @@ class Claims:
 
     def complete(self, node_id: str, agent: str | None = None, token: str | None = None) -> Status:
         node, _ = self._held(node_id, (Status.IMPLEMENTING, Status.FIXING), agent, token)
-        return self._advance(node, Event.COMPLETE, "task complete")
+        return self._advance(self._with_written_migrations(node), Event.COMPLETE, "task complete")
+
+    def _with_written_migrations(self, node: Node) -> Node:
+        """`node` declaring each file under its repository's `migrations` its branch changes: a
+        step that writes a migration makes the node a migration writer from then on, so its fix
+        is re-reviewed and it holds its repository's migration chain."""
+        repo = node.target_repo
+        if self.is_container(node) or repo is None:
+            return node
+        repo_dir = self.root / repo
+        base = self.target_ref(node.id, repo)
+        if not gitops.rev_parse(repo_dir, base):
+            base = f"origin/{self.ops.default_branch(repo)}"
+        declared = declared_files_of(node, [])
+        migrations = self.config.repo(repo).migrations
+        written = [
+            f
+            for f in gitops.changed_files(repo_dir, base, self.branch_of(node.id))
+            if f not in declared and writes_migration([f], migrations)
+        ]
+        if not written:
+            return node
+        frontmatter = {**node.frontmatter, "declared_files": [*declared, *written]}
+        return node.model_copy(update={"frontmatter": frontmatter})
 
     def review(
         self,

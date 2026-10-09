@@ -26,9 +26,6 @@ from taskmanager.engine.verification import codegraph_regex
 _SET_ASIDE_OR_FAILED = EXITS | {Status.FAILED}
 # Work whose code never lands again, so nothing reads where it would.
 _LANDS_NO_MORE: Final = frozenset({Status.COMPLETED, Status.SUPERSEDED})
-# What a `sensitive:` key may name: a fix touching one of these gets one review scoped to its
-# findings before it lands.
-SENSITIVE_AREAS: Final = ("tenant", "rls", "crypto", "migration")
 
 
 @dataclass(frozen=True)
@@ -90,14 +87,15 @@ def _flags(after: Snapshot, n: SnapNode) -> list[Refusal]:
                 f"set merge=spec to land on its target {n.top}",
             )
         )
-    unknown = [area for area in n.sensitive if area not in SENSITIVE_AREAS]
+    areas = after.config.sensitive_areas
+    unknown = [area for area in n.sensitive if area not in areas]
     if unknown:
         refusals.append(
             Refusal(
                 n.id,
                 9,
                 f"{n.id}: sensitive names {', '.join(map(repr, unknown))}; it takes "
-                f"{', '.join(SENSITIVE_AREAS)}",
+                f"{', '.join(areas)}",
             )
         )
     refusals += _origin_main(n)

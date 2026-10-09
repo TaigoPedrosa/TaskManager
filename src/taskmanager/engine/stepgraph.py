@@ -9,7 +9,7 @@ from taskmanager.core.enums import CONTAINERS, NodeKind
 from taskmanager.core.status import EXITS, ON_TARGET, SET_ASIDE, DecisionStatus, Merge, Status
 from taskmanager.db.graph_reader import GraphData
 from taskmanager.engine.chains import base_chain, landing_chain, meet, meeting, satisfied
-from taskmanager.engine.config import DEFAULT_BRANCH
+from taskmanager.engine.config import DEFAULT_BRANCH, ProjectConfig
 
 Graph = dict[str, set[str]]
 
@@ -48,6 +48,9 @@ class Snapshot:
     # The bulk read `SnapshotBuilder.build()` made this snapshot from: None only for a snapshot a
     # test builds by hand for the validation rules, where a rule reading it refuses nothing.
     data: GraphData | None = None
+    # The per-repository paths and the sensitive areas the rules read; a hand-built snapshot
+    # reads every default.
+    config: ProjectConfig = field(default_factory=ProjectConfig)
     _children: dict[str, list[str]] = field(
         init=False, repr=False, compare=False, default_factory=dict
     )

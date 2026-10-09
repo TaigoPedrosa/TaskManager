@@ -24,12 +24,12 @@ from taskmanager.core.status import (
     Status,
 )
 from taskmanager.db.cache_repo import _command_hash
-from taskmanager.db.node_repo import declared_files_of, is_locked_path, locked_key
+from taskmanager.db.node_repo import declared_files_of
 from taskmanager.db.runtime_repo import lease_alive
 from taskmanager.engine.chains import satisfied
 from taskmanager.engine.config import ProjectConfig
 from taskmanager.engine.routing import STRONG, model_for
-from taskmanager.engine.snapshot import SnapshotBuilder, apply_cycle, cycle_in
+from taskmanager.engine.snapshot import SnapshotBuilder, apply_cycle, cycle_in, locked_keys
 from taskmanager.engine.stepgraph import Snapshot, migration_holders
 
 # Later steps first, so a wave drains work already under way before it starts more.
@@ -311,11 +311,8 @@ def candidates(
 def _wave_files(node: Node, action: Action | None, snap: Snapshot) -> list[str]:
     if action not in (Action.IMPLEMENT, Action.FIX):
         return []
-    return [
-        locked_key(node.target_repo, f)
-        for f in declared_files_of(node, snap.graph_data().verifications.get(node.id, []))
-        if is_locked_path(f)
-    ]
+    files = declared_files_of(node, snap.graph_data().verifications.get(node.id, []))
+    return locked_keys(snap, node.target_repo, files)
 
 
 def _reserved(exclude: Sequence[str], snap: Snapshot) -> set[str]:

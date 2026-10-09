@@ -1,7 +1,9 @@
 import re
+from collections.abc import Collection
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Final, Literal
 
 from taskmanager.core.display import Facts, display_status, phase
@@ -45,8 +47,9 @@ _VERIFY_REF_EXPANSION = re.compile(r"\$\{TM_VERIFY_REF:-[^}]*\}")
 ORIGIN_MAIN: Final = "origin/main"
 
 
-def writes_migration(files: list[str]) -> bool:
-    return any("migrations/versions/" in f for f in files)
+def writes_migration(files: list[str], migrations: Collection[str]) -> bool:
+    """Whether any of `files` falls under one of its repository's `migrations` globs."""
+    return any(PurePosixPath(f).full_match(glob) for f in files for glob in migrations)
 
 
 def names_origin_main(command: str) -> bool:
@@ -61,14 +64,22 @@ def sensitive_areas(node: Node) -> tuple[str, ...]:
     return tuple(str(area) for area in (value if isinstance(value, list) else [value]))
 
 
+def locked_keys(snapshot: Snapshot, repo: str | None, files: list[str]) -> list[str]:
+    """The lock keys of `files` declared by a node targeting `repo`, its `unlocked_files` left
+    out."""
+    unlocked = snapshot.config.repo(repo).unlocked_files
+    return [locked_key(repo, f) for f in files if is_locked_path(f, unlocked)]
+
+
 def stored_status(node: Node) -> Status | DecisionStatus:
     return node.status
 
 
-def is_sensitive(node: Node, files: list[str]) -> bool:
+def is_sensitive(node: Node, files: list[str], config: ProjectConfig) -> bool:
     """`node` alone, `files` being its declared files: a node writing a migration is sensitive
     without the key."""
-    return bool(sensitive_areas(node)) or writes_migration(files)
+    migrations = config.repo(node.target_repo).migrations
+    return bool(sensitive_areas(node)) or writes_migration(files, migrations)
 
 
 def cycle_of(node: Node, sensitive: bool) -> Cycle:
@@ -97,7 +108,9 @@ def cycle_in(snapshot: Snapshot, node: Node) -> Cycle:
     files = declared_files_of(node, snapshot.graph_data().verifications.get(node.id, []))
     under = (snapshot.nodes[d] for d in snapshot.descendants(node.id))
     return cycle_of(
-        node, is_sensitive(node, files) or any(n.sensitive or n.writes_migration for n in under)
+        node,
+        is_sensitive(node, files, snapshot.config)
+        or any(n.sensitive or n.writes_migration for n in under),
     )
 
 
@@ -215,7 +228,7 @@ def with_tops(snapshot: Snapshot, branches: ProjectConfig, repo: str | None = No
         node_id: replace(n, top=_top(snapshot, node_id, branches, repo))
         for node_id, n in snapshot.nodes.items()
     }
-    return Snapshot(nodes=tops, edges=snapshot.edges, data=snapshot.data)
+    return Snapshot(nodes=tops, edges=snapshot.edges, data=snapshot.data, config=snapshot.config)
 
 
 class SnapshotBuilder:
@@ -235,17 +248,21 @@ class SnapshotBuilder:
 
     def build(self) -> Snapshot:
         data = read_graph(self.node_repo.db)
+        config = self._config()
         parents: dict[str, str] = {}
         for source, target in data.relations[RelationType.CONTAINS]:
             parents.setdefault(target, source)
         nodes = {
-            node_id: self._snap(node, parents.get(node_id), data)
+            node_id: self._snap(node, parents.get(node_id), data, config)
             for node_id, node in data.nodes.items()
         }
         edges = data.relations[RelationType.DEPENDS_ON]
         # A container's repository is only known once its descendants are in the tree.
-        draft = Snapshot(nodes=nodes, edges=edges, data=data)
-        return with_tops(draft, ConfigStore(self.node_repo.db.taskmanager_dir.parent).branches())
+        draft = Snapshot(nodes=nodes, edges=edges, data=data, config=config)
+        return with_tops(draft, config)
+
+    def _config(self) -> ProjectConfig:
+        return ConfigStore(self.node_repo.db.taskmanager_dir.parent).rules()
 
     def cycle(self, node: Node) -> Cycle:
         return cycle_of(node, self._sensitive(node))
@@ -254,10 +271,11 @@ class SnapshotBuilder:
         """`cycle_in`'s rule, read node by node down `node`'s own subtree, never the whole graph.
         `seen` stops a corrupt CONTAINS cycle, which would otherwise hang the claim reading it."""
         pending, seen = [node], {node.id}
+        config = self._config()
         while pending:
             current = pending.pop()
             files = declared_files_of(current, self.node_repo.get_verifications(current.id))
-            if is_sensitive(current, files):
+            if is_sensitive(current, files, config):
                 return True
             for child_id in self.node_repo.get_children(current.id):
                 if child_id not in seen and (child := self.node_repo.get_node(child_id)):
@@ -278,12 +296,13 @@ class SnapshotBuilder:
         node = snapshot.nodes[node_id]
         own = SnapshotBuilder._declared_files(node_id, data)
         if own or node.kind not in CONTAINERS:
-            return [locked_key(node.repo, f) for f in own if is_locked_path(f)]
+            return locked_keys(snapshot, node.repo, own)
         keys = [
-            locked_key(snapshot.nodes[d].repo, f)
+            key
             for d in snapshot.counted_descendants(node_id)
-            for f in SnapshotBuilder._declared_files(d, data)
-            if is_locked_path(f)
+            for key in locked_keys(
+                snapshot, snapshot.nodes[d].repo, SnapshotBuilder._declared_files(d, data)
+            )
         ]
         return list(dict.fromkeys(keys))
 
@@ -355,7 +374,9 @@ class SnapshotBuilder:
             return True
         return any(j.state in _LIVE_JOB for j in data.jobs.get(node_id, ()))
 
-    def _snap(self, node: Node, parent: str | None, data: GraphData) -> SnapNode:
+    def _snap(
+        self, node: Node, parent: str | None, data: GraphData, config: ProjectConfig
+    ) -> SnapNode:
         commands = [
             v.expected_pattern or v.target_path
             for v in data.verifications.get(node.id, [])
@@ -371,7 +392,9 @@ class SnapshotBuilder:
             review=node.review,
             fix=node.fix,
             repo=node.target_repo,
-            writes_migration=writes_migration(self._declared_files(node.id, data)),
+            writes_migration=writes_migration(
+                self._declared_files(node.id, data), config.repo(node.target_repo).migrations
+            ),
             sensitive=sensitive_areas(node),
             busy=self._busy(node.id, data),
             literal_origin_main=any(names_origin_main(c) for c in commands),
