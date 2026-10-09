@@ -6,7 +6,14 @@ from pathlib import Path
 from typing import Any, Final, Literal, NamedTuple
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+)
 
 from taskmanager.core.enums import EmbeddingProviderType
 from taskmanager.core.status import Action
@@ -71,14 +78,14 @@ _REPO_LEAVES: Final = (
     *(
         f"gates.{gate}.{field}"
         for gate in _GATE_NAMES
-        for field in ("command", "junit", "tests_ran", "timeout")
+        for field in ("command", "junit", "tests_ran", "failing_pattern", "timeout")
     ),
 )
 _REPO_MAPPINGS: Final = ("gates", *(f"gates.{gate}" for gate in _GATE_NAMES))
 _VALID: Final = ", ".join(
     (
         *KEYS,
-        "repos.<repo>[.default_branch|.gates[.<main|parent>[.command|.junit|.tests_ran|.timeout]]|.after_land]",
+        "repos.<repo>[.default_branch|.gates[.<main|parent>[.command|.junit|.tests_ran|.failing_pattern|.timeout]]|.after_land]",
     )
 )
 
@@ -131,11 +138,13 @@ class Gate(BaseModel):
     command: str = Field(min_length=1)
     junit: str | None = None
     tests_ran: str | None = None
+    # Matched line by line over the full output; each match's one group is a failing test's id.
+    failing_pattern: str | None = None
     timeout: int = Field(default=3600, gt=0)
 
-    @field_validator("tests_ran")
+    @field_validator("tests_ran", "failing_pattern")
     @classmethod
-    def _captures_one_count(cls, value: str | None) -> str | None:
+    def _captures_one_group(cls, value: str | None, info: ValidationInfo) -> str | None:
         if value is None:
             return value
         try:
@@ -143,7 +152,8 @@ class Gate(BaseModel):
         except re.error as exc:
             raise ValueError(f"'{value}' is not a regular expression: {exc}") from exc
         if groups != 1:
-            raise ValueError(f"'{value}' must capture the test count in one group, not {groups}")
+            what = "the test count" if info.field_name == "tests_ran" else "a failing test's id"
+            raise ValueError(f"'{value}' must capture {what} in one group, not {groups}")
         return value
 
 

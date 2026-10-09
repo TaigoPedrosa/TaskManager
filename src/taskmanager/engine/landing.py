@@ -681,7 +681,12 @@ class Landing:
 
     def _run_gate(self, gate: Gate, job: Job, worktree: Path) -> GateRun:
         return gates.run_gate(
-            self._render(gate, job, worktree), worktree, gate.timeout, gate.junit, gate.tests_ran
+            self._render(gate, job, worktree),
+            worktree,
+            gate.timeout,
+            gate.junit,
+            gate.tests_ran,
+            gate.failing_pattern,
         )
 
     def _no_tests(self, job: Job, run: GateRun) -> JobState:
