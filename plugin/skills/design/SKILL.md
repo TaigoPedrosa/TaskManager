@@ -32,12 +32,12 @@ On a re-run, each decision this skill raised earlier is named in the `design` se
 
 ## 2. Scale
 
-Classify the work, say which and why in one line, and let the owner overrule it:
+Classify the work and say which and why in one line:
 
 - **Bounded**: a change to a flow that already exists in the code.
 - **Architectural**: a new subsystem, or a change to an interface others depend on.
 
-When in doubt, take architectural. Record the scale as the first line of the `design` section (`Scale: bounded` or `Scale: architectural`, with its reason), written with `tm section set` as in step 6.
+When in doubt, take architectural. Record the scale as the first line of the `design` section (`Scale: bounded` or `Scale: architectural`, with its reason), written with `tm section set` as in step 6. The owner overrules it through the step 8 decision, whose summary leads with the scale, never in the conversation: a scale needs no decision of its own, since the owner sees it there with the design it shaped.
 
 ## 3. Explore
 
@@ -90,4 +90,4 @@ Raise one decision to approve the design, blocking the spec:
 tm decision add "Approve the design of <spec-id>?" --context-file <summary> --option "approve|Approve|the plan is written against this design" --option "change|Change it|name what to change; the design is revised and raised again" --recommend approve --blocks <spec-id>
 ```
 
-The summary names the scale, the chosen approach and each component in one line. Report the decision id, and stop. No plan is written before this decision is answered approve; once it is, `/taskmanager:plan` writes the plan as `tm guide plan` describes. An answer of change goes back to step 6 with what it names, and the gate is raised again.
+The summary names the scale, the chosen approach and each component in one line. Report the decision id, and stop. No plan is written before this decision is answered approve; once it is, `/taskmanager:plan` writes the plan as `tm guide plan` describes. An answer of change goes back to step 6 with what it names, and the gate is raised again. A change of scale goes back to step 3 under the scale it names, so architectural work gets its approaches decision.

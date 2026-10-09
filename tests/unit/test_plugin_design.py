@@ -132,7 +132,21 @@ def test_design_skill_asks_one_question_at_a_time_through_decisions() -> None:
 def test_design_skill_takes_architectural_when_the_scale_is_in_doubt() -> None:
     scale = _text(SKILL).split("## 2. Scale", 1)[1].split("## 3.", 1)[0]
     assert "When in doubt, take architectural" in scale
-    assert "overrule" in scale
+
+
+def test_design_skill_takes_a_scale_overrule_only_through_the_approval_decision() -> None:
+    scale = _text(SKILL).split("## 2. Scale", 1)[1].split("## 3.", 1)[0]
+    assert "overrules it through the step 8 decision" in scale
+    gate = _text(SKILL).split("## 8. Gate", 1)[1]
+    assert "summary names the scale" in gate
+    assert "A change of scale goes back to step 3" in gate
+
+
+def test_design_command_with_no_spec_lists_the_specs_and_stops() -> None:
+    text = _text(COMMAND)
+    assert "`tm spec list`" in text
+    assert "/taskmanager:design <spec-id>" in text
+    assert "ask the user" not in text.lower()
 
 
 def test_design_skill_writes_the_design_into_the_spec_from_the_reference() -> None:
