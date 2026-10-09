@@ -35,18 +35,21 @@ codegraph init <repository>
 
 ```bash
 cd my-repo                      # a clone with its default branch on origin
-tm init
-tm config set repos...gates.main.command "<your test command>"
+tm init                         # asks for each setting, the gate included
 tm guide plan                   # how to write plan.yaml
 tm import --format yaml -f plan.yaml
 tm wave discover --session me --slots 2 --max-strong 1
 tm web
 ```
 
+- `tm init` asks, at a terminal, for each setting not yet set: the repositories, their default
+  branches, the worktree directory, each repository's gate and whether `.taskmanager/` is
+  tracked. Re-running it asks only for what is still missing. In a script,
+  `tm init --yes --gate .="<your test command>"` asks nothing and sets the gate; `tm guide overview`
+  lists every flag.
 - `.` names the repository when the tm root is the repository itself, and every task in
-  `plan.yaml` names it in `target_repo`. Its gate key is `repos.<repo>.gates.main.command` with
-  `.` as `<repo>`, hence the three dots; with several repositories under one tm root, each is
-  set the same way under its own directory name.
+  `plan.yaml` names it in `target_repo`; with several repositories under one tm root, each is
+  named by its directory.
 - `<your test command>` is the gate tm runs on the merged tip before a landing pushes. It may use
   `{worktree}`, `{node}`, `{repo}` and `{target}`, each replaced shell-quoted; every other brace
   reaches the shell as written.
