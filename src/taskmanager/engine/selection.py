@@ -198,7 +198,12 @@ def gated_repos(config: ProjectConfig) -> frozenset[str]:
     return frozenset(repo for repo, found in config.repos.items() if "main" in found.gates)
 
 
-def ungated_reason(repo: str) -> str:
+def ungated_reason(repos: Sequence[str], gated: Collection[str]) -> str | None:
+    """Why a node landing in `repos` is held when only `gated` have a main gate: its chain
+    could only stop at its landing."""
+    repo = next((r for r in repos if r not in gated), None)
+    if repo is None:
+        return None
     return (
         f"repos.{repo}.gates.main is not configured, so nothing lands in {repo}; set it with "
         f'`tm config set repos.{repo}.gates.main.command "<your test command>"`'
@@ -277,9 +282,9 @@ def candidates(
             held.append(f"{node.id}: {reason}")
             continue
         repos = repos_of(snap, node.id, repo_order)
-        ungated = [r for r in repos if gated is not None and r not in gated]
-        if ungated:
-            held.append(f"{node.id}: {ungated_reason(ungated[0])}")
+        ungated = None if gated is None else ungated_reason(repos, gated)
+        if ungated is not None:
+            held.append(f"{node.id}: {ungated}")
             continue
         found.append(Candidate(node, action, model, None, repos))
     return sorted(found, key=lambda c: (_STAGE[c.action], -c.node.priority, c.node.id)), held

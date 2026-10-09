@@ -131,3 +131,46 @@ def test_discovery_holds_a_node_whose_repo_has_no_main_gate_naming_the_key(root:
     assert tm(root, "config", "set", "repos...gates.main.command", "true")[0] == 0
 
     assert [entry["id"] for entry in discovered(root)["chosen"]] == ["P-T"]
+
+
+def test_claim_of_a_node_whose_repo_has_no_main_gate_is_refused_with_the_discovery_hold(
+    root: Path, tmp_path: Path
+) -> None:
+    assert import_task(root, ".")[0] == 0
+    held = (
+        "repos...gates.main is not configured, so nothing lands in .; set it with "
+        '`tm config set repos...gates.main.command "<your test command>"`'
+    )
+    start = ("task", "start", "P-T", "--agent", "a", "--session", "s", "--yaml")
+    start = (*start, "--worktree-dir", str(tmp_path / "wt"))
+
+    code, output = tm(root, *start)
+
+    assert code == 3, output
+    assert held in " ".join(output.split())
+    assert f"P-T: {held}" in discovered(root)["held"]
+
+    assert tm(root, "config", "set", "repos...gates.main.command", "true")[0] == 0
+
+    code, output = tm(root, *start)
+    assert code != 3, output
+    assert "gates.main" not in output
+
+
+def test_task_add_repo_sets_target_repo(root: Path) -> None:
+    assert import_task(root, "api")[0] == 0
+
+    code, output = tm(root, "task", "add", "t2", "--plan", "P", "--slug", "S", "--repo", ".")
+
+    assert code == 0, output
+    assert stored_repo(root, "P-S") == "."
+
+
+def test_task_add_repo_refuses_a_target_repo_that_is_not_a_clone(root: Path) -> None:
+    assert import_task(root, "api")[0] == 0
+
+    code, output = tm(root, "task", "add", "t2", "--plan", "P", "--slug", "S", "--repo", "apj")
+
+    assert code == 1
+    assert refusal("apj", root).replace("P-T", "P-S") in " ".join(output.split())
+    assert stored_repo(root, "P-S") is None

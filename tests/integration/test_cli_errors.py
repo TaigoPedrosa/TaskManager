@@ -230,6 +230,7 @@ def test_audit_names_the_agent_that_closed_a_step_as_its_actor(tmp_path: Path) -
     )
     git(work, "push", "-q", "origin", "HEAD:main")
     assert tm(tmp_path, "init").exit_code == 0
+    assert tm(tmp_path, "config", "set", "repos.core.gates.main.command", "true").exit_code == 0
     plan = tmp_path / "plan.yaml"
     plan.write_text(
         PLAN_YAML.replace(

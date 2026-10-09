@@ -20,7 +20,7 @@ Every node takes the fields below; `verifications` and `target_repo` act only on
 | `title` | One line, what the change is. |
 | `priority` | 1-100, default 50. Raise it to break a tie in discovery, not to express importance. |
 | `ordinal` | Display order; the position in the list when omitted. |
-| `target_repo` | The directory, under the tm root, the task's branch is cut in; `.` when the tm root is itself the repository. Per node and **not inherited**: set it on every task. A task without one cannot be implemented. |
+| `target_repo` | The directory, under the tm root, the task's branch is cut in; `.` when the tm root is itself the repository. Per node and **not inherited**: set it on every task. A task without one cannot be implemented. `tm import`, `tm task add --repo` and `tm task update --repo` refuse a directory that is not a git working tree under the tm root, and name the ones that are. |
 | `acceptable_models` | Real model ids. See §3. |
 | `review`, `fix`, `merge` | How the node reaches its spec's target branch. See §4. |
 | `requires` | Capabilities the agent needs, such as `figma`. See §3. |

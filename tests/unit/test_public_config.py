@@ -5,7 +5,16 @@ from typing import Any
 
 import pytest
 import yaml
-from lifecycle_estate import add, attach_landing, commit, git, make_estate, make_repo, stored
+from lifecycle_estate import (
+    add,
+    attach_landing,
+    commit,
+    gated,
+    git,
+    make_estate,
+    make_repo,
+    stored,
+)
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import app
@@ -206,8 +215,8 @@ def test_a_gate_command_keeps_every_brace_that_names_no_placeholder() -> None:
     )
 
 
-def landing_estate(tmp_path: Path, gate_config: Gate | None = TRUE) -> tuple[Claims, Landing]:
-    repos = {"api": RepoConfig(gates={"main": gate_config})} if gate_config is not None else {}
+def landing_estate(tmp_path: Path, gate_config: Gate = TRUE) -> tuple[Claims, Landing]:
+    repos = {"api": RepoConfig(gates={"main": gate_config})}
     claims = make_estate(tmp_path, config=ProjectConfig(repos=repos))
     return claims, attach_landing(claims)
 
@@ -260,10 +269,13 @@ def test_an_unexpected_error_in_a_step_stops_the_job_for_an_agent(
 
 
 def test_a_landing_with_no_main_gate_names_the_command_that_sets_one(tmp_path: Path) -> None:
-    claims, landing = landing_estate(tmp_path, gate_config=None)
+    claims, landing = landing_estate(tmp_path)
     implemented(claims)
+    merge = claims.start("T1", "merger", "s1")
+    assert merge.job is not None, merge.reason
+    claims.config.repos["api"] = RepoConfig()
 
-    job_id, state = land(claims, landing)
+    job_id, state = merge.job, landing.run(merge.job)
 
     job = claims.jobs.get(job_id)
     assert state == JobState.NEEDS_AGENT and job is not None
@@ -280,7 +292,7 @@ def test_a_landing_with_no_main_gate_names_the_command_that_sets_one(tmp_path: P
 def test_a_claim_in_a_repository_with_no_origin_branch_is_refused_naming_it(
     tmp_path: Path, setup: tuple[str, ...] | None, branch: str
 ) -> None:
-    repos = {"api": RepoConfig(default_branch=branch)}
+    repos = {"api": RepoConfig(default_branch=branch, gates={"main": TRUE})}
     claims = make_estate(tmp_path, config=ProjectConfig(repos=repos))
     add(claims, "T1")
     api = claims.root / "api"
@@ -300,7 +312,7 @@ def test_a_claim_in_a_repository_with_no_origin_branch_is_refused_naming_it(
 
 
 def test_a_lease_records_the_worktree_its_claim_cut(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1")
 
     code, out = tm(claims.root, "task", "start", "T1", "--agent", "a", "--session", "s")
@@ -320,6 +332,7 @@ def test_a_task_in_the_repository_at_the_tm_root_is_cut_at_its_id(tmp_path: Path
     tm_dir.mkdir()
     DatabaseManager(tm_dir).init_all()
     add(Claims.open(root, ProjectConfig()), "SOLO-A", repo=".")
+    assert tm(root, "config", "set", "repos...gates.main.command", "true")[0] == 0
 
     code, out = tm(root, "task", "start", "SOLO-A", "--agent", "a", "--session", "s")
 
@@ -347,7 +360,7 @@ def reset_to_completed(claims: Claims) -> tuple[int, str]:
 
 
 def test_a_reset_to_completed_removes_the_worktree(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     worktree = implemented(claims)
 
     code, out = reset_to_completed(claims)

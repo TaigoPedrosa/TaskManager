@@ -7,6 +7,7 @@ from lifecycle_estate import (
     attach_landing,
     branch_at,
     commit,
+    gated,
     git,
     junit_gate,
     make_estate,
@@ -27,7 +28,7 @@ TRUE = Gate(command="true", junit=None, timeout=60)
 
 def lagging_parent(tmp_path: Path, config: ProjectConfig | None = None) -> tuple[Claims, Landing]:
     """X builds on tm/P and depends on Y, which landed on main after tm/P was cut."""
-    claims = make_estate(tmp_path, config=config)
+    claims = make_estate(tmp_path, config=config or gated("api"))
     api = claims.root / "api"
     add(claims, "P", NodeKind.PLAN, review=True, fix=True)
     add(claims, "Y", status=Status.COMPLETED)
@@ -71,7 +72,7 @@ def test_a_claim_on_a_lagging_parent_branch_syncs_main_in_before_implement_start
 
 
 def test_a_sync_conflict_is_handed_to_an_agent_who_resolves_and_resumes(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     api = claims.root / "api"
     add(claims, "P", NodeKind.PLAN, review=True, fix=True)
     add(claims, "Y", status=Status.COMPLETED)
@@ -99,7 +100,11 @@ def test_a_sync_conflict_is_handed_to_an_agent_who_resolves_and_resumes(tmp_path
 
 def test_a_red_parent_gate_stops_a_sync_for_an_agent(tmp_path: Path) -> None:
     red = ProjectConfig(
-        repos={"api": RepoConfig(gates={"parent": Gate(command="exit 1", junit=None, timeout=60)})}
+        repos={
+            "api": RepoConfig(
+                gates={"main": TRUE, "parent": Gate(command="exit 1", junit=None, timeout=60)}
+            )
+        }
     )
     claims, landing = lagging_parent(tmp_path, red)
     first = claims.start("X", "implementer", "s1")
@@ -111,7 +116,7 @@ def test_a_red_parent_gate_stops_a_sync_for_an_agent(tmp_path: Path) -> None:
 
 
 def test_a_sync_its_agent_abandons_counts_one_step_failure(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     api = claims.root / "api"
     add(claims, "P", NodeKind.PLAN, review=True, fix=True)
     add(claims, "Y", status=Status.COMPLETED)
@@ -263,7 +268,7 @@ def test_main_moving_after_a_sync_starts_no_second_sync_for_the_same_dependency(
 
 
 def test_a_dependency_landed_in_one_repository_syncs_no_other(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path, repos=("api", "web"))
+    claims = make_estate(tmp_path, repos=("api", "web"), config=gated("api", "web"))
     api, web = claims.root / "api", claims.root / "web"
     add(claims, "P", NodeKind.PLAN, review=True, fix=True)
     add(claims, "Y", status=Status.COMPLETED)
@@ -300,7 +305,7 @@ def test_a_sync_that_cannot_be_launched_stops_for_an_agent_instead_of_running_no
 def test_a_dependency_landed_as_main_s_tree_but_not_its_history_is_synced_once(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     api = claims.root / "api"
     add(claims, "P", NodeKind.PLAN, review=True, fix=True)
     add(claims, "Y", status=Status.COMPLETED)
