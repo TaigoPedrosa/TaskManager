@@ -8,7 +8,7 @@ A local task tracker for agents: a SQLite graph of specs, plans and tasks that c
 
 ## Requirements
 
-macOS or Linux; Windows is not supported: tm runs gates, conditions and landings in POSIX process groups and checks them with `ps`. Python 3.14 (uv fetches it); git; every repository tm lands into needs an `origin` remote with its default branch (`repos.<repo>.default_branch`, `main` unless set). The plugin runs in Claude Code.
+macOS or Linux; Windows is not supported: tm runs gates, conditions and landings in POSIX process groups and checks them with `ps`. Python 3.14 (uv fetches it); git; every repository tm lands into holds its default branch (`repos.<repo>.default_branch`, `main` unless set) on the remote `repos.<repo>.remote` names, `origin` unless set, or sets that key to `null` to land on its local branches with no remote. The plugin runs in Claude Code.
 
 Optional: [codegraph](https://www.npmjs.com/package/@colbymchenry/codegraph), a code index that implement, fix, review and plan agents query before reading files, and that `codegraph_query` verifications run against.
 
@@ -34,7 +34,7 @@ codegraph init <repository>
 ## Quickstart
 
 ```bash
-cd my-repo                      # a clone with its default branch on origin
+cd my-repo                      # a clone with its default branch on its remote
 tm init                         # asks for each setting, the gate included
 tm guide plan                   # how to write plan.yaml
 tm import --format yaml -f plan.yaml
@@ -65,7 +65,7 @@ tm web
 - Landings as detached jobs: merge, gate against a cached baseline of the target, push, verify
 - Edges, decisions and conditions as the only things a node waits on, with a cycle check on every write
 - `state.db`, `cache.db` and `audit.db` under `.taskmanager/`, SQLite in WAL mode, with `sqlite-vec` search
-- The `tm-wave` workflow (`plugin/workflows/tm-wave.js`): one step per node per tick, on the model family tm names, with a dispatching session looping itself to carry a node the rest of the way
+- The `tm-wave` workflow (`plugin/workflows/tm-wave.js`): one step per node per tick, on the model id tm names, with a dispatching session looping itself to carry a node the rest of the way
 
 ## Lifecycle
 
@@ -88,9 +88,10 @@ A node goes `READY`, `IMPLEMENTING`, `IMPLEMENTED`, then through review, fix and
   and that fix lands as soon as it is done. A task with `review` on is still reviewed before it
   lands, and its fix lands the same way.
 - A sensitive node is the exception: its fix gets one re-review, scoped to the open findings,
-  before it lands. `sensitive:` names the area as one of `tenant`, `rls`, `crypto` or
-  `migration`, or a list of them (`sensitive: [tenant, rls]`); a node whose `declared_files`
-  hold a path under `migrations/versions/` is sensitive without the key.
+  before it lands. `sensitive:` names the area as one of those the `sensitive_areas` config key
+  lists (`tenant`, `rls`, `crypto` and `migration` unless set), or a list of them
+  (`sensitive: [tenant, rls]`); a node whose `declared_files` or commits hold a path matching one
+  of its repository's `repos.<repo>.migrations` globs is sensitive without the key.
 
 ## Web
 

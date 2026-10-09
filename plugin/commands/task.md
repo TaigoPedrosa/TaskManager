@@ -6,7 +6,7 @@ argument-hint: "[start <task-id> | heartbeat <task-id> | verify <task-id> | comp
 Run `tm guide implement` (or `review`, `fix`, `merge` for your role) before the first command of a
 task: it names what each command refuses and the verb that closes your step.
 
-- `start <task-id>`: claim the step tm chooses next for the task under the agent name `<name>`, cut any worktree under `<dir>`, and print the step, its model family, its worktree and the claim's `token`, which every verb below passes back:
+- `start <task-id>`: claim the step tm chooses next for the task under the agent name `<name>`, cut any worktree under `<dir>`, and print the step, its model id, its worktree and the claim's `token`, which every verb below passes back:
   `tm task start <task-id> --agent <name> --session <id> --worktree-dir <dir> --yaml`
 - `heartbeat <task-id>`: renew the lease before it runs out:
   `tm task heartbeat <task-id>`

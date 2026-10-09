@@ -10,7 +10,7 @@ A dispatcher's workflow usually claims the step for you and says so in the promp
 tm task start <node-id> --agent <name> --session <id> --yaml
 ```
 
-`action: review` sets the node to `REVIEWING`, names the `model` family, the `repos` it touched (several for a plan or spec), its `branch` and `base`, and locks nothing: a review writes no code, so it never holds a sibling out. It cuts no worktree. The lease is held under `<name>` and the claim prints its `token`; the verbs closing the step pass both back with `--agent <name> --token <token>`, and a workflow's prompt carries them. `action: blocked` (exit 3) claimed nothing; report its `reason`.
+`action: review` sets the node to `REVIEWING`, names the `model` id, the `repos` it touched (several for a plan or spec), its `branch` and `base`, and locks nothing: a review writes no code, so it never holds a sibling out. It cuts no worktree. The lease is held under `<name>` and the claim prints its `token`; the verbs closing the step pass both back with `--agent <name> --token <token>`, and a workflow's prompt carries them. `action: blocked` (exit 3) claimed nothing; report its `reason`.
 
 What this review covers follows from the status it was claimed from, which `tm task get <node-id> --yaml` prints as `claimed_from`:
 
@@ -28,7 +28,7 @@ That is the brief the implementer was given, and the only standard you review ag
 
 ## 3. Read the branch
 
-In each repository the claim's `repos` names, `<base>` is that repository's entry in the claim's `bases`, since a container's repositories can land on different default branches (`base` is the first repository's): the branch the node's spec lands on, or the container branch the node lands on. A spec's target that origin does not have yet reads as the repository's default branch, which the branch was cut from. `<base-ref>` is where it is read: `origin/<base>` for the spec's target, and `<base>` itself for a container branch, which is local to the clone:
+In each repository the claim's `repos` names, `<base>` is that repository's entry in the claim's `bases`, since a container's repositories can land on different default branches (`base` is the first repository's): the branch the node's spec lands on, or the container branch the node lands on. A spec's target that its remote does not have yet reads as the repository's default branch, which the branch was cut from. `<base-ref>` is where it is read: `<remote>/<base>` for the spec's target (the local `<base>` in a repository with no remote), and `<base>` itself for a container branch, which is local to the clone:
 
 ```
 git -C <repo> log --oneline <base-ref>..<branch>
@@ -57,7 +57,7 @@ Say in the review that you executed it, and where.
 - **A plan's or spec's review** runs once, on its landed target. It reads the whole landing against the brief, and for what is true only between its children: a producer nobody calls, a column only ever written as null, two halves that do not join.
 - **A re-review** is scoped to the open findings of a sensitive fix: each finding in `:review` not yet recorded as closed, checked against the fix commits and the fixer's latest `:report` entry, and, when the last landing failed, the failure the latest `:merge` entry names. Establish each closure by making it fail. It never widens: no fresh read of the rest of the diff and no new finding outside those; anything else you notice goes in the report.
 
-A diff that edits a file missing from `declared_files`, a test that selects another file's markup by class, and anything the diff left without a reader (a file, symbol, field, or a computation or load whose only consumer it removed) are each a finding. So is a defect in code the diff leaves unchanged but makes reachable; mark it as reached through the diff.
+A diff that edits a file missing from `declared_files`, a UI test that reaches a control another file owns by its implementation rather than by what it shows the user, and anything the diff left without a reader (a file, symbol, field, or a computation or load whose only consumer it removed) are each a finding. So is a defect in code the diff leaves unchanged but makes reachable; mark it as reached through the diff.
 
 ## 4. Run the checks
 
@@ -65,7 +65,7 @@ A diff that edits a file missing from `declared_files`, a test that selects anot
 tm verify run <node-id> --ref <branch>
 ```
 
-For a review claimed from `LANDED`, run it with no `--ref`: each task is then read at its own target on origin, fetched first, which every repository it touched holds.
+For a review claimed from `LANDED`, run it with no `--ref`: each task is then read at its own target on its remote, fetched first, which every repository it touched holds.
 
 The path checks read that ref directly, with no fetch, so a check against the unmerged branch is real evidence. Each `test_command` sees the same ref as `TM_VERIFY_REF`. Exit 1 names each failing row; `No verifications to run.` exits 2 and proves nothing — a task with no checks is itself a finding.
 

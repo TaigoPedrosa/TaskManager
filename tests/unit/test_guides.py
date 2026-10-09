@@ -18,7 +18,7 @@ from typer.testing import CliRunner
 
 from taskmanager.cli.main import _guide_topics, app
 from taskmanager.core.status import Merge
-from taskmanager.engine.config import MIGRATIONS, SENSITIVE_AREAS
+from taskmanager.engine.config import MIGRATIONS, SENSITIVE_AREAS, Gate, ModelsConfig
 from taskmanager.engine.snapshot import writes_migration
 
 REQUIRED_TOPICS = {"implement", "review", "fix", "merge", "overview"}
@@ -666,33 +666,37 @@ def test_merge_guide_builds_gates_and_pushes_on_the_spec_s_target_whatever_it_is
 ) -> None:
     text = rendered("merge")
     assert (
-        "A fresh merge worktree cut from the target (`origin/<target>` when it is the branch the "
+        "A fresh merge worktree cut from the target (`<remote>/<target>` when it is the branch the "
         "node's spec lands on, or the container branch), and `git merge --no-ff` of the node's "
         "branch with the subject `merge(<node-id>): land <branch> on <target>`. A spec's target "
-        "that origin does not have yet is cut from the repository's `default_branch`."
+        "that its remote does not have yet is cut from the repository's `default_branch`."
     ) in text
     assert (
         "On the spec's target: the repository's `main` gate, whatever the target is named"
     ) in text
     assert (
-        "push `HEAD:<target>`, never force; a target origin does not have yet is created by this "
-        "push."
+        "push `HEAD:<target>`, never force; a target its remote does not have yet is created by "
+        "this push. In a repository with no remote, the push moves the local target branch."
+    ) in text
+    assert (
+        "both red and neither a report nor the gate's `failing_pattern` names the failures"
     ) in text
 
 
-def test_review_guide_reads_a_spec_s_target_on_origin_and_a_container_branch_locally(
+def test_review_guide_reads_a_spec_s_target_on_its_remote_and_a_container_branch_locally(
     rendered: Callable[[str], str],
 ) -> None:
     """A landing's subject names the bare target, so the landed grep reads the claim's `base`,
-    while the diffs read the target where it lives: on origin, or in the shared clone."""
+    while the diffs read the target where it lives: on its remote, or in the shared clone."""
     text = rendered("review")
     assert (
         "`<base>` is that repository's entry in the claim's `bases`, since a container's "
         "repositories can land on different default branches (`base` is the first repository's): "
         "the branch the node's spec lands on, or the container branch the node lands on. A spec's "
-        "target that origin does not have yet reads as the repository's default branch, which the "
-        "branch was cut from. `<base-ref>` is where it is read: `origin/<base>` for the spec's "
-        "target, and `<base>` itself for a container branch, which is local to the clone:"
+        "target that its remote does not have yet reads as the repository's default branch, which "
+        "the branch was cut from. `<base-ref>` is where it is read: `<remote>/<base>` for the "
+        "spec's target (the local `<base>` in a repository with no remote), and `<base>` itself "
+        "for a container branch, which is local to the clone:"
     ) in text
     assert "git -C <repo> diff <base-ref>...<branch>" in text
     assert (
@@ -701,7 +705,7 @@ def test_review_guide_reads_a_spec_s_target_on_origin_and_a_container_branch_loc
     ) in text
     assert (
         "For a review claimed from `LANDED`, run it with no `--ref`: each task is then read at its "
-        "own target on origin, fetched first, which every repository it touched holds."
+        "own target on its remote, fetched first, which every repository it touched holds."
     ) in text
 
 
@@ -1044,10 +1048,9 @@ BRIEF_RULES = [
     pytest.param(
         "implement",
         "## 5. Verify",
-        "- A test selects only markup that its own task's declared files render. It reaches "
-        "another file's control by what that control shows the user (role, accessible name), "
-        "never by its classes or inner elements.",
-        id="implement:test-markup",
+        "- A UI test reaches a control another file owns by what it shows the user (role, "
+        "accessible name), never by its implementation.",
+        id="implement:ui-test-reach",
     ),
     pytest.param(
         "implement",
@@ -1070,9 +1073,10 @@ BRIEF_RULES = [
     pytest.param(
         "review",
         "## 3. Read the branch",
-        "A diff that edits a file missing from `declared_files`, a test that selects another "
-        "file's markup by class, and anything the diff left without a reader (a file, symbol, "
-        "field, or a computation or load whose only consumer it removed) are each a finding.",
+        "A diff that edits a file missing from `declared_files`, a UI test that reaches a control "
+        "another file owns by its implementation rather than by what it shows the user, and "
+        "anything the diff left without a reader (a file, symbol, field, or a computation or load "
+        "whose only consumer it removed) are each a finding.",
         id="review:scope-findings",
     ),
     pytest.param(
@@ -1098,6 +1102,22 @@ BRIEF_RULES = [
     pytest.param(
         "overview",
         "# How TaskManager works",
+        "A gate is `{command, timeout, failing_pattern, junit, tests_ran}`; only `command` is "
+        "required, and `timeout` is in seconds, 3600 unless set. `failing_pattern` is a regular "
+        "expression matched line by line over the command's full output, whose one group captures "
+        "a failing test's id, in whatever form the runner prints it.",
+        id="overview:gate-keys",
+    ),
+    pytest.param(
+        "dispatch",
+        "## 3. Models are tm's",
+        "| fix after a rejection, rounds 1 and 2 | the implement id when `models.strong` lists it, "
+        "else the last of `acceptable_models` |",
+        id="dispatch:fix-model",
+    ),
+    pytest.param(
+        "overview",
+        "# How TaskManager works",
         '"The owner" in these guides is whoever runs the project: the person who answers its '
         "decisions, configures its gates and keeps its guide addendum. The addendum is a section "
         "per topic on a spec with the id `guide`, created once with `tm spec add 'Project guide' "
@@ -1109,7 +1129,7 @@ BRIEF_RULES = [
         "overview",
         "## Moving an estate to this version",
         "Configure each repository's landing gate, `tm config set repos.<repo>.gates.main "
-        "'{command: <template>, junit: <glob>, timeout: <seconds>}'`,",
+        "'{command: <template>, failing_pattern: <regex>, timeout: <seconds>}'`,",
         id="overview:runbook-gate",
     ),
     pytest.param(
@@ -1137,18 +1157,18 @@ BRIEF_RULES = [
     pytest.param(
         "plan",
         "## 3. Models and capabilities",
-        "tm routes on the Claude families `haiku`, `sonnet`, `opus` and `fable`, read from each "
-        "id: an id naming none of them is ignored, so a list of only such ids routes as an empty "
-        "one.",
-        id="plan:model-families",
+        "`acceptable_models` lists real model ids of any vendor, cheapest first, and decides the "
+        "implement route: tm takes the first. An **empty list reads as the project's "
+        "`models.default`**, not the strongest model.",
+        id="plan:model-ids",
     ),
     pytest.param(
         "plan",
         "## 6. Verifications",
-        "`symbol_signature` and `ast_export` parse the file as Python and fail on any other "
-        "language; for a symbol in another language, use a `test_command` or a "
-        "`codegraph_query`.",
-        id="plan:python-only-checks",
+        "A symbol or a line the file must hold, in any language, is a `test_command` that greps "
+        "the ref, as the worked example's first check does: `git -C <repo> grep -qE '<regex>' "
+        '"${TM_VERIFY_REF:-origin/main}" -- <path>`.',
+        id="plan:grep-idiom",
     ),
 ]
 
@@ -1239,3 +1259,84 @@ def test_overview_names_tm_init_yes_and_every_init_flag(rendered: Callable[[str]
     flags = {f for f in _accepted_flags(init) if f.startswith("--")} - {"--help", "--path"}
     assert "`tm init --yes`" in text
     assert [f for f in sorted(flags) if not re.search(re.escape(f) + r"(?![\w-])", text)] == []
+
+
+STACK_WORDS = ("pytest", "ruff", "mypy", "uv run", "npm", "JUnit")
+_EXAMPLE = re.compile(r"<!-- tm:example -->\s*```yaml\n.*?```", re.DOTALL)
+
+
+@pytest.mark.parametrize("topic", _topics())
+def test_guide_names_no_stack_outside_the_worked_example(
+    topic: str, rendered: Callable[[str], str]
+) -> None:
+    """tm assumes no language, runner or report format; only the example, whose context names its
+    stack, may show one."""
+    text = _EXAMPLE.sub("", rendered(topic))
+    assert [word for word in STACK_WORDS if word in text] == []
+
+
+def test_the_worked_example_names_its_stack_in_its_plan_context() -> None:
+    example = _EXAMPLE.search(_guide_text("plan"))
+    assert example is not None
+    assert "context: >-\n        `backend` is a Python service whose tests run with `pytest`." in (
+        example.group(0)
+    )
+
+
+RETIRED_MODEL_AND_CHECK_WORDING = (
+    "model family",
+    "`model` family",
+    "`haiku`",
+    "`sonnet`",
+    "`opus`",
+    "`fable`",
+    "never below",
+    "symbol_signature",
+    "ast_export",
+    "selects only markup",
+    "markup by class",
+)
+
+
+@pytest.mark.parametrize("where,text", _TEXTS, ids=[w for w, _ in _TEXTS])
+def test_no_guide_or_doc_routes_on_a_model_family_or_names_a_retired_check(
+    where: str, text: str
+) -> None:
+    assert [phrase for phrase in RETIRED_MODEL_AND_CHECK_WORDING if phrase in text] == []
+
+
+def test_overview_names_every_gate_key_tm_reads(rendered: Callable[[str], str]) -> None:
+    line = next(ln for ln in rendered("overview").splitlines() if ln.startswith("A gate is `{"))
+    shape = line.split("`", 2)[1]
+    assert sorted(shape.strip("{}").split(", ")) == sorted(Gate.model_fields)
+    for key in ("failing_pattern", "junit", "tests_ran"):
+        assert f"`{key}` is a" in line, key
+
+
+def test_dispatch_guide_names_every_models_config_key(rendered: Callable[[str], str]) -> None:
+    text = rendered("dispatch")
+    assert [k for k in ModelsConfig.model_fields if f"`models.{k}`" not in text] == []
+    assert "| fix after a failed landing; a landing or sync agent | `models.merge` |" in text
+
+
+@pytest.mark.parametrize("args", [["--help"], ["verify", "--help"]])
+def test_cli_help_calls_verifications_machine_checks_of_a_deliverable(args: list[str]) -> None:
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 0, result.output
+    assert "Machine checks of a task's deliverable" in result.stdout
+    assert "AST" not in result.stdout
+
+
+def test_readme_names_the_remote_migration_and_sensitive_area_keys() -> None:
+    text = " ".join(_doc_text("README.md").split())
+    assert (
+        "on the remote `repos.<repo>.remote` names, `origin` unless set, or sets that key to `null`"
+        in text
+    )
+    assert (
+        "`sensitive_areas` config key lists (`tenant`, `rls`, `crypto` and `migration` unless set)"
+        in text
+    )
+    assert "matching one of its repository's `repos.<repo>.migrations` globs" in text
+    assert "migrations/versions/" not in text
+    assert "an `origin` remote" not in text

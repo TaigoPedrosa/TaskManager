@@ -7,10 +7,10 @@ For the session manager: run the `tm-wave` workflow, which asks tm what each nod
 The plugin ships the dispatcher as a workflow script, run by name, `Workflow({name: 'taskmanager:tm-wave', args: {...}})` with the plugin installed, or by `scriptPath`, the plugin's `workflows/tm-wave.js`. One run is one tick:
 
 1. `tm wave discover` chooses a batch: every claimable node, within the session's slots, file-disjoint within the batch.
-2. Each chosen node's next step is claimed once, and no node waits for a sibling. `tm task get` reads where it stands and its `next_action`; `tm task start` claims that one step and names its action and model family; the workflow dispatches the agent that action needs on the model id `models` maps that family to; the agent does the step and closes it with its guide's verb, passing the lease's agent name with `--agent` and the claim's token with `--token`. For a `merge` or a `sync`, the workflow waits on `tm job status <job> --wait 540` instead. When the job is already parked for an agent — a merge claim of a node already `MERGING`, or any sync claim — that claim is the hand-over: the workflow dispatches the agent the job needs, on the new token `tm job resume` asks for, and this run's one step is that hand-over. A container landing in several repositories runs one job per repository within that step, and the workflow follows each to the next.
+2. Each chosen node's next step is claimed once, and no node waits for a sibling. `tm task get` reads where it stands and its `next_action`; `tm task start` claims that one step and names its action and model id; the workflow dispatches the agent that action needs on that id; the agent does the step and closes it with its guide's verb, passing the lease's agent name with `--agent` and the claim's token with `--token`. For a `merge` or a `sync`, the workflow waits on `tm job status <job> --wait 540` instead. When the job is already parked for an agent — a merge claim of a node already `MERGING`, or any sync claim — that claim is the hand-over: the workflow dispatches the agent the job needs, on the new token `tm job resume` asks for, and this run's one step is that hand-over. A container landing in several repositories runs one job per repository within that step, and the workflow follows each to the next.
 3. The run reads the node once more and stops, returning whatever its status now is — mid-step, `COMPLETED`, `FAILED`, or blocked on something outside the step. It claims nothing further: a node still short of `COMPLETED` goes back through `tm wave discover` on a later tick.
 
-A step the agent leaves open, an agent that dies, or a handed-over job the agent never resumed is released by the workflow with `tm task release <id> --agent <its lease's agent> --token <its claim's token>` as a failed step, which tm counts; tm refuses that release once another claim holds the node. A job the agent resumed that stops again is left parked, since tm has counted it already, and the next claim hands it over. A claim naming a family `models` does not map is released the same way, never run on a guess. tm counts fix rounds and landing failures too, so the workflow keeps no counter and no hold of its own.
+A step the agent leaves open, an agent that dies, or a handed-over job the agent never resumed is released by the workflow with `tm task release <id> --agent <its lease's agent> --token <its claim's token>` as a failed step, which tm counts; tm refuses that release once another claim holds the node. A job the agent resumed that stops again is left parked, since tm has counted it already, and the next claim hands it over. tm counts fix rounds and landing failures too, so the workflow keeps no counter and no hold of its own.
 
 Because one run takes a node exactly one step, carrying it from `implement` through `review`, `fix` and `merge` takes several ticks — so the dispatching session loops itself, not the workflow: arm `/loop` with a dynamic interval unless the user says otherwise. Each wakeup is one tick: read `tm run list`, then one `tm wave discover` sized to the tick's budget, split into staggered waves of at most `wave_size` nodes; launch each wave as its own `tm-wave` run by `scriptPath`, with `maxBatch` set to `wave_size` and every other wave's chosen ids in `exclude`, so no two runs draw the same node. Record what each wave landed, failed or blocked, then schedule the next wakeup — shorter while nodes are mid-step, longer when nothing is claimable. Never run two ticks in one wakeup drawing from the same unclaimed pool. When `tm wave discover` offers nothing and no step is in flight, report and stop.
 
@@ -26,7 +26,7 @@ Arguments, of which `session` is required:
 | `worktreeDir` | where implement and fix worktrees are cut, passed to every claim as `tm task start --worktree-dir`; omitted means the estate's `worktree_dir` config |
 | `specs` | spec ids to discover under; omitted means every spec and every node with no spec |
 | `slots` | agents this session may hold at once (default 9) |
-| `maxStrong` | of those, how many may run on `opus` or `fable` (default 5) |
+| `maxStrong` | of those, how many may run on an id `models.strong` lists (default 5) |
 | `maxBatch` | the most nodes one tick takes on; the rest wait for the next tick |
 | `exclude` | node ids this tick never chooses |
 | `holdMerge` | node ids whose landing this tick never starts: discovery passes over their merge step (`--hold-merge`), and a node reaching it mid-loop stops there; a task is implemented, reviewed and fixed, and waits at its merge step for the owner; a reviewed plan or spec lands before its review, so holding its landing holds that review too |
@@ -38,7 +38,7 @@ Arguments, of which `session` is required:
 | `preamble` | repository → a line prepended to every brief for it, plus a `default` key |
 | `rulesDir` | a directory every agent reads before its first edit |
 | `gateLane` | where suites and gates run, as text or repository → text with a `default` key; `{task}` becomes the node id |
-| `models` | the family tm names on a claim → the model id every brief's `Model:` line carries; each family given overrides the current Claude id, and a family missing from both is released unrun |
+| `models` | model id → model id, an alias applied to the id a claim names before it reaches the brief's `Model:` line and the agent; an id it does not list runs as named |
 
 A run holds at most `min(16, CPUs - 2)` agents at once, so a batch larger than that queues inside the run; `maxBatch` keeps it from sitting claimed but idle.
 
@@ -64,16 +64,18 @@ Within a batch no two nodes declare the same file. Across a repository, a node w
 
 ## 3. Models are tm's
 
-`tm task start` names the model family; the workflow runs the step on the id `models` maps it to.
+`tm task start` names the model id, and the workflow runs the step on it. Any string is an id, of any vendor; nothing is refused for its vendor. `acceptable_models` and `review_models` list ids cheapest first, and an empty `acceptable_models` reads as `models.default`:
 
-| Step | Family |
+| Step | Model id |
 |:--|:--|
-| implement | the cheapest family in `acceptable_models` |
-| review of a task | the family of `review_models` when set, else `sonnet` |
-| review of a plan or spec | the family of `review_models` when set, else the strongest in `acceptable_models`, never below `opus` |
-| fix after a rejection, rounds 1 and 2 | the implement family when it is `opus` or `fable`, else `sonnet` |
-| fix after a rejection, round 3 onward (containers only) | the strongest in `acceptable_models`, never below `opus` |
-| fix after a failed landing; a landing or sync agent | `sonnet` |
+| implement | the first of `acceptable_models` |
+| review of a task | the first of `review_models` when set, else the first of `acceptable_models` |
+| review of a plan or spec | the first of `review_models` when set, else the last of `acceptable_models` |
+| fix after a rejection, rounds 1 and 2 | the implement id when `models.strong` lists it, else the last of `acceptable_models` |
+| fix after a rejection, round 3 onward (containers only) | the last of `acceptable_models` |
+| fix after a failed landing; a landing or sync agent | `models.merge` |
+
+`models.default`, `models.merge` and `models.strong`, the list of ids `maxStrong` counts, are `tm config` keys; `tm config list` prints their values, and `tm config set models.strong '[<id>, ...]'` changes the list.
 
 A list you disagree with is a plan defect: fix it with `tm task update <id> --models a,b` and say so, never dispatch around it.
 

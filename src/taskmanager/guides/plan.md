@@ -46,7 +46,7 @@ Put shared context on the **plan**. Only the direct parent's `context` and `over
 Frontmatter keys the estate reads:
 
 - `declared_files`: every repo-relative path the task will create or modify. This is what an implement or fix claim locks and what discovery keeps disjoint, so an unlisted file is a collision nobody sees and a listed file nobody touches holds a task out of a wave for nothing. Tests count.
-- `review_models`: who reviews this node, as model ids; tm routes the review to that family. A task that is cheap to write can be expensive to check, and a migration, a row-level security policy or a crypto boundary is reviewed on the strongest model whatever wrote it.
+- `review_models`: who reviews this node, as model ids, cheapest first; tm runs the review on the first. A task that is cheap to write can be expensive to check, and a migration, a row-level security policy or a crypto boundary is reviewed on the strongest model whatever wrote it.
 - `sensitive`: where a fix of this node is re-reviewed before it lands, as one of the areas `tm config` key `sensitive_areas` lists (`tenant`, `rls`, `crypto` and `migration` unless set), or a list of them: `sensitive: migration`, `sensitive: [tenant, rls]`. tm refuses any other name. A node that writes a migration, a path matching one of its repository's `repos.<repo>.migrations` globs (`**/migrations/**` among them unless set) in its `declared_files` or in a step's commits, is sensitive without the key. A sensitive node's fix gets one re-review, scoped to its open findings; every other fix lands without one.
 - `soft_depends_on`: ids this task builds against a stub until they land. It creates no edge and holds nothing back; it tells the implementer what the stub is for.
 - `gate_lane`: where this task's own gate can run. It is a claim about this task's files, so its author owns it.
@@ -54,7 +54,7 @@ Frontmatter keys the estate reads:
 
 ## 3. Models and capabilities
 
-`acceptable_models` decides the implement route: tm takes the cheapest family listed. An **empty list means every model**, not the strongest one. tm routes on the Claude families `haiku`, `sonnet`, `opus` and `fable`, read from each id: an id naming none of them is ignored, so a list of only such ids routes as an empty one. Reviews, fixes and landings follow from it and from `review_models`, as `tm guide dispatch` lists; tm prints the model family with every claim.
+`acceptable_models` lists real model ids of any vendor, cheapest first, and decides the implement route: tm takes the first. An **empty list reads as the project's `models.default`**, not the strongest model. Reviews, fixes and landings follow from it, from `review_models` and from `models.merge` and `models.strong`, as `tm guide dispatch` lists; tm prints the model id with every claim.
 
 `requires` names what the agent must be able to reach — `figma` for a node read against a design frame, say. The dispatcher routes the node to an agent type that serves it, or to the default agent, which reaches every connected tool.
 
@@ -97,13 +97,13 @@ The usual cause is an edge from a container to its own child, or between two chi
 
 ## 6. Verifications
 
-A verification is the node's own proof. `file_exists`, `file_absent`, `symbol_signature` and `ast_export` take a repo-relative path in `target_path` and count towards `declared_files`. `symbol_signature` and `ast_export` parse the file as Python and fail on any other language; for a symbol in another language, use a `test_command` or a `codegraph_query`. `test_command` puts a label in `target_path` and the command in `expected_pattern`, and counts towards nothing. `codegraph_query` puts a search in `target_path` and a regex in `expected_pattern`, and counts towards nothing: tm runs `codegraph query --json` for that search and passes when the output matches the regex. `codegraph_query_json` optionally carries the query's other flags as a JSON object, such as `{"kind": "function", "limit": 20}`, set with `--query-json` on `tm verify add`. tm refuses a `codegraph_query` whose `expected_pattern` is missing or is not a regex, and query flags that are not a JSON object. It fails where it cannot run: without the `codegraph` CLI, or when the target repo's checkout has no `.codegraph/` index, which `codegraph init` there creates.
+A verification is the node's own proof. `file_exists` and `file_absent` take a repo-relative path in `target_path` and count towards `declared_files`. A symbol or a line the file must hold, in any language, is a `test_command` that greps the ref, as the worked example's first check does: `git -C <repo> grep -qE '<regex>' "${TM_VERIFY_REF:-origin/main}" -- <path>`. `test_command` puts a label in `target_path` and the command in `expected_pattern`, and counts towards nothing. `codegraph_query` puts a search in `target_path` and a regex in `expected_pattern`, and counts towards nothing: tm runs `codegraph query --json` for that search and passes when the output matches the regex. `codegraph_query_json` optionally carries the query's other flags as a JSON object, such as `{"kind": "function", "limit": 20}`, set with `--query-json` on `tm verify add`. tm refuses a `codegraph_query` whose `expected_pattern` is missing or is not a regex, and query flags that are not a JSON object. It fails where it cannot run: without the `codegraph` CLI, or when the target repo's checkout has no `.codegraph/` index, which `codegraph init` there creates.
 
 A good check exits 0 exactly when this task's own deliverable exists: content this change makes true, never a path another task creates and never the whole suite. Write it, then run it once against the open task and watch it fail:
 
 ```
 $ tm verify run NOTIFY-EMAIL-SENDER --ref tm/NOTIFY-EMAIL-SENDER
-symbol_signature  src/notify/email/sender.py  FAILED  File src/notify/email/sender.py missing
+sender-defined  test_command  FAILED  Test command failed with exit code 1
 ```
 
 The path checks and `codegraph_query` read a ref of the task's `target_repo` and never a working tree: with no `--ref`, `<remote>/<the branch its spec lands on>`, fetched first; `--ref` names another. codegraph indexes a directory, so tm exports the ref's commit to `.taskmanager/cache/codegraph/<sha>`, indexes it there once, and every later query at that commit reuses it. The cache keeps the `codegraph.cache_commits` (3) most recently queried commits, and indexing another deletes the least recently queried. `test_command` runs from the tm root with that ref in `TM_VERIFY_REF`, and a landing sets it to the landing target — the parent's branch for `merge: parent` — so a command reads `"${TM_VERIFY_REF:-origin/main}"` instead of naming a branch; tm refuses one that names `origin/main` itself on a task read anywhere else: one landing on its parent, or under a spec whose target is not `main`. The target repository is a directory under the tm root, and the ref is not checked out anywhere, so a command that runs code checks the ref out itself first, as the worked example's do.
@@ -203,7 +203,9 @@ plans:
     review: true
     fix: true
     sections:
-      context: SMTP only. The provider client is injected, so no test opens a socket.
+      context: >-
+        `backend` is a Python service whose tests run with `pytest`. SMTP only. The provider
+        client is injected, so no test opens a socket.
     tasks:
       - id: NOTIFY-EMAIL-SENDER
         title: SMTP sender with retry
@@ -220,8 +222,11 @@ plans:
             - A permanent failure raises `SendFailed` without a retry.
           body: Take the clock as an argument so the retry test does not wait.
         verifications:
-          - type: file_exists
-            target_path: src/notify/email/sender.py
+          - type: test_command
+            target_path: sender-defined
+            expected_pattern: >-
+              git -C backend grep -qE '^def send\(' "${TM_VERIFY_REF:-origin/main}" --
+              src/notify/email/sender.py
           - type: test_command
             target_path: sender-suite
             expected_pattern: >-
