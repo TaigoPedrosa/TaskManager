@@ -37,13 +37,9 @@ def git(cwd: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
 
 
-def gate_core(root: Path) -> None:
-    assert tm(root, "config", "set", "repos.core.gates.main.command", "true").exit_code == 0
-
-
 def estate(root: Path) -> None:
-    """A spec, a plan and two tasks in the repository `core`, which has an `origin/main`;
-    `S1-P1-b` depends on `S1-P1-a`."""
+    """A spec, a plan and two tasks in the repository `core`, which has an `origin/main` and a
+    main gate; `S1-P1-b` depends on `S1-P1-a`."""
     origin = root / "core.git"
     git(root, "init", "--bare", "-b", "main", str(origin))
     git(root, "clone", str(origin), str(root / "core"))
@@ -60,6 +56,7 @@ def estate(root: Path) -> None:
     tm(root, "task", "add", "b", "--plan", "S1-P1", "--slug", "b", "--depends-on", "S1-P1-a")
     for task in ("S1-P1-a", "S1-P1-b"):
         assert tm(root, "task", "update", task, "--repo", "core").exit_code == 0
+    assert tm(root, "config", "set", "repos.core.gates.main.command", "true").exit_code == 0
 
 
 def get(root: Path, node_id: str) -> dict[str, Any]:
@@ -287,7 +284,6 @@ def test_tm_run_takes_no_start_stop_release_or_heartbeat_subcommand(
 
 def test_wave_discover_takes_an_optional_spec_and_has_no_release_flag(tmp_path: Path) -> None:
     estate(tmp_path)
-    gate_core(tmp_path)
     base = ["wave", "discover", "--session", "s", "--slots", "4", "--max-strong", "1"]
     for extra in ([], ["--spec", "S1"]):
         res = tm(tmp_path, *base, *extra)
@@ -477,7 +473,6 @@ def test_a_step_closes_or_releases_only_under_the_token_its_claim_printed(tmp_pa
 
 def test_wave_discover_holds_only_the_merges_it_is_told_to_hold(tmp_path: Path) -> None:
     estate(tmp_path)
-    gate_core(tmp_path)
     approved(tmp_path, "S1-P1-a")
     base = ["wave", "discover", "--session", "s", "--slots", "4", "--max-strong", "1"]
 

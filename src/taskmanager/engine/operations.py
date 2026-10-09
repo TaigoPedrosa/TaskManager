@@ -585,6 +585,7 @@ class Operations:
         merge: str | None = None,
         requires: list[str] | None = None,
         frontmatter: dict[str, Any] | None = None,
+        repo: str | None = None,
     ) -> str:
         self._validate_priority(priority)
         parent = self.node_repo.get_node(plan)
@@ -615,6 +616,7 @@ class Operations:
                 frontmatter=frontmatter or {},
                 status=Status.READY,
                 requires=requires or [],
+                target_repo=repo,
             ),
             parent,
             review=review,

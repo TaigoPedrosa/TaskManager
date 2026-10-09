@@ -1213,3 +1213,17 @@ def test_guide_lists_and_prints_intake(tmp_path: Path, rendered: Callable[[str],
 
 def test_dispatcher_skill_points_to_the_intake_guide() -> None:
     assert "`tm guide intake`" in _doc_text("plugin/skills/dispatcher/SKILL.md")
+
+
+def test_guides_describe_the_repository_gate_and_test_count_checks(
+    rendered: Callable[[str], str],
+) -> None:
+    plan, dispatch, merge = (" ".join(rendered(t).split()) for t in ("plan", "dispatch", "merge"))
+    assert (
+        "`tm import`, `tm task add --repo` and `tm task update --repo` refuse a directory that "
+        "is not a git working tree under the tm root"
+    ) in plan
+    assert "a repository it lands in has no `main` gate" in dispatch
+    assert "`tm task start` refuses the node with the same reason" in dispatch
+    assert "the test gate exited 0 but ran no tests" in merge
+    assert "Report it; the owner fixes the gate, then resume" in merge

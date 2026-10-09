@@ -113,7 +113,10 @@ def test_landing_with_a_gate_that_ran_tests_completes(tmp_path: Path, gate: Gate
 def test_sync_with_a_parent_gate_that_ran_no_tests_stops_for_an_agent(tmp_path: Path) -> None:
     gate = Gate(command="echo 0 passed", tests_ran=COUNT)
     claims, landing = lagging_parent(
-        tmp_path, ProjectConfig(repos={"api": RepoConfig(gates={"parent": gate})})
+        tmp_path,
+        ProjectConfig(
+            repos={"api": RepoConfig(gates={"main": Gate(command="true"), "parent": gate})}
+        ),
     )
     first = claims.start("X", "implementer", "s1")
     assert first.job is not None

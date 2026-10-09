@@ -10,7 +10,7 @@ from taskmanager.cli.main import app as cli_app
 from taskmanager.core.enums import NodeKind
 from taskmanager.core.status import Action, Merge, Status
 from taskmanager.engine.claims import Claims
-from taskmanager.engine.config import ProjectConfig, RepoConfig
+from taskmanager.engine.config import Gate, ProjectConfig, RepoConfig
 from taskmanager.engine.operations import OperationError
 
 
@@ -28,8 +28,8 @@ def push_branch(repo: Path, branch: str, base: str = "origin/main") -> str:
 
 def estate(tmp_path: Path, default: str | None = None) -> Claims:
     """S > P > (T, C): T lands where its spec lands, C on P's branch."""
-    config = ProjectConfig(repos={"api": RepoConfig(default_branch=default)}) if default else None
-    claims = make_estate(tmp_path, config=config)
+    repo = RepoConfig(default_branch=default or "main", gates={"main": Gate(command="true")})
+    claims = make_estate(tmp_path, config=ProjectConfig(repos={"api": repo}))
     add(claims, "S", NodeKind.SPEC)
     add(claims, "P", NodeKind.PLAN, parent="S")
     add(claims, "T", parent="P", merge=Merge.SPEC)

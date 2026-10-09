@@ -42,9 +42,9 @@ def push_branch(repo: Path, branch: str, path: str, content: str | None) -> str:
     return sha
 
 
-def released(tmp_path: Path, gate: Gate | None = TRUE) -> tuple[Claims, Landing]:
+def released(tmp_path: Path, gate: Gate = TRUE) -> tuple[Claims, Landing]:
     """Spec S lands on release/x. A condition's result is cached for a second only."""
-    repos = {"api": RepoConfig(gates={"main": gate})} if gate is not None else {}
+    repos = {"api": RepoConfig(gates={"main": gate})}
     claims = make_estate(tmp_path, config=ProjectConfig(repos=repos, condition_ttl=1))
     add(claims, "S", NodeKind.SPEC)
     claims.ops.update_node("S", frontmatter_set={"land_on": RELEASE})
@@ -197,10 +197,15 @@ def test_a_top_push_reads_moves_or_creates_the_target_on_origin(
 
 
 def test_a_top_landing_with_no_main_gate_stops_naming_its_target(tmp_path: Path) -> None:
-    claims, landing = released(tmp_path, gate=None)
+    claims, landing = released(tmp_path)
     reviewed(claims, "T1", "x = 1\n")
+    merge = claims.start("T1", "merger", "s1")
+    assert merge.job is not None, merge.reason
+    claims.config.repos["api"] = RepoConfig()
 
-    job, state = land(claims, landing, "T1")
+    state = landing.run(merge.job)
+    job = claims.jobs.get(merge.job)
+    assert job is not None
 
     assert (state, job.result["reason"]) == (JobState.NEEDS_AGENT, "no gate")
     assert job.result["detail"].endswith(f"cannot land on {RELEASE}")
@@ -366,7 +371,11 @@ def test_a_review_of_a_container_landed_across_targets_names_each_repository_s_o
 ) -> None:
     """Plan P landed on api's trunk and web's main, web landing first."""
     config = ProjectConfig(
-        repo_order=["web", "api"], repos={"api": RepoConfig(default_branch="trunk")}
+        repo_order=["web", "api"],
+        repos={
+            "api": RepoConfig(default_branch="trunk", gates={"main": TRUE}),
+            "web": RepoConfig(gates={"main": TRUE}),
+        },
     )
     claims = make_estate(tmp_path, repos=("api", "web"), config=config)
     push_branch(claims.root / "api", "trunk", "trunk.txt", "t\n")
