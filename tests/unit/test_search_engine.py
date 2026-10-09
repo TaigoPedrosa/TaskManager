@@ -1,4 +1,5 @@
 import json
+import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -515,9 +516,10 @@ def test_a_missing_sentence_transformers_prints_the_install_hint(
     code, out = _cli(project, "index")
     assert code == 1 and "Traceback" not in out
     assert (
-        "sentence-transformers is not installed: uv tool install --reinstall "
-        "'taskmanager[local-embeddings] @ git+https://github.com/TaigoPedrosa/TaskManager@main'"
+        "sentence-transformers is not installed: "
+        f"uv pip install --python {shlex.quote(sys.executable)} 'sentence-transformers>=3.4.0'"
     ) in out
+    assert "uv tool install" not in out
     assert _cli(project, "index", "--status")[0] == 0
 
 

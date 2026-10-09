@@ -1,8 +1,10 @@
 import hashlib
 import os
 import re
+import shlex
 import sqlite3
 import struct
+import sys
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, replace
@@ -34,7 +36,6 @@ NO_PROVIDER: Final = (
     "no embedding provider configured: `tm config set embeddings.provider <local|openai>`"
 )
 REBUILD: Final = "run `tm index --rebuild`"
-REPOSITORY: Final = "git+https://github.com/TaigoPedrosa/TaskManager"
 
 # The plan a node belongs to: itself for a plan, its parent plan for a task.
 _PLAN_SQL: Final = """CASE n.kind WHEN 'plan' THEN n.id WHEN 'task' THEN (
@@ -97,9 +98,10 @@ class LocalEmbeddingProvider:
             try:
                 from sentence_transformers import SentenceTransformer
             except ImportError as exc:
+                # Into the interpreter running tm, so its source and version stay as installed.
                 raise SearchError(
-                    "sentence-transformers is not installed: uv tool install --reinstall "
-                    f"'taskmanager[local-embeddings] @ {REPOSITORY}@main'"
+                    "sentence-transformers is not installed: uv pip install --python "
+                    f"{shlex.quote(sys.executable)} 'sentence-transformers>=3.4.0'"
                 ) from exc
             try:
                 self._encoder = SentenceTransformer(self.model)
