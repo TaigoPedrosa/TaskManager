@@ -1206,6 +1206,7 @@ def test_guide_lists_and_prints_intake(tmp_path: Path, rendered: Callable[[str],
     text = rendered("intake")
     assert text.startswith("# Taking in outside work\n")
     assert "Never reset or reopen a `COMPLETED` node" in text
+    assert "only for sources that are files inside the project" in text
 
 
 def test_dispatcher_skill_points_to_the_intake_guide() -> None:
