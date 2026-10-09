@@ -1,4 +1,3 @@
-import ast
 import contextlib
 import io
 import json
@@ -28,144 +27,19 @@ class VerificationResult:
     message: str
 
 
-def _extract_symbol_name(pattern: str) -> str:
-    cleaned = pattern.strip()
-    if cleaned.startswith("async def "):
-        cleaned = cleaned[len("async def ") :].strip()
-    elif cleaned.startswith("def "):
-        cleaned = cleaned[len("def ") :].strip()
-    elif cleaned.startswith("class "):
-        cleaned = cleaned[len("class ") :].strip()
-
-    for delimiter in ("(", ":", " "):
-        if delimiter in cleaned:
-            cleaned = cleaned.split(delimiter, 1)[0].strip()
-    return cleaned
+# Types that parsed Python only. No write accepts them; a stored one, read from an older estate
+# or export, fails naming the language-neutral check.
+RETIRED_VERIFICATIONS = frozenset({VerificationType.SYMBOL_SIGNATURE, VerificationType.AST_EXPORT})
 
 
-PYTHON_SUFFIXES = frozenset({".py", ".pyi"})
-
-_PATH_VERIFICATION_TYPES = frozenset(
-    {
-        VerificationType.FILE_EXISTS,
-        VerificationType.FILE_ABSENT,
-        VerificationType.SYMBOL_SIGNATURE,
-        VerificationType.AST_EXPORT,
-    }
-)
-
-
-def _binds_name(node: ast.AST, name: str) -> bool:
-    """A module-, class- or function-level binding of `name`, by any statement that creates one.
-
-    Annotated and plain assignments count: a schema field is `x: int` or `x = 0`, and matching only
-    def/class made every field-adding task's check unsatisfiable.
-    """
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        return node.name == name
-    if isinstance(node, ast.AnnAssign):
-        return isinstance(node.target, ast.Name) and node.target.id == name
-    if isinstance(node, ast.Assign):
-        for target in node.targets:
-            if isinstance(target, ast.Name) and target.id == name:
-                return True
-            if isinstance(target, (ast.Tuple, ast.List)) and any(
-                isinstance(elt, ast.Name) and elt.id == name for elt in target.elts
-            ):
-                return True
-    return False
-
-
-def _symbol_signature_result(
-    ver: NodeVerification, content: str, mode_suffix: str
-) -> VerificationResult:
-    try:
-        tree = ast.parse(content)
-    except SyntaxError as e:
-        return VerificationResult(
-            verification_id=ver.id,
-            target_path=ver.target_path,
-            verification_type=ver.verification_type,
-            passed=False,
-            message=f"Syntax error in {ver.target_path}: {e}{mode_suffix}",
-        )
-
-    if not ver.expected_pattern:
-        return VerificationResult(
-            verification_id=ver.id,
-            target_path=ver.target_path,
-            verification_type=ver.verification_type,
-            passed=False,
-            message=f"No expected symbol pattern specified{mode_suffix}",
-        )
-
-    symbol_name = _extract_symbol_name(ver.expected_pattern)
-    found = any(_binds_name(node, symbol_name) for node in ast.walk(tree))
-    if found:
-        return VerificationResult(
-            verification_id=ver.id,
-            target_path=ver.target_path,
-            verification_type=ver.verification_type,
-            passed=True,
-            message=f"Symbol {symbol_name} found{mode_suffix}",
-        )
-    return VerificationResult(
-        verification_id=ver.id,
-        target_path=ver.target_path,
-        verification_type=ver.verification_type,
-        passed=False,
-        message=f"Symbol {symbol_name} not found in {ver.target_path}{mode_suffix}",
+def retired_verification(verification_type: VerificationType) -> str:
+    return (
+        f"{verification_type} is retired, it parsed Python only; check the file with a "
+        "test_command: git -C <repo> grep -qE '<regex>' \"${TM_VERIFY_REF:-origin/main}\" -- <path>"
     )
 
 
-def _ast_export_result(ver: NodeVerification, content: str, mode_suffix: str) -> VerificationResult:
-    try:
-        tree = ast.parse(content)
-    except SyntaxError as e:
-        return VerificationResult(
-            verification_id=ver.id,
-            target_path=ver.target_path,
-            verification_type=ver.verification_type,
-            passed=False,
-            message=f"Syntax error in {ver.target_path}: {e}{mode_suffix}",
-        )
-
-    expected_name = ver.expected_pattern.strip() if ver.expected_pattern else ""
-    found = False
-    for node in tree.body:
-        if (
-            isinstance(node, ast.Assign)
-            and any(isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets)
-            and isinstance(node.value, (ast.List, ast.Tuple, ast.Set))
-        ):
-            for elt in node.value.elts:
-                if isinstance(elt, ast.Constant) and elt.value == expected_name:
-                    found = True
-                    break
-        elif (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            and node.name == expected_name
-            and not node.name.startswith("_")
-        ):
-            found = True
-        if found:
-            break
-
-    if found:
-        return VerificationResult(
-            verification_id=ver.id,
-            target_path=ver.target_path,
-            verification_type=ver.verification_type,
-            passed=True,
-            message=f"Export {expected_name} found{mode_suffix}",
-        )
-    return VerificationResult(
-        verification_id=ver.id,
-        target_path=ver.target_path,
-        verification_type=ver.verification_type,
-        passed=False,
-        message=f"Export {expected_name} not found in {ver.target_path}{mode_suffix}",
-    )
+_PATH_VERIFICATION_TYPES = frozenset({VerificationType.FILE_EXISTS, VerificationType.FILE_ABSENT})
 
 
 def _git(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -276,6 +150,14 @@ class VerificationEngine:
         """With no `ref`, a path check or a codegraph query reads `origin/<branch>` (the default
         branch when none is named), and a test command is handed `origin/<branch>` only when
         `branch` is named."""
+        if ver.verification_type in RETIRED_VERIFICATIONS:
+            return VerificationResult(
+                ver.id,
+                ver.target_path,
+                ver.verification_type,
+                False,
+                retired_verification(ver.verification_type),
+            )
         if ver.verification_type == VerificationType.CODEGRAPH_QUERY:
             return self._codegraph_at_ref(ver, target_repo or ".", ref, branch or DEFAULT_BRANCH)
         if target_repo and ver.verification_type in _PATH_VERIFICATION_TYPES:
@@ -323,74 +205,36 @@ class VerificationEngine:
                 f"File {ver.target_path} does not exist{mode_suffix}",
             )
 
-        if ver.verification_type == VerificationType.FILE_ABSENT:
-            ref_resolves = (
-                _git(
-                    repo_root, "rev-parse", "--verify", "--quiet", f"{effective_ref}^{{commit}}"
-                ).returncode
-                == 0
-            )
-            if not ref_resolves:
-                return VerificationResult(
-                    ver.id,
-                    ver.target_path,
-                    ver.verification_type,
-                    False,
-                    f"Ref {effective_ref} does not resolve in {target_repo}; "
-                    f"file_absent fails closed{mode_suffix}",
-                )
-            if not exists:
-                return VerificationResult(
-                    ver.id,
-                    ver.target_path,
-                    ver.verification_type,
-                    True,
-                    f"File absent{mode_suffix}",
-                )
+        ref_resolves = (
+            _git(
+                repo_root, "rev-parse", "--verify", "--quiet", f"{effective_ref}^{{commit}}"
+            ).returncode
+            == 0
+        )
+        if not ref_resolves:
             return VerificationResult(
                 ver.id,
                 ver.target_path,
                 ver.verification_type,
                 False,
-                f"File {ver.target_path} still exists{mode_suffix}",
+                f"Ref {effective_ref} does not resolve in {target_repo}; "
+                f"file_absent fails closed{mode_suffix}",
             )
-
-        if ver.verification_type == VerificationType.SYMBOL_SIGNATURE and (
-            Path(rel_path).suffix not in PYTHON_SUFFIXES
-        ):
-            return VerificationResult(
-                verification_id=ver.id,
-                target_path=ver.target_path,
-                verification_type=ver.verification_type,
-                passed=False,
-                message=(
-                    f"symbol_signature parses Python; {ver.target_path} is "
-                    f"'{Path(rel_path).suffix or 'extensionless'}'. Use a test_command."
-                ),
-            )
-
         if not exists:
             return VerificationResult(
                 ver.id,
                 ver.target_path,
                 ver.verification_type,
-                False,
-                f"File {ver.target_path} missing{mode_suffix}",
+                True,
+                f"File absent{mode_suffix}",
             )
-
-        shown = _git(repo_root, "show", f"{effective_ref}:{rel_path}")
-        if shown.returncode != 0:
-            return VerificationResult(
-                ver.id,
-                ver.target_path,
-                ver.verification_type,
-                False,
-                f"Failed to read {ver.target_path}{mode_suffix}: {shown.stderr.strip()}",
-            )
-
-        if ver.verification_type == VerificationType.SYMBOL_SIGNATURE:
-            return _symbol_signature_result(ver, shown.stdout, mode_suffix)
-        return _ast_export_result(ver, shown.stdout, mode_suffix)
+        return VerificationResult(
+            ver.id,
+            ver.target_path,
+            ver.verification_type,
+            False,
+            f"File {ver.target_path} still exists{mode_suffix}",
+        )
 
     def _codegraph_at_ref(
         self, ver: NodeVerification, target_repo: str, ref: str | None, branch: str
@@ -498,59 +342,6 @@ class VerificationEngine:
                 passed=False,
                 message=f"File {ver.target_path} still exists",
             )
-
-        if ver.verification_type == VerificationType.SYMBOL_SIGNATURE:
-            if not full_path.exists():
-                return VerificationResult(
-                    verification_id=ver.id,
-                    target_path=ver.target_path,
-                    verification_type=ver.verification_type,
-                    passed=False,
-                    message=f"File {ver.target_path} missing",
-                )
-            if full_path.suffix not in PYTHON_SUFFIXES:
-                return VerificationResult(
-                    verification_id=ver.id,
-                    target_path=ver.target_path,
-                    verification_type=ver.verification_type,
-                    passed=False,
-                    message=(
-                        f"symbol_signature parses Python; {ver.target_path} is "
-                        f"'{full_path.suffix or 'extensionless'}'. Use a test_command."
-                    ),
-                )
-            try:
-                content = full_path.read_text(encoding="utf-8")
-            except OSError as e:
-                return VerificationResult(
-                    verification_id=ver.id,
-                    target_path=ver.target_path,
-                    verification_type=ver.verification_type,
-                    passed=False,
-                    message=f"Failed to read {ver.target_path}: {e}",
-                )
-            return _symbol_signature_result(ver, content, mode_suffix="")
-
-        if ver.verification_type == VerificationType.AST_EXPORT:
-            if not full_path.exists():
-                return VerificationResult(
-                    verification_id=ver.id,
-                    target_path=ver.target_path,
-                    verification_type=ver.verification_type,
-                    passed=False,
-                    message=f"File {ver.target_path} missing",
-                )
-            try:
-                content = full_path.read_text(encoding="utf-8")
-            except OSError as e:
-                return VerificationResult(
-                    verification_id=ver.id,
-                    target_path=ver.target_path,
-                    verification_type=ver.verification_type,
-                    passed=False,
-                    message=f"Failed to read {ver.target_path}: {e}",
-                )
-            return _ast_export_result(ver, content, mode_suffix="")
 
         if ver.verification_type == VerificationType.TEST_COMMAND:
             command = ver.expected_pattern or ver.target_path

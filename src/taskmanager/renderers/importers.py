@@ -255,7 +255,9 @@ class BulkImporter:
             and r.source_id not in self.node_repo.get_parent_ids(r.target_id)
         }
 
-        with validated_write(self.node_repo, self.snapshots, known, prefix=REFUSED):
+        with validated_write(
+            self.node_repo, self.snapshots, known, prefix=REFUSED, restoring=restoring
+        ):
             for node in nodes:
                 self.node_repo.save_node(node)
             for section in sections:

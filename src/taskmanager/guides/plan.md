@@ -220,9 +220,8 @@ plans:
             - A permanent failure raises `SendFailed` without a retry.
           body: Take the clock as an argument so the retry test does not wait.
         verifications:
-          - type: symbol_signature
+          - type: file_exists
             target_path: src/notify/email/sender.py
-            expected_pattern: "def send(self, message: Message) -> SendResult"
           - type: test_command
             target_path: sender-suite
             expected_pattern: >-
