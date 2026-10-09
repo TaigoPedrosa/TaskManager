@@ -1,4 +1,5 @@
-"""Gate commands, the failing set a JUnit report names, and the attribution of a red tip."""
+"""Gate commands, the failing set a JUnit report names, whether a green run ran any test, and the
+attribution of a red tip."""
 
 import argparse
 import glob
@@ -60,7 +61,38 @@ def _failing(reports: list[Path]) -> frozenset[str]:
     return frozenset(failing)
 
 
-def run_gate(command: str, cwd: Path, timeout: int, junit_glob: str | None) -> GateRun:
+def _count(reports: list[Path]) -> int:
+    return sum(1 for report in reports for _ in ET.parse(report).getroot().iter("testcase"))
+
+
+def _no_tests(
+    cwd: Path, output: str, reports: list[Path], junit_glob: str | None, tests_ran: str | None
+) -> str | None:
+    if junit_glob:
+        if not reports:
+            return f"no test report matches {junit_glob}"
+        names = ", ".join(str(report.relative_to(cwd)) for report in reports)
+        try:
+            if _count(reports) == 0:
+                return f"test report {names} holds 0 tests"
+        except ET.ParseError:
+            return f"test report {names} could not be read"
+    if tests_ran:
+        found = re.search(tests_ran, output)
+        if found is None or not found[1].isdigit():
+            return f"the gate's output never matched tests_ran {tests_ran!r} with a count"
+        if int(found[1]) == 0:
+            return f"the gate ran 0 tests (tests_ran {tests_ran!r})"
+    return None
+
+
+def run_gate(
+    command: str,
+    cwd: Path,
+    timeout: int,
+    junit_glob: str | None,
+    tests_ran: str | None = None,
+) -> GateRun:
     # A report an earlier run left in this worktree would be read as this run's.
     for stale in _reports(cwd, junit_glob):
         stale.unlink()
@@ -90,7 +122,10 @@ def run_gate(command: str, cwd: Path, timeout: int, junit_glob: str | None) -> G
         # A red run whose report names no failure failed where the report does not look (a
         # build, a crash), so its set says nothing about which tests broke.
         failing = None
-    return GateRun(proc.returncode, failing, output[-TAIL_CHARS:])
+    no_tests = (
+        _no_tests(cwd, output, reports, junit_glob, tests_ran) if proc.returncode == 0 else None
+    )
+    return GateRun(proc.returncode, failing, output[-TAIL_CHARS:], no_tests)
 
 
 def attribute(tip: GateRun, base: GateRun) -> Attribution:

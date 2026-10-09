@@ -249,7 +249,14 @@ def test_whole_valued_keys_are_set_as_yaml_and_stored_nested(root: Path) -> None
         "repos": {
             "core": {
                 "default_branch": "main",
-                "gates": {"main": {"command": "make ci", "junit": "out/*.xml", "timeout": 3600}},
+                "gates": {
+                    "main": {
+                        "command": "make ci",
+                        "junit": "out/*.xml",
+                        "tests_ran": None,
+                        "timeout": 3600,
+                    }
+                },
             }
         },
     }

@@ -1,5 +1,6 @@
 import copy
 import os
+import re
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, Final, Literal, NamedTuple
@@ -64,11 +65,18 @@ _GATE_NAMES: Final = ("main", "parent")
 # `repos` mapping. The mapping-valued ones, the repository's whole entry included, take YAML.
 _REPO_LEAVES: Final = (
     "default_branch",
-    *(f"gates.{gate}.{field}" for gate in _GATE_NAMES for field in ("command", "junit", "timeout")),
+    *(
+        f"gates.{gate}.{field}"
+        for gate in _GATE_NAMES
+        for field in ("command", "junit", "tests_ran", "timeout")
+    ),
 )
 _REPO_MAPPINGS: Final = ("gates", *(f"gates.{gate}" for gate in _GATE_NAMES))
 _VALID: Final = ", ".join(
-    (*KEYS, "repos.<repo>[.default_branch|.gates[.<main|parent>[.command|.junit|.timeout]]]")
+    (
+        *KEYS,
+        "repos.<repo>[.default_branch|.gates[.<main|parent>[.command|.junit|.tests_ran|.timeout]]]",
+    )
 )
 
 LEASE_TTL_DEFAULTS: Final = {
@@ -119,7 +127,21 @@ class Gate(BaseModel):
 
     command: str = Field(min_length=1)
     junit: str | None = None
+    tests_ran: str | None = None
     timeout: int = Field(default=3600, gt=0)
+
+    @field_validator("tests_ran")
+    @classmethod
+    def _captures_one_count(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        try:
+            groups = re.compile(value).groups
+        except re.error as exc:
+            raise ValueError(f"'{value}' is not a regular expression: {exc}") from exc
+        if groups != 1:
+            raise ValueError(f"'{value}' must capture the test count in one group, not {groups}")
+        return value
 
 
 class RepoConfig(BaseModel):

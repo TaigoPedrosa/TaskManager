@@ -19,8 +19,10 @@ from taskmanager.engine.landing import Landing
 TRUE = Gate(command="true", timeout=60)
 
 
-def gate(command: str, junit: str | None = None, timeout: int = 3600) -> dict[str, Any]:
-    return {"command": command, "junit": junit, "timeout": timeout}
+def gate(
+    command: str, junit: str | None = None, timeout: int = 3600, tests_ran: str | None = None
+) -> dict[str, Any]:
+    return {"command": command, "junit": junit, "tests_ran": tests_ran, "timeout": timeout}
 
 
 WEB = {"web": {"default_branch": "main", "gates": {"main": gate("make web")}}}
@@ -81,17 +83,22 @@ def test_a_dotted_repos_key_merges_into_the_stored_mapping(
 def test_every_gate_field_is_set_on_its_own_and_read_back(root: Path) -> None:
     for gate_name in ("main", "parent"):
         prefix = f"repos.app.gates.{gate_name}"
-        for field, value in (("command", "make ci"), ("junit", "out/*.xml"), ("timeout", "90")):
+        for field, value in (
+            ("command", "make ci"),
+            ("junit", "out/*.xml"),
+            ("tests_ran", r"(\d+) passed"),
+            ("timeout", "90"),
+        ):
             assert tm(root, "config", "set", f"{prefix}.{field}", value)[0] == 0
             assert tm(root, "config", "get", f"{prefix}.{field}") == (0, f"{value}\n")
 
-    full = gate("make ci", "out/*.xml", 90)
+    full = gate("make ci", "out/*.xml", 90, r"(\d+) passed")
     assert stored_repos(root) == {
         **WEB,
         "app": {"default_branch": "main", "gates": {"main": full, "parent": full}},
     }
     assert ConfigStore(root).project().repos["app"].gates["main"] == Gate(
-        command="make ci", junit="out/*.xml", timeout=90
+        command="make ci", junit="out/*.xml", timeout=90, tests_ran=r"(\d+) passed"
     )
 
 
