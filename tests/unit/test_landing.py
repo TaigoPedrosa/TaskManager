@@ -154,6 +154,41 @@ def test_a_conflict_is_handed_to_an_agent_who_resolves_commits_and_resumes(tmp_p
     assert git(api, "show", "origin/main:app.py") == "both"
 
 
+def resolved_conflict(tmp_path: Path) -> tuple[Claims, Landing, str, Path]:
+    claims, landing = estate_with(tmp_path, TRUE)
+    reviewed_task(claims, path="app.py", content="branch\n")
+    push_main(claims.root / "api", "app.py", "main\n")
+    job_id, state = land(claims, landing)
+    assert state == JobState.NEEDS_AGENT
+    handed = claims.start("T1", "resolver", "s2")
+    assert handed.worktree is not None
+    worktree = Path(handed.worktree)
+    (worktree / "app.py").write_text("both\n")
+    git(worktree, "add", "app.py")
+    git(worktree, "commit", "-q", "--no-edit")
+    return claims, landing, job_id, worktree
+
+
+def test_a_resume_ignores_untracked_files_beside_a_committed_merge(tmp_path: Path) -> None:
+    claims, landing, job_id, worktree = resolved_conflict(tmp_path)
+    (worktree / "report.xml").write_text("<testsuites/>\n")
+
+    assert landing.resume(job_id) == JobState.SUCCEEDED
+    assert stored(claims, "T1").status == Status.COMPLETED
+
+
+def test_a_resume_refuses_a_tracked_change_left_uncommitted_after_the_merge(
+    tmp_path: Path,
+) -> None:
+    claims, landing, job_id, worktree = resolved_conflict(tmp_path)
+    (worktree / "app.py").write_text("edited\n")
+
+    with pytest.raises(OperationError, match="not committed") as refused:
+        landing.resume(job_id)
+    assert refused.value.status_code == 409
+    assert stored(claims, "T1").status == Status.MERGING
+
+
 MOVER = """
 import pathlib, subprocess, sys
 api, flag, log = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])

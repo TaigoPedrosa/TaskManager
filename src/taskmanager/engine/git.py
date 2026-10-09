@@ -205,9 +205,9 @@ def add_detached_worktree(repo: Path, path: Path, commit: str) -> None:
 
 
 def settled(worktree: Path, ref: str) -> bool:
-    """A handed-over merge is resolved: none in progress, nothing uncommitted, `ref` merged."""
+    """A handed-over merge is resolved: none in progress, no tracked change uncommitted, `ref` merged."""
     return (
         not rev_parse(worktree, "MERGE_HEAD")
-        and _git(worktree, "status", "--porcelain").stdout.strip() == ""
+        and _git(worktree, "status", "--porcelain", "--untracked-files=no").stdout.strip() == ""
         and is_ancestor(worktree, ref, "HEAD")
     )
