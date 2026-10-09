@@ -11,6 +11,17 @@ description: Use when about to claim, build, review, fix, merge or hand off a ta
 
 The instructions ship with the tool and are printed on demand, so nothing here repeats them.
 
+## The flow
+
+A piece of work goes through four steps, each ending where the next begins:
+
+1. `tm init` prepares the project: the estate, the repositories and their gates.
+2. `/taskmanager:init` starts a piece of work, turning its source into a spec: what was asked, the repos, the landing branch, and the open questions as decisions.
+3. `/taskmanager:design` settles those decisions and writes the design into the spec, ending on an approval decision.
+4. `/taskmanager:plan` turns the approved design into plans and tasks with `tm import`, each proved by a verification that fails before the work.
+
+Then dispatch: the `dispatcher` skill reads `tm guide dispatch` and claims each step.
+
 ## Read your role's guide first
 
 ```
@@ -25,6 +36,8 @@ tm guide <topic>    # the built-in guidance, then this project's addendum
 | a step printed as `action: fix` | `tm guide fix` |
 | a landing or a sync tm stopped for an agent | `tm guide merge` |
 | starting a piece of work from a tracker item, a file or the user's words | `/taskmanager:init` |
+| designing a spec `/taskmanager:init` recorded | `/taskmanager:design` |
+| turning an approved design into plans and tasks | `/taskmanager:plan` |
 | anything else, or first contact with `tm` | `tm doctor`, then `tm guide overview` |
 
 Run it before your first `tm` command, not after: it names the flags, what each refusal means, and the verb that closes your step. A project's own conventions are appended to the same output, so the guide you read is the one that applies here.

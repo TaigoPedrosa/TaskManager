@@ -20,7 +20,7 @@ claude plugin marketplace add TaigoPedrosa/TaskManager
 claude plugin install taskmanager@taskmanager
 ```
 
-The plugin carries the skills, the `/taskmanager:tm`, `:task` and `:board` commands, the `tm-op` agent and the `tm-wave` workflow. It does not install `tm`: install both, at the same version.
+The plugin carries the skills, the `/taskmanager:init`, `:design`, `:plan`, `:tm`, `:task` and `:board` commands, the `tm-op` agent and the `tm-wave` workflow. It does not install `tm`: install both, at the same version.
 
 codegraph, the optional extra, installs on its own and indexes each repository once:
 
@@ -32,6 +32,18 @@ codegraph init <repository>
 `tm doctor` lists what tm found: the required tools, and codegraph and each repository's index when present.
 
 ## Quickstart
+
+A piece of work goes through four steps, then dispatch:
+
+1. `tm init` prepares the project: the estate, the repositories and their gates.
+2. `/taskmanager:init <source>` turns a tracker item, a file or your own words into a spec, with
+   its open questions as decisions.
+3. `/taskmanager:design <spec-id>` settles those decisions and writes the design into the spec,
+   ending on an approval decision.
+4. `/taskmanager:plan <spec-id>` turns the approved design into plans and tasks with `tm import`.
+
+Then ask Claude Code for a wave: the plugin's dispatcher skill reads `tm guide dispatch` and runs
+the `tm-wave` workflow. Without the plugin, write the import document by hand:
 
 ```bash
 cd my-repo                      # a clone with its default branch on origin
@@ -55,8 +67,6 @@ tm web
   reaches the shell as written.
 - A spec lands on its own branch, the one its `land_on` names, and on its repository's default branch (`main` unless set) without one.
 - `tm wave discover` prints what is claimable without claiming it, and `tm web` opens the board.
-- To dispatch, ask Claude Code for a wave: the plugin's dispatcher skill reads
-  `tm guide dispatch` and runs the `tm-wave` workflow.
 
 ## Features
 
