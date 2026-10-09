@@ -7,7 +7,7 @@ description: Use when planning a wave, dispatching a subagent, routing a task to
 
 `tm` holds the specs, plans and tasks, decides the next step of each, locks the files a claim covers, lands finished work and records every state change. It is the only record of what is planned, claimed, built and finished — there is no second tracker, and nothing it can answer is written down anywhere else.
 
-`tm` installs separately from this plugin: `uv tool install git+https://github.com/TaigoPedrosa/TaskManager@v<this plugin's version>`. When `tm` is not on PATH, say so and stop; run nothing in its place.
+`tm` and this plugin install together, at one version, through `install.sh`: `curl -fsSL https://raw.githubusercontent.com/TaigoPedrosa/TaskManager/main/install.sh | bash`. When `tm` is not on PATH, say so and stop; run nothing in its place.
 
 `tm --version` must print this plugin's version; otherwise stop and say which one to upgrade.
 

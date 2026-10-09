@@ -7,7 +7,6 @@ import httpx
 import pytest
 from typer.testing import CliRunner
 
-from taskmanager import __version__
 from taskmanager.cli.main import app
 from taskmanager.core.enums import (
     EmbeddingProviderType,
@@ -517,7 +516,7 @@ def test_a_missing_sentence_transformers_prints_the_install_hint(
     assert code == 1 and "Traceback" not in out
     assert (
         "sentence-transformers is not installed: uv tool install --reinstall "
-        f"'taskmanager[local-embeddings] @ git+https://github.com/TaigoPedrosa/TaskManager@v{__version__}'"
+        "'taskmanager[local-embeddings] @ git+https://github.com/TaigoPedrosa/TaskManager@main'"
     ) in out
     assert _cli(project, "index", "--status")[0] == 0
 

@@ -1,3 +1,4 @@
+import json
 import re
 import shutil
 import subprocess
@@ -5,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from taskmanager import __version__
 from taskmanager.engine import doctor
 from taskmanager.engine.config import ConfigStore
 from taskmanager.engine.git import valid_branch
@@ -133,7 +135,8 @@ def test_facts_under_too_old_a_python_exit_non_zero(
     python = _by_name(found)["python"]
     assert (python.ok, python.required) == (False, True)
     assert python.fix is not None
-    assert "--python 99.0 " in python.fix
+    assert "99.0" in python.fix
+    assert doctor.INSTALL in python.fix
     assert doctor.exit_code(found) == 1
 
 
@@ -145,7 +148,13 @@ def test_facts_require_no_project_stack_tool(
 
     found = doctor.facts(repo)
 
-    assert [f.name for f in found] == ["git", "python", "codegraph", "codegraph index (.)"]
+    assert [f.name for f in found] == [
+        "git",
+        "python",
+        "plugin",
+        "codegraph",
+        "codegraph index (.)",
+    ]
     required = [f for f in found if f.required]
     assert [f.name for f in required] == ["git", "python"]
     assert [f.fix for f in required if STACK_TOOLS.search(f.fix or "")] == []
@@ -164,7 +173,7 @@ def test_facts_check_only_the_configured_repos_that_are_cloned(
 
     names = [f.name for f in doctor.facts(root)]
 
-    assert names[3:] == ["codegraph index (web)", "codegraph index (api)"]
+    assert names[4:] == ["codegraph index (web)", "codegraph index (api)"]
 
 
 def test_facts_without_git_leave_the_configured_repos_unread(tmp_path: Path, bin_dir: Path) -> None:
@@ -175,11 +184,11 @@ def test_facts_without_git_leave_the_configured_repos_unread(tmp_path: Path, bin
     (bin_dir / "git").unlink()
     valid_branch.cache_clear()
 
-    assert [f.name for f in doctor.facts(root)] == ["git", "python", "codegraph"]
+    assert [f.name for f in doctor.facts(root)] == ["git", "python", "plugin", "codegraph"]
 
 
 def test_facts_check_no_index_where_the_root_is_no_clone(tmp_path: Path, bin_dir: Path) -> None:
-    assert [f.name for f in doctor.facts(tmp_path)] == ["git", "python", "codegraph"]
+    assert [f.name for f in doctor.facts(tmp_path)] == ["git", "python", "plugin", "codegraph"]
 
 
 def test_a_tool_printing_no_version_is_found_at_its_path(repo: Path, bin_dir: Path) -> None:
@@ -202,3 +211,82 @@ def test_the_taskmanager_skill_runs_tm_doctor_on_first_contact() -> None:
         line for line in skill.read_text(encoding="utf-8").splitlines() if "first contact" in line
     )
     assert "`tm doctor`" in row
+
+
+def _claude(bin_dir: Path, version: str) -> None:
+    listed = (
+        '[{"id": "other@market", "version": "9.9.9"}, '
+        f'{{"id": "taskmanager@taskmanager", "version": "{version}"}}]'
+    )
+    _tool(bin_dir, "claude", f"echo '{listed}'")
+
+
+def test_facts_with_the_plugin_at_tm_s_version_find_it(repo: Path, bin_dir: Path) -> None:
+    _git(bin_dir)
+    _claude(bin_dir, __version__)
+
+    found = doctor.facts(repo)
+
+    assert _by_name(found)["plugin"].line() == f"plugin: {__version__}"
+    assert doctor.exit_code(found) == 0
+
+
+def test_facts_with_the_plugin_at_another_version_print_the_install_sh_fix(
+    repo: Path, bin_dir: Path
+) -> None:
+    _git(bin_dir)
+    _claude(bin_dir, "0.0.1")
+
+    found = doctor.facts(repo)
+
+    assert _by_name(found)["plugin"].line() == (
+        f"plugin: 0.0.1 (required) -> tm is {__version__}; reinstall both: {doctor.INSTALL}"
+    )
+    assert "install.sh" in doctor.INSTALL
+    assert doctor.exit_code(found) == 1
+
+
+@pytest.mark.parametrize("claude", [None, "echo '[]'", "echo 'not json'", "echo '{}'"])
+def test_facts_without_the_plugin_recommend_install_sh(
+    repo: Path, bin_dir: Path, claude: str | None
+) -> None:
+    _git(bin_dir)
+    if claude is not None:
+        _tool(bin_dir, "claude", claude)
+
+    found = doctor.facts(repo)
+
+    assert _by_name(found)["plugin"].line() == (
+        f"plugin: missing (recommended) -> {doctor.INSTALL}"
+    )
+    assert doctor.exit_code(found) == 0
+
+
+CLAUDE = shutil.which("claude")
+
+
+@pytest.mark.skipif(CLAUDE is None, reason="claude is not on PATH")
+def test_facts_read_the_real_claude_s_plugin_list_in_an_empty_profile(
+    repo: Path, bin_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _git(bin_dir)
+    assert CLAUDE is not None
+    (bin_dir / "claude").symlink_to(CLAUDE)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home / ".claude"))
+
+    listed = subprocess.run(
+        [CLAUDE, "plugin", "list", "--json"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert listed.returncode == 0, listed.stderr
+    assert json.loads(listed.stdout) == []
+
+    plugin = _by_name(doctor.facts(repo))["plugin"]
+
+    assert (plugin.found, plugin.fix) == (None, doctor.INSTALL)

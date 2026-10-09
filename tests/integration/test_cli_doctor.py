@@ -7,6 +7,7 @@ import yaml
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import app
+from taskmanager.engine.doctor import INSTALL
 
 runner = CliRunner()
 # Resolved before any test narrows PATH to its fake tools.
@@ -47,6 +48,7 @@ def test_doctor_prints_each_fact_and_exits_zero_without_codegraph(
     assert lines[0] == "git: 2.55.0"
     assert lines[1].startswith("python: 3.")
     assert lines[2:] == [
+        f"plugin: missing (recommended) -> {INSTALL}",
         "codegraph: missing (recommended) -> npm install -g @colbymchenry/codegraph",
         f"codegraph index (.): missing (recommended) -> codegraph init {project}",
     ]
@@ -83,7 +85,7 @@ def test_doctor_yaml_prints_the_same_facts(project: Path, bin_dir: Path) -> None
 
     assert res.exit_code == 0, res.stdout
     facts = {f["name"]: f for f in yaml.safe_load(res.stdout)}
-    assert list(facts) == ["git", "python", "codegraph", "codegraph index (.)"]
+    assert list(facts) == ["git", "python", "plugin", "codegraph", "codegraph index (.)"]
     assert facts["codegraph"] == {
         "name": "codegraph",
         "required": False,
@@ -105,6 +107,7 @@ def test_init_ends_with_the_doctor_summary(project: Path, bin_dir: Path) -> None
     assert lines[0] == f"Initialized .taskmanager in {project}"
     assert lines[1] == "git: 2.55.0"
     assert lines[3:] == [
+        f"plugin: missing (recommended) -> {INSTALL}",
         "codegraph: 1.6.0",
         f"codegraph index (.): missing (recommended) -> codegraph init {project}",
         (
@@ -112,3 +115,21 @@ def test_init_ends_with_the_doctor_summary(project: Path, bin_dir: Path) -> None
             'gate: tm config set repos.<repo>.gates.main.command "<command>"'
         ),
     ]
+
+
+def test_doctor_with_the_plugin_at_another_version_prints_the_install_sh_fix(
+    project: Path, bin_dir: Path
+) -> None:
+    _tool(bin_dir, "git", "git version 2.55.0")
+    claude = bin_dir / "claude"
+    listed = '[{"id": "taskmanager@taskmanager", "version": "0.0.1"}]'
+    claude.write_text(f"#!/bin/sh\necho '{listed}'\n", encoding="utf-8")
+    claude.chmod(0o755)
+
+    res = runner.invoke(app, ["doctor", "-C", str(project)])
+
+    assert res.exit_code == 1, res.stdout
+    plugin = next(line for line in res.stdout.splitlines() if line.startswith("plugin: "))
+    assert plugin.startswith("plugin: 0.0.1 (required) -> tm is ")
+    assert plugin.endswith(f"; reinstall both: {INSTALL}")
+    assert "install.sh" in INSTALL

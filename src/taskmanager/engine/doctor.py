@@ -1,3 +1,4 @@
+import json
 import shutil
 import subprocess
 import sys
@@ -11,6 +12,10 @@ from taskmanager.engine.config import ConfigStore
 PYTHON_MIN: Final = (3, 14)
 GIT_INSTALL: Final = "https://git-scm.com/downloads"
 CODEGRAPH_INSTALL: Final = "npm install -g @colbymchenry/codegraph"
+INSTALL: Final = (
+    "curl -fsSL https://raw.githubusercontent.com/TaigoPedrosa/TaskManager/main/install.sh | bash"
+)
+PLUGIN: Final = "taskmanager@taskmanager"
 
 
 @dataclass(frozen=True)
@@ -52,11 +57,39 @@ def _tool(name: str, required: bool, fix: str) -> Fact:
 def _python() -> Fact:
     found = ".".join(str(part) for part in sys.version_info[:3])
     ok = sys.version_info[:2] >= PYTHON_MIN
-    fix = (
-        f"uv tool install --reinstall --python {'.'.join(map(str, PYTHON_MIN))} "
-        f"git+https://github.com/TaigoPedrosa/TaskManager@v{__version__}"
-    )
+    fix = f"Python {'.'.join(map(str, PYTHON_MIN))}+, which install.sh fetches: {INSTALL}"
     return Fact("python", True, ok, found, None if ok else fix)
+
+
+def _plugin_version() -> str | None:
+    claude = shutil.which("claude")
+    if claude is None:
+        return None
+    try:
+        res = subprocess.run(
+            [claude, "plugin", "list", "--json"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        listed = json.loads(res.stdout)
+    except OSError, subprocess.SubprocessError, ValueError:
+        return None
+    if not isinstance(listed, list):
+        return None
+    versions = [p.get("version") for p in listed if isinstance(p, dict) and p.get("id") == PLUGIN]
+    return next((str(v) for v in versions if v), None)
+
+
+def _plugin() -> Fact:
+    found = _plugin_version()
+    if found is None:
+        return Fact("plugin", False, False, None, INSTALL)
+    if found != __version__:
+        # Skills of one version read guides and verbs of another: tm and the plugin move together.
+        return Fact("plugin", True, False, found, f"tm is {__version__}; reinstall both: {INSTALL}")
+    return Fact("plugin", True, True, found, None)
 
 
 def _repos(root: Path) -> list[str]:
@@ -86,7 +119,13 @@ def facts(root: Path) -> list[Fact]:
     git = _tool("git", True, GIT_INSTALL)
     # Reading the configured repositories validates their branch names with git.
     indexes = [_index(root, repo) for repo in _repos(root)] if git.ok else []
-    return [git, _python(), _tool("codegraph", False, CODEGRAPH_INSTALL), *indexes]
+    return [
+        git,
+        _python(),
+        _plugin(),
+        _tool("codegraph", False, CODEGRAPH_INSTALL),
+        *indexes,
+    ]
 
 
 def exit_code(found: list[Fact]) -> int:

@@ -2,7 +2,7 @@
 
 `tm` is a local CLI over a SQLite task graph of specs, plans and tasks. It claims each step of a node with a lease, cuts the worktree the work happens in, lands the branch, and verifies it there. It is the only writer of that record.
 
-`tm` installs separately from this extension: `uv tool install git+https://github.com/TaigoPedrosa/TaskManager@v<this extension's version>`. When `tm` is not on PATH, say so and stop; run nothing in its place.
+`tm` and this extension install together, at one version, through `install.sh`: `curl -fsSL https://raw.githubusercontent.com/TaigoPedrosa/TaskManager/main/install.sh | bash`. When `tm` is not on PATH, say so and stop; run nothing in its place.
 
 Before your first `tm` command, read your role's guide. It prints the built-in guidance, then this project's addendum:
 

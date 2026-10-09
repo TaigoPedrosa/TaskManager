@@ -10,7 +10,6 @@ from typing import Any, Final, Protocol
 
 import httpx
 
-from taskmanager import __version__
 from taskmanager.core.enums import (
     EmbeddingProviderType,
     NodeKind,
@@ -100,7 +99,7 @@ class LocalEmbeddingProvider:
             except ImportError as exc:
                 raise SearchError(
                     "sentence-transformers is not installed: uv tool install --reinstall "
-                    f"'taskmanager[local-embeddings] @ {REPOSITORY}@v{__version__}'"
+                    f"'taskmanager[local-embeddings] @ {REPOSITORY}@main'"
                 ) from exc
             try:
                 self._encoder = SentenceTransformer(self.model)

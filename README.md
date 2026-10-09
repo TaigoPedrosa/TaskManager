@@ -15,12 +15,18 @@ Optional: [codegraph](https://www.npmjs.com/package/@colbymchenry/codegraph), a 
 ## Install
 
 ```bash
-uv tool install git+https://github.com/TaigoPedrosa/TaskManager@v0.3.7
-claude plugin marketplace add TaigoPedrosa/TaskManager
-claude plugin install taskmanager@taskmanager
+curl -fsSL https://raw.githubusercontent.com/TaigoPedrosa/TaskManager/main/install.sh | bash
 ```
 
-The plugin carries the skills, the `/taskmanager:init`, `:design`, `:plan`, `:tm`, `:task` and `:board` commands, the `tm-op` agent and the `tm-wave` workflow. It does not install `tm`: install both, at the same version.
+or, from a clone, `./install.sh`. It installs `tm` with uv and the Claude Code plugin from the same git ref, `main` unless `--ref <ref>` names another, into the profile `CLAUDE_CONFIG_DIR` names (`~/.claude` when unset), and links the Gemini extension when `~/.gemini/extensions` exists. Pass arguments to the piped form after `bash -s --`:
+
+```bash
+./install.sh status        # tm, the plugin and their versions; non-zero when they differ
+./install.sh uninstall     # removes what install created
+./install.sh --from .      # installs tm and the plugin from this checkout
+```
+
+The plugin carries the skills, the `/taskmanager:init`, `:design`, `:plan`, `:tm`, `:task` and `:board` commands, the `tm-op` agent and the `tm-wave` workflow. `tm` and the plugin run at the same version; `install.sh` installs both, and `tm doctor` reports when they differ.
 
 codegraph, the optional extra, installs on its own and indexes each repository once:
 
