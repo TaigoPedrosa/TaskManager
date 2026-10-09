@@ -110,6 +110,25 @@ def test_landing_with_a_gate_that_ran_tests_completes(tmp_path: Path, gate: Gate
     assert stored(claims, "T1").status == Status.COMPLETED
 
 
+def test_landing_stopped_for_no_tests_resumes_at_the_gate_keeping_the_agents_commit(
+    tmp_path: Path,
+) -> None:
+    gate = Gate(command="test -f fixed.txt && echo 1 passed || echo 0 passed", tests_ran=COUNT)
+    job_id, state, claims = landing_with(tmp_path, gate)
+    assert state == JobState.NEEDS_AGENT
+    handed = claims.start("T1", "resolver", "s2")
+    assert (handed.action, handed.job) == (Action.MERGE, job_id)
+    assert handed.worktree is not None
+    worktree = Path(handed.worktree)
+    (worktree / "fixed.txt").write_text("x\n")
+    git(worktree, "add", "fixed.txt")
+    git(worktree, "commit", "-q", "-m", "add the test the gate counts")
+
+    assert attach_landing(claims).resume(job_id) == JobState.SUCCEEDED
+    assert git(claims.root / "api", "show", "origin/main:fixed.txt") == "x"
+    assert stored(claims, "T1").status == Status.COMPLETED
+
+
 def test_sync_with_a_parent_gate_that_ran_no_tests_stops_for_an_agent(tmp_path: Path) -> None:
     gate = Gate(command="echo 0 passed", tests_ran=COUNT)
     claims, landing = lagging_parent(

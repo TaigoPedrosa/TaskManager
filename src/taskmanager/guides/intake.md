@@ -12,7 +12,7 @@ tm attach <spec-id> <file> --source <uri> --caption "<what it is>"
 
 - Capture the whole source: the body, every comment in its thread, and every linked document that governs the work. A preview or a summary is not the source.
 - Count what you received against what the source says it holds (comments, attachments, linked items). A mismatch means part of it is missing: fetch the rest before going on.
-- When the source changes, re-capture it with `tm attach <spec-id> <file> --source <uri> --replace <asset>`, and `tm attachments <spec-id> --check` to see which copies are stale.
+- When an outside source changes, re-capture it with `tm attach <spec-id> <file> --source <uri> --replace <asset>`: tm cannot tell when a ticket or URL changed. `tm attachments <spec-id> --check` reports stale copies only for sources that are files inside the project.
 - Attach to the spec the work belongs under. For new work, import that spec first, holding only its title, and attach to it.
 
 ## 2. A request becomes a spec, a plan and decisions

@@ -47,6 +47,7 @@ RESUME_AT = {
     "conflict": "gate",
     "unattributed": "gate",
     "no gate": "gate",
+    "no tests": "gate",
     "red": "gate",
     "push_failed": "push",
     "branch_locked": "push",
