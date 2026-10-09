@@ -14,8 +14,8 @@ usage() {
 Usage: install.sh [install|status|uninstall] [--ref <git ref>] [--from <checkout>]
 
   install     install tm (uv tool) and the Claude Code plugin at one version (default)
-  status      report tm, the plugin, the Gemini link and codegraph; non-zero when tm or
-              the plugin is missing or their versions differ
+  status      report tm, the plugin, its marketplace source, the Gemini link and codegraph;
+              non-zero when tm or the plugin is missing or their versions differ
   uninstall   remove what install created
 
   --ref <ref>       git ref of $REPO to install (default: main)
@@ -32,7 +32,8 @@ fail() {
 }
 
 COMMAND=install
-REF=main
+DEFAULT_REF=main
+REF=$DEFAULT_REF
 FROM=
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -106,19 +107,29 @@ marketplace_added() {
 
 json_field() { sed -n "s/.*\"$1\": *\"\([^\"]*\)\".*/\1/p"; }
 
-# The source the marketplace was added from, in the form `marketplace add` takes.
+# The source the marketplace was added from, as a directory or `<git url>[#<ref>]`. Reads the
+# entry flat or with its source nested as an object, and a github `repo` as its https url.
 marketplace_source() {
-    local entry path url ref
-    entry=$(claude plugin marketplace list --json 2>/dev/null | tr -d '\n' | tr '{}' '\n' \
+    local entry path url repo ref
+    entry=$(claude plugin marketplace list --json 2>/dev/null | tr -d '\n' \
+        | sed 's/"source": *{\([^{}]*\)}/\1/g' | tr '{}' '\n' \
         | grep "\"name\": *\"$MARKETPLACE\"" | head -n 1) || return 0
     path=$(printf "%s" "$entry" | json_field path)
     url=$(printf "%s" "$entry" | json_field url)
+    repo=$(printf "%s" "$entry" | json_field repo)
     ref=$(printf "%s" "$entry" | json_field ref)
+    [ -z "$repo" ] || url="https://github.com/$repo.git"
     if [ -n "$path" ]; then
         printf '%s\n' "$path"
     else
         printf '%s\n' "$url${ref:+#$ref}"
     fi
+}
+
+# A marketplace with no ref tracks the default branch, the same as one pinned to it.
+is_install_source() {
+    [ "$1" = "$MARKETPLACE_SOURCE" ] \
+        || { [ -z "$FROM" ] && [ "$REF" = "$DEFAULT_REF" ] && [ "$1" = "https://github.com/$REPO.git" ]; }
 }
 
 gemini_source() {
@@ -149,12 +160,15 @@ install() {
         # Claude Code refuses to add a git source over a marketplace added from another source.
         local added
         added=$(marketplace_source)
-        if [ -n "$added" ] && [ "$added" != "$MARKETPLACE_SOURCE" ]; then
-            claude plugin marketplace remove "$MARKETPLACE"
+        if [ -z "$added" ] || ! is_install_source "$added"; then
+            if [ -n "$added" ]; then
+                say "plugin: moving $MARKETPLACE off $added, so Claude Code resets $PLUGIN's saved options and data"
+                claude plugin marketplace remove "$MARKETPLACE"
+            fi
+            claude plugin marketplace add "$MARKETPLACE_SOURCE"
         fi
-        claude plugin marketplace add "$MARKETPLACE_SOURCE"
         claude plugin marketplace update "$MARKETPLACE"
-        claude plugin install "$PLUGIN"
+        [ -n "$(plugin_version)" ] || claude plugin install "$PLUGIN"
         claude plugin update "$PLUGIN"
     else
         say "plugin: claude is not on PATH; once it is, run:"
@@ -215,6 +229,13 @@ status() {
         if [ -n "$tm" ] && [ -n "$plugin" ] && [ "$tm" != "$plugin" ]; then
             say "mismatch: tm $tm differs from plugin $plugin"
             rc=1
+        fi
+        local source
+        source=$(marketplace_source)
+        if [ -n "$source" ]; then
+            say "marketplace: $MARKETPLACE from $source"
+        else
+            say "marketplace: $MARKETPLACE not added"
         fi
     fi
 
