@@ -3,7 +3,7 @@
 // target #waves-content) rather than routed through core.js's api()/scheduleRender(): the
 // only globals it leans on are the ones every other view already shares -- the shared
 // renderers, openNode, setWavesLoadPending and isStaticMode (core.js), filters.specMode
-// (filters.js) and window.tmStore.
+// and filters.archived (filters.js) and window.tmStore.
 
 let waveDepth = 1;
 let waveSize = null;
@@ -97,6 +97,7 @@ async function fetchWaves() {
   const params = new URLSearchParams({ depth: String(waveDepth) });
   if (size !== null) params.set('size', size);
   waveSpecFilter().forEach((s) => params.append('spec', s));
+  if (filters.archived) params.set('archived', 'only');
   try {
     const res = await getJson(`/api/waves?${params}`);
     if (seq !== waveRequestSeq) return; // superseded by a later request

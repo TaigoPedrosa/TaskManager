@@ -119,7 +119,7 @@ function makeFakeFetch(wavesPayload) {
 // declared inside the script (waveDepth, waveData, ...) never becomes a context property --
 // only its top-level `function`s do -- so every assertion below reads observable behaviour
 // (a fetch call's URL, #waves-content's rendered HTML) rather than that internal state.
-function freshContext(wavesPayload, { isStaticMode = false, shown = true } = {}) {
+function freshContext(wavesPayload, { isStaticMode = false, shown = true, archived = false } = {}) {
   const contentEl = new FakeContent();
   let rafQueue = [];
   const loadPendingCalls = [];
@@ -130,7 +130,7 @@ function freshContext(wavesPayload, { isStaticMode = false, shown = true } = {})
     requestAnimationFrame: (fn) => rafQueue.push(fn),
     document: { getElementById: (id) => (id === 'waves-content' ? contentEl : new FakeElement()) },
     fetch: makeFakeFetch(wavesPayload || oneEntryWave),
-    filters: { specMode: new Map() },
+    filters: { specMode: new Map(), archived },
     esc: (s) => String(s ?? ''),
     renderIcon: (name) => `<svg data-icon="${name}"></svg>`,
     statusIcon: (code) => `<span role="img" aria-label="${code}"></span>`,
@@ -459,4 +459,19 @@ test("the page's Tailwind config makes font-mono JetBrains Mono, the frames' mon
   vm.runInContext(configSrc, context);
   const mono = context.module.exports.theme.extend.fontFamily?.mono;
   assert.ok(Array.isArray(mono) && /JetBrains Mono/.test(mono[0]), `font-mono resolves to ${JSON.stringify(mono)}`);
+});
+
+test('the Archive toggle reaches /api/waves as archived=only, and its absence asks for the default', async () => {
+  const off = freshContext();
+  await flushAsync();
+  assert.equal(new URLSearchParams(wavesCalls(off)[0].split('?')[1]).get('archived'), null);
+
+  const on = freshContext(undefined, { archived: true });
+  await flushAsync();
+  assert.equal(new URLSearchParams(wavesCalls(on)[0].split('?')[1]).get('archived'), 'only');
+
+  on.filters.archived = false;
+  on.resetWaves();
+  await flushAsync();
+  assert.equal(new URLSearchParams(wavesCalls(on).at(-1).split('?')[1]).get('archived'), null);
 });
