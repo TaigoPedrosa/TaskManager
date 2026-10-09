@@ -821,8 +821,11 @@ def test_the_plan_guide_example_routes_on_a_current_model_id() -> None:
 
 
 VERIFY_DEFAULT_REF = [
-    ("overview", "With no `--ref`, it reads each task at `origin/<the branch its spec lands on>`"),
-    ("plan", "with no `--ref`, `origin/<the branch its spec lands on>`, fetched first"),
+    (
+        "overview",
+        "With no `--ref`, it reads each task at `<remote>/<the branch its spec lands on>`",
+    ),
+    ("plan", "with no `--ref`, `<remote>/<the branch its spec lands on>`, fetched first"),
     (
         "implement",
         (
@@ -1085,7 +1088,7 @@ BRIEF_RULES = [
     pytest.param(
         "overview",
         "# How TaskManager works",
-        "A repository is a directory under the tm root with an `origin` remote holding its "
+        "A repository is a directory under the tm root with a remote holding its "
         "default branch (`repos.<repo>.default_branch`, `main` unless set). When the tm root is "
         "the repository itself, its name is `.`. The command runs in tm's merge worktree and may "
         "use `{worktree}`, `{node}`, `{repo}` and `{target}`, each replaced shell-quoted; every "

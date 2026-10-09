@@ -140,11 +140,15 @@ class FakeRemote:
         self.pushed: list[str] = []
         self.merged: list[str] = []
 
-    def ls_remote(self, _repo: Path, ref: str) -> tuple[str, subprocess.CompletedProcess[str]]:
+    def ls_remote(
+        self, _repo: Path, _remote: str | None, ref: str
+    ) -> tuple[str, subprocess.CompletedProcess[str]]:
         self.read.append(ref)
         return self.head, subprocess.CompletedProcess(["git", "ls-remote"], 0, "", "")
 
-    def push(self, _worktree: Path, target: str) -> subprocess.CompletedProcess[str]:
+    def push(
+        self, _worktree: Path, _remote: str | None, target: str
+    ) -> subprocess.CompletedProcess[str]:
         self.pushed.append(target)
         return subprocess.CompletedProcess(["git", "push"], 0, "", "")
 
@@ -176,7 +180,7 @@ def test_a_top_push_reads_moves_or_creates_the_target_on_origin(
     monkeypatch.setattr(gitops, "ls_remote", fake.ls_remote)
     monkeypatch.setattr(gitops, "push", fake.push)
     monkeypatch.setattr(gitops, "merge_no_ff", fake.merge_no_ff)
-    monkeypatch.setattr(gitops, "fetch", lambda repo, branch: True)
+    monkeypatch.setattr(gitops, "fetch", lambda repo, remote, branch: True)
     monkeypatch.setattr(gitops, "rev_parse", lambda repo, ref: "moved")
     job = claims.jobs.create(
         Job(

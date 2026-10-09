@@ -37,13 +37,17 @@ class FakeRemote:
         self.refusals = refusals
         self.pushes: list[str] = []
 
-    def ls_remote(self, _repo: Path, ref: str) -> tuple[str, subprocess.CompletedProcess[str]]:
+    def ls_remote(
+        self, _repo: Path, _remote: str | None, ref: str
+    ) -> tuple[str, subprocess.CompletedProcess[str]]:
         head = next(self._heads)
         if head:
             return head, ran("ls-remote", "origin", ref)
         return "", ran("ls-remote", "origin", ref, code=128, stderr=UNREACHABLE)
 
-    def push(self, _worktree: Path, target: str) -> subprocess.CompletedProcess[str]:
+    def push(
+        self, _worktree: Path, _remote: str | None, target: str
+    ) -> subprocess.CompletedProcess[str]:
         self.pushes.append(target)
         if self.refusals:
             self.refusals -= 1
@@ -138,7 +142,7 @@ def test_push_to_a_moved_main_merges_it_in_and_gates_again_without_pushing(
         merged.append(ref)
         return True
 
-    monkeypatch.setattr(gitops, "fetch", lambda repo, branch: True)
+    monkeypatch.setattr(gitops, "fetch", lambda repo, remote, branch: True)
     monkeypatch.setattr(gitops, "merge_no_ff", merge_no_ff)
     monkeypatch.setattr(gitops, "rev_parse", lambda repo, ref: "moved")
     job = pushing(claims)

@@ -219,7 +219,7 @@ class Landing:
         repo_dir, branch = self._dir(job), self.claims.branch_of(job.node_id)
         if self._at_top(job):
             top = self.claims.fetched_top(job.node_id, job.repo)
-            target, creating = f"origin/{top}", top != job.target
+            target, creating = self.claims.ops.top_ref(job.repo, top), top != job.target
         else:
             target, creating = self.claims.target_ref(job.node_id, job.repo), False
         exists = bool(gitops.rev_parse(repo_dir, f"refs/heads/{branch}"))
@@ -228,7 +228,7 @@ class Landing:
             return self._needs_agent(
                 job, "no branch", detail=f"{branch} does not exist in {job.repo}"
             )
-        # A target not on origin yet is merged from its default branch and created by the push,
+        # A target not created yet is merged from its default branch and created by the push,
         # even when the branch adds nothing to it.
         if not exists or (
             not creating
@@ -301,27 +301,28 @@ class Landing:
         worktree = Path(self._require_worktree(job))
         if not self._at_top(job):
             return self._move_branch(job, worktree, "verify")
-        repo_dir, moved = self._dir(job), f"origin/{job.target}"
+        repo_dir, remote = self._dir(job), self.claims.ops.remote(job.repo)
+        moved = gitops.tracking(remote, job.target)
         while (tries := int(job.result.get("push_tries", 0))) < PUSH_TRIES:
             if tries:
                 # A remote that did not answer usually does a few seconds later; trying again at
                 # once spends every try on the same blip.
                 self.sleep(PUSH_PAUSE_SECONDS * tries)
-            remote, run = gitops.ls_remote(repo_dir, f"refs/heads/{job.target}")
-            if remote and remote != job.result["base_sha"]:
+            head, run = gitops.ls_remote(repo_dir, remote, f"refs/heads/{job.target}")
+            if head and head != job.result["base_sha"]:
                 # The full gate runs at the tip that is pushed, so a moved target is merged in
                 # and gated again.
-                gitops.fetch(repo_dir, job.target)
+                gitops.fetch(repo_dir, remote, job.target)
                 subject = f"merge({job.node_id}): {moved} into its landing"
                 if not gitops.merge_no_ff(worktree, moved, subject):
                     return self._needs_agent(job, "conflict")
                 job.result["base_sha"] = gitops.rev_parse(repo_dir, moved)
                 return "gate"
             # A remote that answered with no such branch is one this push creates.
-            if remote or run.returncode == 0:
+            if head or run.returncode == 0:
                 if not self._running(job):
                     return self._state(job)
-                run = gitops.push(worktree, job.target)
+                run = gitops.push(worktree, remote, job.target)
                 if run.returncode == 0:
                     self._after_land(job, worktree)
                     return "verify"
@@ -521,8 +522,8 @@ class Landing:
         failing = sorted(base.failing or frozenset())
         remote = self._at_top(job)
         red = job.target
-        if remote and not gitops.rev_parse(self._dir(job), f"origin/{red}"):
-            # A target not on origin yet was merged from its default branch: that is what is red.
+        if remote and not gitops.rev_parse(self._dir(job), self.claims.ops.top_ref(job.repo, red)):
+            # A target not created yet was merged from its default branch: that is what is red.
             red = self.claims.ops.default_branch(job.repo)
         gates.clear_red_targets(self.claims.nodes, job.node_id)
         self.claims.nodes.add_condition(
@@ -667,12 +668,13 @@ class Landing:
 
     def _target_ref(self, job: Job) -> str:
         if self._at_top(job):
-            gitops.fetch(self._dir(job), job.target)
+            gitops.fetch(self._dir(job), self.claims.ops.remote(job.repo), job.target)
         return self.claims.target_ref(job.node_id, job.repo)
 
     def _at_top(self, job: Job) -> bool:
-        """The landing's target is its chain's top branch, which lives on origin and is pushed;
-        a container branch is local to the shared clone and moved in place."""
+        """The landing's target is its chain's top branch, which is pushed to the repository's
+        remote, or to the repository itself when it has none; a container branch is local to the
+        shared clone and moved in place."""
         return self.claims.ops.landing_parent(job.node_id) is None
 
     def _gate_config(self, repo: str, which: Literal["main", "parent"]) -> Gate | None:

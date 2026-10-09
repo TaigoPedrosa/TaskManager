@@ -14,6 +14,7 @@ from pathlib import Path
 
 from taskmanager.core.enums import VerificationType
 from taskmanager.core.models import NodeVerification
+from taskmanager.engine import git as gitops
 from taskmanager.engine.config import DEFAULT_BRANCH, ConfigStore
 from taskmanager.engine.doctor import CODEGRAPH_INSTALL, codegraph_index
 
@@ -56,19 +57,28 @@ def _relative_to_repo(target_path: str, target_repo: str) -> str:
     return target_path.removeprefix(prefix)
 
 
-def _resolve_ref(repo_root: Path, ref: str | None, branch: str) -> tuple[str, str | None]:
+def _resolve_ref(
+    repo_root: Path, target_repo: str, remote: str | None, ref: str | None, branch: str
+) -> tuple[str, str | None]:
     """The ref to read, and a fetch-failure message when the default ref could not be refreshed.
 
     A caller-supplied `ref` is read as-is, with no fetch. Otherwise the default is
-    `origin/<branch>` after fetching it; a failed fetch is reported and never falls back to the
-    working tree.
+    `<remote>/<branch>` after fetching it, or the local branch in a repository with no remote; a
+    failed fetch is reported and never falls back to the working tree.
     """
     if ref is not None:
         return ref, None
-    fetched = _git(repo_root, "fetch", "-q", "origin", branch)
+    tracked = gitops.tracking(remote, branch)
+    if remote is None:
+        return tracked, None
+    fetched = _git(repo_root, "fetch", "-q", remote, branch)
     if fetched.returncode != 0:
-        return f"origin/{branch}", fetched.stderr.strip() or f"exit code {fetched.returncode}"
-    return f"origin/{branch}", None
+        return tracked, (
+            gitops.missing_remote(repo_root, target_repo, remote)
+            or fetched.stderr.strip()
+            or f"exit code {fetched.returncode}"
+        )
+    return tracked, None
 
 
 def codegraph_regex(pattern: str | None) -> re.Pattern[str]:
@@ -147,9 +157,9 @@ class VerificationEngine:
         ref: str | None = None,
         branch: str | None = None,
     ) -> VerificationResult:
-        """With no `ref`, a path check or a codegraph query reads `origin/<branch>` (the default
-        branch when none is named), and a test command is handed `origin/<branch>` only when
-        `branch` is named."""
+        """With no `ref`, a path check or a codegraph query reads `<remote>/<branch>` (the default
+        branch when none is named; the local branch with no remote), and a test command is
+        handed that ref only when `branch` is named."""
         if ver.verification_type in RETIRED_VERIFICATIONS:
             return VerificationResult(
                 ver.id,
@@ -163,14 +173,17 @@ class VerificationEngine:
         if target_repo and ver.verification_type in _PATH_VERIFICATION_TYPES:
             return self._verify_at_ref(ver, target_repo, ref, branch or DEFAULT_BRANCH)
         if ref is None and branch is not None:
-            ref = f"origin/{branch}"
+            ref = gitops.tracking(self._remote(target_repo), branch)
         return self._verify_in_tree(ver, ref)
+
+    def _remote(self, target_repo: str | None) -> str | None:
+        return ConfigStore(self.root).branches().remote(target_repo)
 
     def _verify_at_ref(
         self, ver: NodeVerification, target_repo: str, ref: str | None, branch: str
     ) -> VerificationResult:
-        repo_root = self.root / target_repo
-        effective_ref, fetch_error = _resolve_ref(repo_root, ref, branch)
+        repo_root, remote = self.root / target_repo, self._remote(target_repo)
+        effective_ref, fetch_error = _resolve_ref(repo_root, target_repo, remote, ref, branch)
         mode_suffix = f" (git ref {effective_ref} in {target_repo})"
 
         if fetch_error is not None:
@@ -180,7 +193,7 @@ class VerificationEngine:
                 verification_type=ver.verification_type,
                 passed=False,
                 message=(
-                    f"git fetch origin {branch} in {target_repo} failed, refusing to fall back "
+                    f"git fetch {remote} {branch} in {target_repo} failed, refusing to fall back "
                     f"to the working tree: {fetch_error}"
                 ),
             )
@@ -257,11 +270,12 @@ class VerificationEngine:
                 False, f"{target_repo} has no codegraph index; run `codegraph init` in {repo_root}"
             )
 
-        effective_ref, fetch_error = _resolve_ref(repo_root, ref, branch)
+        remote = self._remote(target_repo)
+        effective_ref, fetch_error = _resolve_ref(repo_root, target_repo, remote, ref, branch)
         if fetch_error is not None:
             return result(
                 False,
-                f"git fetch origin {branch} in {target_repo} failed, refusing to fall back to "
+                f"git fetch {remote} {branch} in {target_repo} failed, refusing to fall back to "
                 f"the working tree: {fetch_error}",
             )
         mode_suffix = f" (git ref {effective_ref} in {target_repo})"

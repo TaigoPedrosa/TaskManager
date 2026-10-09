@@ -651,20 +651,20 @@ class Claims:
     def _base_ref(self, node_id: str, repo: str) -> str:
         """The ref `node_id`'s branch is cut from in `repo`, creating each ancestor container
         branch on the way: a node builds on its landing target, never on the top branch past a
-        parent that has not landed. A top branch not on origin yet is cut from the repository's
+        parent that has not landed. A top branch not on its remote yet is cut from the repository's
         default branch, and the first landing on it creates it; with that one missing too, the
         claim is refused, since the landing would have nowhere to push."""
         repo_dir = self.root / repo
         parent = self.ops.landing_parent(self.node(node_id).id)
         if parent is None:
-            top = self.fetched_top(node_id, repo)
-            if not gitops.rev_parse(repo_dir, f"origin/{top}"):
+            top, remote = self.fetched_top(node_id, repo), self.ops.remote(repo)
+            ref = gitops.tracking(remote, top)
+            if not gitops.rev_parse(repo_dir, ref):
+                lands = f"by pushing to {remote}" if remote else f"on {top}"
                 raise OperationError(
-                    f"{repo} has no origin/{top}: tm cuts branches from origin/{top} and lands "
-                    "by pushing to origin",
-                    409,
+                    f"{repo} has no {ref}: tm cuts branches from {ref} and lands {lands}", 409
                 )
-            return f"origin/{top}"
+            return ref
         parent_branch = self.branch_of(parent)
         if not gitops.rev_parse(repo_dir, f"refs/heads/{parent_branch}"):
             gitops.ensure_branch(repo_dir, parent_branch, self._base_ref(parent, repo))
@@ -673,18 +673,19 @@ class Claims:
     def base_of(self, node_id: str, repo: str) -> str:
         """The branch `node_id`'s branch is read against in `repo`: the container branch it
         lands on, else its top as `fetched_top` reads it, which is the default branch the
-        branch was cut from until the first landing creates the top on origin."""
+        branch was cut from until the first landing creates the top."""
         parent = self.ops.landing_parent(node_id)
         return self.branch_of(parent) if parent else self.fetched_top(node_id, repo)
 
     def fetched_top(self, node_id: str, repo: str) -> str:
-        """The branch `node_id`'s chain lands on at the top in `repo`, fetched. One not on origin
-        yet reads as the repository's default branch, which the first landing on it pushes."""
-        repo_dir = self.root / repo
+        """The branch `node_id`'s chain lands on at the top in `repo`, fetched. One that does not
+        exist yet reads as the repository's default branch, which the first landing on it
+        creates."""
+        repo_dir, remote = self.root / repo, self.ops.remote(repo)
         top, default = self.ops.landing_branch(node_id, repo), self.ops.default_branch(repo)
-        gitops.fetch(repo_dir, top)
-        if top != default and not gitops.rev_parse(repo_dir, f"origin/{top}"):
-            gitops.fetch(repo_dir, default)
+        gitops.fetch(repo_dir, remote, top)
+        if top != default and not gitops.rev_parse(repo_dir, gitops.tracking(remote, top)):
+            gitops.fetch(repo_dir, remote, default)
             return default
         return top
 
@@ -740,7 +741,7 @@ class Claims:
         repo_dir = self.root / repo
         base = self.target_ref(node.id, repo)
         if not gitops.rev_parse(repo_dir, base):
-            base = f"origin/{self.ops.default_branch(repo)}"
+            base = self.ops.top_ref(repo, self.ops.default_branch(repo))
         declared = declared_files_of(node, [])
         migrations = self.config.repo(repo).migrations
         written = [
@@ -1117,7 +1118,7 @@ class Claims:
             repo_dir = self.root / repo
             target, ref = self.target_of(node_id, repo), self.target_ref(node_id, repo)
             if at_top:
-                gitops.fetch(repo_dir, target)
+                gitops.fetch(repo_dir, self.ops.remote(repo), target)
             if gitops.rev_parse(repo_dir, f"refs/heads/{branch}"):
                 if not gitops.is_ancestor(repo_dir, branch, ref):
                     raise OperationError(
@@ -1222,7 +1223,7 @@ class Claims:
                 source_ref = self.target_ref(base, repo)
                 top = self.target_of(base, repo) if source.startswith(TOP) else None
                 if top is not None and (repo, top) not in fetched:
-                    gitops.fetch(repo_dir, top)
+                    gitops.fetch(repo_dir, self.ops.remote(repo), top)
                     fetched.add((repo, top))
                 present = all(
                     gitops.rev_parse(repo_dir, ref)
