@@ -42,7 +42,7 @@ from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.di.container import TaskManagerProvider
-from taskmanager.engine.archive import archived_specs
+from taskmanager.engine.archive import Archive, archived_specs
 from taskmanager.engine.assets import ASSET_NAME_RE
 from taskmanager.engine.config import ConfigStore, DispatchConfig
 from taskmanager.engine.decisions import read_decision
@@ -580,10 +580,12 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         """One snapshot per request, so every display in one response reads the same tree."""
         return DisplayView(snapshots, cache, _condition_ttl())
 
-    def view_rows(view: DisplayView) -> dict[str, dict[str, Any]]:
+    def view_archive(view: DisplayView) -> Archive:
         days = ConfigStore(project_root).project().web.archive_after_days
-        archive = archived_specs(view.snapshot, ledger, datetime.now(tz=UTC), days)
-        return build_rows(view, archive.nodes)
+        return archived_specs(view.snapshot, ledger, datetime.now(tz=UTC), days)
+
+    def view_rows(view: DisplayView) -> dict[str, dict[str, Any]]:
+        return build_rows(view, view_archive(view).nodes)
 
     def _body_repos() -> BodyRepos:
         return BodyRepos(
@@ -695,7 +697,12 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         depth: int = 1,
         size: int | None = None,
         spec: Annotated[list[str] | None, Query()] = None,
+        archived: str | None = None,
     ) -> dict[str, Any]:
+        try:
+            mode = parse_archived(archived)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         dispatch = _dispatch_config()
         depth = _parse_bound(
             depth,
@@ -717,6 +724,13 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         # condition's command under.
         view = new_view()
         snap = view.snapshot
+        if mode != "include":
+            # The archive holds whole spec subtrees, so scoping by spec is the whole filter;
+            # "none" scopes the nodes under no spec, which never archive.
+            archive = view_archive(view)
+            every_spec = [n.id for n in snap.graph_data().nodes.values() if n.kind == NodeKind.SPEC]
+            pool = spec if spec is not None else [*every_spec, "none"]
+            spec = [s for s in pool if (s in archive.specs) is (mode == "only")]
         cached_conditions = cache.all_conditions(_condition_ttl())
         waves = simulate(
             snap,
