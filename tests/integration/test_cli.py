@@ -524,6 +524,86 @@ def test_cli_task_update_unset_removes_a_frontmatter_key(tmp_path: Path) -> None
     assert "declared_files" not in doc["frontmatter"]
 
 
+def test_set_refuses_a_key_that_names_a_node_field(tmp_path: Path) -> None:
+    root = str(tmp_path)
+    assert runner.invoke(app, ["init", "--path", root]).exit_code == 0
+    assert runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "--path", root]).exit_code == 0
+    res = runner.invoke(app, ["plan", "add", "P", "--spec", "S1", "--slug", "P1", "--path", root])
+    assert res.exit_code == 0
+    res = runner.invoke(
+        app, ["task", "add", "T", "--plan", "S1-P1", "--slug", "t1", "--path", root]
+    )
+    assert res.exit_code == 0
+
+    res = runner.invoke(
+        app, ["task", "update", "S1-P1-t1", "--set", "target_repo=.", "--path", root]
+    )
+    assert res.exit_code != 0
+    assert "--repo" in res.stderr
+
+    res = runner.invoke(app, ["task", "update", "S1-P1-t1", "--set", "status=DONE", "--path", root])
+    assert res.exit_code != 0
+    assert "tm sets it" in res.stderr
+
+    res = runner.invoke(app, ["task", "update", "S1-P1-t1", "--set", "ordinal=3", "--path", root])
+    assert res.exit_code != 0
+    assert "--order" not in res.stderr
+    assert "this command has no option for it" in res.stderr
+
+    for key, named, absent in [
+        ("title=x", "TITLE argument", "--title"),
+        ("land_order=a", "this command has no option for it", "--land-order"),
+    ]:
+        res = runner.invoke(
+            app,
+            ["task", "add", "V", "--plan", "S1-P1", "--slug", "t3", "--set", key, "--path", root],
+        )
+        assert res.exit_code != 0
+        assert named in res.stderr
+        assert absent not in res.stderr
+
+    res = runner.invoke(
+        app,
+        [
+            "task",
+            "add",
+            "U",
+            "--plan",
+            "S1-P1",
+            "--slug",
+            "t2",
+            "--set",
+            "target_repo=.",
+            "--path",
+            root,
+        ],
+    )
+    assert res.exit_code != 0
+    assert "--repo" in res.stderr
+    assert runner.invoke(app, ["task", "get", "S1-P1-t2", "--path", root]).exit_code != 0
+
+    res = runner.invoke(
+        app,
+        [
+            "task",
+            "update",
+            "S1-P1-t1",
+            "--set",
+            'declared_files=["a"]',
+            "--set",
+            'review_models=["m"]',
+            "--path",
+            root,
+        ],
+    )
+    assert res.exit_code == 0
+    doc = json.loads(
+        runner.invoke(app, ["task", "get", "S1-P1-t1", "--json", "--path", root]).stdout
+    )
+    assert doc["target_repo"] is None
+    assert doc["frontmatter"] == {"declared_files": ["a"], "review_models": ["m"]}
+
+
 def test_cli_task_move_reparents_to_another_plan(tmp_path: Path) -> None:
     runner.invoke(app, ["init", "--path", str(tmp_path)])
     runner.invoke(app, ["spec", "add", "S", "--slug", "S1", "--path", str(tmp_path)])
