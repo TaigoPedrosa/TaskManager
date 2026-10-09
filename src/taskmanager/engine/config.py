@@ -306,7 +306,8 @@ def _typed(key: str, raw: Any) -> Any:
         # Inside `repos`, the message names the key that failed as a dotted write spells it.
         where = ".".join(str(p) for p in error["loc"] if p != "[key]") if key == "repos" else key
         raise ConfigError(f"{where}: {msg} (valid keys: {_VALID})") from exc
-    return _lookup(model.model_dump(mode="json"), key)
+    # Only what was set: a stored default would read as a choice someone made.
+    return _lookup(model.model_dump(mode="json", exclude_unset=True), key)
 
 
 def _refuse_dropping(stored: dict[str, Any], repos: dict[str, Any]) -> None:
@@ -432,7 +433,7 @@ class ConfigStore:
         it that is not set, such as a gate never configured, reads as None."""
         repos = self.resolve("repos")
         entry = repos.value.get(key.repo)
-        node: Any = RepoConfig().model_dump(mode="json") if entry is None else entry
+        node: Any = RepoConfig.model_validate(entry or {}).model_dump(mode="json")
         for part in key.path:
             node = node.get(part) if isinstance(node, dict) else None
         return Resolved(node, "default" if entry is None else repos.source)

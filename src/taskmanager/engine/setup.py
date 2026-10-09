@@ -91,9 +91,13 @@ def _repo_order(root: Path, store: ConfigStore, flags: Flags, ask: Ask | None) -
     return repos
 
 
+def _has_default_branch(store: ConfigStore, repo: str) -> bool:
+    return "default_branch" in store.read().get("repos", {}).get(repo, {})
+
+
 def _default_branches(root: Path, store: ConfigStore, repos: list[str], ask: Ask) -> None:
     for repo in repos:
-        if repo not in store.read().get("repos", {}):
+        if not _has_default_branch(store, repo):
             branch = ask(f"default branch ({repo})", origin_head(root / repo))
             store.set(f"repos.{repo}.default_branch", branch)
 
@@ -108,8 +112,8 @@ def _worktree_dir(root: Path, store: ConfigStore, flags: Flags, ask: Ask | None)
 def _gates(root: Path, store: ConfigStore, repos: list[str], flags: Flags, ask: Ask | None) -> None:
     _require_repos(root, list(flags.gates))
     for repo, command in flags.gates.items():
-        # Any write under repos.<repo> stores default_branch, so the entry takes origin/HEAD now.
-        if repo not in store.read().get("repos", {}):
+        # Without a prompt the default-branch step never runs, so a gate's repo takes origin/HEAD.
+        if not _has_default_branch(store, repo):
             store.set(f"repos.{repo}.default_branch", origin_head(root / repo))
         store.set(f"repos.{repo}.gates.main.command", command)
     if ask is None:

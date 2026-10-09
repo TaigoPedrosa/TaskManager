@@ -294,3 +294,41 @@ def test_init_gate_flag_keeps_a_stored_default_branch(root: Path) -> None:
     init(root, "--gate", "api=make test")
 
     assert config(root)["repos"]["api"]["default_branch"] == "release"
+
+
+def config_set(root: Path, key: str, value: str) -> None:
+    init(root)
+    res = runner.invoke(app, ["config", "set", key, value, "-C", str(root)])
+    assert res.exit_code == 0, res.output
+
+
+def test_config_set_under_a_repo_writes_no_defaults(root: Path) -> None:
+    config_set(root, "repos.api.gates.main.command", "make test")
+
+    assert config(root)["repos"] == {"api": {"gates": {"main": {"command": "make test"}}}}
+
+
+def test_init_yes_sets_an_unset_default_branch_of_a_repo_configured_by_hand(root: Path) -> None:
+    config_set(root, "repos.api.gates.main.command", "make test")
+
+    init(root, "--yes")
+
+    assert config(root)["repos"]["api"]["default_branch"] == "trunk"
+
+
+def test_init_yes_keeps_a_default_branch_set_by_hand(root: Path) -> None:
+    config_set(root, "repos.api.default_branch", "main")
+
+    init(root, "--yes")
+
+    assert config(root)["repos"]["api"]["default_branch"] == "main"
+
+
+def test_init_gate_flag_sets_an_unset_default_branch_of_a_repo_configured_by_hand(
+    root: Path,
+) -> None:
+    config_set(root, "repos.api.gates.parent.command", "make quick")
+
+    init(root, "--gate", "api=make test")
+
+    assert config(root)["repos"]["api"]["default_branch"] == "trunk"
