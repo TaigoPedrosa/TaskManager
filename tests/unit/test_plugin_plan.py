@@ -66,7 +66,8 @@ def test_the_plan_skill_gates_on_design_approval_and_proves_its_verifications() 
     text = SKILL.read_text(encoding="utf-8")
     gate = _section(text, "Gate")
     assert "approve the design" in gate
-    assert "ANSWERED" in gate
+    assert "Approve the design of <spec-id>?" in gate
+    assert "`ANSWERED` and its `answer.option` is `approve`" in gate
     assert "stop and name it" in gate
     prove = _section(text, "Prove")
     assert "tm verify run <task-id> --ref origin/<lands_on>" in prove

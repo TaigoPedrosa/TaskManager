@@ -13,7 +13,7 @@ Two hard gates: no plan before the design is approved, and no dispatch before th
 
 ## 1. Gate
 
-Take the spec id from the call. Find its approval decision, the "approve the design" decision `/taskmanager:design` raised blocking the spec: every decision blocking the spec is listed with its state under `depends_on` in `tm task get`, and `tm decision list` gives each one's question.
+Take the spec id from the call. Find its approval decision, the "approve the design" decision `/taskmanager:design` raised blocking the spec, asked as "Approve the design of <spec-id>?" with the options `approve` and `change`: every decision blocking the spec is listed with its state under `depends_on` in `tm task get`, and `tm decision list` gives each one's question.
 
 ```
 tm task get <spec-id> --yaml
@@ -21,7 +21,7 @@ tm decision list --yaml
 tm decision get <decision-id> --yaml
 ```
 
-Go on only when that decision is `ANSWERED` and its `answer.option` is the option that approves the design. Otherwise stop and name it: the decision id, its question, and its state (open, answered with another option, withdrawn, or not raised at all, in which case the next stage is `/taskmanager:design`). An answer that asks for changes sends the work back to design; nothing here edits the `design` section.
+Go on only when that decision is `ANSWERED` and its `answer.option` is `approve`. Otherwise stop and name it: the decision id, its question, and its state (open, answered with another option, withdrawn, or not raised at all, in which case the next stage is `/taskmanager:design`). An answer that asks for changes sends the work back to design; nothing here edits the `design` section.
 
 Also stop while any other decision blocking the spec is open: list each one with its id.
 
