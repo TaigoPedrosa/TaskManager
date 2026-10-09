@@ -59,7 +59,7 @@ from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.db.schema import STATE_SCHEMA_VERSION
 from taskmanager.di.container import TaskManagerProvider
-from taskmanager.engine import doctor
+from taskmanager.engine import doctor, setup
 from taskmanager.engine.chains import landing_chain
 from taskmanager.engine.claims import LIVE_JOBS, Blocker, Claims, DecisionSpec
 from taskmanager.engine.config import ConfigError, ConfigStore
@@ -418,12 +418,42 @@ def init(
             help="Move a pre-lifecycle estate to .taskmanager/archive-<timestamp>/ first",
         ),
     ] = False,
+    yes: Annotated[
+        bool, typer.Option("--yes", "-y", help="Take every found value and ask nothing")
+    ] = False,
+    repos: Annotated[
+        list[str] | None,
+        typer.Option("--repo", metavar="<repo>", help="A repository in repo_order, repeatable"),
+    ] = None,
+    gates: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--gate", metavar="<repo>=<command>", help="A repository's main gate, repeatable"
+        ),
+    ] = None,
+    worktree_dir: Annotated[
+        str | None, typer.Option("--worktree-dir", metavar="<dir>", help="Set worktree_dir")
+    ] = None,
+    track_estate: Annotated[
+        bool | None,
+        typer.Option(
+            "--track-estate/--ignore-estate",
+            help="Keep .taskmanager/ tracked for sharing, or ignore it in .gitignore",
+        ),
+    ] = None,
     path: Annotated[
         Path | None, typer.Option("--path", "-C", help="Target project root directory")
     ] = None,
 ) -> None:
-    """Create the estate under .taskmanager and print what tm needs, with the command that fixes each missing piece."""
+    """Create the estate under .taskmanager, walk the project's configuration at a terminal (each
+    step not already set), and print what tm needs, with the command that fixes each missing piece."""
     root = _get_root(path, must_exist=False)
+    flags = setup.Flags(
+        repos=repos or [],
+        gates=dict(_gate_flag(g) for g in gates or []),
+        worktree_dir=worktree_dir,
+        track_estate=track_estate,
+    )
     if archive:
         try:
             moved = DatabaseManager.archive_pre_lifecycle(root)
@@ -435,12 +465,35 @@ def init(
     db = container.get(DatabaseManager)
     db.init_all()
     _record_ledger(container, command=LedgerCommand.INIT, target_id=str(root))
-    _exclude_local_state(root)
     print(f"[green]Initialized .taskmanager in {root}[/green]")
+    with _user_errors(), _refusing():
+        setup.configure(root, _config_store(root), flags, _init_ask(yes))
+    _exclude_local_state(root)
     sys.stdout.writelines(f"{fact.line()}\n" for fact in _doctor_facts(root))
     sys.stdout.write(
         "next: read `tm guide overview`, then give every repository a task lands in a main gate: "
         'tm config set repos.<repo>.gates.main.command "<command>"\n'
+    )
+
+
+def _gate_flag(raw: str) -> tuple[str, str]:
+    repo, sep, command = raw.partition("=")
+    if not sep or not repo or not command.strip():
+        raise typer.BadParameter(f"'{raw}' is not <repo>=<command>", param_hint="--gate")
+    return repo, command
+
+
+def _stdin_is_terminal() -> bool:
+    return sys.stdin.isatty()
+
+
+def _init_ask(yes: bool) -> setup.Ask | None:
+    if yes:
+        return lambda _question, found: found
+    if not _stdin_is_terminal():
+        return None
+    return lambda question, found: str(
+        typer.prompt(question, default=found, show_default=bool(found))
     )
 
 
