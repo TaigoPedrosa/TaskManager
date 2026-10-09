@@ -11,7 +11,7 @@
 // fresh Map here would silently desync from them.
 const filters = {
   statusMode: new Map(), phaseMode: new Map(), repoMode: new Map(), modelMode: new Map(),
-  specMode: new Map(), scoreMin: null, scoreMax: null, q: ''
+  specMode: new Map(), scoreMin: null, scoreMax: null, q: '', archived: false
 };
 
 function anyFilterActive() {
@@ -42,6 +42,7 @@ function readFilters(p) {
   filters.scoreMax = smax !== null && smax !== '' ? Number(smax) : null;
   filters.q = (p.get('q') || '').toLowerCase();
   searchBox.value = filters.q;
+  filters.archived = p.get('archived') === 'only';
 }
 
 function modeEntries(modeMap) {
@@ -72,6 +73,7 @@ function filtersToF() {
   if (filters.scoreMin !== null) F.smin = String(filters.scoreMin);
   if (filters.scoreMax !== null) F.smax = String(filters.scoreMax);
   if (filters.q) F.q = filters.q;
+  if (filters.archived) F.archived = 'only';
   return F;
 }
 
@@ -108,6 +110,11 @@ function readLocation() {
   const params = new URLSearchParams(query);
   const sort = params.get('sort') === 'priority' ? 'priority' : 'progress';
   params.delete('sort');
+  // The URL spells the archive ?archive=1; the store's filters name the server's mode.
+  const archive = params.get('archive') === '1';
+  params.delete('archive');
+  params.delete('archived');
+  if (archive) params.set('archived', 'only');
   return {
     view: known ? view : window.VIEW_MODES.DOCUMENT,
     id: known && id ? id : null,
@@ -149,6 +156,9 @@ function applyLocation({ view, id, filters: F, sort }) {
 function navigate({ view = currentMode, id = null, filters: F = filtersToF(), sort = sortOrder } = {}, { replace = false } = {}) {
   const here = readLocation();
   const params = new URLSearchParams(F);
+  const archive = params.get('archived') === 'only';
+  params.delete('archived');
+  if (archive) params.set('archive', '1');
   if (sort === 'priority') params.set('sort', sort);
   const query = params.toString();
   // "/" and "/document" both open Document, so a write that keeps the view and its selection
@@ -399,7 +409,7 @@ function createTriStatePopover(container, { label, dimension, getOptions, modeMa
     const active = modeMap.size > 0;
     const btn = container.querySelector('.tri-btn-main');
     btn.querySelector('.tri-label').textContent = summary();
-    btn.className = `tri-btn-main h-8 min-w-[6.5rem] flex items-center justify-between gap-1 px-2.5 rounded-lg border text-xs transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${active ? 'bg-zinc-800 text-white border-emerald-600' : 'bg-zinc-950 text-zinc-300 border-zinc-800 hover:bg-zinc-900'}`;
+    btn.className = `tri-btn-main h-8 min-w-24 flex items-center justify-between gap-1 px-2.5 rounded-lg border text-xs transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${active ? 'bg-zinc-800 text-white border-emerald-600' : 'bg-zinc-950 text-zinc-300 border-zinc-800 hover:bg-zinc-900'}`;
     btn.setAttribute('aria-expanded', String(open));
     const pop = container.querySelector('.tri-pop');
     pop.classList.toggle('hidden', !open);
@@ -457,7 +467,7 @@ function createScoreFilter(container) {
     const active = filters.scoreMin !== null || filters.scoreMax !== null;
     const btn = container.querySelector('.sf-btn');
     btn.querySelector('.sf-label').textContent = `Score: ${Math.round(min)}-${Math.round(max)}`;
-    btn.className = `sf-btn h-8 min-w-[6.5rem] flex items-center justify-between gap-1 px-2.5 rounded-lg border text-xs transition ${active ? 'bg-zinc-800 text-white border-emerald-600' : 'bg-zinc-950 text-zinc-300 border-zinc-800 hover:bg-zinc-900'}`;
+    btn.className = `sf-btn h-8 min-w-24 flex items-center justify-between gap-1 px-2.5 rounded-lg border text-xs transition ${active ? 'bg-zinc-800 text-white border-emerald-600' : 'bg-zinc-950 text-zinc-300 border-zinc-800 hover:bg-zinc-900'}`;
     btn.setAttribute('aria-expanded', String(open));
     container.querySelector('.sf-pop').classList.toggle('hidden', !open);
     const lo = container.querySelector('.sf-lo');
@@ -573,7 +583,7 @@ let filtersPanelOpen = false;
 // The status chips fold into the panel too, so a status filter counts while it is closed.
 function activeFilterCount() {
   return filters.statusMode.size + filters.phaseMode.size + filters.repoMode.size + filters.modelMode.size +
-    filters.specMode.size + (filters.scoreMin !== null || filters.scoreMax !== null ? 1 : 0);
+    filters.specMode.size + (filters.scoreMin !== null || filters.scoreMax !== null ? 1 : 0) + (filters.archived ? 1 : 0);
 }
 
 function renderFiltersToggle() {
@@ -594,9 +604,22 @@ function renderFilterControls() {
   specTriState.render();
   phaseTriState.render();
   scoreFilter.render();
+  renderArchiveToggle();
   clearFiltersBtn.classList.toggle('hidden', !(anyFilterActive() || filters.q !== ''));
   renderFiltersToggle();
 }
+
+// Archive swaps the view's rows and counts for the archived specs'; pressing it again is the
+// way back to the default view.
+function renderArchiveToggle() {
+  archiveBtn.setAttribute('aria-pressed', String(filters.archived));
+  archiveBtn.className = `h-8 px-2.5 flex items-center rounded-lg border text-xs transition ${FOCUS_RING} ${filters.archived ? 'bg-zinc-800 text-white border-emerald-600' : 'bg-zinc-950 text-zinc-300 border-zinc-800 hover:bg-zinc-900'}`;
+}
+
+archiveBtn.addEventListener('click', () => {
+  filters.archived = !filters.archived;
+  applyFilterChange();
+});
 
 clearFiltersBtn.addEventListener('click', () => {
   filters.statusMode.clear();

@@ -49,6 +49,7 @@ _ROW_FIELDS = {
     "superseded_by",
     "child_count",
     "rev",
+    "archived",
 }
 
 

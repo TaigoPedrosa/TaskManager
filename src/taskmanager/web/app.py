@@ -11,7 +11,7 @@ import tempfile
 from collections.abc import AsyncGenerator, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import asdict
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlsplit
@@ -39,8 +39,10 @@ from taskmanager.core.status import (
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
+from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.di.container import TaskManagerProvider
+from taskmanager.engine.archive import Archive, archived_specs
 from taskmanager.engine.assets import ASSET_NAME_RE
 from taskmanager.engine.config import ConfigStore, DispatchConfig
 from taskmanager.engine.decisions import read_decision
@@ -50,9 +52,16 @@ from taskmanager.engine.simulate import simulate
 from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder, stored_status
 from taskmanager.web.bodies import BodyRepos, attachments_with_size, build_bodies, lease_dict
 from taskmanager.web.live import LiveHub
-from taskmanager.web.rows import build_rows, canonical, decisions_open, statuses, statuses_hash
+from taskmanager.web.rows import (
+    build_rows,
+    canonical,
+    decisions_open,
+    rows_in,
+    statuses,
+    statuses_hash,
+)
 from taskmanager.web.ui import get_web_html
-from taskmanager.web.visibility import parse_filters, visible_ids
+from taskmanager.web.visibility import parse_archived, parse_filters, visible_ids
 
 # The page's own paths (filters.js's router): /<view> and /<view>/<id>.
 PAGE_VIEWS = frozenset({"document", "graph", "waves", "decisions"})
@@ -392,8 +401,9 @@ def paginate_nodes(
         candidates.sort(key=lambda r: (r["ordinal"], r["id"]))
     else:
         parent_id = None if parent in (None, "root") else parent
-        visible = visible_ids(rows, filters, list(rows.keys()))
-        candidates = [rows[i] for i in visible if rows[i]["parent"] == parent_id]
+        in_view = rows_in(rows, filters.archived)
+        visible = visible_ids(in_view, filters, list(in_view.keys()))
+        candidates = [in_view[i] for i in visible if in_view[i]["parent"] == parent_id]
 
     query_key = {
         "parent": parent,
@@ -519,6 +529,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     claims = Landing.open(project_root).claims
     jobs = container.get(JobRepository)
     cache = container.get(CacheRepository)
+    ledger = container.get(LedgerRepository)
 
     def _condition_ttl() -> int:
         return ConfigStore(project_root).project().condition_ttl
@@ -569,6 +580,13 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         """One snapshot per request, so every display in one response reads the same tree."""
         return DisplayView(snapshots, cache, _condition_ttl())
 
+    def view_archive(view: DisplayView) -> Archive:
+        days = ConfigStore(project_root).project().web.archive_after_days
+        return archived_specs(view.snapshot, ledger, datetime.now(tz=UTC), days)
+
+    def view_rows(view: DisplayView) -> dict[str, dict[str, Any]]:
+        return build_rows(view, view_archive(view).nodes)
+
     def _body_repos() -> BodyRepos:
         return BodyRepos(
             node_repo=node_repo,
@@ -600,10 +618,13 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         return detail
 
     @app.get("/api/statuses")
-    def get_statuses() -> dict[str, Any]:
+    def get_statuses(archived: str | None = None) -> dict[str, Any]:
+        try:
+            mode = parse_archived(archived)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         view = new_view()
-        rows = build_rows(view)
-        entries = statuses(rows)
+        entries = statuses(rows_in(view_rows(view), mode))
         return {
             "statuses": entries,
             "hash": statuses_hash(entries),
@@ -627,7 +648,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
                 raise HTTPException(400, f"at most {_MAX_NODES_IDS} ids")
         view = new_view()
         return paginate_nodes(
-            build_rows(view),
+            view_rows(view),
             view=view,
             repos=_body_repos(),
             parent=parent,
@@ -676,7 +697,12 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         depth: int = 1,
         size: int | None = None,
         spec: Annotated[list[str] | None, Query()] = None,
+        archived: str | None = None,
     ) -> dict[str, Any]:
+        try:
+            mode = parse_archived(archived)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         dispatch = _dispatch_config()
         depth = _parse_bound(
             depth,
@@ -698,6 +724,13 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         # condition's command under.
         view = new_view()
         snap = view.snapshot
+        if mode != "include":
+            # The archive holds whole spec subtrees, so scoping by spec is the whole filter;
+            # "none" scopes the nodes under no spec, which never archive.
+            archive = view_archive(view)
+            every_spec = [n.id for n in snap.graph_data().nodes.values() if n.kind == NodeKind.SPEC]
+            pool = spec if spec is not None else [*every_spec, "none"]
+            spec = [s for s in pool if (s in archive.specs) is (mode == "only")]
         cached_conditions = cache.all_conditions(_condition_ttl())
         waves = simulate(
             snap,

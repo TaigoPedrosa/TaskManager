@@ -5,7 +5,7 @@
 //
 // options:
 //   wsUrl      - full ws(s):// URL; defaults to the current page's origin + /ws.
-//   staticData - {statuses, hash, rows, edges, bodies, decisions}, every row/edge/body the
+//   staticData - {statuses, hash, archived_statuses, rows, edges, bodies, decisions}, every row/edge/body the
 //                project has. Presence of this key is what puts the store in static mode:
 //                everything after this point is computed locally, from web/visibility.py's
 //                rules, instead of asked of a server.
@@ -341,22 +341,33 @@ function createStore(options) {
 
   let allRows = null;
   let allEdges = null;
+  let defaultStatuses = [];
+  let archivedStatuses = [];
 
+  // The export carries every row with its `archived` flag; the server's `archived` mode is
+  // applied here: `only` keeps the archived rows, anything else keeps the rest.
   function recomputeStatic() {
     const parsed = parseFilters(filters);
-    const visible = visibleIds(allRows, parsed, [...openSet]);
-    const newRows = new Map(visible.map(id => [id, allRows[id]]));
+    const only = filters.archived === 'only';
+    const modeRows = Object.fromEntries(Object.entries(allRows).filter(([, r]) => !!r.archived === only));
+    const visible = visibleIds(modeRows, parsed, [...openSet]);
+    const newRows = new Map(visible.map(id => [id, modeRows[id]]));
     const rowIds = diffMapIds(rows, newRows);
     rows = newRows;
-    edges = projectEdges(allEdges, allRows, visible);
-    facets = facetsOf(allRows, parsed);
-    notify({ rowIds, bodyIds: [], statusesChanged: false, facetsChanged: true, edgesChanged: true, connectionChanged: false });
+    edges = projectEdges(allEdges, modeRows, visible);
+    facets = facetsOf(modeRows, parsed);
+    const nextStatuses = only ? archivedStatuses : defaultStatuses;
+    const statusesChanged = nextStatuses !== statuses;
+    statuses = nextStatuses;
+    notify({ rowIds, bodyIds: [], statusesChanged, facetsChanged: true, edgesChanged: true, connectionChanged: false });
   }
 
   function initStatic(data) {
     allRows = data.rows || {};
     allEdges = data.edges || [];
-    statuses = data.statuses || [];
+    defaultStatuses = data.statuses || [];
+    archivedStatuses = data.archived_statuses || [];
+    statuses = defaultStatuses;
     decisionsOpen = (data.decisions || []).filter(d => d.status === 'OPEN').length;
     bodies = new Map(Object.entries(data.bodies || {}).map(([id, b]) => [id, normalizeBody(b)]));
     recomputeStatic();
