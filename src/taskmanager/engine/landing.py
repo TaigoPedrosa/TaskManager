@@ -36,6 +36,8 @@ PUSH_TRIES = 3
 PUSH_PAUSE_SECONDS = 5
 PUSH_ERROR_LINES = 5
 LOCK_WAIT_SECONDS = 120
+# ponytail: one fixed limit for every after_land hook; a repos.<repo> key if a hook needs longer.
+AFTER_LAND_TIMEOUT_SECONDS = 600
 LIVE = frozenset({JobState.RUNNING, JobState.NEEDS_AGENT})
 _logger = logging.getLogger(__name__)
 
@@ -277,7 +279,9 @@ class Landing:
             gate = self._gate_config(job.repo, "parent")
             if gate is None:
                 return "push"
-        tip = gates.run_gate(self._render(gate, job, worktree), worktree, gate.timeout, gate.junit)
+        tip = self._run_gate(gate, job, worktree)
+        if tip.no_tests:
+            return self._no_tests(job, tip)
         if tip.exit_code == 0:
             return "push"
         base = self._baseline(job, gate)
@@ -318,10 +322,32 @@ class Landing:
                     return self._state(job)
                 run = gitops.push(worktree, job.target)
                 if run.returncode == 0:
+                    self._after_land(job, worktree)
                     return "verify"
             job.result["push_tries"] = tries + 1
             job.result.setdefault("push_errors", []).append(_git_failure(run))
         return self._needs_agent(job, "push_failed")
+
+    def _after_land(self, job: Job, worktree: Path) -> None:
+        """The repository's `after_land` hook, for a container's push only: the push already
+        happened, so a red hook is recorded and the landing goes on."""
+        repo_config = self.config.repos.get(job.repo)
+        hook = repo_config.after_land if repo_config is not None else None
+        if hook is None or not self.claims.is_container(self.claims.node(job.node_id)):
+            return
+        command = gates.render(
+            hook,
+            target=job.target,
+            branch=self.claims.branch_of(job.node_id),
+            node=job.node_id,
+            repo=job.repo,
+        )
+        run = gates.run_gate(command, worktree, AFTER_LAND_TIMEOUT_SECONDS, None)
+        self.claims.note(
+            job.node_id,
+            "merge",
+            f"{job.repo}: after_land `{command}` exited {run.exit_code}\n{run.tail}".rstrip(),
+        )
 
     def _move_branch(self, job: Job, worktree: Path, done: str) -> str | JobState:
         """Moves a local container branch to the worktree's HEAD by compare-and-swap, under the
@@ -429,9 +455,9 @@ class Landing:
                 gate = self._gate_config(job.repo, "parent")
                 if gate is not None:
                     worktree = Path(self._require_worktree(job))
-                    run = gates.run_gate(
-                        self._render(gate, job, worktree), worktree, gate.timeout, gate.junit
-                    )
+                    run = self._run_gate(gate, job, worktree)
+                    if run.no_tests:
+                        return self._no_tests(job, run)
                     if run.exit_code != 0:
                         return self._needs_agent(job, "red", tip=run.tail)
                 job.step = "push"
@@ -619,9 +645,7 @@ class Landing:
             worktree = self._worktree_path(job, "base")
             gitops.add_detached_worktree(self._dir(job), worktree, sha)
             try:
-                run = gates.run_gate(
-                    self._render(gate, job, worktree), worktree, gate.timeout, gate.junit
-                )
+                run = self._run_gate(gate, job, worktree)
             finally:
                 GitManager(self._dir(job)).remove_worktree(worktree, force=True)
             self.cache.put_baseline(job.repo, sha, key, run)
@@ -653,6 +677,21 @@ class Landing:
     def _gate_config(self, repo: str, which: Literal["main", "parent"]) -> Gate | None:
         repo_config = self.config.repos.get(repo)
         return repo_config.gates.get(which) if repo_config is not None else None
+
+    def _run_gate(self, gate: Gate, job: Job, worktree: Path) -> GateRun:
+        return gates.run_gate(
+            self._render(gate, job, worktree), worktree, gate.timeout, gate.junit, gate.tests_ran
+        )
+
+    def _no_tests(self, job: Job, run: GateRun) -> JobState:
+        return self._needs_agent(
+            job,
+            "no tests",
+            detail=f"the test gate exited 0 but {run.no_tests}: a gate that ran no tests is not "
+            f"green (fix the gate's command, report or tests_ran in repos.{job.repo}.gates, then "
+            f"`tm job resume {job.id}`)",
+            tip=run.tail,
+        )
 
     def _render(self, gate: Gate, job: Job, worktree: Path) -> str:
         return gates.render(

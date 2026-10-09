@@ -1,5 +1,6 @@
 import copy
 import os
+import re
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, Final, Literal, NamedTuple
@@ -39,6 +40,7 @@ KEYS: Final = (
     "dispatch.tick_budget",
     "codegraph.cache_commits",
     "web.archive_after_days",
+    "review.blind",
 )
 
 # The dispatch loop's typical target, printed by `tm guide dispatch`: a wakeup every tick_min-
@@ -65,11 +67,19 @@ _GATE_NAMES: Final = ("main", "parent")
 # `repos` mapping. The mapping-valued ones, the repository's whole entry included, take YAML.
 _REPO_LEAVES: Final = (
     "default_branch",
-    *(f"gates.{gate}.{field}" for gate in _GATE_NAMES for field in ("command", "junit", "timeout")),
+    "after_land",
+    *(
+        f"gates.{gate}.{field}"
+        for gate in _GATE_NAMES
+        for field in ("command", "junit", "tests_ran", "timeout")
+    ),
 )
 _REPO_MAPPINGS: Final = ("gates", *(f"gates.{gate}" for gate in _GATE_NAMES))
 _VALID: Final = ", ".join(
-    (*KEYS, "repos.<repo>[.default_branch|.gates[.<main|parent>[.command|.junit|.timeout]]]")
+    (
+        *KEYS,
+        "repos.<repo>[.default_branch|.gates[.<main|parent>[.command|.junit|.tests_ran|.timeout]]|.after_land]",
+    )
 )
 
 LEASE_TTL_DEFAULTS: Final = {
@@ -120,13 +130,31 @@ class Gate(BaseModel):
 
     command: str = Field(min_length=1)
     junit: str | None = None
+    tests_ran: str | None = None
     timeout: int = Field(default=3600, gt=0)
+
+    @field_validator("tests_ran")
+    @classmethod
+    def _captures_one_count(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        try:
+            groups = re.compile(value).groups
+        except re.error as exc:
+            raise ValueError(f"'{value}' is not a regular expression: {exc}") from exc
+        if groups != 1:
+            raise ValueError(f"'{value}' must capture the test count in one group, not {groups}")
+        return value
 
 
 class RepoConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     default_branch: str = DEFAULT_BRANCH
+    # A command run in the landing worktree after a container's push to its spec's target, with
+    # {target}, {branch}, {node} and {repo} filled in; its exit never undoes the landing.
+    # Left out of the stored file while unset, so no repository carries an empty hook.
+    after_land: str | None = Field(default=None, min_length=1, exclude_if=lambda v: v is None)
     gates: dict[Literal["main", "parent"], Gate] = Field(default_factory=dict)
 
     @field_validator("default_branch")
@@ -160,6 +188,13 @@ class WebConfig(BaseModel):
     archive_after_days: int = Field(default=3, ge=0)
 
 
+class ReviewConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # A review brief leaves out the implementer's report, so the review is a second opinion.
+    blind: bool = True
+
+
 class ProjectConfig(BaseModel):
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
     worktree_dir: str = Field(default=".worktrees", min_length=1)
@@ -175,6 +210,7 @@ class ProjectConfig(BaseModel):
     dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
     codegraph: CodegraphConfig = Field(default_factory=CodegraphConfig)
     web: WebConfig = Field(default_factory=WebConfig)
+    review: ReviewConfig = Field(default_factory=ReviewConfig)
 
     @field_validator("lease_ttl")
     @classmethod
@@ -228,7 +264,7 @@ def _repo_key(key: str) -> RepoKey | None:
     rest = key.removeprefix("repos.")
     below = next((k for k in (*_REPO_LEAVES, *_REPO_MAPPINGS) if rest.endswith(f".{k}")), None)
     repo = rest.removesuffix(f".{below}") if below else rest
-    if not repo or {"gates", "default_branch"} & set(repo.split(".")):
+    if not repo or {"gates", "default_branch", "after_land"} & set(repo.split(".")):
         return None
     return RepoKey(repo, tuple(below.split(".")) if below else ())
 

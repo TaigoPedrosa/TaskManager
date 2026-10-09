@@ -5,7 +5,7 @@ leave the chain, through every review and fix status in between."""
 from pathlib import Path
 
 import pytest
-from lifecycle_estate import add, make_estate, stored
+from lifecycle_estate import add, gated, make_estate, stored
 
 from taskmanager.core.enums import NodeKind
 from taskmanager.core.status import Action, Merge, Outcome, Status
@@ -19,7 +19,7 @@ MIGRATION = ["api/migrations/versions/001_add.py"]
 def plan_estate(tmp_path: Path) -> Claims:
     """Spec S over plan P (review on), mid-merge, whose children land on P's branch: C, and W,
     which writes a migration. Task X depends on C."""
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "S", NodeKind.SPEC)
     add(
         claims,
@@ -254,7 +254,7 @@ def test_a_reset_to_before_landed_moves_the_plan_back_before_landing(
 def test_a_plan_the_rollup_lands_with_nothing_to_land_stays_on_its_target_through_its_review(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "S", NodeKind.SPEC)
     add(claims, "P", NodeKind.PLAN, parent="S", review=True)
     add(

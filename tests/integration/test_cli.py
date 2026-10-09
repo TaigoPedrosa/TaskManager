@@ -374,9 +374,6 @@ def test_cli_verify_run_reads_a_branch_ref_before_merge(tmp_path: Path) -> None:
     runner.invoke(
         app, ["task", "add", "Task R", "--plan", "SPR-PLR", "--slug", "TR", "--path", str(tmp_path)]
     )
-    runner.invoke(
-        app, ["task", "update", "SPR-PLR-TR", "--repo", "myrepo", "--path", str(tmp_path)]
-    )
 
     origin = tmp_path / "origin.git"
     subprocess.run(
@@ -401,6 +398,10 @@ def test_cli_verify_run_reads_a_branch_ref_before_merge(tmp_path: Path) -> None:
     (repo / "delivered.py").write_text("def deliver():\n    pass\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo), "add", "delivered.py"], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "deliver"], check=True)
+    updated = runner.invoke(
+        app, ["task", "update", "SPR-PLR-TR", "--repo", "myrepo", "--path", str(tmp_path)]
+    )
+    assert updated.exit_code == 0, updated.output
 
     runner.invoke(
         app,

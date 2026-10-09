@@ -20,7 +20,7 @@ Every node takes the fields below; `verifications` and `target_repo` act only on
 | `title` | One line, what the change is. |
 | `priority` | 1-100, default 50. Raise it to break a tie in discovery, not to express importance. |
 | `ordinal` | Display order; the position in the list when omitted. |
-| `target_repo` | The directory, under the tm root, the task's branch is cut in; `.` when the tm root is itself the repository. Per node and **not inherited**: set it on every task. A task without one cannot be implemented. |
+| `target_repo` | The directory, under the tm root, the task's branch is cut in; `.` when the tm root is itself the repository. Per node and **not inherited**: set it on every task. A task without one cannot be implemented. `tm import`, `tm task add --repo` and `tm task update --repo` refuse a directory that is not a git working tree under the tm root, and name the ones that are. |
 | `acceptable_models` | Real model ids. See §3. |
 | `review`, `fix`, `merge` | How the node reaches its spec's target branch. See §4. |
 | `requires` | Capabilities the agent needs, such as `figma`. See §3. |
@@ -166,6 +166,8 @@ tm verify add <id> --type test_command --target api-suite --pattern "<command>"
 tm verify list <id>
 tm verify remove <id> <verification-id>
 ```
+
+A section is rewritten in place, never extended with a second generation: `tm section get <id>:<key>`, edit it, set the whole back, with every sentence the change overrides gone. Only `:report`, `:review` and `:merge` grow by appended entries.
 
 A ruling (a decision's answer, or a fix round's instruction) that changes a landed task's approach updates that task's verifications in the same step: `tm verify list <id>`, then `tm verify remove` for each row that checks the old approach, then `tm verify add` for the new one. A verification still checking the old approach fails the plan's landing on a green fix.
 

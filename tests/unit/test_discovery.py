@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from lifecycle_estate import add, make_estate, stored
+from lifecycle_estate import add, gated, make_estate, stored
 
 from taskmanager.core.enums import NodeKind
 from taskmanager.core.models import Job, Lease
@@ -75,7 +75,7 @@ def test_the_batch_checksum_is_djb2_over_the_payload_bytes() -> None:
 def test_every_kind_of_node_is_offered_with_its_next_step_model_and_requirements(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "S", NodeKind.SPEC)
     add(claims, "P1", NodeKind.PLAN, parent="S", review=True, fix=True, status=Status.LANDED)
     add(claims, "C1", parent="P1", status=Status.COMPLETED)
@@ -98,7 +98,7 @@ def test_every_kind_of_node_is_offered_with_its_next_step_model_and_requirements
 
 
 def test_a_landing_or_a_sync_waiting_for_an_agent_is_offered_with_its_job(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1", status=Status.REVIEWED, outcome=Outcome.APPROVE)
     hold(claims, "T1", "other", Status.MERGING, Action.MERGE)
     land = waiting_job(claims, "T1", JobKind.LAND)
@@ -113,7 +113,7 @@ def test_a_landing_or_a_sync_waiting_for_an_agent_is_offered_with_its_job(tmp_pa
 
 
 def test_a_node_that_cannot_be_claimed_is_held_with_its_reason(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "D")
     add(claims, "T1", depends=("D",))
 
@@ -135,7 +135,7 @@ def test_a_node_that_cannot_be_claimed_is_held_with_its_reason(tmp_path: Path) -
 def test_specs_scope_the_batch_and_none_names_the_nodes_under_no_spec(
     tmp_path: Path, specs: list[str] | None, expected: set[str]
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     for spec, plan, task in (("S1", "P1", "T1"), ("S2", "P2", "T2")):
         add(claims, spec, NodeKind.SPEC)
         add(claims, plan, NodeKind.PLAN, parent=spec)
@@ -148,7 +148,7 @@ def test_specs_scope_the_batch_and_none_names_the_nodes_under_no_spec(
 
 
 def test_slots_strong_slots_exclusions_and_file_overlap_shape_the_batch(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1", files=["api/a.py"], priority=90)
     add(claims, "T2", files=["api/a.py"], priority=80)
     add(claims, "T3", models=["claude-opus-4"], priority=70)
@@ -166,7 +166,7 @@ def test_slots_strong_slots_exclusions_and_file_overlap_shape_the_batch(tmp_path
 
 
 def test_the_session_leases_take_its_slots(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T0")
     hold(claims, "T0", "s1", Status.IMPLEMENTING, Action.IMPLEMENT)
     add(claims, "T1")
@@ -177,7 +177,7 @@ def test_the_session_leases_take_its_slots(tmp_path: Path) -> None:
 
 
 def test_a_session_lease_routed_to_a_strong_model_takes_a_strong_slot(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T0")
     hold(claims, "T0", "s1", Status.IMPLEMENTING, Action.IMPLEMENT, model="opus")
     add(claims, "T1", models=["claude-opus-4"], priority=90)
@@ -192,7 +192,7 @@ def test_a_session_lease_routed_to_a_strong_model_takes_a_strong_slot(tmp_path: 
 def test_a_migration_writer_holds_its_repository_chain_until_it_lands_on_main(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "A", files=MIGRATION, status=Status.IMPLEMENTED)
     add(claims, "B", files=["api/migrations/versions/002_more.py"])
     add(claims, "C", files=["api/app.py"])
@@ -206,7 +206,7 @@ def test_a_migration_writer_holds_its_repository_chain_until_it_lands_on_main(
 def test_a_sibling_building_on_a_landed_migration_proceeds_while_others_wait(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "P", NodeKind.PLAN)
     add(claims, "A", parent="P", merge=Merge.PARENT, files=MIGRATION, status=Status.COMPLETED)
     add(claims, "B", parent="P", merge=Merge.PARENT, files=["api/migrations/versions/002_b.py"])
@@ -221,7 +221,7 @@ def test_a_sibling_building_on_a_landed_migration_proceeds_while_others_wait(
 def test_two_ready_migration_writers_in_one_repository_are_never_chosen_together(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "B1", files=["api/migrations/versions/001_b1.py"], priority=90)
     add(claims, "B2", files=["api/migrations/versions/002_b2.py"], priority=80)
 
@@ -238,7 +238,7 @@ def test_the_migration_chain_follows_migration_order_not_declared_priority(
     """A candidate order driven by priority would grant the chain to whichever ready writer this
     wave reaches first: here that is A, the higher-priority one. `migration_order` instead ranks
     by ordinal, putting B ahead, so discovery must grant the chain to B and hold A behind it."""
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "A", files=MIGRATION, priority=90, ordinal=1)
     add(claims, "B", files=["api/migrations/versions/002_b.py"], priority=10, ordinal=0)
 
@@ -253,7 +253,7 @@ def test_a_node_the_lifecycle_cannot_read_is_held_and_its_siblings_are_still_cho
 ) -> None:
     from taskmanager.core.lifecycle import LifecycleError
 
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "BAD")
     add(claims, "OK")
     real = Claims.next_step
@@ -272,7 +272,7 @@ def test_a_node_the_lifecycle_cannot_read_is_held_and_its_siblings_are_still_cho
 def test_a_held_merge_is_skipped_while_the_same_nodes_other_steps_are_offered(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1", status=Status.REVIEWED, outcome=Outcome.APPROVE)
     add(claims, "T2", status=Status.IMPLEMENTED)
     add(claims, "T3")
@@ -288,7 +288,7 @@ def test_a_held_merge_is_skipped_while_the_same_nodes_other_steps_are_offered(
 
 
 def test_a_job_parked_for_an_agent_takes_no_slot_of_its_session(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T0", status=Status.REVIEWED, outcome=Outcome.APPROVE)
     hold(claims, "T0", "s1", Status.MERGING, Action.MERGE)
     waiting_job(claims, "T0", JobKind.LAND)

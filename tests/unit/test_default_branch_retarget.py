@@ -118,7 +118,7 @@ def test_moving_the_default_branch_is_accepted_when_nothing_cut_from_it_still_la
 def multi_repo_estate(tmp_path: Path) -> Claims:
     """S > P > (A in api, W in web), both landing on P; P's branch cut in web alone, where
     `develop` and `main` have forked."""
-    claims = make_estate(tmp_path, repos=("api", "web"))
+    claims = make_estate(tmp_path, repos=("api", "web"), config=ProjectConfig())
     add(claims, "S", NodeKind.SPEC)
     add(claims, "P", NodeKind.PLAN, parent="S")
     add(claims, "A", parent="P", merge=Merge.PARENT)
@@ -189,7 +189,7 @@ def test_a_config_write_reaches_its_guard_only_when_a_default_branch_moves(
 
 def crossing_estate(tmp_path: Path, dep: Status, owner: Status) -> Claims:
     """W in web depends on A in api, both landing on main, with no branch cut."""
-    claims = make_estate(tmp_path, repos=("api", "web"))
+    claims = make_estate(tmp_path, repos=("api", "web"), config=ProjectConfig())
     add(claims, "A", status=dep)
     add(claims, "W", repo="web", status=owner, depends=("A",))
     return claims

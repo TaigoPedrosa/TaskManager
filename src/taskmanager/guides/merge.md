@@ -1,6 +1,6 @@
 # Resolving a stopped landing
 
-For the agent handed a landing or a sync that tm stopped because it needs judgement: a conflict, a red it cannot attribute, a refused push or a missing gate.
+For the agent handed a landing or a sync that tm stopped because it needs judgement: a conflict, a red it cannot attribute, a refused push, a missing gate or a gate that ran no tests.
 
 ## What tm already did
 
@@ -22,7 +22,24 @@ A sync merges a target into a container branch the same way, under that branch's
 | `unattributed` | the tip and the untouched target are both red and no report names the failures: read both outputs; if the tip adds a failure, record an own defect, and if it adds none, resume with `--push` |
 | `push_failed` | three failed tries. A push to the spec's target records each in `result.push_errors` with its command, exit code and stderr: an `ls-remote` with no answer is the network or the remote, a refused `push` a permission, a protection rule or a hook. A container branch, moved by a landing or a sync, records none: it moved under each of three compare-and-swaps, so other landings or syncs onto it kept moving it. Report it, resume only once the cause is gone, and never force |
 | `no gate` | the repository has no `main` gate, which every landing on a spec's target needs: report it; the owner sets it with `tm config set repos.<repo>.gates.main.command "<command>"` |
+| `no tests` | the test gate exited 0 but ran no tests: its test report is missing or holds 0 tests, or its `tests_ran` pattern never matched the output or captured 0. `result.detail` names the report or the pattern, and the count. Report it; the owner fixes the gate, then resume |
 | a red sync | the container's `parent` gate went red after the target was merged in: fix it in the job's worktree, commit, resume |
+
+A gate says how many tests it ran in one of two ways. It writes a test report at the glob its report key names, which tm counts; or it declares `tests_ran`, a regular expression whose one group captures the count from the command's output:
+
+```
+tm config set repos.<repo>.gates.main.command "<your test command>"
+tm config set repos.<repo>.gates.main.tests_ran "<a pattern whose one group captures the count>"
+```
+
+A gate that declares neither is judged by its exit code alone.
+
+After a plan's or spec's push to the spec's target, tm runs the repository's `after_land` command in the merge worktree, when one is set, with `{target}`, `{branch}`, `{node}` and `{repo}` filled in. Its exit and output go to the node's `:merge`; the push stands whatever it exits, and a task's landing never runs it. tm calls no git provider itself, so opening a pull or merge request is a hook such as:
+
+```
+tm config set repos.<repo>.after_land "gh pr create --base main --head {target} --fill"
+tm config set repos.<repo>.after_land "glab mr create --target-branch main --source-branch {target} --fill --yes"
+```
 
 ## 1. Take the job
 

@@ -280,7 +280,7 @@ const head = (n, c, fam, role) => {
 Model: ${MODEL_ID[fam]}
 The tm-wave workflow claimed this ${c.action} step for you: never run tm task start, and never claim or release any other node. Read tm guide ${role} and follow it from the step after its claim. Close the step with ${close(n, c)}${blocked}.
 Brief: tm render ${n.id} --view subagent${codegraph}${rules}${gate}${needs}
-Sections: before any tm section set, tm section get the same key and append to it.`
+Sections: before any tm section set, tm section get the same key. Append an entry to :report, :review or :merge; rewrite any other section whole, in the present tense, with every sentence it overrides gone.`
 }
 
 async function work(n, c, s, trail) {
@@ -318,6 +318,7 @@ async function work(n, c, s, trail) {
     body = again
       ? `Scope: every finding in tm section ${n.id}:review not yet recorded as closed, against the fix commits on ${c.branch} and the fixer's latest :report entry, and, when the last landing failed, the failure its latest :merge entry names. Establish each closure by mutation.`
       : `Scope: ${landed ? `what ${n.id} and every node under it landed on ${targets}` : `the whole diff of ${c.branch} from its base`}, in each repository it touched: ${repos.map(r => `git -C ${ROOT}/${r} ${diff(r)}`).join('; ')}.${landed ? ' A repository where that prints nothing had nothing land.' : ''}${container ? ' This is a container review: read what is true only between its children, and every child tm render lists as rejected by its own review.' : ''}`
+    if (!again) body += `\nReport: read tm section ${n.id}:report only after your findings are written, to judge the discrepancies it records; with review.blind on, the default, the brief leaves it out.`
     body += `\nFindings: append numbered findings to tm section ${n.id}:review; write it even when nothing is open, saying so.`
     // One scratch path per repository: a container review may execute code in several.
     const wtDir = WT || `<the directory ${TM} config get worktree_dir names>`

@@ -275,6 +275,63 @@ def test_review_guide_says_a_reviewer_raises_a_ruling_instead_of_rejecting() -> 
     assert "raises it instead of rejecting" in _guide_text("review")
 
 
+def test_review_guide_proves_each_behaviour_line_by_breaking_it_from_the_acceptance(
+    rendered: Callable[[str], str],
+) -> None:
+    text = rendered("review")
+    checks, never = text.split("## 5. Write the findings", 1)[0], text.split("## Never", 1)[1]
+    assert "Every acceptance line about behaviour is proven by breaking it" in checks
+    assert "Choose what to break from the acceptance, never from the tests" in checks
+    assert "A limit is broken from both sides" in checks
+    assert "each break turns only its own test red" in checks
+    assert "An acceptance line no break turns red is a finding" in checks
+    assert "restored, never committed" in never
+
+
+def test_review_guide_counts_a_defect_the_diff_makes_reachable(
+    rendered: Callable[[str], str],
+) -> None:
+    branch = rendered("review").split("## 3. Read the branch", 1)[1].split("## 4.", 1)[0]
+    assert "a defect in code the diff leaves unchanged but makes reachable" in branch
+
+
+def test_review_guide_findings_are_read_and_name_their_search_and_rule(
+    rendered: Callable[[str], str],
+) -> None:
+    findings = rendered("review").split("## 5. Write the findings", 1)[1].split("## 6.", 1)[0]
+    assert "a derived claim is not a finding until it is read" in findings
+    assert "A claim that something is absent" in findings
+    assert "names the search that would have found it" in findings
+    assert "quotes that rule, or proposes the missing line" in findings
+
+
+def test_fix_guide_watches_a_finding_s_test_go_red_and_names_its_searches(
+    rendered: Callable[[str], str],
+) -> None:
+    fix = rendered("fix").split("## 2. Fix exactly the findings", 1)[1].split("## 3.", 1)[0]
+    assert "watch it fail for the reason the finding names, then fix and watch it pass" in fix
+    assert "a derived claim refutes nothing until it is read" in fix
+    assert "names the search that would have found it" in fix
+
+
+def test_dispatch_guide_rewrites_an_overridden_section_and_turns_a_repeat_finding_into_a_rule(
+    rendered: Callable[[str], str],
+) -> None:
+    rulings = rendered("dispatch").split("## 8. Write rulings down where the work is", 1)[1]
+    rulings = rulings.split("## Never", 1)[0]
+    assert "The overridden sentence goes, and the decision keeps the history" in rulings
+    assert "Only `:report`, `:review` and `:merge` are appended to" in rulings
+    assert "When findings under one rule reach review on two nodes" in rulings
+    assert 'tm decision add "Add to guide:<topic>: <line>?"' in rulings
+    assert "tm section set guide:<topic> --file <path>" in rulings
+
+
+def test_plan_guide_amends_a_section_in_place(rendered: Callable[[str], str]) -> None:
+    amend = rendered("plan").split("## 10. Amend it", 1)[1].split("## Worked example", 1)[0]
+    assert "never extended with a second generation" in amend
+    assert "with every sentence the change overrides gone" in amend
+
+
 def test_dispatch_guide_names_every_argument_tm_wave_reads() -> None:
     read = set(re.findall(r"\bA\.([A-Za-z]+)", WORKFLOW.read_text(encoding="utf-8")))
     assert read, "no argument found in the workflow script"
@@ -970,8 +1027,8 @@ BRIEF_RULES = [
         "implement",
         "## 6. Report",
         "A report that fixes a contract its dependents build on (a shape, a name, an id scheme) "
-        "appends the contract to what `tm section get <plan-id>:overview` prints and writes the "
-        "whole of it back with `tm section set <plan-id>:overview --file <path>` before the step "
+        "adds the contract to what `tm section get <plan-id>:overview` prints, or replaces the "
+        "earlier wording of the same contract, and writes the whole of it back with `tm section set <plan-id>:overview --file <path>` before the step "
         "closes. Only the parent's `context` "
         "and `overview` reach a dependent's brief, and no step runs between tasks to copy it "
         "there.",
@@ -1132,3 +1189,30 @@ def test_readme_quickstart_gate_line_is_one_tm_config_set_accepts(tmp_path: Path
     got = runner.invoke(app, ["config", "get", "repos...gates.main.command", "-C", str(tmp_path)])
     assert got.exit_code == 0, got.output
     assert got.stdout.strip() == "true"
+
+
+def test_guide_lists_and_prints_intake(tmp_path: Path, rendered: Callable[[str], str]) -> None:
+    listed = CliRunner().invoke(app, ["guide", "-C", str(tmp_path)])
+    assert listed.exit_code == 0, listed.output
+    assert any(line.startswith("intake: ") for line in listed.stdout.splitlines()), listed.stdout
+    text = rendered("intake")
+    assert text.startswith("# Taking in outside work\n")
+    assert "Never reset or reopen a `COMPLETED` node" in text
+
+
+def test_dispatcher_skill_points_to_the_intake_guide() -> None:
+    assert "`tm guide intake`" in _doc_text("plugin/skills/dispatcher/SKILL.md")
+
+
+def test_guides_describe_the_repository_gate_and_test_count_checks(
+    rendered: Callable[[str], str],
+) -> None:
+    plan, dispatch, merge = (" ".join(rendered(t).split()) for t in ("plan", "dispatch", "merge"))
+    assert (
+        "`tm import`, `tm task add --repo` and `tm task update --repo` refuse a directory that "
+        "is not a git working tree under the tm root"
+    ) in plan
+    assert "a repository it lands in has no `main` gate" in dispatch
+    assert "`tm task start` refuses the node with the same reason" in dispatch
+    assert "the test gate exited 0 but ran no tests" in merge
+    assert "Report it; the owner fixes the gate, then resume" in merge

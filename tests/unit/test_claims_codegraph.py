@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 import yaml
 from click.testing import Result
-from lifecycle_estate import add, make_estate
+from lifecycle_estate import add, gated, make_estate
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import app as cli_app
@@ -123,7 +123,7 @@ def claim(claims: Claims, node_id: str) -> tuple[list[str], Path]:
 def test_a_claim_seeds_its_worktree_index_from_the_checkout_and_queries_there_answer_for_it(
     tmp_path: Path, log: Path
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     indexed(claims.root / "api")
     add(claims, "T1", files=["src/a.py"])
 
@@ -146,7 +146,7 @@ def test_a_claim_seeds_its_worktree_index_from_the_checkout_and_queries_there_an
 def test_a_claim_names_each_declared_symbol_whose_dependents_sit_in_a_file_another_lease_holds(
     tmp_path: Path, log: Path, answer: Answer
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     indexed(claims.root / "api")
     add(claims, "T2", files=["src/b.py"])
     add(claims, "T1", files=["src/a.py", "src/lone.py", "src/new.py"])
@@ -230,7 +230,7 @@ def test_a_claim_asks_impact_of_each_symbol_when_the_listing_names_only_some_dep
 def test_a_container_claim_reads_each_repository_s_declared_files_in_that_repository_s_worktree(
     tmp_path: Path, log: Path
 ) -> None:
-    claims = make_estate(tmp_path, repos=("api", "web"))
+    claims = make_estate(tmp_path, repos=("api", "web"), config=gated("api", "web"))
     for repo in ("api", "web"):
         indexed(claims.root / repo)
     add(
@@ -260,7 +260,7 @@ def test_a_container_claim_reads_each_repository_s_declared_files_in_that_reposi
 def test_a_claim_with_no_codegraph_directory_prints_no_codegraph_line(
     tmp_path: Path, log: Path
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1", files=["src/a.py"])
 
     lines, worktree = claim(claims, "T1")
@@ -273,7 +273,7 @@ def test_a_claim_with_no_codegraph_directory_prints_no_codegraph_line(
 def test_a_claim_without_the_codegraph_cli_stands_with_one_unavailable_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     indexed(claims.root / "api")
     add(claims, "T1", files=["src/a.py"])
     git_only = tmp_path / "git-only"
@@ -291,7 +291,7 @@ def test_a_claim_without_the_codegraph_cli_stands_with_one_unavailable_line(
 def test_a_claim_whose_codegraph_directory_holds_no_database_prints_no_codegraph_line(
     tmp_path: Path, log: Path
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     checkout = claims.root / "api"
     (checkout / ".codegraph").mkdir()
     (checkout / ".codegraph" / ".gitignore").write_text("*\n!.gitignore\n", encoding="utf-8")
@@ -306,7 +306,7 @@ def test_a_claim_whose_codegraph_directory_holds_no_database_prints_no_codegraph
 def test_a_claim_whose_sync_fails_stands_with_one_unavailable_line(
     tmp_path: Path, answer: Answer
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     indexed(claims.root / "api")
     add(claims, "T1", files=["src/a.py"])
     answer(fails="sync")
@@ -319,7 +319,7 @@ def test_a_claim_whose_sync_fails_stands_with_one_unavailable_line(
 def test_a_claim_whose_index_cannot_be_copied_stands_with_one_unavailable_line(
     tmp_path: Path, log: Path
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     index = indexed(claims.root / "api")
     index.write_bytes(b"not a database, though long enough to be read as one" * 4)
     add(claims, "T1", files=["src/a.py"])
@@ -333,7 +333,7 @@ def test_a_claim_whose_index_cannot_be_copied_stands_with_one_unavailable_line(
 def test_a_codegraph_call_past_its_timeout_leaves_the_claim_standing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer: Answer
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     indexed(claims.root / "api")
     add(claims, "T1", files=["src/a.py"])
     answer(sleeps="sync")
@@ -349,7 +349,7 @@ def test_a_codegraph_call_past_its_timeout_leaves_the_claim_standing(
 def test_an_advisory_that_cannot_read_impact_keeps_the_ready_line_and_adds_one_unavailable(
     tmp_path: Path, answer: Answer
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     indexed(claims.root / "api")
     add(claims, "T2", files=["src/b.py"])
     add(claims, "T1", files=["src/a.py"])
@@ -393,7 +393,7 @@ def start(claims: Claims, node_id: str, *flags: str) -> Result:
 def test_task_start_prints_the_codegraph_lines_in_its_yaml_document(
     tmp_path: Path, log: Path, answer: Answer
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     indexed(claims.root / "api")
     add(claims, "T2", files=["src/b.py"])
     add(claims, "T1", files=["src/a.py"])
@@ -415,7 +415,7 @@ def test_task_start_prints_the_codegraph_lines_in_its_yaml_document(
 def test_task_start_json_with_codegraph_lines_is_one_document_on_stdout(
     tmp_path: Path, log: Path
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     indexed(claims.root / "api")
     add(claims, "T1", files=["src/a.py"])
 
@@ -429,7 +429,7 @@ def test_task_start_json_with_codegraph_lines_is_one_document_on_stdout(
 def test_task_start_with_no_codegraph_directory_prints_no_codegraph_key(
     tmp_path: Path, log: Path
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1", files=["src/a.py"])
 
     claimed = yaml.safe_load(start(claims, "T1").output)

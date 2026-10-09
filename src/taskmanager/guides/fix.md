@@ -26,7 +26,8 @@ A fix lands without a re-review unless the node is sensitive: its `sensitive:` f
 One commit per finding, or one commit naming them all — either way on the node's branch, inside your worktree, with an explicit pathspec. Do not rewrite the branch's earlier commits: the review cites them.
 
 - A finding you can close, close.
-- A finding you judge wrong is answered in the report with the evidence that refutes it, and the code is left alone. It is never silently skipped.
+- A finding you judge wrong is answered in the report with the evidence that refutes it, and the code is left alone. It is never silently skipped. Evidence is what was read; a derived claim refutes nothing until it is read. A claim that something is absent (no caller, no other reader, not reachable) names the search that would have found it: the command, the path and pattern, and the range it covered.
+- A finding you close starts with its test: write it first, run it on the unfixed branch and watch it fail for the reason the finding names, then fix and watch it pass. A test first seen green proves nothing about the finding.
 - A finding you close lands with a test for each branch the fix adds (each stage a fold adds, each guard, each argument threaded through a call), and each test fails when its branch alone is reverted: revert each branch on its own, watch the suite go red, then restore it. Reverting the whole fix at once proves nothing about its parts.
 - Anything else you notice goes in the report, not in the diff. Widening the scope is what spends the next round.
 - A landing failure whose red lies in files this node does not declare belongs to the node that caused it: find or file that node, then `tm task release <node-id> --agent <name> --token <token> --blocked --depends <that-node>`, and say so in the report.

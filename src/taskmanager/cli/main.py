@@ -788,6 +788,7 @@ def task_add(
     requires: Annotated[
         str | None, typer.Option("--requires", help="Comma-separated agent capabilities")
     ] = None,
+    repo: Annotated[str | None, typer.Option("--repo", help="Target repository directory")] = None,
     set_frontmatter: Annotated[list[str] | None, _SET_OPTION] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
@@ -809,6 +810,7 @@ def task_add(
             merge=merge,
             requires=_csv(requires),
             frontmatter=frontmatter,
+            repo=repo,
         )
     print(f"[green]Added task {task_id}[/green]")
 

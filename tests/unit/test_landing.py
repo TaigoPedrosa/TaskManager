@@ -34,8 +34,8 @@ Seen = tuple[dict[str, JobState], Status, str]
 TRUE = Gate(command="true", junit=None, timeout=60)
 
 
-def estate_with(tmp_path: Path, gate: Gate | None, **config: object) -> tuple[Claims, Landing]:
-    repos = {"api": RepoConfig(gates={"main": gate})} if gate is not None else {}
+def estate_with(tmp_path: Path, gate: Gate, **config: object) -> tuple[Claims, Landing]:
+    repos = {"api": RepoConfig(gates={"main": gate})}
     claims = make_estate(tmp_path, config=ProjectConfig(repos=repos, **config))
     return claims, attach_landing(claims)
 
@@ -60,6 +60,14 @@ def land(claims: Claims, landing: Landing, node_id: str = "T1") -> tuple[str, Jo
     assert result.action == Action.MERGE, result.reason
     assert result.job is not None
     return result.job, landing.run(result.job)
+
+
+def land_ungated(claims: Claims, landing: Landing) -> tuple[str, JobState]:
+    """A landing claimed while its repository has a main gate that is then removed."""
+    merge = claims.start("T1", "merger", "s1")
+    assert merge.job is not None, merge.reason
+    claims.config.repos["api"] = RepoConfig()
+    return merge.job, landing.run(merge.job)
 
 
 def merges_of(api: Path, node_id: str) -> int:
@@ -466,10 +474,10 @@ def test_a_landing_condition_unmet_when_the_job_runs_returns_the_node_without_co
 
 
 def test_a_repository_with_no_main_gate_stops_for_an_agent(tmp_path: Path) -> None:
-    claims, landing = estate_with(tmp_path, None)
+    claims, landing = estate_with(tmp_path, TRUE)
     reviewed_task(claims)
 
-    job_id, state = land(claims, landing)
+    job_id, state = land_ungated(claims, landing)
 
     job = claims.jobs.get(job_id)
     assert state == JobState.NEEDS_AGENT
@@ -494,7 +502,7 @@ def parent_landing(claims: Claims, **columns: object) -> Path:
 
 
 def test_a_child_lands_on_its_parent_branch_after_its_own_verifications(tmp_path: Path) -> None:
-    claims, landing = estate_with(tmp_path, None)
+    claims, landing = estate_with(tmp_path, TRUE)
     api = parent_landing(claims)
     verification(claims, "T1", "api/feature.py")
     main_before = git(api, "ls-remote", "origin", "refs/heads/main")
@@ -517,7 +525,7 @@ def test_a_child_lands_on_its_parent_branch_after_its_own_verifications(tmp_path
 def test_own_verifications_stop_a_parent_landing_unless_nobody_below_fixes_a_rejection(
     tmp_path: Path, fix: bool, outcome: Outcome, state: JobState
 ) -> None:
-    claims, landing = estate_with(tmp_path, None)
+    claims, landing = estate_with(tmp_path, TRUE)
     parent_landing(claims, fix=fix, outcome=outcome)
     verification(claims, "T1", "api/missing.py")
 
@@ -528,7 +536,7 @@ def test_own_verifications_stop_a_parent_landing_unless_nobody_below_fixes_a_rej
 def test_a_parent_branch_that_moves_before_the_swap_is_merged_in_and_gated_again(
     tmp_path: Path,
 ) -> None:
-    claims, landing = estate_with(tmp_path, None)
+    claims, landing = estate_with(tmp_path, TRUE)
     api = parent_landing(claims)
     side = on_branch(api, "side", "side.py", "s = 1\n", base="tm/P")
     flag = tmp_path / "moved"
@@ -560,7 +568,7 @@ def release_from_the_gate(root: Path) -> Gate:
 
 
 def test_a_landing_released_mid_gate_stays_expired_and_pushes_nothing(tmp_path: Path) -> None:
-    claims, landing = estate_with(tmp_path, None)
+    claims, landing = estate_with(tmp_path, TRUE)
     claims.config.repos["api"] = RepoConfig(gates={"main": release_from_the_gate(claims.root)})
     api = claims.root / "api"
     reviewed_task(claims)
@@ -641,7 +649,8 @@ def test_a_landing_parked_on_a_red_parent_branch_waits_until_that_branch_moves(
     claims = make_estate(
         tmp_path,
         config=ProjectConfig(
-            repos={"api": RepoConfig(gates={"parent": junit_gate(tmp_path)})}, condition_ttl=1
+            repos={"api": RepoConfig(gates={"main": TRUE, "parent": junit_gate(tmp_path)})},
+            condition_ttl=1,
         ),
     )
     landing = attach_landing(claims)
@@ -713,9 +722,9 @@ def test_a_repair_ends_a_parked_landing_s_red_target_wait(tmp_path: Path, repair
 def test_a_handed_over_job_that_stops_again_counts_a_step_failure_until_the_node_fails(
     tmp_path: Path,
 ) -> None:
-    claims, landing = estate_with(tmp_path, None)
+    claims, landing = estate_with(tmp_path, TRUE)
     reviewed_task(claims)
-    job_id, state = land(claims, landing)
+    job_id, state = land_ungated(claims, landing)
     assert state == JobState.NEEDS_AGENT
     assert stored(claims, "T1").step_failures == 0
 
@@ -830,9 +839,9 @@ def test_a_job_stopped_again_after_each_resume_counts_resumes_under_the_key_tm_w
 ) -> None:
     workflow = Path(__file__).resolve().parents[2] / "plugin" / "workflows" / "tm-wave.js"
     assert "j['result.resumed']" in workflow.read_text(encoding="utf-8")
-    claims, landing = estate_with(tmp_path, None)
+    claims, landing = estate_with(tmp_path, TRUE)
     reviewed_task(claims)
-    job_id, _ = land(claims, landing)
+    job_id, _ = land_ungated(claims, landing)
 
     for resumes in (1, 2):
         claims.start("T1", "agent", "s1")

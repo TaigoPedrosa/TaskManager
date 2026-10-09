@@ -276,6 +276,7 @@ def test_codegraph_query_with_no_target_repo_reads_the_tm_root_and_leaves_git_cl
 
 
 def _import(root: Path, tmp_path: Path, checks: list[dict[str, str]]) -> str:
+    subprocess.run(["git", "init", "-q", str(root / "app")], check=True)
     doc = tmp_path / "doc.json"
     task = {"id": "P-1", "title": "a", "target_repo": "app", "verifications": checks}
     doc.write_text(

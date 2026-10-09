@@ -38,8 +38,8 @@ def git(cwd: Path, *args: str) -> None:
 
 
 def estate(root: Path) -> None:
-    """A spec, a plan and two tasks in the repository `core`, which has an `origin/main`;
-    `S1-P1-b` depends on `S1-P1-a`."""
+    """A spec, a plan and two tasks in the repository `core`, which has an `origin/main` and a
+    main gate; `S1-P1-b` depends on `S1-P1-a`."""
     origin = root / "core.git"
     git(root, "init", "--bare", "-b", "main", str(origin))
     git(root, "clone", str(origin), str(root / "core"))
@@ -56,6 +56,7 @@ def estate(root: Path) -> None:
     tm(root, "task", "add", "b", "--plan", "S1-P1", "--slug", "b", "--depends-on", "S1-P1-a")
     for task in ("S1-P1-a", "S1-P1-b"):
         assert tm(root, "task", "update", task, "--repo", "core").exit_code == 0
+    assert tm(root, "config", "set", "repos.core.gates.main.command", "true").exit_code == 0
 
 
 def get(root: Path, node_id: str) -> dict[str, Any]:
@@ -427,7 +428,7 @@ def test_no_guide_or_command_page_shows_a_removed_run_verb() -> None:
     repo = Path(__file__).resolve().parents[2]
     guides = sorted((repo / "src" / "taskmanager" / "guides").glob("*.md"))
     pages = [*guides, repo / "plugin" / "commands" / "task.md"]
-    assert len(pages) == 9, pages
+    assert len(pages) == 10, pages
     shown = [
         f"{page.name}: {line}"
         for page in pages

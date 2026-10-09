@@ -75,6 +75,8 @@ def test_add_task_wires_deps_and_parent(ops_setup: tuple) -> None:
 def test_update_node_changes_only_given_fields(ops_setup: tuple) -> None:
     node_repo, _runtime_repo, ledger_repo, ops = ops_setup
     _spec_id, _plan_id, task_id = _seed_task(ops)
+    web = node_repo.db.taskmanager_dir.parent / "web"
+    subprocess.run(["git", "init", "-q", str(web)], check=True)
     changed = ops.update_node(task_id, priority=90, repo="web")
     assert changed == {"priority": 90, "target_repo": "web"}
     node = node_repo.get_node(task_id)

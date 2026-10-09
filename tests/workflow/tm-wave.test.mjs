@@ -970,8 +970,24 @@ test('a brief leaves comment, test-name and review-format rules to the project g
   for (let i = 0; i < 2; i++) briefs.push(...(await runWave({ args: ARGS, tm, agents })).work.map(w => w.prompt))
   assert.equal(briefs.length, 2)
   for (const brief of briefs) {
-    assert.match(brief, /^Sections: before any tm section set, tm section get the same key and append to it\.$/m)
+    assert.match(brief, /^Sections: before any tm section set, tm section get the same key\. Append an entry to :report, :review or :merge; rewrite any other section whole, in the present tense, with every sentence it overrides gone\.$/m)
     assert.ok(!brief.includes('never name a ruling'), brief)
   }
   assert.match(briefs[1], /^Findings: append numbered findings to tm section T1:review; write it even when nothing is open, saying so\.$/m)
 })
+
+const REPORT_AFTER_FINDINGS = /^Report: read tm section T1:report only after your findings are written, to judge the discrepancies it records; with review\.blind on, the default, the brief leaves it out\.$/m
+
+for (const [from, first] of [['IMPLEMENTED', true], ['FIXED', false]]) {
+  test(`a review claimed from ${from} ${first ? 'reads' : 'is not told to defer'} the report after its findings`, async () => {
+    const tm = makeTm({
+      chosen: [{ ...T1, action: 'review' }],
+      nodes: { T1: node(from, 'review', from === 'FIXED' ? { outcome: 'reject' } : {}) },
+      start: { T1: [() => (tm.set('T1', { status: 'REVIEWING', next_action: null }), claim('review'))] },
+    })
+    const agents = () => (tm.set('T1', { status: 'REVIEWED', next_action: null }), 'done')
+    const { work } = await runWave({ args: ARGS, tm, agents })
+    assert.match(work[0].prompt, /^Brief: tm render T1 --view subagent$/m)
+    assert.equal(REPORT_AFTER_FINDINGS.test(work[0].prompt), first)
+  })
+}

@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from lifecycle_estate import add, make_estate, stored
+from lifecycle_estate import add, gated, git, make_estate, stored
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import app
@@ -110,7 +110,7 @@ def batch(claims: Claims) -> dict[str, Any]:
 
 def two_specs(tmp_path: Path) -> Claims:
     """A lands on release/x, B on main; each has a plan whose second task waits on its first."""
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     for spec in ("A", "B"):
         add(claims, spec, SPEC)
         add(claims, f"{spec}P", PLAN, parent=spec)
@@ -247,6 +247,7 @@ def test_moving_a_spec_s_land_on_across_an_edge_is_refused(root: Path) -> None:
 
 def test_import_refuses_a_migration_chain_across_targets(root: Path) -> None:
     writer = {"target_repo": "api", "frontmatter": {"declared_files": MIGRATION}}
+    git(root, "init", "-q", "api")
     assert tm(root, "import", stdin=doc("C", "release/x", **writer))[0] == 0
 
     code, output = tm(root, "import", stdin=doc("D", **writer))

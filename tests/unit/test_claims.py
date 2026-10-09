@@ -4,7 +4,17 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from lifecycle_estate import add, branch_at, git, make_estate, on_branch, push_main, section, stored
+from lifecycle_estate import (
+    add,
+    branch_at,
+    gated,
+    git,
+    make_estate,
+    on_branch,
+    push_main,
+    section,
+    stored,
+)
 
 from taskmanager.core.enums import NodeKind, RelationType, VerificationType
 from taskmanager.core.models import Condition, Job, NodeRelation, NodeVerification
@@ -47,7 +57,7 @@ def test_a_containers_locked_files_are_the_same_set_the_display_builds_from_its_
     tmp_path: Path,
 ) -> None:
     """A set-aside child's files are excluded from both: one walk, read two ways."""
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "P1", kind=NodeKind.PLAN)
     add(claims, "T1", parent="P1", files=["api/a.py"])
     add(claims, "T2", parent="P1", files=["api/b.py"], status=Status.SUPERSEDED)
@@ -63,7 +73,7 @@ def test_a_containers_locked_files_are_the_same_set_the_display_builds_from_its_
 def test_an_implement_claim_cuts_the_branch_from_origin_main_and_locks_declared_files(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1", files=["api/app.py"], models=["claude-opus-4", "claude-sonnet-4"])
 
     result = claims.start("T1", "agent-1", "s1")
@@ -91,7 +101,7 @@ def test_an_implement_claim_cuts_the_branch_from_origin_main_and_locks_declared_
 
 
 def test_a_claim_cuts_its_worktree_under_the_directory_the_caller_names(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1")
 
     result = claims.start("T1", "agent-1", "s1", worktree_dir=tmp_path / "wave")
@@ -104,7 +114,7 @@ def test_a_claim_cuts_its_worktree_under_the_directory_the_caller_names(tmp_path
 def test_an_implement_claim_resumes_an_existing_branch_and_a_fix_reuses_its_worktree(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     api = claims.root / "api"
     earlier = on_branch(api, "tm/T1", "a.py", "a = 1\n")
     add(claims, "T1")
@@ -127,7 +137,7 @@ def test_an_implement_claim_resumes_an_existing_branch_and_a_fix_reuses_its_work
 def test_a_container_fix_is_routed_by_the_one_based_review_round_it_answers(
     tmp_path: Path, review_cycles: int, model: str
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(
         claims,
         "P",
@@ -150,7 +160,7 @@ def test_a_container_fix_is_routed_by_the_one_based_review_round_it_answers(
 def test_closing_a_step_with_an_agent_is_refused_unless_that_agent_holds_the_lease(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1")
     add(claims, "T2", status=Status.IMPLEMENTED)
     claims.start("T1", "implementer", "s1")
@@ -173,7 +183,7 @@ def test_closing_a_step_with_an_agent_is_refused_unless_that_agent_holds_the_lea
 
 
 def test_a_child_landing_on_its_parent_is_cut_from_the_parent_branch(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     api = claims.root / "api"
     add(claims, "P", NodeKind.PLAN)
     add(claims, "T1", parent="P", merge=Merge.PARENT)
@@ -200,7 +210,7 @@ def test_a_child_landing_on_its_parent_is_cut_from_the_parent_branch(tmp_path: P
 def test_a_refused_claim_answers_blocked_and_writes_nothing(
     tmp_path: Path, setup: str, reason: str
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(
         claims,
         "T1",
@@ -243,7 +253,7 @@ def test_a_completed_node_with_an_unmet_condition_reports_the_condition_not_no_n
 ) -> None:
     """The condition check runs ahead of "has no next action", same as every other rule here:
     a node with nothing left to do but an unmet condition still surfaces the condition."""
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1", files=["api/app.py"], status=Status.COMPLETED)
     claims.nodes.add_condition(
         Condition(
@@ -262,7 +272,7 @@ def test_a_completed_node_with_an_unmet_condition_reports_the_condition_not_no_n
 
 
 def test_two_sessions_claiming_at_once_leave_exactly_one_lease(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1")
     barrier = threading.Barrier(2)
     results: list[ClaimResult] = []
@@ -301,7 +311,7 @@ def test_lease_ttl_reads_a_per_action_map_or_a_scalar_implement_default(
 
 
 def test_complete_closes_implement_and_releases_the_lease(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1")
     claims.start("T1", "agent-1", "s1")
 
@@ -311,7 +321,7 @@ def test_complete_closes_implement_and_releases_the_lease(tmp_path: Path) -> Non
 
 
 def test_complete_refuses_a_node_that_is_not_mid_implement_or_fix(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1")
     with pytest.raises(OperationError) as refused:
         claims.complete("T1")
@@ -319,7 +329,7 @@ def test_complete_refuses_a_node_that_is_not_mid_implement_or_fix(tmp_path: Path
 
 
 def test_a_review_verdict_is_refused_until_the_review_section_changes(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1", status=Status.IMPLEMENTED)
 
     result = claims.start("T1", "reviewer", "s1")
@@ -340,7 +350,7 @@ def test_a_review_verdict_is_refused_until_the_review_section_changes(tmp_path: 
 def test_a_review_of_a_landed_plan_reads_the_target_it_landed_on_in_every_repository(
     tmp_path: Path, merge: Merge, branch: str, base: str
 ) -> None:
-    claims = make_estate(tmp_path, repos=("api", "web"))
+    claims = make_estate(tmp_path, repos=("api", "web"), config=gated("api", "web"))
     add(claims, "S", NodeKind.SPEC)
     add(claims, "P", NodeKind.PLAN, parent="S", merge=merge, review=True, status=Status.LANDED)
     add(claims, "A", parent="P", repo="api", review=False, fix=False, status=Status.COMPLETED)
@@ -358,7 +368,7 @@ def test_a_review_of_a_landed_plan_reads_the_target_it_landed_on_in_every_reposi
 def test_a_landed_plan_s_fix_is_cut_from_its_target_in_every_repository_its_code_landed_in(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path, repos=("api", "web"))
+    claims = make_estate(tmp_path, repos=("api", "web"), config=gated("api", "web"))
     api = claims.root / "api"
     add(
         claims,
@@ -388,7 +398,7 @@ def test_a_landed_plan_s_fix_is_cut_from_its_target_in_every_repository_its_code
 def test_a_fix_whose_branch_carries_nothing_of_its_own_is_cut_from_its_target(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     api = claims.root / "api"
     add(claims, "T1", status=Status.REVIEWED, outcome=Outcome.REJECT, review_cycles=1)
     branch_at(api, "tm/T1")
@@ -425,7 +435,7 @@ def test_a_fix_lands_as_it_is_unless_the_node_is_sensitive_and_owes_its_fix_one_
     action: Action,
     shown: str,
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     claims.landing = FakeLanding()
     add(
         claims,
@@ -449,7 +459,7 @@ def test_a_fix_lands_as_it_is_unless_the_node_is_sensitive_and_owes_its_fix_one_
 
 
 def test_a_landed_plan_rejected_with_fix_off_fails_and_opens_a_decision(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "P", NodeKind.PLAN, review=True, fix=False, status=Status.LANDED)
 
     assert claims.start("P", "reviewer", "s1").action == Action.REVIEW
@@ -462,7 +472,7 @@ def test_a_landed_plan_rejected_with_fix_off_fails_and_opens_a_decision(tmp_path
 def test_transient_releases_count_step_failures_until_the_cap_fails_the_node(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1")
     for failures in (1, 2):
         claims.start("T1", "agent-1", "s1")
@@ -477,7 +487,7 @@ def test_transient_releases_count_step_failures_until_the_cap_fails_the_node(
 def test_a_blocked_release_writes_what_the_node_waits_on_without_counting_a_failure(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1")
     add(claims, "D")
     claims.start("T1", "agent-1", "s1")
@@ -489,7 +499,7 @@ def test_a_blocked_release_writes_what_the_node_waits_on_without_counting_a_fail
 
 
 def test_a_blocked_release_naming_nothing_is_refused(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1")
     claims.start("T1", "agent-1", "s1")
     with pytest.raises(OperationError) as refused:
@@ -499,7 +509,7 @@ def test_a_blocked_release_naming_nothing_is_refused(tmp_path: Path) -> None:
 
 
 def test_a_blocked_release_with_a_prose_condition_is_refused(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1")
     claims.start("T1", "agent-1", "s1")
     prose = Condition(
@@ -515,7 +525,7 @@ def test_a_blocked_release_with_a_prose_condition_is_refused(tmp_path: Path) -> 
 
 
 def test_a_blocked_release_that_closes_a_cycle_is_refused_with_the_cycle(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1")
     add(claims, "D", depends=("T1",))
     claims.start("T1", "agent-1", "s1")
@@ -527,7 +537,7 @@ def test_a_blocked_release_that_closes_a_cycle_is_refused_with_the_cycle(tmp_pat
 
 
 def test_sweep_returns_an_expired_claim_to_where_it_was_claimed_from(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1", status=Status.IMPLEMENTED)
     claims.start("T1", "reviewer", "s1", ttl=1)
     time.sleep(1.5)
@@ -538,7 +548,7 @@ def test_sweep_returns_an_expired_claim_to_where_it_was_claimed_from(tmp_path: P
 
 
 def test_sweep_restores_a_mid_step_node_with_no_lease_row(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(
         claims,
         "T1",
@@ -552,7 +562,7 @@ def test_sweep_restores_a_mid_step_node_with_no_lease_row(tmp_path: Path) -> Non
 
 
 def test_a_merge_claim_starts_a_landing_job_and_returns_at_once(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1", status=Status.REVIEWED, outcome=Outcome.APPROVE, review_cycles=1)
     landing = FakeLanding()
     claims.landing = landing
@@ -567,7 +577,7 @@ def test_a_merge_claim_starts_a_landing_job_and_returns_at_once(tmp_path: Path) 
 
 
 def test_a_landing_waiting_for_an_agent_is_handed_to_the_next_claimant(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1", status=Status.REVIEWED, outcome=Outcome.APPROVE, review_cycles=1)
     claims.landing = FakeLanding()
     claims.start("T1", "merger", "s1")
@@ -607,7 +617,7 @@ def test_a_landing_waiting_for_an_agent_is_handed_to_the_next_claimant(tmp_path:
 def test_a_container_whose_children_completed_with_nothing_on_its_branch_completes(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "P", NodeKind.PLAN)
     add(claims, "T1", parent="P", status=Status.REVIEWED, outcome=Outcome.APPROVE)
     branch_at(claims.root / "api", "tm/T1")
@@ -618,7 +628,7 @@ def test_a_container_whose_children_completed_with_nothing_on_its_branch_complet
 
 
 def test_a_container_with_code_on_its_branch_stops_at_implemented(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     api = claims.root / "api"
     add(claims, "P", NodeKind.PLAN)
     add(
@@ -641,7 +651,7 @@ def test_a_container_with_code_on_its_branch_stops_at_implemented(tmp_path: Path
 def test_a_reset_to_landed_code_is_refused_while_the_branch_is_not_on_its_target(
     tmp_path: Path, to: Status
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1", status=Status.REVIEWED, outcome=Outcome.APPROVE)
     on_branch(claims.root / "api", "tm/T1", "a.py", "a = 1\n")
 
@@ -653,7 +663,7 @@ def test_a_reset_to_landed_code_is_refused_while_the_branch_is_not_on_its_target
 def test_deferring_a_node_others_depend_on_opens_one_decision_for_the_dependents(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "D")
     add(claims, "T1", depends=("D",))
     add(claims, "T2", depends=("D",))
@@ -666,7 +676,7 @@ def test_deferring_a_node_others_depend_on_opens_one_decision_for_the_dependents
 
 
 def test_defer_is_refused_mid_step(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1")
     claims.start("T1", "agent-1", "s1")
     with pytest.raises(OperationError) as refused:
@@ -677,7 +687,7 @@ def test_defer_is_refused_mid_step(tmp_path: Path) -> None:
 def test_reopen_returns_a_deferred_task_to_ready_with_counters_cleared_and_the_note_kept(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1", status=Status.DEFERRED, step_failures=2, review_cycles=1)
 
     assert claims.reopen("T1", "the vendor shipped") == Status.READY
@@ -688,7 +698,7 @@ def test_reopen_returns_a_deferred_task_to_ready_with_counters_cleared_and_the_n
 
 
 def test_reopen_is_refused_while_an_open_decision_blocks_the_node(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1", status=Status.FAILED)
     claims.ops.add_decision("Abandon T1?", blocks=["T1"])
 
@@ -698,7 +708,7 @@ def test_reopen_is_refused_while_an_open_decision_blocks_the_node(tmp_path: Path
 
 
 def test_reopen_with_a_new_branch_keeps_the_old_one_under_a_numbered_name(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     api = claims.root / "api"
     add(claims, "T1", status=Status.ABANDONED)
     old = on_branch(api, "tm/T1", "a.py", "a = 1\n")
@@ -716,7 +726,7 @@ def test_a_node_the_lifecycle_refuses_to_expire_does_not_stop_the_sweep_for_its_
 
     from taskmanager.core.models import Lease
 
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "BAD", status=Status.FAILED)
     add(claims, "OK", status=Status.IMPLEMENTING, claimed_from=Status.READY)
     stale = datetime.now(tz=UTC) - timedelta(hours=1)
@@ -743,7 +753,7 @@ def test_a_node_the_lifecycle_refuses_to_expire_does_not_stop_the_sweep_for_its_
 def test_a_child_reopens_under_its_rolled_up_exit_only_once_the_container_is_reopened(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "P", NodeKind.PLAN)
     add(claims, "P-a", parent="P")
     claims.defer("P-a", "later")
@@ -764,7 +774,7 @@ def test_a_child_reopens_under_its_rolled_up_exit_only_once_the_container_is_reo
 def test_a_container_claimed_just_before_a_reopen_commits_refuses_the_reopen(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "P", NodeKind.PLAN, review=True, fix=True, status=Status.IMPLEMENTED)
     add(claims, "U", parent="P", status=Status.COMPLETED)
     add(claims, "T", parent="P", status=Status.DEFERRED)
@@ -791,7 +801,7 @@ def test_a_container_lands_locks_and_verifies_only_the_descendants_it_still_coun
     from taskmanager.core.enums import VerificationType
     from taskmanager.core.models import NodeVerification
 
-    claims = make_estate(tmp_path, repos=("api", "web"))
+    claims = make_estate(tmp_path, repos=("api", "web"), config=gated("api", "web"))
     add(
         claims,
         "P",
@@ -833,7 +843,7 @@ def test_a_container_lands_locks_and_verifies_only_the_descendants_it_still_coun
 
 
 def test_a_step_closes_only_under_the_token_its_claim_returned(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1")
     add(claims, "T2", status=Status.IMPLEMENTED)
     first = claims.start("T1", "worker", "s1")
@@ -859,7 +869,7 @@ def test_a_step_closes_only_under_the_token_its_claim_returned(tmp_path: Path) -
 def test_a_handed_over_job_gets_a_new_token_and_the_parked_one_closes_nothing(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1", status=Status.REVIEWED, outcome=Outcome.APPROVE, review_cycles=1)
     claims.landing = FakeLanding()
     merged = claims.start("T1", "merger", "s1")
@@ -887,7 +897,7 @@ def test_a_handed_over_job_gets_a_new_token_and_the_parked_one_closes_nothing(
 def test_a_node_reopened_on_a_new_branch_is_cut_a_fresh_worktree_beside_the_retired_one(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1")
     first = claims.start("T1", "agent", "s1")
     assert first.worktree is not None
@@ -909,7 +919,7 @@ def test_a_node_reopened_on_a_new_branch_is_cut_a_fresh_worktree_beside_the_reti
 
 
 def test_a_worktree_path_taken_by_another_branch_undoes_the_claim(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1")
     taken = claims.root / claims.config.worktree_dir / "api-T1"
     git(claims.root / "api", "worktree", "add", "-q", "-b", "other", str(taken), "origin/main")
@@ -927,7 +937,7 @@ def test_an_investigate_answer_cannot_reopen_a_child_under_a_set_aside_container
 ) -> None:
     from taskmanager.engine.decisions import open_failed_decision
 
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "P", NodeKind.PLAN)
     add(claims, "P-a", parent="P", status=Status.FAILED)
     add(claims, "P-b", parent="P")
@@ -954,7 +964,7 @@ def test_an_investigate_answer_cannot_reopen_a_child_under_a_failed_or_stepping_
 ) -> None:
     from taskmanager.engine.decisions import open_failed_decision
 
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "P", NodeKind.PLAN, status=status, claimed_from=claimed_from)
     add(claims, "P-a", parent="P", status=Status.FAILED)
     decision = open_failed_decision(claims.ops, "P-a", "its step failed", "")
@@ -969,7 +979,7 @@ def test_an_investigate_answer_cannot_reopen_a_child_under_a_failed_or_stepping_
 def test_an_investigate_answer_ends_a_parked_landing_s_red_target_wait(tmp_path: Path) -> None:
     from taskmanager.engine.decisions import open_failed_decision
 
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1", status=Status.FAILED)
     claims.nodes.add_condition(
         Condition(
@@ -991,7 +1001,7 @@ def test_an_investigate_answer_ends_a_parked_landing_s_red_target_wait(tmp_path:
 def test_reopening_a_container_on_a_new_branch_retires_it_where_only_a_set_aside_child_worked(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path, repos=("api", "web"))
+    claims = make_estate(tmp_path, repos=("api", "web"), config=gated("api", "web"))
     add(claims, "P", NodeKind.PLAN, status=Status.DEFERRED)
     add(claims, "P-a", parent="P", repo="api", status=Status.DEFERRED)
     add(claims, "P-b", parent="P", repo="web")
@@ -1007,7 +1017,7 @@ def test_reopening_a_container_on_a_new_branch_retires_it_where_only_a_set_aside
 def test_main_and_a_container_branch_red_at_one_sha_each_get_their_own_decision(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     sha = "a" * 40
     for node_id, target in (("T1", "main"), ("T2", "tm/P")):
         add(claims, node_id)
@@ -1047,7 +1057,7 @@ def test_main_and_a_container_branch_red_at_one_sha_each_get_their_own_decision(
 
 
 def test_escalating_red_targets_selects_every_node_only_once(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1")
 
     node_selects: list[str] = []
@@ -1073,7 +1083,7 @@ def test_escalating_red_targets_selects_every_node_only_once(tmp_path: Path) -> 
 def test_counting_a_stopped_job_keeps_an_edit_that_committed_after_the_count_began(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1")
     real = claims.nodes.transaction
 
@@ -1092,7 +1102,7 @@ def test_counting_a_stopped_job_keeps_an_edit_that_committed_after_the_count_beg
 def test_two_counts_racing_below_the_cap_fail_the_node_that_reaches_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    claims = make_estate(tmp_path)
+    claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1")
     claims.start("T1", "agent-1", "s1")
     below = claims.caps.step_failures - 2

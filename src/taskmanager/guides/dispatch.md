@@ -56,7 +56,7 @@ tm wave discover --spec <spec-id> --session <id> --slots <n> --max-strong <n> --
 tm wave discover --session <id> --slots <n> --max-strong <n> --hold-merge <node-id>
 ```
 
-Every node of every kind whose next step can be claimed now, with that step and its model, plus landings and syncs stopped for an agent; a JSON line, then `__CHECK n=<chosen> h=<djb2>`. A node is claimable when none of these holds, checked in this order: it is mid-step or its job is running; an edge (its own, or one on a container above it) points at an open decision; an edge is unsatisfied; a `claim` condition is unmet; a sync its claim needs is running or waiting; its next step would lock a file another lease holds; its status has no next step.
+Every node of every kind whose next step can be claimed now, with that step and its model, plus landings and syncs stopped for an agent; a JSON line, then `__CHECK n=<chosen> h=<djb2>`. A node is claimable when none of these holds, checked in this order: it is mid-step or its job is running; an edge (its own, or one on a container above it) points at an open decision; an edge is unsatisfied; a `claim` condition is unmet; a sync its claim needs is running or waiting; its next step would lock a file another lease holds; its status has no next step; a repository it lands in has no `main` gate. That last hold names `tm config set repos.<repo>.gates.main.command`, and `tm task start` refuses the node with the same reason, so a direct claim never reaches a landing that would stop with `no gate`.
 
 A reviewed plan or spec lands before its review: once its code is on its target it reads `LANDED`, and its one review is claimable. Nodes that depend on it may start meanwhile, since an edge is satisfied once the code has landed. A `FIXED` node's next step is its landing, unless the node is sensitive (`tm guide plan`, §2): then it is one re-review, scoped to the open findings. A dispatcher never re-dispatches a review of a fix that is not sensitive: not by hand, not through a `tm task reset`, not as a `rereview` agent sent anyway.
 
@@ -122,6 +122,16 @@ tm section set <plan-id>:context --file <path>
 ```
 
 A plan's `context` reaches every task's brief. Anything a `tm` command can answer — what is claimed, what is ready, who holds a file — is not written down at all.
+
+A ruling that changes what a section states rewrites it: `tm section get` it, edit it, and set the whole back in the present tense. The overridden sentence goes, and the decision keeps the history. Only `:report`, `:review` and `:merge` are appended to, because each entry records a round.
+
+When findings under one rule reach review on two nodes, the rule is missing from the guide. Raise it, and on a yes add the line to the project's addendum:
+
+```
+tm decision add "Add to guide:<topic>: <line>?" --context "<the two findings, by node>" --option "yes|Add the line|every later agent reads it" --option "no|Leave it|the two findings are unrelated" --recommend yes
+tm section get guide:<topic>
+tm section set guide:<topic> --file <path>
+```
 
 ## Never
 

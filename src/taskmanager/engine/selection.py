@@ -7,7 +7,7 @@ caller with no live check available (the wave simulator, run ahead of any real c
 `cached_conditions`, the same condition-result cache `DisplayView` reads once per view, instead.
 """
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from taskmanager.core.enums import CONTAINERS, NodeKind
@@ -26,6 +26,7 @@ from taskmanager.db.cache_repo import _command_hash
 from taskmanager.db.node_repo import declared_files_of, is_locked_path, locked_key
 from taskmanager.db.runtime_repo import lease_alive
 from taskmanager.engine.chains import satisfied
+from taskmanager.engine.config import ProjectConfig
 from taskmanager.engine.routing import STRONG, model_for
 from taskmanager.engine.snapshot import SnapshotBuilder, apply_cycle, cycle_in
 from taskmanager.engine.stepgraph import Snapshot, migration_holders
@@ -193,6 +194,22 @@ def blocked_reason(
     return blocked_reason_after_condition(node, snap, action, repo_order=repo_order)
 
 
+def gated_repos(config: ProjectConfig) -> frozenset[str]:
+    return frozenset(repo for repo, found in config.repos.items() if "main" in found.gates)
+
+
+def ungated_reason(repos: Sequence[str], gated: Collection[str]) -> str | None:
+    """Why a node landing in `repos` is held when only `gated` have a main gate: its chain
+    could only stop at its landing."""
+    repo = next((r for r in repos if r not in gated), None)
+    if repo is None:
+        return None
+    return (
+        f"repos.{repo}.gates.main is not configured, so nothing lands in {repo}; set it with "
+        f'`tm config set repos.{repo}.gates.main.command "<your test command>"`'
+    )
+
+
 def _in_scope(snap: Snapshot, node: Node, specs: list[str] | None) -> bool:
     if specs is None:
         return True
@@ -220,6 +237,7 @@ def candidates(
     repo_order: Sequence[str] = (),
     next_step: Callable[[Node, Snapshot], tuple[Action | None, str | None]] = next_step,
     blocked_reason: Callable[[Node, Snapshot, Action | None], str | None] = blocked_reason,
+    gated: Collection[str] | None = None,
 ) -> tuple[list[Candidate], list[str]]:
     """Every claimable node with the step it would take next, later steps first within a
     priority, and the reason each held node cannot be claimed now.
@@ -230,6 +248,9 @@ def candidates(
     `repo_order` only orders a `Candidate`'s own `repos`; a `blocked_reason` bound to `Claims`
     carries its own copy for the "nothing to land" check, so a caller passing a custom
     `blocked_reason` must give it the same `repo_order` itself.
+
+    `gated`, when given, names the repositories with a main gate: a node touching any other is
+    held now, since its chain could only stop at its landing.
     """
     found: list[Candidate] = []
     held: list[str] = []
@@ -260,7 +281,12 @@ def candidates(
         if reason is not None:
             held.append(f"{node.id}: {reason}")
             continue
-        found.append(Candidate(node, action, model, None, repos_of(snap, node.id, repo_order)))
+        repos = repos_of(snap, node.id, repo_order)
+        ungated = None if gated is None else ungated_reason(repos, gated)
+        if ungated is not None:
+            held.append(f"{node.id}: {ungated}")
+            continue
+        found.append(Candidate(node, action, model, None, repos))
     return sorted(found, key=lambda c: (_STAGE[c.action], -c.node.priority, c.node.id)), held
 
 

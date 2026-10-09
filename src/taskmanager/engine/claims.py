@@ -452,7 +452,10 @@ class Claims:
         snap = self.snapshots.build()
         cycle = self.snapshots.cycle(node)
         action = lifecycle.next_action(cycle)
-        reason = self.blocked_reason(node, snap, action)
+        reason = self.blocked_reason(node, snap, action) or selection.ungated_reason(
+            selection.repos_of(snap, node.id, self.config.repo_order),
+            selection.gated_repos(self.config),
+        )
         if reason is not None or action is None:
             return ClaimResult(Action.BLOCKED, reason)
         pairs = self._sync_pairs(node.id, snap)

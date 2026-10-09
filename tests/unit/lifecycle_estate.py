@@ -15,7 +15,7 @@ from taskmanager.core.status import Merge, Status
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.engine.claims import Claims
-from taskmanager.engine.config import Gate, ProjectConfig
+from taskmanager.engine.config import Gate, ProjectConfig, RepoConfig
 from taskmanager.engine.landing import Landing
 
 
@@ -108,7 +108,7 @@ def make_estate(
     root.mkdir()
     for name in repos:
         make_repo(root, name)
-    cfg = config or ProjectConfig()
+    cfg = config or gated(*repos)
     tm_dir = root / ".taskmanager"
     tm_dir.mkdir()
     (tm_dir / "config.yaml").write_text(
@@ -116,6 +116,11 @@ def make_estate(
     )
     DatabaseManager(tm_dir).init_all()
     return Claims.open(root, cfg)
+
+
+def gated(*repos: str) -> ProjectConfig:
+    """A config giving each repository a main gate, so discovery offers the nodes in it."""
+    return ProjectConfig(repos={r: RepoConfig(gates={"main": Gate(command="true")}) for r in repos})
 
 
 def add(
