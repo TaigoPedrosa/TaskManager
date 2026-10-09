@@ -2,6 +2,7 @@
 that keeps its marketplaces and plugins as files under the profile."""
 
 import hashlib
+import json
 import os
 import shutil
 import signal
@@ -38,11 +39,17 @@ def version(source):
     manifest = Path(checkout) / "plugin" / ".claude-plugin" / "plugin.json"
     return json.loads(manifest.read_text())["version"]
 
+# A source written as `<owner>/<name>[#ref]` lists as the github form the README once added.
 def listed(name, source):
     if Path(source).is_dir():
-        return {{"name": name, "source": "directory", "path": source}}
-    url, _, ref = source.partition("#")
-    return {{"name": name, "source": "git", "url": url, **({{"ref": ref}} if ref else {{}})}}
+        entry = {{"source": "directory", "path": source}}
+    else:
+        where, _, ref = source.partition("#")
+        kind = {{"source": "git", "url": where}} if "://" in where else {{"source": "github", "repo": where}}
+        entry = {{**kind, **({{"ref": ref}} if ref else {{}})}}
+    if os.environ.get("STUB_NESTED_SOURCE"):
+        return {{"name": name, "source": entry}}
+    return {{"name": name, **entry}}
 
 match args:
     case ["plugin", "marketplace", "add", source]:
@@ -265,6 +272,95 @@ def test_install_at_another_source_moves_tm_and_the_plugin_to_it(
     ]
     assert installs[-1].endswith("git+https://github.com/TaigoPedrosa/TaskManager@other")
     assert install_sh(scratch, "status").returncode == 0
+
+
+def seed_marketplace(scratch: Scratch, source: str) -> None:
+    (scratch.profile / "stub" / "marketplaces" / "taskmanager").write_text(source)
+    (scratch.profile / "stub" / "plugins" / PLUGIN).write_text(VERSION)
+
+
+def plugin_writes(scratch: Scratch) -> list[str]:
+    reads = ("plugin list", "plugin marketplace list")
+    return [c for c in scratch.log.read_text().splitlines() if not c.startswith(reads)]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "TaigoPedrosa/TaskManager",
+        "TaigoPedrosa/TaskManager#main",
+        "https://github.com/TaigoPedrosa/TaskManager.git",
+        "https://github.com/TaigoPedrosa/TaskManager.git#main",
+    ],
+)
+@pytest.mark.parametrize("nested", [False, True], ids=["flat", "nested"])
+def test_install_over_a_github_repo_marketplace_updates_it_in_place(
+    tmp_path: Path, uv_cache: Path, source: str, nested: bool
+) -> None:
+    scratch = scratch_env(tmp_path, uv_cache)
+    if nested:
+        scratch.env["STUB_NESTED_SOURCE"] = "1"
+    seed_marketplace(scratch, source)
+
+    res = install_sh(scratch)
+
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert plugin_writes(scratch) == [
+        "plugin marketplace update taskmanager",
+        f"plugin update {PLUGIN}",
+    ]
+    assert scratch.marketplaces() == {"taskmanager": source}
+    assert "resets" not in res.stdout
+    status = install_sh(scratch, "status")
+    git = "https://github.com/TaigoPedrosa/TaskManager.git"
+    assert f"marketplace: taskmanager from {git}{source.partition('#')[1]}" in status.stdout
+
+
+def test_install_at_another_ref_over_a_github_repo_marketplace_re_adds_it_and_says_data_resets(
+    tmp_path: Path, uv_cache: Path
+) -> None:
+    scratch = scratch_env(tmp_path, uv_cache)
+    seed_marketplace(scratch, "TaigoPedrosa/TaskManager")
+
+    res = install_sh(scratch, "--ref", "other")
+
+    assert res.returncode == 0, res.stdout + res.stderr
+    git = "https://github.com/TaigoPedrosa/TaskManager.git"
+    assert plugin_writes(scratch) == [
+        "plugin marketplace remove taskmanager",
+        f"plugin marketplace add {git}#other",
+        "plugin marketplace update taskmanager",
+        f"plugin install {PLUGIN}",
+        f"plugin update {PLUGIN}",
+    ]
+    resets = [line for line in res.stdout.splitlines() if "resets" in line]
+    assert resets == [
+        f"plugin: moving taskmanager off {git}, so Claude Code resets {PLUGIN}'s saved options and data"
+    ]
+    assert scratch.marketplaces() == {"taskmanager": f"{git}#other"}
+
+
+def test_status_reads_the_marketplace_source_the_real_claude_lists(
+    tmp_path: Path, uv_cache: Path
+) -> None:
+    real = shutil.which("claude")
+    if real is None:
+        pytest.skip("claude is not on PATH")
+    scratch = scratch_env(tmp_path, uv_cache, claude=False)
+    (tmp_path / "sysbin" / "claude").symlink_to(real)
+    known = scratch.profile / "plugins" / "known_marketplaces.json"
+    known.parent.mkdir(parents=True)
+    entry = {
+        "source": {"source": "github", "repo": "TaigoPedrosa/TaskManager"},
+        "installLocation": str(tmp_path),
+        "lastUpdated": "2026-10-09T00:00:00.000Z",
+    }
+    known.write_text(json.dumps({"taskmanager": entry}))
+
+    status = install_sh(scratch, "status")
+
+    git = "https://github.com/TaigoPedrosa/TaskManager.git"
+    assert f"marketplace: taskmanager from {git}\n" in status.stdout, status.stdout + status.stderr
 
 
 def test_uninstall_removes_tm_the_plugin_and_the_gemini_link_and_nothing_else(
