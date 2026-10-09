@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from taskmanager.core.status import DisplayStatus, Phase
-from taskmanager.web.rows import counts_as_work
+from taskmanager.web.rows import ARCHIVED_MODES, ArchivedMode, counts_as_work
 
 NO_REPO = "(none)"
 NO_SPEC = "(none)"
@@ -28,6 +28,7 @@ class Filters:
     score_min: float | None = None
     score_max: float | None = None
     q: str = ""
+    archived: ArchivedMode = "exclude"
 
 
 def _split(raw: str) -> list[str]:
@@ -56,6 +57,13 @@ def _parse_score(raw: str | None) -> float | None:
         raise ValueError(f"smin/smax must be a number, got {raw!r}") from e
 
 
+def parse_archived(raw: str | None) -> ArchivedMode:
+    mode = raw or "exclude"
+    if mode not in ARCHIVED_MODES:
+        raise ValueError(f"archived must be one of {', '.join(ARCHIVED_MODES)}, got {raw!r}")
+    return mode
+
+
 def parse_filters(params: Mapping[str, str]) -> Filters:
     """Mirrors `filters.js` `readFilters`'s parsing, minus the DOM it also touches."""
     return Filters(
@@ -67,6 +75,7 @@ def parse_filters(params: Mapping[str, str]) -> Filters:
         score_min=_parse_score(params.get("smin")),
         score_max=_parse_score(params.get("smax")),
         q=(params.get("q") or "").lower(),
+        archived=parse_archived(params.get("archived")),
     )
 
 

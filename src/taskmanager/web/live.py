@@ -20,8 +20,11 @@ from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.graph_reader import GraphData
 from taskmanager.db.job_repo import _COLUMNS as _JOB_COLUMNS
 from taskmanager.db.job_repo import JobRepository, _row_to_job
+from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.utils import parse_db_datetime
+from taskmanager.engine.archive import archived_specs
+from taskmanager.engine.config import ConfigStore
 from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder
 from taskmanager.web.bodies import (
     BodyRepos,
@@ -31,7 +34,16 @@ from taskmanager.web.bodies import (
     lease_dict,
     refresh_relations,
 )
-from taskmanager.web.rows import build_rows, decisions_open, row_digest, statuses, statuses_hash
+from taskmanager.web.rows import (
+    ARCHIVED_MODES,
+    ArchivedMode,
+    build_rows,
+    decisions_open,
+    row_digest,
+    rows_in,
+    statuses,
+    statuses_hash,
+)
 from taskmanager.web.visibility import Filters, facets, parse_filters, project_edges, visible_ids
 
 _MAX_WATCH = 200
@@ -82,11 +94,16 @@ def _runtime_parts(
 
 
 def _next_deadline(
-    leases: Mapping[str, Lease], cache_conn: sqlite3.Connection, condition_ttl: int
+    leases: Mapping[str, Lease],
+    cache_conn: sqlite3.Connection,
+    condition_ttl: int,
+    archive_boundary: datetime | None,
 ) -> datetime | None:
     """The earliest instant a display could flip on its own, with no write to trigger a
-    rebuild: a live lease going stale, or a cached condition result ageing out of its TTL."""
-    deadlines = [
+    rebuild: a live lease going stale, a cached condition result ageing out of its TTL, or a
+    completed spec crossing into the archive."""
+    deadlines = [] if archive_boundary is None else [archive_boundary]
+    deadlines += [
         lease.last_heartbeat + timedelta(seconds=lease.ttl_seconds)
         for lease in leases.values()
         if lease.ttl_seconds is not None
@@ -159,8 +176,12 @@ class LiveHub:
         # they exist to detect.
         self._state_conn = sqlite3.connect(str(state_db), check_same_thread=False)
         self._cache_conn = sqlite3.connect(str(cache_db), check_same_thread=False)
-        self._last_state_version: int | None = None
-        self._last_cache_version: int | None = None
+        # The ledger records a completion after the state write commits, so a rebuild that
+        # state's change started may read the ledger before the completion lands in it.
+        self._ledger_conn = sqlite3.connect(str(node_repo.db.ledger_db), check_same_thread=False)
+        self._ledger = LedgerRepository(node_repo.db)
+        self._config = ConfigStore(node_repo.db.taskmanager_dir.parent)
+        self._last_versions: tuple[int, ...] | None = None
         self._deadline: datetime | None = None
         # Guards a rebuild's diff step against a subscribe answered mid-cycle: both touch a
         # session's `sent_*` fields, and a subscribe must always start from what was last
@@ -172,11 +193,23 @@ class LiveHub:
         self._sessions_lock = threading.Lock()
         self.sessions: dict[int, Session] = {}
         self.rows: dict[str, dict[str, Any]] = {}
-        self.statuses: list[dict[str, Any]] = []
-        self.hash: str = statuses_hash([])
+        self.statuses_by_mode: dict[ArchivedMode, list[dict[str, Any]]] = {
+            mode: [] for mode in ARCHIVED_MODES
+        }
+        self.hash_by_mode: dict[ArchivedMode, str] = dict.fromkeys(
+            ARCHIVED_MODES, statuses_hash([])
+        )
         self.decisions_open: int = 0
         self._raw_edges: list[tuple[str, str, str]] = []
         self._bodies: dict[str, dict[str, Any]] = {}
+
+    @property
+    def statuses(self) -> list[dict[str, Any]]:
+        return self.statuses_by_mode["exclude"]
+
+    @property
+    def hash(self) -> str:
+        return self.hash_by_mode["exclude"]
 
     # -- sessions -----------------------------------------------------------------------------
 
@@ -263,21 +296,21 @@ class LiveHub:
     # -- per-session views ----------------------------------------------------------------------
 
     def _visible(self, session: Session) -> tuple[list[str], list[list[str]], dict[str, Any]]:
-        visible = visible_ids(self.rows, session.filters, list(session.open))
-        edges = project_edges(self._raw_edges, self.rows, visible)
-        facet_data = facets(self.rows, session.filters)
+        rows = rows_in(self.rows, session.filters.archived)
+        visible = visible_ids(rows, session.filters, list(session.open))
+        edges = project_edges(self._raw_edges, rows, visible)
+        facet_data = facets(rows, session.filters)
         return visible, edges, facet_data
 
     def _snapshot_message(self, session: Session, req_id: int) -> dict[str, Any]:
         visible, edges, facet_data = self._visible(session)
         bodies = {i: self._bodies[i] for i in session.watch if i in self._bodies}
+        entries = self.statuses_by_mode[session.filters.archived]
         session.sent_rows = {i: row_digest(self.rows[i]) for i in visible}
         session.sent_edges = {tuple(e) for e in edges}
-        session.sent_statuses = {e["spec"] for e in self.statuses}
+        session.sent_statuses = {e["spec"] for e in entries}
         session.sent_plan_counts = {
-            (e["spec"], p["plan"]): row_digest(p["counts"])
-            for e in self.statuses
-            for p in e["plans"]
+            (e["spec"], p["plan"]): row_digest(p["counts"]) for e in entries for p in e["plans"]
         }
         session.sent_facets = row_digest(facet_data)
         session.sent_decisions_open = self.decisions_open
@@ -285,8 +318,8 @@ class LiveHub:
         return {
             "type": "snapshot",
             "re": req_id,
-            "hash": self.hash,
-            "statuses": self.statuses,
+            "hash": self.hash_by_mode[session.filters.archived],
+            "statuses": entries,
             "facets": facet_data,
             "decisions_open": self.decisions_open,
             "rows": [self.rows[i] for i in visible],
@@ -298,7 +331,7 @@ class LiveHub:
         return {
             "type": "update",
             "re": req_id,
-            "hash": self.hash,
+            "hash": self.hash_by_mode[session.filters.archived],
             "items": self._update_items(session),
         }
 
@@ -327,7 +360,7 @@ class LiveHub:
         # (a spec created or deleted, or the first/last plan under spec `null`); a count
         # change inside an entry that stays travels as its own `plan_counts` item instead, so
         # one plan's count moving never resends every other plan in the same spec.
-        entry_by_spec = {e["spec"]: e for e in self.statuses}
+        entry_by_spec = {e["spec"]: e for e in self.statuses_by_mode[session.filters.archived]}
         new_spec_keys = set(entry_by_spec)
         added_specs = new_spec_keys - session.sent_statuses
         removed_specs = session.sent_statuses - new_spec_keys
@@ -399,20 +432,25 @@ class LiveHub:
         for session, items in broadcasts:
             if items:
                 await self._send(
-                    session, {"type": "update", "re": None, "hash": self.hash, "items": items}
+                    session,
+                    {
+                        "type": "update",
+                        "re": None,
+                        "hash": self.hash_by_mode[session.filters.archived],
+                        "items": items,
+                    },
                 )
 
     def _should_rebuild(self) -> bool:
-        state_version = self._state_conn.execute("PRAGMA data_version").fetchone()[0]
-        cache_version = self._cache_conn.execute("PRAGMA data_version").fetchone()[0]
-        changed = (
-            state_version != self._last_state_version or cache_version != self._last_cache_version
+        versions = tuple(
+            conn.execute("PRAGMA data_version").fetchone()[0]
+            for conn in (self._state_conn, self._cache_conn, self._ledger_conn)
         )
+        changed = versions != self._last_versions
         due = self._deadline is not None and self._clock() >= self._deadline
         if not changed and not due:
             return False
-        self._last_state_version = state_version
-        self._last_cache_version = cache_version
+        self._last_versions = versions
         return True
 
     def _rebuild_and_diff(self) -> list[tuple[Session, list[dict[str, Any]]]]:
@@ -424,8 +462,13 @@ class LiveHub:
     def _rebuild(self) -> None:
         view = DisplayView(self._snapshots, self._cache, self._condition_ttl())
         data = view.snapshot.graph_data()
-        new_rows = build_rows(view)
-        new_statuses = statuses(new_rows)
+        archive = archived_specs(
+            view.snapshot,
+            self._ledger,
+            self._clock(),
+            self._config.project().web.archive_after_days,
+        )
+        new_rows = build_rows(view, archive.nodes)
         raw_edges = [(source, target, "depends_on") for source, target in view.snapshot.edges]
 
         with self._sessions_lock:
@@ -460,8 +503,12 @@ class LiveHub:
                 del self._bodies[node_id]
 
         self.rows = new_rows
-        self.statuses = new_statuses
-        self.hash = statuses_hash(new_statuses)
+        self.statuses_by_mode = {mode: statuses(rows_in(new_rows, mode)) for mode in ARCHIVED_MODES}
+        self.hash_by_mode = {
+            mode: statuses_hash(entries) for mode, entries in self.statuses_by_mode.items()
+        }
         self.decisions_open = decisions_open(view)
         self._raw_edges = raw_edges
-        self._deadline = _next_deadline(data.leases, self._cache_conn, self._condition_ttl())
+        self._deadline = _next_deadline(
+            data.leases, self._cache_conn, self._condition_ttl(), archive.next_boundary
+        )
