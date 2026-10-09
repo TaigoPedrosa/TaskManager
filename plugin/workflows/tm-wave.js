@@ -280,7 +280,7 @@ const head = (n, c, fam, role) => {
 Model: ${MODEL_ID[fam]}
 The tm-wave workflow claimed this ${c.action} step for you: never run tm task start, and never claim or release any other node. Read tm guide ${role} and follow it from the step after its claim. Close the step with ${close(n, c)}${blocked}.
 Brief: tm render ${n.id} --view subagent${codegraph}${rules}${gate}${needs}
-Sections: before any tm section set, tm section get the same key and append to it.`
+Sections: before any tm section set, tm section get the same key. Append an entry to :report, :review or :merge; rewrite any other section whole, in the present tense, with every sentence it overrides gone.`
 }
 
 async function work(n, c, s, trail) {

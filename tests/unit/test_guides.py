@@ -315,6 +315,24 @@ def test_fix_guide_watches_a_finding_s_test_go_red_and_names_its_searches(
     assert "names the search that would have found it" in fix
 
 
+def test_dispatch_guide_rewrites_an_overridden_section_and_turns_a_repeat_finding_into_a_rule(
+    rendered: Callable[[str], str],
+) -> None:
+    rulings = rendered("dispatch").split("## 8. Write rulings down where the work is", 1)[1]
+    rulings = rulings.split("## Never", 1)[0]
+    assert "The overridden sentence goes, and the decision keeps the history" in rulings
+    assert "Only `:report`, `:review` and `:merge` are appended to" in rulings
+    assert "When findings under one rule reach review on two nodes" in rulings
+    assert 'tm decision add "Add to guide:<topic>: <line>?"' in rulings
+    assert "tm section set guide:<topic> --file <path>" in rulings
+
+
+def test_plan_guide_amends_a_section_in_place(rendered: Callable[[str], str]) -> None:
+    amend = rendered("plan").split("## 10. Amend it", 1)[1].split("## Worked example", 1)[0]
+    assert "never extended with a second generation" in amend
+    assert "with every sentence the change overrides gone" in amend
+
+
 def test_dispatch_guide_names_every_argument_tm_wave_reads() -> None:
     read = set(re.findall(r"\bA\.([A-Za-z]+)", WORKFLOW.read_text(encoding="utf-8")))
     assert read, "no argument found in the workflow script"
@@ -1020,8 +1038,8 @@ BRIEF_RULES = [
         "implement",
         "## 6. Report",
         "A report that fixes a contract its dependents build on (a shape, a name, an id scheme) "
-        "appends the contract to what `tm section get <plan-id>:overview` prints and writes the "
-        "whole of it back with `tm section set <plan-id>:overview --file <path>` before the step "
+        "adds the contract to what `tm section get <plan-id>:overview` prints, or replaces the "
+        "earlier wording of the same contract, and writes the whole of it back with `tm section set <plan-id>:overview --file <path>` before the step "
         "closes. Only the parent's `context` "
         "and `overview` reach a dependent's brief, and no step runs between tasks to copy it "
         "there.",

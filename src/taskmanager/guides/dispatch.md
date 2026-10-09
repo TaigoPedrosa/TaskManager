@@ -123,6 +123,16 @@ tm section set <plan-id>:context --file <path>
 
 A plan's `context` reaches every task's brief. Anything a `tm` command can answer — what is claimed, what is ready, who holds a file — is not written down at all.
 
+A ruling that changes what a section states rewrites it: `tm section get` it, edit it, and set the whole back in the present tense. The overridden sentence goes, and the decision keeps the history. Only `:report`, `:review` and `:merge` are appended to, because each entry records a round.
+
+When findings under one rule reach review on two nodes, the rule is missing from the guide. Raise it, and on a yes add the line to the project's addendum:
+
+```
+tm decision add "Add to guide:<topic>: <line>?" --context "<the two findings, by node>" --option "yes|Add the line|every later agent reads it" --option "no|Leave it|the two findings are unrelated" --recommend yes
+tm section get guide:<topic>
+tm section set guide:<topic> --file <path>
+```
+
 ## Never
 
 - Never dispatch a step `tm task start` did not claim, and never two agents on one node.
