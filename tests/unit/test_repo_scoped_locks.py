@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from lifecycle_estate import add, make_estate, stored
+from lifecycle_estate import add, gated, make_estate, stored
 
 from taskmanager.core.enums import NodeKind
 from taskmanager.core.status import Action, DisplayStatus
@@ -35,7 +35,9 @@ def next_task_ids(claims: Claims) -> set[str]:
 def test_two_repos_declaring_the_same_path_are_both_chosen_and_both_claim(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path, repos=("workers", "scheduler"))
+    claims = make_estate(
+        tmp_path, repos=("workers", "scheduler"), config=gated("workers", "scheduler")
+    )
     add(claims, "W1", repo="workers", files=LOCK_FILES)
     add(claims, "S1", repo="scheduler", files=LOCK_FILES)
 
@@ -56,7 +58,7 @@ def test_two_repos_declaring_the_same_path_are_both_chosen_and_both_claim(
 def test_two_same_repo_tasks_on_the_same_path_collide_in_discovery_heuristics_and_claim(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path, repos=("workers",))
+    claims = make_estate(tmp_path, repos=("workers",), config=gated("workers"))
     add(claims, "W1", repo="workers", files=["src/app.py"], priority=90)
     add(claims, "W2", repo="workers", files=["src/app.py"], priority=80)
 
@@ -77,7 +79,9 @@ def test_two_same_repo_tasks_on_the_same_path_collide_in_discovery_heuristics_an
 def test_a_container_spanning_two_repositories_locks_each_descendants_files_under_its_own_repo(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path, repos=("workers", "scheduler"))
+    claims = make_estate(
+        tmp_path, repos=("workers", "scheduler"), config=gated("workers", "scheduler")
+    )
     add(claims, "PLAN", NodeKind.PLAN)
     add(claims, "W1", parent="PLAN", repo="workers", files=LOCK_FILES)
     add(claims, "S1", parent="PLAN", repo="scheduler", files=LOCK_FILES)
@@ -94,7 +98,7 @@ def test_a_container_spanning_two_repositories_locks_each_descendants_files_unde
 
 
 def test_run_list_shows_the_qualified_keys_a_claim_wrote(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path, repos=("workers",))
+    claims = make_estate(tmp_path, repos=("workers",), config=gated("workers"))
     add(claims, "W1", repo="workers", files=LOCK_FILES)
 
     claims.start("W1", "agent-w", "s1")
@@ -104,7 +108,7 @@ def test_run_list_shows_the_qualified_keys_a_claim_wrote(tmp_path: Path) -> None
 
 
 def test_a_manifest_or_lockfile_never_holds_back_a_second_claim(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path, repos=("workers",))
+    claims = make_estate(tmp_path, repos=("workers",), config=gated("workers"))
     add(claims, "W1", repo="workers", files=["pyproject.toml", "uv.lock", "src/a.py"], priority=90)
     add(claims, "W2", repo="workers", files=["pyproject.toml", "uv.lock", "src/b.py"], priority=80)
 
@@ -117,7 +121,7 @@ def test_a_manifest_or_lockfile_never_holds_back_a_second_claim(tmp_path: Path) 
 def test_a_container_never_locks_a_manifest_or_lockfile_its_descendants_declare(
     tmp_path: Path,
 ) -> None:
-    claims = make_estate(tmp_path, repos=("workers",))
+    claims = make_estate(tmp_path, repos=("workers",), config=gated("workers"))
     add(claims, "PLAN", NodeKind.PLAN)
     add(claims, "W1", parent="PLAN", repo="workers", files=["pyproject.toml", "src/a.py"])
     add(claims, "W2", parent="PLAN", repo="workers", files=["svc/uv.lock", "src/b.py"])

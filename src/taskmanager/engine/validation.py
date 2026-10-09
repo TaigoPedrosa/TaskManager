@@ -5,6 +5,7 @@ A step's own close (complete, review, landing, release) is the lease holder's wr
 through the lifecycle, and does not come here: rule 7 guards a busy node against everyone else."""
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Final, Protocol
 
 from taskmanager.core.enums import NodeKind, VerificationType
@@ -310,6 +311,34 @@ def _codegraph_patterns(before: Snapshot, after: Snapshot, node_id: str) -> list
     return refusals
 
 
+def is_repository(root: Path, name: str) -> bool:
+    path = (root / name).resolve()
+    return path.is_relative_to(root.resolve()) and (path / ".git").exists()
+
+
+def repositories(root: Path) -> list[str]:
+    """The root's own repository as `.`, then each git working tree directly under it."""
+    own = ["."] if (root / ".git").exists() else []
+    return own + sorted(p.name for p in root.iterdir() if p.is_dir() and (p / ".git").exists())
+
+
+def _target_repo(before: Snapshot, n: SnapNode, root: Path) -> list[Refusal]:
+    old = before.nodes.get(n.id)
+    # Only the write that stores the name is refused: a node already naming a missing clone,
+    # restored from an export, never blocks a write around it.
+    if not n.repo or (old is not None and old.repo == n.repo) or is_repository(root, n.repo):
+        return []
+    found = ", ".join(repositories(root)) or "none"
+    return [
+        Refusal(
+            n.id,
+            15,
+            f"{n.id}: target_repo '{n.repo}' is not a git working tree under {root}; name one "
+            f"relative to it, `.` for the root itself (repositories there: {found})",
+        )
+    ]
+
+
 def _crossings(s: Snapshot) -> dict[tuple[str, ...], Refusal]:
     """Every wait the step graph draws between two targets, which no meeting node can satisfy:
     a dependency edge, once per node it gates, and a migration chain's link. Work that lands no
@@ -354,8 +383,13 @@ def _crossings(s: Snapshot) -> dict[tuple[str, ...], Refusal]:
 
 
 def validate(
-    before: Snapshot, after: Snapshot, touched: set[str], branches: BranchFacts
+    before: Snapshot,
+    after: Snapshot,
+    touched: set[str],
+    branches: BranchFacts,
+    root: Path | None = None,
 ) -> list[Refusal]:
+    """`root`, when given, is where each newly stored `target_repo` must be a git working tree."""
     present = {node_id for node_id in touched if node_id in after.nodes}
     # A write to a container can break a rule its children keep only through it, and a spec's
     # `land_on` moves every node below it that lands at the top.
@@ -378,6 +412,8 @@ def validate(
         refusals += _placement(before, after, n)
         refusals += _busy(before, after, n)
         refusals += _codegraph_patterns(before, after, node_id)
+        if root is not None:
+            refusals += _target_repo(before, n, root)
     # Only the write that draws a wait across targets is refused, never one around it.
     crossed = _crossings(after)
     refusals += [crossed[k] for k in sorted(crossed.keys() - _crossings(before).keys())]

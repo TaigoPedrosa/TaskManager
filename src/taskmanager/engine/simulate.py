@@ -9,7 +9,7 @@ same condition-result cache a display reads once per view) is the only signal it
 `repo_order` is threaded through so a container's `repos` matches a real claim's.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import partial
 
@@ -65,6 +65,7 @@ def simulate(
     *,
     repo_order: Sequence[str] = (),
     cached_conditions: Mapping[tuple[str, int], tuple[str, int]] | None = None,
+    gated: Collection[str] | None = None,
 ) -> list[Wave]:
     """`depth` waves out from `snapshot`, each a `select` over the snapshot the wave before it
     left: `snapshot` itself is read only, never written, and this issues no SQL -- every wave
@@ -73,7 +74,9 @@ def simulate(
     snap = snapshot
     waves: list[Wave] = []
     for _ in range(depth):
-        snap, wave = _advance(snap, size, max_strong, specs, caps, repo_order, cached_conditions)
+        snap, wave = _advance(
+            snap, size, max_strong, specs, caps, repo_order, cached_conditions, gated
+        )
         waves.append(wave)
     return waves
 
@@ -86,13 +89,14 @@ def _advance(
     caps: Caps,
     repo_order: Sequence[str],
     cached_conditions: Mapping[tuple[str, int], tuple[str, int]] | None,
+    gated: Collection[str] | None,
 ) -> tuple[Snapshot, Wave]:
     data = snap.graph_data()
     blocked_reason = partial(
         selection.blocked_reason, repo_order=repo_order, cached_conditions=cached_conditions
     )
     found, candidate_held = selection.candidates(
-        snap, specs, repo_order=repo_order, blocked_reason=blocked_reason
+        snap, specs, repo_order=repo_order, blocked_reason=blocked_reason, gated=gated
     )
     result = selection.select(found, snap, size, max_strong)
     cand_by_id = {c.node.id: c for c in found}

@@ -155,6 +155,8 @@ def test_completing_a_node_whose_repository_is_not_cloned_logs_nothing(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     claims = estate(tmp_path)
+    # Stored as a restore stores it: an import refuses to name a repository that is not cloned.
+    add(claims, "T1", repo="web", review=False, fix=False)
 
     with caplog.at_level(logging.WARNING):
         import_completed(claims, "T1", repo="web")

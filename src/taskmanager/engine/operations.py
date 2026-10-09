@@ -244,7 +244,7 @@ def validated_write(
         scope = {n for n in touched if n in after.nodes}
         for node_id in list(scope):
             scope.update(after.children(node_id))
-        refusals = validate(before, after, scope, GitBranchFacts(root, node_repo, before))
+        refusals = validate(before, after, scope, GitBranchFacts(root, node_repo, before), root)
         if refusals:
             code = 409 if any(r.rule in _CONFLICT_RULES for r in refusals) else 400
             raise OperationError(prefix + "; ".join(r.message for r in refusals), code)

@@ -44,6 +44,8 @@ def _imported_root(tmp_path: Path) -> Path:
     document = tmp_path / "plan.yaml"
     document.write_text(_example_document(), encoding="utf-8")
     _run("init", "-C", str(tmp_path))
+    subprocess.run(["git", "init", "-q", str(tmp_path / "backend")], check=True)
+    _run("config", "set", "repos.backend.gates.main.command", "true", "-C", str(tmp_path))
     _run("import", "--format", "yaml", "-f", str(document), "-C", str(tmp_path))
     return tmp_path
 

@@ -46,6 +46,7 @@ from taskmanager.engine.config import ConfigStore, DispatchConfig
 from taskmanager.engine.decisions import read_decision
 from taskmanager.engine.landing import Landing
 from taskmanager.engine.operations import OperationError, Operations
+from taskmanager.engine.selection import gated_repos
 from taskmanager.engine.simulate import simulate
 from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder, stored_status
 from taskmanager.web.bodies import BodyRepos, attachments_with_size, build_bodies, lease_dict
@@ -526,9 +527,6 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     def _dispatch_config() -> DispatchConfig:
         return ConfigStore(project_root).project().dispatch
 
-    def _repo_order() -> list[str]:
-        return ConfigStore(project_root).project().repo_order
-
     live_hub = LiveHub(
         snapshots=snapshots,
         cache=cache,
@@ -699,14 +697,16 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         view = new_view()
         snap = view.snapshot
         cached_conditions = cache.all_conditions(_condition_ttl())
+        project = ConfigStore(project_root).project()
         waves = simulate(
             snap,
             depth,
             size,
             _WAVE_MAX_STRONG,
             spec,
-            repo_order=_repo_order(),
+            repo_order=project.repo_order,
             cached_conditions=cached_conditions,
+            gated=gated_repos(project),
         )
         # What a wave row draws beyond the simulator's own fields: a held node's status and
         # title, and the live lease an in-flight step runs under.
