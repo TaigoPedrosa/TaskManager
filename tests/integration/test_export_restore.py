@@ -1,6 +1,7 @@
 """Export writes the lifecycle format with its marker; restore reads only that format."""
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -9,9 +10,14 @@ from typer.testing import CliRunner
 from taskmanager.cli.main import EXPORT_FORMAT, EXPORT_FORMATS_MERGE_MAIN, app
 from taskmanager.core.status import ConditionStage, Merge
 from taskmanager.db.connection import DatabaseManager
+from taskmanager.db.job_repo import JobRepository
+from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
+from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.di.container import create_container
+from taskmanager.engine.archive import archived_specs
 from taskmanager.engine.operations import MERGE_REFUSAL, Operations
+from taskmanager.engine.snapshot import SnapshotBuilder
 from taskmanager.renderers.importers import BulkImporter
 
 runner = CliRunner()
@@ -40,7 +46,7 @@ def test_export_writes_the_format_marker_flags_conditions_and_bare_dependencies(
     assert runner.invoke(app, ["export", str(out), "-C", str(tmp_path)]).exit_code == 0
     assert json.loads((out / "_format.json").read_text()) == {
         "format": "tm-lifecycle",
-        "version": 4,
+        "version": 5,
     }
     plan = json.loads((out / "S1-P1.json").read_text())["plans"][0]
     a, b = plan["tasks"]
@@ -181,3 +187,55 @@ def test_restore_refuses_merge_main_in_a_current_export_and_writes_nothing(
     # Rich wraps a long line at the terminal width.
     assert MERGE_REFUSAL in " ".join(res.output.split())
     assert NodeRepository(DatabaseManager(fresh / ".taskmanager")).list_nodes() == []
+
+
+def completed_spec_export(directory: Path, version: int, completed_at: str | None) -> None:
+    directory.mkdir()
+    (directory / "_format.json").write_text(
+        json.dumps({"format": "tm-lifecycle", "version": version})
+    )
+    spec: dict[str, object] = {"id": "OLD", "kind": "spec", "title": "OLD", "status": "COMPLETED"}
+    if completed_at is not None:
+        spec["completed_at"] = completed_at
+    (directory / "_spec-OLD.json").write_text(json.dumps({"spec": spec}))
+
+
+def archived_in(root: Path, days: int = 3) -> frozenset[str]:
+    db = DatabaseManager(root / ".taskmanager")
+    nodes = NodeRepository(db)
+    snapshot = SnapshotBuilder(nodes, RuntimeRepository(db), JobRepository(db)).build()
+    return archived_specs(snapshot, LedgerRepository(db), datetime.now(tz=UTC), days).specs
+
+
+def test_restore_keeps_a_completed_spec_s_completion_time_so_an_old_one_archives(
+    tmp_path: Path,
+) -> None:
+    completed_at = "2026-01-02T03:04:05+00:00"
+    completed_spec_export(tmp_path / "e1", 5, completed_at)
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+
+    res = runner.invoke(app, ["restore", str(tmp_path / "e1"), "-C", str(fresh)])
+
+    assert res.exit_code == 0, res.output
+    assert archived_in(fresh) == {"OLD"}
+    assert runner.invoke(app, ["export", str(tmp_path / "e2"), "-C", str(fresh)]).exit_code == 0
+    spec = json.loads((tmp_path / "e2" / "_spec-OLD.json").read_text())["spec"]
+    assert spec["completed_at"] == completed_at
+
+
+def test_restore_of_an_export_without_completion_times_counts_from_the_restore(
+    tmp_path: Path,
+) -> None:
+    completed_spec_export(tmp_path / "e", 4, None)
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    before = datetime.now(tz=UTC)
+
+    res = runner.invoke(app, ["restore", str(tmp_path / "e"), "-C", str(fresh)])
+
+    assert res.exit_code == 0, res.output
+    assert archived_in(fresh) == frozenset()
+    assert runner.invoke(app, ["export", str(tmp_path / "e2"), "-C", str(fresh)]).exit_code == 0
+    spec = json.loads((tmp_path / "e2" / "_spec-OLD.json").read_text())["spec"]
+    assert datetime.fromisoformat(spec["completed_at"]) >= before - timedelta(seconds=1)

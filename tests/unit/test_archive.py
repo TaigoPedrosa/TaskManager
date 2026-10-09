@@ -52,6 +52,11 @@ class Estate:
             )
         )
 
+    def updated(self, node_id: str, days_ago: float) -> None:
+        node = self.nodes.get_node(node_id)
+        assert node is not None
+        self.nodes.save_node(node.model_copy(update={"updated_at": NOW - timedelta(days=days_ago)}))
+
     def archive(self, days: int = 3) -> Archive:
         return archived_specs(self.builder.build(), self.ledger, NOW, days)
 
@@ -123,12 +128,26 @@ def test_archived_specs_completed_again_counts_from_the_last_completion(estate: 
     assert archive.next_boundary == NOW + timedelta(days=2)
 
 
-def test_archived_specs_completed_spec_with_no_ledger_completion_stays_in_view(
+def test_archived_specs_completed_spec_with_no_ledger_completion_counts_from_its_last_update(
     estate: Estate,
 ) -> None:
-    estate.spec("S")
+    estate.spec("OLD")
+    estate.updated("OLD", days_ago=4)
+    estate.spec("NEW")
+    estate.updated("NEW", days_ago=1)
 
-    assert estate.archive().specs == frozenset()
+    archive = estate.archive()
+
+    assert archive.specs == {"OLD"}
+    assert archive.next_boundary == NOW + timedelta(days=2)
+
+
+def test_archived_specs_ledger_completion_wins_over_a_later_update(estate: Estate) -> None:
+    estate.spec("S")
+    estate.moved("S", Status.COMPLETED, days_ago=4)
+    estate.updated("S", days_ago=1)
+
+    assert estate.archive().specs == {"S"}
 
 
 def test_archived_specs_subtree_goes_with_its_spec(estate: Estate) -> None:

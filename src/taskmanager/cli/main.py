@@ -58,8 +58,10 @@ from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.db.schema import STATE_SCHEMA_VERSION
+from taskmanager.db.utils import parse_db_datetime, to_db_timestamp
 from taskmanager.di.container import TaskManagerProvider
 from taskmanager.engine import doctor
+from taskmanager.engine.archive import completion_times
 from taskmanager.engine.chains import landing_chain
 from taskmanager.engine.claims import LIVE_JOBS, Blocker, Claims, DecisionSpec
 from taskmanager.engine.config import ConfigError, ConfigStore
@@ -176,8 +178,9 @@ def _emit(data: Any, as_yaml: bool = False) -> None:
 # A restore reads only exports carrying one of these markers; an export without one came from a
 # pre-lifecycle tm, whose statuses and gated edges this version does not store. Versions 1 and 2
 # store `merge: main`, which restore reads as `spec`. Versions 1 to 3 carry no `on_target`, so a
-# restored node is on its target only at the LANDED or COMPLETED it states.
-EXPORT_FORMAT: dict[str, Any] = {"format": "tm-lifecycle", "version": 4}
+# restored node is on its target only at the LANDED or COMPLETED it states. Versions 1 to 4 carry
+# no `completed_at`, so a restored COMPLETED node counts as completed at its restore.
+EXPORT_FORMAT: dict[str, Any] = {"format": "tm-lifecycle", "version": 5}
 EXPORT_FORMATS_MERGE_MAIN = (
     {"format": "tm-lifecycle", "version": 1},
     {"format": "tm-lifecycle", "version": 2},
@@ -185,6 +188,7 @@ EXPORT_FORMATS_MERGE_MAIN = (
 READABLE_EXPORT_FORMATS = (
     *EXPORT_FORMATS_MERGE_MAIN,
     {"format": "tm-lifecycle", "version": 3},
+    {"format": "tm-lifecycle", "version": 4},
     EXPORT_FORMAT,
 )
 # Config keys whose value holds only on the machine that set it: an export leaves them out, and
@@ -2353,8 +2357,9 @@ def export_cmd(
 ) -> None:
     """Write the whole database as importable JSON: one file per plan and one per spec.
 
-    No timestamps, so two exports of the same state are byte-identical: commit the directory and
-    its history is a diff of what changed. `tm restore <dir>` rebuilds a database from it.
+    The only timestamp is a COMPLETED node's `completed_at`, so two exports of the same state are
+    byte-identical: commit the directory and its history is a diff of what changed.
+    `tm restore <dir>` rebuilds a database from it.
     """
     root = _get_root(path)
     container = _get_container(root)
@@ -2371,6 +2376,7 @@ def export_cmd(
     superseded: dict[str, list[str]] = {}
     for new, old in node_repo.relations(RelationType.SUPERSEDES):
         superseded.setdefault(new, []).append(old)
+    completed_at = completion_times(node_repo.list_nodes(), container.get(LedgerRepository))
 
     def entry(node: Node) -> dict[str, Any]:
         if node.status in IN_STEP:
@@ -2379,7 +2385,10 @@ def export_cmd(
             # next step, never where a release returns.
             released = advance(cycle_of(node, sensitive=False), Event.RELEASE_BLOCKED, caps)
             node = apply_cycle(node, released)
-        return _export_node(node_repo, node, sorted(superseded.get(node.id, [])))
+        doc = _export_node(node_repo, node, sorted(superseded.get(node.id, [])))
+        if node.id in completed_at:
+            doc["completed_at"] = to_db_timestamp(completed_at[node.id])
+        return doc
 
     directory.mkdir(parents=True, exist_ok=True)
     dump("_format.json", EXPORT_FORMAT)
@@ -2475,11 +2484,17 @@ def restore_cmd(
             *doc.get("tasks", []),
         ]
 
+    exported_nodes = [
+        *(n for d in docs for n in nodes_of(d)),
+        *(decisions_doc["decisions"] if decisions_doc else []),
+    ]
     if export_format in EXPORT_FORMATS_MERGE_MAIN:
-        decisions = decisions_doc["decisions"] if decisions_doc else []
-        for node in [*(n for d in docs for n in nodes_of(d)), *decisions]:
+        for node in exported_nodes:
             if node.get("merge") == "main":
                 node["merge"] = Merge.SPEC.value
+    # Import has no completion time to store, so it is taken off each node here and recorded in
+    # the ledger once the nodes exist, where the web's archive reads it.
+    completed_at = {n["id"]: n.pop("completed_at") for n in exported_nodes if "completed_at" in n}
     # Documents depend on each other, so the first pass keeps only the edges a document can
     # satisfy by itself and the second adds the rest; decisions go in between so a task's
     # depends_on edge onto one resolves in the second pass, then specs go last so their full
@@ -2498,6 +2513,17 @@ def restore_cmd(
         importer.import_dict(decisions_doc)
     for doc in [*plan_docs, *spec_docs]:
         importer.import_dict(doc)
+    ledger = container.get(LedgerRepository)
+    for node_id, at in sorted(completed_at.items()):
+        ledger.append(
+            LedgerEvent(
+                actor_id="restore",
+                command=LedgerCommand.RESTORE,
+                target_id=node_id,
+                payload={"to": Status.COMPLETED.value},
+                timestamp=parse_db_datetime(at),
+            )
+        )
     settings_file = directory / "_config.json"
     if settings_file.exists():
         exported = json.loads(settings_file.read_text(encoding="utf-8"))
