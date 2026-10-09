@@ -17,6 +17,7 @@ _RUNS = {
     "board": "tm web",
     "design": "tm decision list",
     "init": "tm doctor",
+    "plan": "tm decision list",
     "task": "tm task start",
     "tm": "tm $ARGUMENTS",
 }
