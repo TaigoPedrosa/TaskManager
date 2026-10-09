@@ -970,7 +970,7 @@ test('a brief leaves comment, test-name and review-format rules to the project g
   for (let i = 0; i < 2; i++) briefs.push(...(await runWave({ args: ARGS, tm, agents })).work.map(w => w.prompt))
   assert.equal(briefs.length, 2)
   for (const brief of briefs) {
-    assert.match(brief, /^Sections: before any tm section set, tm section get the same key and append to it\.$/m)
+    assert.match(brief, /^Sections: before any tm section set, tm section get the same key\. Append an entry to :report, :review or :merge; rewrite any other section whole, in the present tense, with every sentence it overrides gone\.$/m)
     assert.ok(!brief.includes('never name a ruling'), brief)
   }
   assert.match(briefs[1], /^Findings: append numbered findings to tm section T1:review; write it even when nothing is open, saying so\.$/m)
