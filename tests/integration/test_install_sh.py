@@ -34,20 +34,35 @@ def version(source):
     pinned = os.environ.get("STUB_PLUGIN_VERSION")
     if pinned:
         return pinned
-    manifest = Path(source) / "plugin" / ".claude-plugin" / "plugin.json"
+    checkout = source if Path(source).is_dir() else os.environ["STUB_GIT_CHECKOUT"]
+    manifest = Path(checkout) / "plugin" / ".claude-plugin" / "plugin.json"
     return json.loads(manifest.read_text())["version"]
+
+def listed(name, source):
+    if Path(source).is_dir():
+        return {{"name": name, "source": "directory", "path": source}}
+    url, _, ref = source.partition("#")
+    return {{"name": name, "source": "git", "url": url, **({{"ref": ref}} if ref else {{}})}}
 
 match args:
     case ["plugin", "marketplace", "add", source]:
-        (markets / "taskmanager").write_text(source)
+        market = markets / "taskmanager"
+        # Claude Code repoints an added marketplace to a directory, but refuses a git source
+        # over any other source.
+        if market.exists() and market.read_text() != source and not Path(source).is_dir():
+            print("Cannot add marketplace: its source doesn't match its extraKnownMarketplaces entry")
+            sys.exit(1)
+        market.write_text(source)
     case ["plugin", "marketplace", "list"]:
-        print(json.dumps([{{"name": p.name}} for p in markets.iterdir()], indent=2))
+        print(json.dumps([listed(p.name, p.read_text()) for p in markets.iterdir()], indent=2))
     case ["plugin", "marketplace", "update", name]:
         sys.exit(0 if (markets / name).exists() else 1)
     case ["plugin", "marketplace", "remove", name]:
         if not (markets / name).exists():
             sys.exit(1)
         (markets / name).unlink()
+        for plugin in plugins.glob(f"*@{{name}}"):
+            plugin.unlink()
     case ["plugin", "install", plugin]:
         market = markets / plugin.split("@")[1]
         if not market.exists():
@@ -64,6 +79,20 @@ match args:
         (plugins / plugin).unlink()
     case _:
         sys.exit(2)
+"""
+
+
+# Installs from GitHub resolve to this checkout, so a --ref install runs offline.
+UV_WRAPPER = """#!/bin/sh
+printf '%s\\n' "$*" >> "$UV_LOG"
+for a; do
+    shift
+    case $a in
+        git+https://github.com/TaigoPedrosa/TaskManager@*) set -- "$@" "{repo}" ;;
+        *) set -- "$@" "$a" ;;
+    esac
+done
+exec "{uv}" "$@"
 """
 
 
@@ -135,7 +164,9 @@ def scratch_env(tmp_path: Path, uv_cache: Path, *, claude: bool = True, uv: bool
     assert real_git is not None
     (sysbin / "git").symlink_to(real_git)
     if uv:
-        (sysbin / "uv").symlink_to(real_uv)
+        wrapper = sysbin / "uv"
+        wrapper.write_text(UV_WRAPPER.format(repo=REPO, uv=real_uv))
+        wrapper.chmod(0o755)
     path = [str(sysbin), str(tool_bin), "/usr/bin", "/bin"]
     if claude:
         stub_bin = tmp_path / "stub-bin"
@@ -160,6 +191,8 @@ def scratch_env(tmp_path: Path, uv_cache: Path, *, claude: bool = True, uv: bool
         "XDG_STATE_HOME": str(xdg / "state"),
         "XDG_BIN_HOME": str(xdg / "bin"),
         "STUB_LOG": str(tmp_path / "claude-calls.log"),
+        "STUB_GIT_CHECKOUT": str(REPO),
+        "UV_LOG": str(tmp_path / "uv-calls.log"),
         "TM_ROOT": os.environ["TM_ROOT"],
         "NO_COLOR": "1",
     }
@@ -211,13 +244,34 @@ def test_install_run_twice_leaves_the_same_state_and_exits_zero(
     assert again.returncode == 0, again.stdout + again.stderr
     assert (scratch.plugins(), scratch.marketplaces(), scratch.tools()) == state
     assert scratch.marketplaces() == {"taskmanager": str(REPO)}
+    assert "plugin marketplace remove taskmanager" not in scratch.log.read_text()
+
+
+def test_install_at_another_source_moves_tm_and_the_plugin_to_it(
+    tmp_path: Path, uv_cache: Path
+) -> None:
+    scratch = scratch_env(tmp_path, uv_cache)
+    git = "https://github.com/TaigoPedrosa/TaskManager.git"
+
+    for args in (["--from", str(REPO)], ["--ref", "main"], ["--ref", "other"], ["--ref", "other"]):
+        res = install_sh(scratch, *args)
+        assert res.returncode == 0, res.stdout + res.stderr
+
+    assert scratch.marketplaces() == {"taskmanager": f"{git}#other"}
+    assert scratch.log.read_text().splitlines().count("plugin marketplace remove taskmanager") == 2
+    assert scratch.plugins() == {PLUGIN: VERSION}
+    installs = [
+        c for c in (tmp_path / "uv-calls.log").read_text().splitlines() if "tool install" in c
+    ]
+    assert installs[-1].endswith("git+https://github.com/TaigoPedrosa/TaskManager@other")
+    assert install_sh(scratch, "status").returncode == 0
 
 
 def test_uninstall_removes_tm_the_plugin_and_the_gemini_link_and_nothing_else(
     tmp_path: Path, uv_cache: Path
 ) -> None:
     scratch = scratch_env(tmp_path, uv_cache)
-    (scratch.home / ".gemini").mkdir()
+    (scratch.home / ".gemini" / "extensions").mkdir(parents=True)
     before = snapshot(scratch.home)
     installed = install_sh(scratch, "--from", str(REPO))
     assert installed.returncode == 0, installed.stdout + installed.stderr
@@ -237,6 +291,19 @@ def test_uninstall_removes_tm_the_plugin_and_the_gemini_link_and_nothing_else(
     assert snapshot(scratch.home) == before
     status = install_sh(scratch, "status")
     assert status.returncode != 0
+
+
+def test_install_without_a_gemini_extensions_dir_links_nothing(
+    tmp_path: Path, uv_cache: Path
+) -> None:
+    scratch = scratch_env(tmp_path, uv_cache)
+    (scratch.home / ".gemini").mkdir()
+
+    res = install_sh(scratch, "--from", str(REPO))
+
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "gemini: skipped, ~/.gemini/extensions does not exist" in res.stdout
+    assert not (scratch.home / ".gemini" / "extensions").exists()
 
 
 def test_install_without_claude_installs_tm_and_prints_the_plugin_commands(

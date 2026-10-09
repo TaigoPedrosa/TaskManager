@@ -101,6 +101,23 @@ marketplace_added() {
         | grep -q "\"name\":\"$MARKETPLACE\""
 }
 
+json_field() { sed -n "s/.*\"$1\": *\"\([^\"]*\)\".*/\1/p"; }
+
+# The source the marketplace was added from, in the form `marketplace add` takes.
+marketplace_source() {
+    local entry path url ref
+    entry=$(claude plugin marketplace list --json 2>/dev/null | tr -d '\n' | tr '{}' '\n' \
+        | grep "\"name\": *\"$MARKETPLACE\"" | head -n 1) || return 0
+    path=$(printf "%s" "$entry" | json_field path)
+    url=$(printf "%s" "$entry" | json_field url)
+    ref=$(printf "%s" "$entry" | json_field ref)
+    if [ -n "$path" ]; then
+        printf '%s\n' "$path"
+    else
+        printf '%s\n' "$url${ref:+#$ref}"
+    fi
+}
+
 gemini_source() {
     if [ -n "$FROM" ]; then
         printf '%s\n' "$FROM"
@@ -126,6 +143,12 @@ install() {
 
     if has claude; then
         say "plugin: $PLUGIN from $MARKETPLACE_SOURCE into $PROFILE"
+        # Claude Code refuses to add a git source over a marketplace added from another source.
+        local added
+        added=$(marketplace_source)
+        if [ -n "$added" ] && [ "$added" != "$MARKETPLACE_SOURCE" ]; then
+            claude plugin marketplace remove "$MARKETPLACE"
+        fi
         claude plugin marketplace add "$MARKETPLACE_SOURCE"
         claude plugin marketplace update "$MARKETPLACE"
         claude plugin install "$PLUGIN"
@@ -140,12 +163,13 @@ install() {
     source=$(gemini_source)
     if [ ! -d "$HOME/.gemini" ]; then
         say "gemini: skipped, ~/.gemini does not exist"
+    elif [ ! -d "$(dirname "$GEMINI_LINK")" ]; then
+        say "gemini: skipped, ~/.gemini/extensions does not exist"
     elif [ -e "$GEMINI_LINK" ] && [ ! -L "$GEMINI_LINK" ]; then
         say "gemini: skipped, $GEMINI_LINK exists and is not a link"
     elif [ -z "$source" ]; then
         say "gemini: skipped, no local copy of the extension (install the plugin or use --from)"
     else
-        mkdir -p "$(dirname "$GEMINI_LINK")"
         ln -sfn "$source" "$GEMINI_LINK"
         say "gemini: $GEMINI_LINK -> $source"
     fi
@@ -212,7 +236,6 @@ uninstall() {
     fi
     if [ -L "$GEMINI_LINK" ]; then
         rm "$GEMINI_LINK"
-        rmdir "$(dirname "$GEMINI_LINK")" 2>/dev/null || true
     fi
     say "uninstalled"
 }
