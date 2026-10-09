@@ -10,8 +10,9 @@ from taskmanager.engine.snapshot import display_view, stored_status
 
 
 class MarkdownRenderer:
-    def __init__(self, node_repo: NodeRepository) -> None:
+    def __init__(self, node_repo: NodeRepository, blind_review: bool = False) -> None:
         self.node_repo = node_repo
+        self.blind_review = blind_review
 
     def render(self, node_id: str, view: RenderView | str = RenderView.FULL) -> str:
         node = self.node_repo.get_node(node_id)
@@ -76,7 +77,10 @@ class MarkdownRenderer:
 
             out.append(f"# Task Brief: {node.title}")
             out.extend(superseded)
+            blind = self.blind_review and node.status == Status.REVIEWING
             for sec in sections:
+                if blind and sec.section_key == "report":
+                    continue
                 if sec.header:
                     out.append(f"{sec.header}\n\n{sec.content}")
                 else:
