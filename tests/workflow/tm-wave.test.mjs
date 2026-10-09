@@ -8,11 +8,11 @@ import { join } from 'node:path'
 import { SOURCE, discovery, djb2, json, landedRepo, makeTm, meta, realCksum, runWave, scriptCksum } from './harness.mjs'
 
 const ARGS = { session: 's1', worktreeDir: '/wt', root: '/est' }
-const T1 = { id: 'T1', kind: 'task', action: 'implement', model: 'sonnet', repos: ['core'], requires: [], job: null, migration: false }
+const T1 = { id: 'T1', kind: 'task', action: 'implement', model: 'claude-sonnet-5-5', repos: ['core'], requires: [], job: null, migration: false }
 
 const node = (status, next_action, extra = {}) => ({ id: 'T1', kind: 'task', status, next_action, outcome: null, merge: 'spec', ...extra })
 const claim = (action, extra = {}) =>
-  json({ action, reason: null, model: 'sonnet', job: null, repos: ['core'], branch: 'tm/T1', base: 'main', worktree: null, worktrees: {}, token: 'k1', ...extra })
+  json({ action, reason: null, model: 'claude-sonnet-5-5', job: null, repos: ['core'], branch: 'tm/T1', base: 'main', worktree: null, worktrees: {}, token: 'k1', ...extra })
 const jobAt = (state, extra = {}) =>
   json({
     id: 'J1', kind: 'land', node_id: 'T1', repo: 'core', target: 'main', state, step: 'gate',
@@ -80,7 +80,7 @@ test('discovery lines carry kind, repos and requires through to the claim', asyn
   const tm = makeTm({ chosen: [{ ...T1, kind: 'plan', repos: ['api', 'web'], requires: ['figma'] }], nodes: { T1: node('COMPLETED', null) } })
   const { logs, errors } = await runWave({ args: ARGS, tm })
   assert.deepEqual(errors, [])
-  assert.ok(logs.some(l => l.startsWith('wave: T1@implement/sonnet')))
+  assert.ok(logs.some(l => l.startsWith('wave: T1@implement/claude-sonnet-5-5')))
 })
 
 test('a payload carrying non-ASCII text passes its checksum', async () => {
@@ -193,38 +193,29 @@ test('every agent runs under a phase the meta declares, across the run each step
   assert.equal(ticks[5].result.results[0].status, 'COMPLETED')
 })
 
-for (const [fam, models, id] of [
+for (const [claimed, models, id] of [
+  ['gemini-3-pro', undefined, 'gemini-3-pro'],
+  ['claude-opus-5-5', undefined, 'claude-opus-5-5'],
   ['haiku', undefined, 'claude-haiku-4-5-20251001'],
   ['sonnet', undefined, 'claude-sonnet-5-5'],
   ['opus', undefined, 'claude-opus-5-5'],
   ['fable', undefined, 'claude-fable-5-1'],
   ['opus', { opus: 'claude-opus-6' }, 'claude-opus-6'],
+  ['gemini-3-pro', { 'gemini-3-pro': 'gemini-3-pro-preview' }, 'gemini-3-pro-preview'],
 ]) {
-  test(`a step tm routes to the ${fam} family runs on it and names ${id}`, async () => {
+  test(`a step claimed on ${claimed} runs on ${id} and its brief names it`, async () => {
     const tm = makeTm({
       chosen: [T1],
       nodes: { T1: node('READY', 'implement') },
-      start: { T1: [() => (tm.set('T1', { status: 'IMPLEMENTING', next_action: null }), claim('implement', { model: fam, worktree: '/wt/core-T1' }))] },
+      start: { T1: [() => (tm.set('T1', { status: 'IMPLEMENTING', next_action: null }), claim('implement', { model: claimed, worktree: '/wt/core-T1' }))] },
     })
     const agents = () => (tm.set('T1', { status: 'IMPLEMENTED', next_action: null }), 'done')
     const { work, result } = await runWave({ args: { ...ARGS, ...(models ? { models } : {}) }, tm, agents })
-    assert.equal(work[0].opts.model, fam)
+    assert.equal(work[0].opts.model, id)
     assert.match(work[0].prompt, new RegExp(`^Model: ${id}$`, 'm'))
-    assert.ok(result.results[0].trail.includes(`implement on ${fam}: done`))
+    assert.ok(result.results[0].trail.includes(`implement on ${id}: done`))
   })
 }
-
-test('a claim naming a family args.models does not map is released and never dispatched', async () => {
-  const tm = makeTm({
-    chosen: [T1],
-    nodes: { T1: node('READY', 'implement') },
-    start: { T1: [() => (tm.set('T1', { status: 'IMPLEMENTING', next_action: null }), claim('implement', { model: 'claude-opus-5-5', worktree: '/wt/core-T1' }))] },
-  })
-  const { ops, work, result } = await runWave({ args: ARGS, tm })
-  assert.deepEqual(work, [])
-  assert.deepEqual(releases(ops), [releaseOf('k1')])
-  assert.ok(result.results[0].trail.includes('claim names the model family claude-opus-5-5, which args.models does not map'))
-})
 
 test('an implement brief names the worktree, the branch, its base and the verb that closes it', async () => {
   const tm = makeTm({
@@ -286,7 +277,7 @@ test("a dead agent's step is released", async () => {
   })
   const { ops, result } = await runWave({ args: ARGS, tm, agents: () => null })
   assert.deepEqual(releases(ops), [releaseOf('k1')])
-  assert.ok(result.results[0].trail.includes('implement on sonnet: the agent died'))
+  assert.ok(result.results[0].trail.includes('implement on claude-sonnet-5-5: the agent died'))
 })
 
 test('a step the agent closed is never released by the script', async () => {
@@ -437,7 +428,7 @@ test('a landing its own claim started is handed to an agent only by a later clai
   assert.deepEqual(handoverTick.errors, [])
   assert.equal(handoverTick.work.length, 1)
   assert.equal(handoverTick.work[0].opts.label, 'merge-agent:T1')
-  assert.equal(handoverTick.work[0].opts.model, 'sonnet')
+  assert.equal(handoverTick.work[0].opts.model, 'claude-sonnet-5-5')
   for (const text of ['tm guide merge', 'Job: J1', 'stopped at build', 'Worktree: /est/.worktrees/land-T1', 'tm job status J1 prints what stopped it', 'tm job resume J1 --agent wf-s1-T1 --token k2', '--own-defect']) {
     assert.ok(handoverTick.work[0].prompt.includes(text), text)
   }
@@ -499,7 +490,7 @@ test('a landing that stops again after the agent resumed it is left parked, not 
 })
 
 test("a container's landing follows the next repository's job to the end", async () => {
-  const P1 = { id: 'P1', kind: 'plan', action: 'merge', model: 'sonnet', repos: ['core', 'web'], requires: [], job: null, migration: false }
+  const P1 = { id: 'P1', kind: 'plan', action: 'merge', model: 'claude-sonnet-5-5', repos: ['core', 'web'], requires: [], job: null, migration: false }
   const tm = makeTm({
     chosen: [P1],
     nodes: { P1: { ...node('REVIEWED', 'merge', { outcome: 'approve' }), id: 'P1', kind: 'plan' } },
@@ -584,7 +575,7 @@ test('a sync stopped for an agent is handed over by a later claim, on the family
 
   const handoverTick = await runWave({ args: ARGS, tm, agents })
   assert.deepEqual(handoverTick.errors, [])
-  assert.deepEqual(handoverTick.work.map(w => [w.opts.label, w.opts.model]), [['sync-agent:T1', 'sonnet']])
+  assert.deepEqual(handoverTick.work.map(w => [w.opts.label, w.opts.model]), [['sync-agent:T1', 'claude-sonnet-5-5']])
   assert.ok(handoverTick.work[0].prompt.includes('tm job resume S1 --agent wf-s1-T1 --token k1'))
 
   const implementTick = await runWave({ args: ARGS, tm, agents })
@@ -610,17 +601,17 @@ test('a sync the handed agent left stopped is released under its claim, so its l
 
 for (const [base, merge, from] of [['main', 'spec', 'origin/main'], ['release/1.0', 'spec', 'origin/release/1.0'], ['tm/S1', 'parent', 'tm/S1']]) {
   test(`a container review with merge ${merge} based on ${base} reads every repository it touched from ${from}, on the container reviewer`, async () => {
-    const P1 = { id: 'P1', kind: 'plan', action: 'review', model: 'opus', repos: ['core', 'web'], requires: [], job: null, migration: false }
+    const P1 = { id: 'P1', kind: 'plan', action: 'review', model: 'claude-opus-5-5', repos: ['core', 'web'], requires: [], job: null, migration: false }
     const tm = makeTm({
       chosen: [P1],
       nodes: { P1: { ...node('IMPLEMENTED', 'review', { merge }), id: 'P1', kind: 'plan' } },
-      start: { P1: [() => (tm.set('P1', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'opus', repos: ['core', 'web'], branch: 'tm/P1', base }))] },
+      start: { P1: [() => (tm.set('P1', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'claude-opus-5-5', repos: ['core', 'web'], branch: 'tm/P1', base }))] },
     })
     const agents = () => (tm.set('P1', { status: 'REVIEWED', next_action: null }), 'done')
     const reviewerTypes = { task: 'task-reviewer', rereview: 'scoped-re-reviewer', container: 'branch-reviewer' }
     const { work } = await runWave({ args: { ...ARGS, reviewerTypes }, tm, agents })
     assert.equal(work[0].opts.agentType, 'branch-reviewer')
-    assert.equal(work[0].opts.model, 'opus')
+    assert.equal(work[0].opts.model, 'claude-opus-5-5')
     assert.ok(work[0].prompt.includes(`git -C /est/core diff ${from}...tm/P1`))
     assert.ok(work[0].prompt.includes(`git -C /est/web diff ${from}...tm/P1`))
     assert.ok(work[0].prompt.includes('container review'))
@@ -649,10 +640,10 @@ for (const target of ['origin/main', 'tm/S1']) {
       const repos = ['core', 'web']
       for (const repo of repos) landedRepo(join(root, repo), { id, landings, inner, onto })
       const tm = makeTm({
-        chosen: [{ id, kind, action: 'review', model: 'opus', repos, requires: [], job: null, migration: false }],
+        chosen: [{ id, kind, action: 'review', model: 'claude-opus-5-5', repos, requires: [], job: null, migration: false }],
         nodes: { [id]: { ...node('LANDED', 'review', { merge: target === 'tm/S1' ? 'parent' : 'spec' }), id, kind } },
         lists,
-        start: { [id]: [() => (tm.set(id, { status: 'REVIEWING', next_action: null }), claim('review', { model: 'opus', repos, branch: target, base: onto }))] },
+        start: { [id]: [() => (tm.set(id, { status: 'REVIEWING', next_action: null }), claim('review', { model: 'claude-opus-5-5', repos, branch: target, base: onto }))] },
       })
       const agents = () => (tm.set(id, { status: 'COMPLETED', next_action: null }), 'done')
       const { work, errors } = await runWave({ args: { ...ARGS, root, reviewerTypes: REVIEWERS }, tm, agents })
@@ -678,10 +669,10 @@ test("a landed plan's review on origin/release/1.0 reads only the landings that 
     id: 'P1', landings: ['P1', 'C2', 'C3'], inner: ['C1'], onto: 'release/1.0', elsewhere: { C2: 'releaseX1.0', C3: 'release/1X0' },
   })
   const tm = makeTm({
-    chosen: [{ id: 'P1', kind: 'plan', action: 'review', model: 'opus', repos: ['core'], requires: [], job: null, migration: false }],
+    chosen: [{ id: 'P1', kind: 'plan', action: 'review', model: 'claude-opus-5-5', repos: ['core'], requires: [], job: null, migration: false }],
     nodes: { P1: { ...node('LANDED', 'review'), id: 'P1', kind: 'plan' } },
     lists: { 'task list --plan P1': ['C1', 'C2', 'C3'] },
-    start: { P1: [() => (tm.set('P1', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'opus', branch: 'origin/release/1.0', base: 'release/1.0' }))] },
+    start: { P1: [() => (tm.set('P1', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'claude-opus-5-5', branch: 'origin/release/1.0', base: 'release/1.0' }))] },
   })
   const agents = () => (tm.set('P1', { status: 'COMPLETED', next_action: null }), 'done')
   const { work, errors } = await runWave({ args: { ...ARGS, root, reviewerTypes: REVIEWERS }, tm, agents })
@@ -700,10 +691,10 @@ test("a landed plan's review reads each repository's landings on that repository
   landedRepo(join(root, 'core'), { id: 'P1', landings: ['P1'], onto: 'trunk' })
   landedRepo(join(root, 'web'), { id: 'P1', landings: ['P1'], inner: ['C1'] })
   const tm = makeTm({
-    chosen: [{ id: 'P1', kind: 'plan', action: 'review', model: 'opus', repos: ['core', 'web'], requires: [], job: null, migration: false }],
+    chosen: [{ id: 'P1', kind: 'plan', action: 'review', model: 'claude-opus-5-5', repos: ['core', 'web'], requires: [], job: null, migration: false }],
     nodes: { P1: { ...node('LANDED', 'review'), id: 'P1', kind: 'plan' } },
     lists: { 'task list --plan P1': ['C1'] },
-    start: { P1: [() => (tm.set('P1', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'opus', repos: ['core', 'web'], branch: 'origin/trunk', base: 'trunk', bases: { core: 'trunk', web: 'main' } }))] },
+    start: { P1: [() => (tm.set('P1', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'claude-opus-5-5', repos: ['core', 'web'], branch: 'origin/trunk', base: 'trunk', bases: { core: 'trunk', web: 'main' } }))] },
   })
   const agents = () => (tm.set('P1', { status: 'COMPLETED', next_action: null }), 'done')
   const { work, errors } = await runWave({ args: { ...ARGS, root, reviewerTypes: REVIEWERS }, tm, agents })
@@ -717,12 +708,12 @@ test("a landed plan's review reads each repository's landings on that repository
 })
 
 test("a container's review and fix read each repository against that repository's own base", async () => {
-  const P1 = { id: 'P1', kind: 'plan', model: 'opus', repos: ['core', 'web'], requires: [], job: null, migration: false }
+  const P1 = { id: 'P1', kind: 'plan', model: 'claude-opus-5-5', repos: ['core', 'web'], requires: [], job: null, migration: false }
   const bases = { core: 'trunk', web: 'main' }
   const review = makeTm({
     chosen: [{ ...P1, action: 'review' }],
     nodes: { P1: { ...node('IMPLEMENTED', 'review'), id: 'P1', kind: 'plan' } },
-    start: { P1: [() => (review.set('P1', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'opus', repos: ['core', 'web'], branch: 'tm/P1', base: 'trunk', bases }))] },
+    start: { P1: [() => (review.set('P1', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'claude-opus-5-5', repos: ['core', 'web'], branch: 'tm/P1', base: 'trunk', bases }))] },
   })
   const reviewed = await runWave({ args: { ...ARGS, reviewerTypes: REVIEWERS }, tm: review, agents: () => (review.set('P1', { status: 'REVIEWED', next_action: null }), 'done') })
   const scope = scopeOf(reviewed.work[0])
@@ -731,19 +722,19 @@ test("a container's review and fix read each repository against that repository'
   const fix = makeTm({
     chosen: [{ ...P1, action: 'fix' }],
     nodes: { P1: { ...node('REVIEWED', 'fix', { outcome: 'reject' }), id: 'P1', kind: 'plan' } },
-    start: { P1: [() => (fix.set('P1', { status: 'FIXING', next_action: null }), claim('fix', { model: 'opus', repos: ['core', 'web'], branch: 'tm/P1', base: 'trunk', bases, worktree: '/wt/P1', worktrees }))] },
+    start: { P1: [() => (fix.set('P1', { status: 'FIXING', next_action: null }), claim('fix', { model: 'claude-opus-5-5', repos: ['core', 'web'], branch: 'tm/P1', base: 'trunk', bases, worktree: '/wt/P1', worktrees }))] },
   })
   const fixed = await runWave({ args: ARGS, tm: fix, agents: () => (fix.set('P1', { status: 'FIXED', next_action: null }), 'done') })
   assert.ok(fixed.work[0].prompt.includes('core at /wt/P1/core, based on origin/trunk; web at /wt/P1/web, based on origin/main.'), fixed.work[0].prompt)
 })
 
 test('a landed container whose children cannot be read is released, never reviewed on a partial scope', async () => {
-  const P1 = { id: 'P1', kind: 'plan', action: 'review', model: 'opus', repos: ['core'], requires: [], job: null, migration: false }
+  const P1 = { id: 'P1', kind: 'plan', action: 'review', model: 'claude-opus-5-5', repos: ['core'], requires: [], job: null, migration: false }
   const tm = makeTm({
     chosen: [P1],
     nodes: { P1: { ...node('LANDED', 'review'), id: 'P1', kind: 'plan' } },
     lists: PLAN_CHILDREN,
-    start: { P1: [() => (tm.set('P1', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'opus', branch: 'origin/main' }))] },
+    start: { P1: [() => (tm.set('P1', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'claude-opus-5-5', branch: 'origin/main' }))] },
     corrupt: inner => / task list /.test(inner),
   })
   const { ops, work, result } = await runWave({ args: ARGS, tm })
@@ -775,12 +766,12 @@ for (const [kind, id] of [['task', 'T1'], ['plan', 'P1']]) {
 }
 
 test('a container fix across repositories names the worktree tm cut in each', async () => {
-  const P1 = { id: 'P1', kind: 'plan', action: 'fix', model: 'opus', repos: ['core', 'web'], requires: [], job: null, migration: false }
+  const P1 = { id: 'P1', kind: 'plan', action: 'fix', model: 'claude-opus-5-5', repos: ['core', 'web'], requires: [], job: null, migration: false }
   const worktrees = { core: '/wt/core-P1', web: '/wt/web-P1' }
   const tm = makeTm({
     chosen: [P1],
     nodes: { P1: { ...node('REVIEWED', 'fix', { outcome: 'reject' }), id: 'P1', kind: 'plan' } },
-    start: { P1: [() => (tm.set('P1', { status: 'FIXING', next_action: null }), claim('fix', { model: 'opus', repos: ['core', 'web'], branch: 'tm/P1', worktree: '/wt/P1', worktrees }))] },
+    start: { P1: [() => (tm.set('P1', { status: 'FIXING', next_action: null }), claim('fix', { model: 'claude-opus-5-5', repos: ['core', 'web'], branch: 'tm/P1', worktree: '/wt/P1', worktrees }))] },
   })
   const agents = () => (tm.set('P1', { status: 'FIXED', next_action: null }), 'done')
   const { work } = await runWave({ args: ARGS, tm, agents })

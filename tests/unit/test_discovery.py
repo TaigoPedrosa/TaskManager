@@ -9,6 +9,7 @@ from taskmanager.core.enums import NodeKind
 from taskmanager.core.models import Job, Lease
 from taskmanager.core.status import Action, JobKind, JobState, Merge, Outcome, Status
 from taskmanager.engine.claims import Claims
+from taskmanager.engine.config import ModelsConfig
 from taskmanager.engine.discovery import discover, djb2
 
 MIGRATION = ["api/migrations/versions/001_add.py"]
@@ -88,9 +89,9 @@ def test_every_kind_of_node_is_offered_with_its_next_step_model_and_requirements
     assert chosen(data) == [("T2", "merge"), ("P1", "review"), ("T1", "implement")]
     by_id = {entry["id"]: entry for entry in data["chosen"]}
     assert (by_id["P1"]["model"], by_id["T1"]["model"], by_id["T2"]["model"]) == (
-        "opus",
-        "haiku",
-        "sonnet",
+        "claude-sonnet-5-5",
+        "claude-haiku-4",
+        "claude-sonnet-5-5",
     )
     assert by_id["T1"]["requires"] == ["figma"]
     assert by_id["T1"]["repos"] == ["api"]
@@ -110,6 +111,22 @@ def test_a_landing_or_a_sync_waiting_for_an_agent_is_offered_with_its_job(tmp_pa
 
     jobs = {entry["id"]: (entry["action"], entry["job"]) for entry in data["chosen"]}
     assert jobs == {"T1": ("merge", land), "X": ("sync", sync)}
+
+
+def test_the_batch_names_the_configured_model_ids(tmp_path: Path) -> None:
+    models = ModelsConfig(default="gemini-3-flash", merge="gemini-merge")
+    claims = make_estate(tmp_path, config=gated("api").model_copy(update={"models": models}))
+    add(claims, "T1", status=Status.REVIEWED, outcome=Outcome.APPROVE)
+    hold(claims, "T1", "other", Status.MERGING, Action.MERGE)
+    waiting_job(claims, "T1", JobKind.LAND)
+    add(claims, "T2")
+
+    data = batch(claims)
+
+    assert {entry["id"]: entry["model"] for entry in data["chosen"]} == {
+        "T1": "gemini-merge",
+        "T2": "gemini-3-flash",
+    }
 
 
 def test_a_node_that_cannot_be_claimed_is_held_with_its_reason(tmp_path: Path) -> None:
@@ -151,7 +168,7 @@ def test_slots_strong_slots_exclusions_and_file_overlap_shape_the_batch(tmp_path
     claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1", files=["api/a.py"], priority=90)
     add(claims, "T2", files=["api/a.py"], priority=80)
-    add(claims, "T3", models=["claude-opus-4"], priority=70)
+    add(claims, "T3", models=["claude-opus-5-5"], priority=70)
     add(claims, "T4", priority=60)
     add(claims, "T5", priority=50)
     add(claims, "T6", priority=40)
@@ -160,7 +177,7 @@ def test_slots_strong_slots_exclusions_and_file_overlap_shape_the_batch(tmp_path
 
     assert chosen(data) == [("T1", "implement"), ("T5", "implement")]
     assert "T2: declared_files overlap a node chosen this wave" in data["held"]
-    assert "T3: no free opus/fable slot" in data["held"]
+    assert "T3: no free strong-model slot" in data["held"]
     assert "T4: excluded by args" in data["held"]
     assert data["waiting_for_slot"] == 1
 
@@ -179,14 +196,14 @@ def test_the_session_leases_take_its_slots(tmp_path: Path) -> None:
 def test_a_session_lease_routed_to_a_strong_model_takes_a_strong_slot(tmp_path: Path) -> None:
     claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T0")
-    hold(claims, "T0", "s1", Status.IMPLEMENTING, Action.IMPLEMENT, model="opus")
-    add(claims, "T1", models=["claude-opus-4"], priority=90)
+    hold(claims, "T0", "s1", Status.IMPLEMENTING, Action.IMPLEMENT, model="claude-opus-5-5")
+    add(claims, "T1", models=["claude-opus-5-5"], priority=90)
     add(claims, "T2", priority=80)
 
     data = batch(claims, max_strong=1)
 
     assert chosen(data) == [("T2", "implement")]
-    assert "T1: no free opus/fable slot" in data["held"]
+    assert "T1: no free strong-model slot" in data["held"]
 
 
 def test_a_migration_writer_holds_its_repository_chain_until_it_lands_on_main(

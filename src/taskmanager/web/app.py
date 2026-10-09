@@ -743,6 +743,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             repo_order=project.repo_order,
             cached_conditions=cached_conditions,
             gated=gated_repos(project),
+            models=project.models,
         )
         # What a wave row draws beyond the simulator's own fields: a held node's status and
         # title, and the live lease an in-flight step runs under.

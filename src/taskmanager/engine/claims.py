@@ -414,7 +414,7 @@ class Claims:
 
     def next_step(self, node: Node, snap: Snapshot) -> tuple[Action | None, str | None]:
         """The action a claim would take now, and the model it would name."""
-        return selection.next_step(node, snap)
+        return selection.next_step(node, snap, self.config.models)
 
     def verify(self, node_id: str, ref: str, repo: str | None = None) -> tuple[bool, str]:
         """The node's verifications at `ref` (a container's: every descendant task's), limited to
@@ -485,7 +485,7 @@ class Claims:
         if job is None or lease is None or lease.ttl_seconds is not None:
             return None
         action = Action.MERGE if job.kind == JobKind.LAND else Action.SYNC
-        model = model_for(action, node, 0)
+        model = model_for(action, node, 0, self.config.models)
         token = uuid.uuid4().hex
         ttl = ttl or self.ttl_for(action)
         if not self.runtime.take_over(node.id, agent, session, ttl, model, token):
@@ -522,7 +522,7 @@ class Claims:
     ) -> ClaimResult:
         claimed = lifecycle.claim(cycle)
         after = self._with_cycle(node, claimed)
-        model = model_for(action, after, lifecycle.fix_round(claimed))
+        model = model_for(action, after, lifecycle.fix_round(claimed), self.config.models)
         lease = Lease(
             task_id=node.id,
             agent_id=agent,

@@ -9,6 +9,7 @@ caller with no live check available (the wave simulator, run ahead of any real c
 
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 
 from taskmanager.core.enums import CONTAINERS, NodeKind
 from taskmanager.core.lifecycle import LifecycleError, claim, fix_round, next_action
@@ -27,8 +28,8 @@ from taskmanager.db.cache_repo import _command_hash
 from taskmanager.db.node_repo import declared_files_of
 from taskmanager.db.runtime_repo import lease_alive
 from taskmanager.engine.chains import satisfied
-from taskmanager.engine.config import ProjectConfig
-from taskmanager.engine.routing import STRONG, model_for
+from taskmanager.engine.config import STRONG_MODELS, ModelsConfig, ProjectConfig
+from taskmanager.engine.routing import model_for
 from taskmanager.engine.snapshot import SnapshotBuilder, apply_cycle, cycle_in, locked_keys
 from taskmanager.engine.stepgraph import Snapshot, migration_holders
 
@@ -53,7 +54,9 @@ class Selection:
     waiting_for_slot: int = 0
 
 
-def next_step(node: Node, snap: Snapshot) -> tuple[Action | None, str | None]:
+def next_step(
+    node: Node, snap: Snapshot, models: ModelsConfig | None = None
+) -> tuple[Action | None, str | None]:
     """The action a claim would take now, and the model it would name, from the node's own
     stored cycle and its declared files in `snap`."""
     cycle = cycle_in(snap, node)
@@ -61,7 +64,13 @@ def next_step(node: Node, snap: Snapshot) -> tuple[Action | None, str | None]:
     if action is None:
         return None, None
     claimed = claim(cycle)
-    return action, model_for(action, apply_cycle(node, claimed), fix_round(claimed))
+    return action, model_for(
+        action, apply_cycle(node, claimed), fix_round(claimed), models or ModelsConfig()
+    )
+
+
+# `candidates` takes a `next_step` parameter of the same name.
+_rules_next_step = next_step
 
 
 def ordered_repos(
@@ -253,14 +262,16 @@ def candidates(
     specs: list[str] | None,
     *,
     repo_order: Sequence[str] = (),
-    next_step: Callable[[Node, Snapshot], tuple[Action | None, str | None]] = next_step,
+    models: ModelsConfig | None = None,
+    next_step: Callable[[Node, Snapshot], tuple[Action | None, str | None]] | None = None,
     blocked_reason: Callable[[Node, Snapshot, Action | None], str | None] = blocked_reason,
     gated: Collection[str] | None = None,
 ) -> tuple[list[Candidate], list[str]]:
     """Every claimable node with the step it would take next, later steps first within a
     priority, and the reason each held node cannot be claimed now.
 
-    `next_step` and `blocked_reason` default to this module's own pure rules, over `snap` alone;
+    `next_step` and `blocked_reason` default to this module's own pure rules, over `snap` alone,
+    with `models` naming the ids a step runs on;
     `Claims` calls this with its own bound methods instead, so a condition still runs its command
     exactly as a real claim would, and a monkeypatch of `Claims.next_step` still reaches here.
     `repo_order` only orders a `Candidate`'s own `repos`; a `blocked_reason` bound to `Claims`
@@ -270,6 +281,8 @@ def candidates(
     `gated`, when given, names the repositories with a main gate: a node touching any other is
     held now, since its chain could only stop at its landing.
     """
+    models = models or ModelsConfig()
+    step = next_step or partial(_rules_next_step, models=models)
     found: list[Candidate] = []
     held: list[str] = []
     data = snap.graph_data()
@@ -283,12 +296,12 @@ def candidates(
             lease = data.leases.get(node.id)
             if lease is not None and lease.ttl_seconds is None:
                 job_action = Action.MERGE if waiting.kind == JobKind.LAND else Action.SYNC
-                found.append(Candidate(node, job_action, "sonnet", waiting.id, [waiting.repo]))
+                found.append(Candidate(node, job_action, models.merge, waiting.id, [waiting.repo]))
             continue
         if Status(node.status) in IN_STEP:
             continue
         try:
-            action, model = next_step(node, snap)
+            action, model = step(node, snap)
         except LifecycleError as exc:
             # One node the lifecycle cannot read must not stop the wave for every other node.
             held.append(f"{node.id}: {exc}")
@@ -341,8 +354,9 @@ def select(
     max_strong: int,
     exclude: Sequence[str] = (),
     hold_merge: Sequence[str] = (),
+    strong: Collection[str] = STRONG_MODELS,
 ) -> Selection:
-    """The wave `candidates` fills `size` slots with, `max_strong` of them opus/fable, skipping
+    """The wave `candidates` fills `size` slots with, `max_strong` of them on a `strong` id, skipping
     `exclude` and holding `hold_merge`'s merges back."""
     excluded = set(exclude)
     merge_held = set(hold_merge)
@@ -372,8 +386,8 @@ def select(
                 why.append(f"{repo} migration chain held by {holder}")
         if taken.intersection(files):
             why.append("declared_files overlap a node chosen this wave")
-        if cand.model in STRONG and strong_free <= 0:
-            why.append("no free opus/fable slot")
+        if cand.model in strong and strong_free <= 0:
+            why.append("no free strong-model slot")
         if not why and len(chosen) >= size:
             waiting += 1
             continue
@@ -393,6 +407,6 @@ def select(
             }
         )
         taken.update(files)
-        if cand.model in STRONG:
+        if cand.model in strong:
             strong_free -= 1
     return Selection(chosen=chosen, held=held, waiting_for_slot=waiting)
