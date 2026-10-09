@@ -466,9 +466,11 @@ def init(
     db.init_all()
     _record_ledger(container, command=LedgerCommand.INIT, target_id=str(root))
     print(f"[green]Initialized .taskmanager in {root}[/green]")
-    with _user_errors(), _refusing():
-        setup.configure(root, _config_store(root), flags, _init_ask(yes))
-    _exclude_local_state(root)
+    try:
+        with _user_errors(), _refusing():
+            setup.configure(root, _config_store(root), flags, _init_ask(yes))
+    finally:
+        _exclude_local_state(root)
     sys.stdout.writelines(f"{fact.line()}\n" for fact in _doctor_facts(root))
     sys.stdout.write(
         "next: read `tm guide overview`, then give every repository a task lands in a main gate: "

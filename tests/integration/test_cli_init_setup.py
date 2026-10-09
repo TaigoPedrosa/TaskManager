@@ -249,3 +249,48 @@ def test_init_yes_with_no_repository_writes_no_repo_order(tmp_path: Path) -> Non
     init(tmp_path, "--yes")
 
     assert "repo_order" not in config(tmp_path)
+
+
+def test_init_yes_sets_the_default_branch_of_a_repo_configured_without_one(root: Path) -> None:
+    init(root, "--gate", "api=make test")
+
+    init(root, "--yes")
+
+    assert config(root)["repos"]["api"]["default_branch"] == "trunk"
+
+
+def test_init_excludes_the_estate_locally_when_setup_refuses(repo_root: Path) -> None:
+    res = runner.invoke(app, ["init", "--repo", "nope", "-C", str(repo_root)])
+
+    assert res.exit_code == 1
+    exclude = (repo_root / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+    assert "/.taskmanager/" in exclude.splitlines()
+
+
+@pytest.mark.usefixtures("terminal")
+def test_init_skips_a_ci_file_that_is_not_utf8(root: Path) -> None:
+    (root / "api" / ".github" / "workflows" / "bad.yml").write_bytes(b"run: \xff\xfe\n")
+
+    res = init(root, stdin="\n\n\n\nmake gate\n\n")
+
+    assert "api CI runs:\nuv run pytest\n" in res.stdout
+
+
+@pytest.mark.usefixtures("terminal")
+def test_init_shows_a_gitlab_script_written_as_one_string(root: Path) -> None:
+    (root / "api" / ".gitlab-ci.yml").write_text("test:\n  script: make test\n", "utf-8")
+
+    res = init(root, stdin="\n\n\n\nmake gate\n\n")
+
+    assert "npm test\nmake test\nmain gate (api):" in res.stdout
+
+
+def test_init_gate_flag_keeps_a_stored_default_branch(root: Path) -> None:
+    init(root, "--yes")
+    (root / ".taskmanager" / "config.yaml").write_text(
+        "repos:\n  api:\n    default_branch: release\n", encoding="utf-8"
+    )
+
+    init(root, "--gate", "api=make test")
+
+    assert config(root)["repos"]["api"]["default_branch"] == "release"

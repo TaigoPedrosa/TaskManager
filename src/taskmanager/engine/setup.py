@@ -51,7 +51,7 @@ def _commands(node: Any) -> Iterator[str]:
             yield from _commands(item)
     elif isinstance(node, dict):
         for key, value in node.items():
-            if key == "run" and isinstance(value, str):
+            if key in ("run", "script") and isinstance(value, str):
                 yield value.strip()
             elif key == "script" and isinstance(value, list):
                 yield from (v for v in value if isinstance(v, str))
@@ -65,7 +65,7 @@ def ci_commands(repo: Path) -> list[str]:
         for path in sorted(repo.glob(pattern)):
             try:
                 found.extend(_commands(yaml.safe_load(path.read_text(encoding="utf-8"))))
-            except yaml.YAMLError, OSError:
+            except yaml.YAMLError, OSError, UnicodeDecodeError:
                 continue
     return list(dict.fromkeys(found))
 
@@ -108,6 +108,9 @@ def _worktree_dir(root: Path, store: ConfigStore, flags: Flags, ask: Ask | None)
 def _gates(root: Path, store: ConfigStore, repos: list[str], flags: Flags, ask: Ask | None) -> None:
     _require_repos(root, list(flags.gates))
     for repo, command in flags.gates.items():
+        # Any write under repos.<repo> stores default_branch, so the entry takes origin/HEAD now.
+        if repo not in store.read().get("repos", {}):
+            store.set(f"repos.{repo}.default_branch", origin_head(root / repo))
         store.set(f"repos.{repo}.gates.main.command", command)
     if ask is None:
         return
