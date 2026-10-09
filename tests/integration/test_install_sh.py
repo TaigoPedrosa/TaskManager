@@ -39,7 +39,7 @@ def version(source):
     manifest = Path(checkout) / "plugin" / ".claude-plugin" / "plugin.json"
     return json.loads(manifest.read_text())["version"]
 
-# A source written as `<owner>/<name>[#ref]` lists as the github form the README once added.
+# A source written as `<owner>/<name>[#ref]` lists in the github `repo` form.
 def listed(name, source):
     if Path(source).is_dir():
         entry = {{"source": "directory", "path": source}}
