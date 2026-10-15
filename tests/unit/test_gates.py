@@ -1,4 +1,6 @@
 import shlex
+import signal
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -180,3 +182,36 @@ def test_a_stored_red_target_command_reads_its_target_where_it_was_parked(
     command = gates.red_target_command(tmp_path / "estate", "api", sha, "h", "main", remote=remote)
     push_main(api, "next.txt", "n\n")
     assert gates.main(shlex.split(command)[3:]) == cleared
+
+
+def test_a_report_is_found_under_a_worktree_whose_path_holds_glob_characters(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "app[v2]*?"
+    worktree.mkdir()
+    command = f"mkdir target && printf %s {shlex.quote(JUNIT)} > target/r.xml; exit 1"
+
+    run = gates.run_gate(command, worktree, 60, "target/*.xml")
+
+    assert run.failing == {"s::a", "s::b"}
+
+
+def test_a_gate_is_killed_with_its_children_when_the_landing_is_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started: list[subprocess.Popen[str]] = []
+
+    class Stopped(subprocess.Popen[str]):
+        def communicate(self, *args: object, **kwargs: object) -> tuple[str, str]:
+            started.append(self)
+            raise SystemExit(143)
+
+    monkeypatch.setattr(gates.subprocess, "Popen", Stopped)
+
+    with pytest.raises(SystemExit):
+        gates.run_gate("sleep 60", tmp_path, 120, None)
+
+    try:
+        assert started[0].wait(timeout=10) == -signal.SIGKILL
+    finally:
+        started[0].kill()
