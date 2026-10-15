@@ -170,3 +170,41 @@ def test_job_status_of_a_landing_stopped_at_push_prints_its_push_errors(
     printed = json.loads(res.stdout)["result"]
     assert printed["reason"] == "push_failed"
     assert [e["stderr"] for e in printed["push_errors"]] == [UNREACHABLE] * 3
+
+
+def conflicting(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gitops, "fetch", lambda repo, remote, branch: True)
+    monkeypatch.setattr(gitops, "merge_no_ff", lambda _worktree, _ref, _subject: False)
+    monkeypatch.setattr(gitops, "rev_parse", lambda repo, ref: "moved")
+
+
+def test_push_to_a_moved_main_that_conflicts_parks_with_the_moved_sha_as_the_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claims, landing, _ = estate(tmp_path)
+    remote(monkeypatch, ["moved"])
+    conflicting(monkeypatch)
+    job = pushing(claims)
+
+    assert landing._push(job) == JobState.NEEDS_AGENT
+
+    stored = claims.jobs.get(job.id)
+    assert stored is not None
+    assert stored.result["reason"] == "conflict"
+    assert stored.result["base_sha"] == "moved"
+
+
+def test_a_container_branch_that_moved_and_conflicts_parks_with_the_moved_sha_as_the_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claims, landing, _ = estate(tmp_path)
+    conflicting(monkeypatch)
+    monkeypatch.setattr(gitops, "update_ref_cas", lambda repo, ref, new, old: False)
+    job = pushing(claims)
+
+    assert landing._move_branch(job, Path(job.worktree or ""), "done") == JobState.NEEDS_AGENT
+
+    stored = claims.jobs.get(job.id)
+    assert stored is not None
+    assert stored.result["reason"] == "conflict"
+    assert stored.result["base_sha"] == "moved"

@@ -237,6 +237,10 @@ def push(worktree: Path, remote: str | None, target: str) -> subprocess.Complete
     )
 
 
+def prune_worktrees(repo: Path) -> None:
+    _git(repo, "worktree", "prune")
+
+
 def add_detached_worktree(repo: Path, path: Path, commit: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     _run(repo, "worktree", "add", "--detach", str(path), commit)

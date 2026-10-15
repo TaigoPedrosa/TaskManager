@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+from contextlib import suppress
 from pathlib import Path
 from typing import Literal
 
@@ -52,7 +53,8 @@ def template_hash(gate: Gate) -> str:
 def _reports(cwd: Path, junit_glob: str | None) -> list[Path]:
     if not junit_glob:
         return []
-    return sorted(Path(p) for p in glob.glob(str(cwd / junit_glob), recursive=True))
+    # root_dir keeps a `[`, `*` or `?` in the worktree's own path from being read as a pattern.
+    return sorted(cwd / p for p in glob.glob(junit_glob, root_dir=cwd, recursive=True))
 
 
 def _failing(reports: list[Path]) -> frozenset[str]:
@@ -122,6 +124,12 @@ def run_gate(
         os.killpg(proc.pid, signal.SIGKILL)
         output, _ = proc.communicate()
         return GateRun(TIMEOUT_EXIT, None, f"{output}\ntimed out after {timeout}s"[-TAIL_CHARS:])
+    except BaseException:
+        # The gate is a session of its own, so the signal that stops the landing never reaches it.
+        with suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        raise
     reports = _reports(cwd, junit_glob)
     failing: frozenset[str] | None
     try:
