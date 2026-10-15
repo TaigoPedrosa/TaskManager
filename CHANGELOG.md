@@ -5,6 +5,40 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-10-15
+
+### Upgrading
+
+- `repos.<repo>.remote` accepts only letters, digits, `.`, `_`, `/` and `-`, the characters
+  tm-wave quotes into a git command. A config naming any other remote refuses to load: rename the
+  remote with `git remote rename` and set the key to the new name.
+
+### Added
+
+- A claim prints `remotes`, naming each repository's `repos.<repo>.remote`, null for one with no
+  remote.
+
+### Changed
+
+- `tm decision add --slug` and the web's New decision refuse a slug holding `/`.
+
+### Fixed
+
+- A tm-wave review or fix brief reads the spec's target on each repository's own remote, and the
+  local branch where `repos.<repo>.remote` is null, instead of `origin/<target>`. The plan skill
+  proves a task with `tm verify run <task-id>`, which reads the target the same way.
+  ([#1](https://github.com/TaigoPedrosa/TaskManager/issues/1))
+- A red-target decision's id replaces the `/` of its repository's path, and the web pane opens,
+  answers, reopens, withdraws and links a decision whose stored id holds one. An open red-target
+  decision stored that way keeps its parked landings rather than opening a second one.
+  ([#1](https://github.com/TaigoPedrosa/TaskManager/issues/1))
+- A claim of a child landing on its parent's existing branch never reads the remote from git, so
+  a remote the clone lacks no longer refuses it after its worktree is cut.
+- `install.sh` creates `~/.gemini/extensions` when it is missing and links into it, and
+  `uninstall` removes that folder only when install created it.
+- `install.sh` updates a marketplace already added from this repository at the default branch in
+  place, and warns before a change of source resets the plugin's data.
+
 ## [0.3.8] - 2026-10-09
 
 ### Upgrading
@@ -403,7 +437,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - A web visualizer with a live socket, and a static exporter.
 - The taskmanager and dispatcher skills, packaged as a Claude Code plugin.
 
-[Unreleased]: https://github.com/TaigoPedrosa/TaskManager/compare/c804a97...HEAD
+[Unreleased]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.9...HEAD
+[0.3.9]: https://github.com/TaigoPedrosa/TaskManager/compare/c804a97...v0.3.9
 [0.3.8]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.7...c804a97
 [0.3.7]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.5...v0.3.6

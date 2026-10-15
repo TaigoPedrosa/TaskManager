@@ -9,7 +9,7 @@ from pathlib import Path
 
 import taskmanager
 
-RELEASE = "0.3.8"
+RELEASE = "0.3.9"
 HOMEPAGE = "https://github.com/TaigoPedrosa/TaskManager"
 REPO = Path(__file__).resolve().parents[2]
 
