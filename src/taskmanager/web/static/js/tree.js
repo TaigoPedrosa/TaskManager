@@ -212,11 +212,28 @@ function expandId(node) {
   expandRows([node]);
 }
 
+// The drawer's node keeps its watch while the drawer shows it, whatever the tree does to it.
+function unwatchUnlessInspected(ids) {
+  window.tmStore.unwatch(ids.filter(id => id !== inspectorNodeId));
+}
+
+// A dropped row's watch is forgotten by the store, and expandedIds still counts the row as
+// expanded, so expandRows would never ask for its body again; watch it anew when it returns.
+const droppedExpanded = new Set();
+window.tmStore.onChange((patch) => {
+  const back = [];
+  patch.rowIds.forEach((id) => {
+    if (!window.tmStore.rows.has(id)) droppedExpanded.add(id);
+    else if (droppedExpanded.delete(id) && expandedIds.has(id)) back.push(id);
+  });
+  if (back.length > 0) window.tmStore.watch(back);
+});
+
 function toggleExpand(row) {
   if (expandedIds.has(row.id)) {
     const closed = collapseWithDescendants(row.id);
     window.tmStore.close(closed);
-    window.tmStore.unwatch(closed);
+    unwatchUnlessInspected(closed);
   } else {
     expandId(row);
   }
@@ -273,7 +290,7 @@ window.tmStore.onChange(sweepExpandAll);
 function resetExpansion() {
   if (expandedIds.size > 0) {
     window.tmStore.close([...expandedIds]);
-    window.tmStore.unwatch([...expandedIds]);
+    unwatchUnlessInspected([...expandedIds]);
     expandedIds.clear();
   }
   clearExpansionUnder(null);
@@ -304,7 +321,7 @@ function collapseAllUnder(id) {
     below.forEach(x => expandedIds.delete(x));
     if (below.length > 0) {
       window.tmStore.close(below);
-      window.tmStore.unwatch(below);
+      unwatchUnlessInspected(below);
     }
   }
   scheduleRender();
