@@ -1353,3 +1353,32 @@ def test_readme_names_the_remote_migration_and_sensitive_area_keys() -> None:
     assert "matching one of its repository's `repos.<repo>.migrations` globs" in text
     assert "migrations/versions/" not in text
     assert "an `origin` remote" not in text
+
+
+def test_merge_guide_has_a_row_for_every_reason_a_job_stops_for_an_agent(
+    rendered: Callable[[str], str],
+) -> None:
+    from taskmanager.engine.landing import RESUME_AT
+
+    text = rendered("merge")
+    missing = [reason for reason in RESUME_AT if f"| `{reason}` |" not in text]
+    assert missing == []
+
+
+def test_plan_guide_read_back_does_not_export_the_estate() -> None:
+    block = rendered_plan_import_block()
+    assert "tm render <task-id> --view subagent" in block
+    assert "tm export" not in block
+
+
+def rendered_plan_import_block() -> str:
+    text = (REPO / "src/taskmanager/guides/plan.md").read_text(encoding="utf-8")
+    return text.split("## 9. Import it, then read it back", 1)[1].split("\n## ", 1)[0]
+
+
+def test_readme_gemini_link_condition_matches_install_sh() -> None:
+    text = " ".join(_doc_text("README.md").split())
+    assert (
+        "links the Gemini extension when `~/.gemini` exists, creating `~/.gemini/extensions` "
+        "if it is missing and leaving a link of yours there alone."
+    ) in text

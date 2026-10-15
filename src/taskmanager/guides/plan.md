@@ -148,7 +148,6 @@ tm import --format yaml -f plan.yaml
 tm task list --yaml
 tm wave discover --session <id> --slots 5 --max-strong 2
 tm render <task-id> --view subagent
-tm export docs/tm/
 ```
 
 Read the brief before dispatching anyone: a section you meant to write and did not is invisible in the database and obvious here.

@@ -18,7 +18,7 @@ Optional: [codegraph](https://www.npmjs.com/package/@colbymchenry/codegraph), a 
 curl -fsSL https://raw.githubusercontent.com/TaigoPedrosa/TaskManager/main/install.sh | bash
 ```
 
-or, from a clone, `./install.sh`. It installs `tm` with uv and the Claude Code plugin from the same git ref, `main` unless `--ref <ref>` names another, into the profile `CLAUDE_CONFIG_DIR` names (`~/.claude` when unset), and links the Gemini extension when `~/.gemini/extensions` exists. Pass arguments to the piped form after `bash -s --`:
+or, from a clone, `./install.sh`. It installs `tm` with uv and the Claude Code plugin from the same git ref, `main` unless `--ref <ref>` names another, into the profile `CLAUDE_CONFIG_DIR` names (`~/.claude` when unset), and links the Gemini extension when `~/.gemini` exists, creating `~/.gemini/extensions` if it is missing and leaving a link of yours there alone. Pass arguments to the piped form after `bash -s --`:
 
 ```bash
 ./install.sh status        # tm, the plugin and their versions; non-zero when they differ
