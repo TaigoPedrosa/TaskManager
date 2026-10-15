@@ -623,7 +623,7 @@ class NodeRepository:
         ]
 
     def add_condition(self, condition: Condition) -> Condition:
-        with self.db.get_state_connection() as conn:
+        with self.db.spec_transaction() as conn:
             (idx,) = conn.execute(
                 "SELECT COALESCE(MAX(idx), 0) + 1 FROM node_conditions WHERE node_id = ?",
                 (condition.node_id,),

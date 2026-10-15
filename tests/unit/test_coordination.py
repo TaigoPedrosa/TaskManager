@@ -7,9 +7,9 @@ from typing import Any
 
 import pytest
 
-from taskmanager.core.enums import LockType, NodeKind
-from taskmanager.core.models import FileLock, GateRun, Job, Lease, Node
-from taskmanager.core.status import Action, JobKind, JobState, Status
+from taskmanager.core.enums import LockType, NodeKind, RelationType
+from taskmanager.core.models import Condition, FileLock, GateRun, Job, Lease, Node, NodeRelation
+from taskmanager.core.status import Action, ConditionStage, JobKind, JobState, Status
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
@@ -400,3 +400,106 @@ def test_a_condition_result_older_than_its_max_age_is_not_served(db: DatabaseMan
         conn.commit()
     assert cache.get_condition("T1", 1, "true", max_age=300) is None
     assert cache.get_condition("T1", 1, "true", max_age=400) == 0
+
+
+def _contender(db: DatabaseManager) -> sqlite3.Connection:
+    return sqlite3.connect(str(db.state_db), timeout=0)
+
+
+def _hook_statement(
+    db: DatabaseManager, prefix: str, action: Callable[[], None]
+) -> Callable[[], None]:
+    with db.get_state_connection() as conn:
+        fired: list[str] = []
+
+        def trace(statement: str) -> None:
+            if statement.startswith(prefix) and not fired:
+                fired.append(statement)
+                action()
+
+        conn.set_trace_callback(trace)
+    return lambda: conn.set_trace_callback(None)
+
+
+def test_a_failed_repo_write_rolls_back_and_frees_the_write_lock(db: DatabaseManager) -> None:
+    relation = NodeRelation(
+        source_id="NOPE", target_id="NADA", relation_type=RelationType.DEPENDS_ON
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        NodeRepository(db).add_relation(relation)
+    with db.get_state_connection() as conn:
+        assert not conn.in_transaction
+    other = _contender(db)
+    other.execute("BEGIN IMMEDIATE")
+    other.rollback()
+    other.close()
+
+
+def test_a_failure_inside_a_spec_transaction_leaves_the_rollback_to_it(db: DatabaseManager) -> None:
+    _task(db, "T1")
+    with pytest.raises(RuntimeError), db.spec_transaction() as conn:
+        conn.execute("UPDATE nodes SET title = 'x' WHERE id = 'T1'")
+        with pytest.raises(sqlite3.IntegrityError), db.get_state_connection():
+            raise sqlite3.IntegrityError("inner")
+        assert conn.in_transaction
+        raise RuntimeError("outer")
+    node = NodeRepository(db).get_node("T1")
+    assert node is not None and node.title == "T1"
+
+
+def test_add_condition_holds_the_write_lock_from_its_read_to_its_insert(
+    db: DatabaseManager,
+) -> None:
+    _task(db, "T1")
+    other = _contender(db)
+    outcome: list[str] = []
+
+    def rival_insert() -> None:
+        try:
+            other.execute(
+                "INSERT INTO node_conditions (node_id, idx, needs, command, stage) "
+                "VALUES ('T1', 1, 'n', 'c', 'claim')"
+            )
+            other.commit()
+            outcome.append("inserted")
+        except sqlite3.OperationalError:
+            outcome.append("locked")
+
+    unhook = _hook_statement(db, "SELECT COALESCE(MAX(idx)", rival_insert)
+    added = NodeRepository(db).add_condition(
+        Condition(node_id="T1", needs="n", command="c", stage=ConditionStage.CLAIM)
+    )
+    unhook()
+    other.close()
+    assert outcome == ["locked"]
+    assert added.idx == 1
+
+
+def test_a_sweep_holds_the_write_lock_so_a_heartbeat_cannot_land_mid_sweep(
+    db: DatabaseManager,
+) -> None:
+    repo = RuntimeRepository(db)
+    long_ago = datetime.now(tz=UTC) - timedelta(hours=1)
+    repo.acquire_lease(
+        _lease("T1", ttl_seconds=60, last_heartbeat=long_ago),
+        [FileLock(file_path="a.py", task_id="T1")],
+    )
+    other = _contender(db)
+    outcome: list[str] = []
+
+    def rival_heartbeat() -> None:
+        try:
+            other.execute(
+                "UPDATE leases SET last_heartbeat = ? WHERE task_id = 'T1'",
+                (datetime.now(tz=UTC).isoformat(),),
+            )
+            other.commit()
+            outcome.append("beat")
+        except sqlite3.OperationalError:
+            outcome.append("locked")
+
+    unhook = _hook_statement(db, "DELETE FROM leases", rival_heartbeat)
+    assert repo.sweep_expired_leases() == ["T1"]
+    unhook()
+    other.close()
+    assert outcome == ["locked"]

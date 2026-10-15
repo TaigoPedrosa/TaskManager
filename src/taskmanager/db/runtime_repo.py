@@ -251,7 +251,9 @@ class RuntimeRepository:
 
     def sweep_expired_leases(self) -> list[str]:
         now = datetime.now(tz=UTC)
-        with self.db.get_state_connection() as conn:
+        # The write lock is taken before the read: a heartbeat landing between the read and the
+        # delete would otherwise be swept away with its lease.
+        with self.db.spec_transaction() as conn:
             rows = conn.execute(
                 "SELECT task_id, ttl_seconds, last_heartbeat FROM leases "
                 "WHERE ttl_seconds IS NOT NULL"
