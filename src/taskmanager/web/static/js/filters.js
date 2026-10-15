@@ -243,7 +243,9 @@ function triStateHandlers(el, getMode, setMode) {
   });
 
   el.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter' && e.key !== ' ') return;
+    // A key pressed on a control nested in `el` (a popover row's Include and Exclude buttons)
+    // belongs to that control's own click.
+    if (e.target !== el || (e.key !== 'Enter' && e.key !== ' ')) return;
     e.preventDefault();
     if (e.key === 'Enter' && e.shiftKey) setMode('exclude');
     else commitClick();
