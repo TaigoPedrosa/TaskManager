@@ -1,4 +1,7 @@
+import fcntl
 import json
+import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -309,3 +312,105 @@ def test_a_remote_name_tm_wave_cannot_quote_is_refused(remote: str) -> None:
 @pytest.mark.parametrize("remote", ["origin", "up.stream_2", "team/fork", None])
 def test_a_remote_name_of_quotable_characters_or_none_is_kept(remote: str | None) -> None:
     assert RepoConfig(remote=remote).remote == remote
+
+
+def test_a_reader_never_sees_the_file_empty_while_it_is_rewritten(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = ConfigStore(root)
+    store.set("lease_ttl", "10")
+    seen: list[str] = []
+    replace = os.replace
+
+    def replace_after_checking(src: Path, dst: Path) -> None:
+        seen.append(store.path.read_text(encoding="utf-8"))
+        replace(src, dst)
+
+    monkeypatch.setattr("taskmanager.engine.config.os.replace", replace_after_checking)
+
+    store.set("lease_ttl", "20")
+
+    assert seen == ["lease_ttl: 10\n"]
+    assert store.read()["lease_ttl"] == 20
+
+
+def test_two_writers_at_once_both_keep_their_change(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = ConfigStore(root)
+    first_read, second_arrived, go = threading.Event(), threading.Event(), threading.Event()
+    read, flock = ConfigStore.read, fcntl.flock
+
+    def read_pausing_the_first(self: ConfigStore) -> dict[str, object]:
+        loaded = read(self)
+        if threading.current_thread().name == "first":
+            first_read.set()
+            go.wait(timeout=30)
+        elif threading.current_thread().name == "second":
+            second_arrived.set()
+        return loaded
+
+    # Locked, the second announces itself before it blocks on the first's lock; unlocked, it
+    # announces itself by reading the file the first has not written yet.
+    def flock_announcing_the_second(fd: int, op: int) -> None:
+        if threading.current_thread().name == "second" and op == fcntl.LOCK_EX:
+            second_arrived.set()
+        flock(fd, op)
+
+    monkeypatch.setattr(ConfigStore, "read", read_pausing_the_first)
+    monkeypatch.setattr("taskmanager.engine.config.fcntl.flock", flock_announcing_the_second)
+    first = threading.Thread(target=store.set, args=("lease_ttl", "10"), name="first")
+    second = threading.Thread(target=store.set, args=("worktree_dir", "wt"), name="second")
+    first.start()
+    assert first_read.wait(timeout=30)
+    second.start()
+    assert second_arrived.wait(timeout=30)
+    go.set()
+    first.join(timeout=30)
+    second.join(timeout=30)
+
+    monkeypatch.undo()
+    assert (store.read()["lease_ttl"], store.read()["worktree_dir"]) == (10, "wt")
+
+
+def test_a_replace_waits_for_a_set_that_read_before_it(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = ConfigStore(root)
+    first_read, second_arrived, go = threading.Event(), threading.Event(), threading.Event()
+    read, flock = ConfigStore.read, fcntl.flock
+
+    def read_pausing_the_set(self: ConfigStore) -> dict[str, object]:
+        loaded = read(self)
+        if threading.current_thread().name == "set":
+            first_read.set()
+            go.wait(timeout=30)
+        return loaded
+
+    # Locked, the replace announces itself before it blocks on the set's lock; unlocked, it
+    # announces itself once it has written over the file the set has not written yet.
+    def flock_announcing_the_replace(fd: int, op: int) -> None:
+        if threading.current_thread().name == "replace" and op == fcntl.LOCK_EX:
+            second_arrived.set()
+        flock(fd, op)
+
+    def replace() -> None:
+        try:
+            store.replace({"worktree_dir": "wt"})
+        finally:
+            second_arrived.set()
+
+    monkeypatch.setattr(ConfigStore, "read", read_pausing_the_set)
+    monkeypatch.setattr("taskmanager.engine.config.fcntl.flock", flock_announcing_the_replace)
+    first = threading.Thread(target=store.set, args=("lease_ttl", "10"), name="set")
+    second = threading.Thread(target=replace, name="replace")
+    first.start()
+    assert first_read.wait(timeout=30)
+    second.start()
+    assert second_arrived.wait(timeout=30)
+    go.set()
+    first.join(timeout=30)
+    second.join(timeout=30)
+
+    monkeypatch.undo()
+    assert store.document() == {"worktree_dir": "wt"}

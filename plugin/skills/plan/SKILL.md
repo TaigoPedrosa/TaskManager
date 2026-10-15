@@ -46,7 +46,7 @@ Slice the design into plans and tasks, and write them as one import document in 
 doc="$(mktemp -d)/plan.yaml"
 ```
 
-The document opens with `spec:` holding only `id: <spec-id>`: a key the document omits keeps the spec's current value, and plans in a document with no `spec` land under no spec at all.
+The document opens with `spec:` holding only `id: <spec-id>`: a key the document omits keeps the spec's current value, and a document with no `spec` has its plans refused unless they already sit under a spec.
 
 - A **plan** is a slice that ships on its own: once its tasks land, something the design promised works. Pick its landing shape from `tm guide plan` §4: each task reviewed and landed alone, or one review for the whole plan.
 - A **task** is one agent's unit, sized by `tm guide plan` §7: an objective of one sentence, a handful of acceptance lines, a `declared_files` list no sibling wants.
@@ -76,7 +76,7 @@ Every task's verifications must fail before its change. For each task, run its c
 tm verify run <task-id>
 ```
 
-With no `--ref`, this reads the branch `tm task get <task-id> --yaml` prints as `lands_on`, on the repository's remote after a fetch, or the local branch where `repos.<repo>.remote` is null.
+With no `--ref`, this reads the branch `tm task get <task-id> --yaml` prints as `lands_on`, on the repository's remote after a fetch, or the local branch where `repos.<repo>.remote` is null. A `lands_on` branch tm has not created yet (it creates it on the first landing) reads as the repository's default branch, so a check fails for its missing deliverable and not for a missing ref; `--ref <ref>` reads any other ref.
 
 Each run must exit 1 with at least one of the task's checks `FAILED`, and none failing for a reason other than the missing deliverable (a typo in a path, a command that cannot run). A verification that passes on the target proves nothing: rewrite it so it checks this task's own deliverable, put it back with `tm verify remove` and `tm verify add` (or fix the document and re-import while nothing is claimed), and run it again. `No verifications to run.` is a miss from step 4: add one. Do the same for each plan's joined verification.
 

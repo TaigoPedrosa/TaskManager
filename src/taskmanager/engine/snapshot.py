@@ -45,6 +45,8 @@ _NOT_STARTED = frozenset({Status.READY}) | EXITS
 # expansion follows the ref being verified; only a bare `origin/main` pins a check to main.
 _VERIFY_REF_EXPANSION = re.compile(r"\$\{TM_VERIFY_REF:-[^}]*\}")
 ORIGIN_MAIN: Final = "origin/main"
+# A longer ref name (`origin/maintenance`, `origin/main-v2`) is a different branch.
+_ORIGIN_MAIN_REF = re.compile(rf"(?<!\w){ORIGIN_MAIN}(?![\w/-])")
 
 
 def writes_migration(files: list[str], migrations: Collection[str]) -> bool:
@@ -53,7 +55,7 @@ def writes_migration(files: list[str], migrations: Collection[str]) -> bool:
 
 
 def names_origin_main(command: str) -> bool:
-    return ORIGIN_MAIN in _VERIFY_REF_EXPANSION.sub("", command)
+    return _ORIGIN_MAIN_REF.search(_VERIFY_REF_EXPANSION.sub("", command)) is not None
 
 
 def sensitive_areas(node: Node) -> tuple[str, ...]:

@@ -5,15 +5,18 @@ from typing import Any
 import httpx
 import pytest
 
-from taskmanager.core.enums import NodeKind
+from taskmanager.core.enums import EmbeddingProviderType, NodeKind
 from taskmanager.core.models import Node
 from taskmanager.core.status import Status
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
+from taskmanager.engine.config import EmbeddingsConfig
 from taskmanager.engine.search import (
     MockEmbeddingProvider,
     OpenAIEmbeddingProvider,
     SearchEngine,
+    SearchError,
+    build_provider,
 )
 
 
@@ -172,3 +175,75 @@ def test_openai_embedding_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(httpx.Client, "post", mock_post)
     actual_vector = provider.get_embedding("test query")
     assert actual_vector == expected_vector
+
+
+def _openai(**fields: Any) -> EmbeddingsConfig:
+    return EmbeddingsConfig(provider=EmbeddingProviderType.OPENAI, **fields)
+
+
+def _sent_key(cfg: EmbeddingsConfig) -> str | None:
+    provider = build_provider(cfg)
+    assert isinstance(provider, OpenAIEmbeddingProvider)
+    return provider.api_key
+
+
+@pytest.fixture
+def keyed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TASKMANAGER_OPENAI_BASE_URL", raising=False)
+    monkeypatch.setenv("TASKMANAGER_OPENAI_API_KEY", "the-key")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-secret")
+
+
+@pytest.mark.usefixtures("keyed")
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {},
+        {"base_url": "https://api.openai.com/v1"},
+        {"base_url": "http://localhost:8080/v1"},
+        {"base_url": "http://127.0.0.1:8080/v1"},
+        {"base_url": "https://localhost/v1"},
+    ],
+)
+def test_the_key_goes_to_openai_or_a_local_server(fields: dict[str, Any]) -> None:
+    assert _sent_key(_openai(**fields)) == "the-key"
+
+
+@pytest.mark.usefixtures("keyed")
+def test_the_key_goes_to_a_host_the_users_own_environment_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TASKMANAGER_OPENAI_BASE_URL", "https://proxy.corp.example/v1")
+
+    assert _sent_key(_openai(base_url="https://proxy.corp.example/v1")) == "the-key"
+    assert _sent_key(_openai()) == "the-key"
+
+
+@pytest.mark.usefixtures("keyed")
+@pytest.mark.parametrize(
+    ("fields", "why"),
+    [
+        ({"api_key_env": "AWS_SECRET_ACCESS_KEY"}, "only a variable starting with TASKMANAGER_"),
+        ({"base_url": "http://elsewhere.example/v1"}, "is not https"),
+        ({"base_url": "https://elsewhere.example/v1"}, "is set in the config file"),
+        ({"base_url": "https://api.openai.com.elsewhere.example/v1"}, "is set in the config file"),
+    ],
+)
+def test_a_config_naming_another_secret_or_server_sends_no_key(
+    fields: dict[str, Any], why: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def no_post(self: httpx.Client, url: str, **kwargs: Any) -> httpx.Response:
+        raise AssertionError(f"a request went to {url}")
+
+    monkeypatch.setattr(httpx.Client, "post", no_post)
+    provider = build_provider(_openai(**fields))
+    assert provider is not None
+    with pytest.raises(SearchError, match=why):
+        provider.get_embedding("text")
+
+
+@pytest.mark.usefixtures("keyed")
+def test_a_server_that_gets_no_key_needs_no_variable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TASKMANAGER_OPENAI_API_KEY")
+
+    assert _sent_key(_openai(base_url="https://elsewhere.example/v1")) == ""

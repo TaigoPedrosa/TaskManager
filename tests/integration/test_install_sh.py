@@ -493,3 +493,72 @@ def test_install_script_parses_and_passes_shellcheck() -> None:
         pytest.skip("shellcheck is not on PATH")
     res = subprocess.run([shellcheck, str(SCRIPT)], capture_output=True, text=True, check=False)
     assert res.returncode == 0, res.stdout
+
+
+def test_install_and_uninstall_leave_a_gemini_link_the_user_made(
+    tmp_path: Path, uv_cache: Path
+) -> None:
+    scratch = scratch_env(tmp_path, uv_cache)
+    mine = tmp_path / "my-checkout"
+    mine.mkdir()
+    scratch.gemini_link.parent.mkdir(parents=True)
+    scratch.gemini_link.symlink_to(mine)
+
+    res = install_sh(scratch, "--from", str(REPO))
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "is a link install did not make" in res.stdout
+    assert scratch.gemini_link.resolve() == mine
+
+    gone = install_sh(scratch, "uninstall")
+    assert gone.returncode == 0, gone.stdout + gone.stderr
+    assert scratch.gemini_link.resolve() == mine
+
+
+def test_install_repoints_the_gemini_link_it_made_and_uninstall_removes_it(
+    tmp_path: Path, uv_cache: Path
+) -> None:
+    scratch = scratch_env(tmp_path, uv_cache)
+    other = tmp_path / "other-checkout"
+    other.mkdir()
+    for name in ("plugin", "src", "pyproject.toml", "README.md", "gemini-extension.json"):
+        (other / name).symlink_to(REPO / name)
+    (scratch.home / ".gemini" / "extensions").mkdir(parents=True)
+
+    for source in (REPO, other):
+        res = install_sh(scratch, "--from", str(source))
+        assert res.returncode == 0, res.stdout + res.stderr
+        assert scratch.gemini_link.resolve() == source
+
+    gone = install_sh(scratch, "uninstall")
+    assert gone.returncode == 0, gone.stdout + gone.stderr
+    assert not scratch.gemini_link.is_symlink()
+    assert not (scratch.home / ".gemini" / "extensions" / ".taskmanager-link").exists()
+
+
+FAKE_UV = """#!/bin/sh
+case "$*" in
+    "tool list")
+        printf 'taskmanager v1.0.0\\n'
+        head -c 400000 /dev/zero | tr '\\0' 'x'
+        ;;
+    "tool uninstall taskmanager") printf 'uninstalled\\n' >> "$UV_LOG" ;;
+    "tool dir --bin") printf '%s\\n' "$UV_TOOL_BIN_DIR" ;;
+esac
+"""
+
+
+def test_uninstall_removes_tm_when_uv_lists_more_than_a_pipe_holds(
+    tmp_path: Path, uv_cache: Path
+) -> None:
+    scratch = scratch_env(tmp_path, uv_cache, claude=False, uv=False)
+    fake = scratch.tool_bin / "uv"
+    scratch.tool_bin.mkdir()
+    fake.write_text(FAKE_UV)
+    fake.chmod(0o755)
+
+    res = install_sh(scratch, "uninstall")
+
+    assert res.returncode == 0, res.stdout + res.stderr
+    log = Path(scratch.env["UV_LOG"])
+    assert log.exists()
+    assert "uninstalled" in log.read_text().splitlines()

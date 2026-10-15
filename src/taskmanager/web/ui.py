@@ -38,8 +38,11 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         # A section's own content is user-writable (`PUT /api/nodes/{id}/sections/{key}`) and
         # ends up inside `initial_data` verbatim; a `</script>` in it would otherwise close this
         # tag early and run whatever text follows as markup, in the one output (the static
-        # export) that has no server left to sanitise on the way out.
-        raw_json = json.dumps(initial_data).replace("</", "<\\/")
+        # export) that has no server left to sanitise on the way out. Every `<` is escaped, not
+        # only `</`: a `<!--` followed by `<script` switches the HTML parser into a state where
+        # even the tag's own `</script>` no longer closes it. `<` only occurs inside JSON
+        # strings, where `<` decodes to the same character.
+        raw_json = json.dumps(initial_data).replace("<", "\\u003c")
         embedded_script = f"<script>window.STATIC_DATA = {raw_json};</script>"
 
     runtime_data = (

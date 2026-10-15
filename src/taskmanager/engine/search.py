@@ -9,6 +9,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, replace
 from typing import Any, Final, Protocol
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -35,6 +36,11 @@ DEFAULT_MODELS: Final = {
 NO_PROVIDER: Final = (
     "no embedding provider configured: `tm config set embeddings.provider <local|openai>`"
 )
+KEY_ENV_PREFIX: Final = "TASKMANAGER_"
+OPENAI_URL: Final = "https://api.openai.com/v1"
+BASE_URL_ENV: Final = "TASKMANAGER_OPENAI_BASE_URL"
+OPENAI_HOST: Final = "api.openai.com"
+LOCAL_HOSTS: Final = frozenset({"localhost", "127.0.0.1", "::1"})
 REBUILD: Final = "run `tm index --rebuild`"
 
 # The plan a node belongs to: itself for a plan, its parent plan for a task.
@@ -66,14 +72,18 @@ class OpenAIEmbeddingProvider:
     def __init__(
         self,
         base_url: str | None = None,
-        api_key: str | None = None,
+        api_key: str | Callable[[], str] | None = None,
         model: str | None = None,
     ) -> None:
-        self.base_url = (
-            base_url or os.getenv("TASKMANAGER_OPENAI_BASE_URL") or "https://api.openai.com/v1"
-        ).rstrip("/")
-        self.api_key = api_key if api_key is not None else os.getenv(DEFAULT_KEY_ENV, "")
+        self.base_url = (base_url or os.getenv(BASE_URL_ENV) or OPENAI_URL).rstrip("/")
+        self._api_key = api_key if api_key is not None else os.getenv(DEFAULT_KEY_ENV, "")
         self.model = model or os.getenv("TASKMANAGER_OPENAI_MODEL") or "text-embedding-3-small"
+
+    @property
+    def api_key(self) -> str:
+        # Resolved only when a request is about to go out, so a search or status that sends
+        # nothing never refuses over a key it would not send.
+        return self._api_key() if callable(self._api_key) else self._api_key
 
     def get_embedding(self, text: str) -> list[float]:
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
@@ -110,13 +120,43 @@ class LocalEmbeddingProvider:
         return [float(x) for x in self._encoder.encode(text)]
 
 
+def _api_key(cfg: EmbeddingsConfig) -> str:
+    """The key `cfg` names, once it is safe to send: the config file is committed and exported,
+    so a cloned estate can name any variable and any server, and neither may take a secret off
+    the machine without the user having set it up in their own environment."""
+    key = os.environ.get(cfg.api_key_env, "")
+    if not key:
+        return ""
+    if not cfg.api_key_env.startswith(KEY_ENV_PREFIX):
+        raise SearchError(
+            f"embeddings.api_key_env names {cfg.api_key_env}, and only a variable starting with "
+            f"{KEY_ENV_PREFIX} is read as an embedding key: export the key under such a name"
+        )
+    from_env = os.environ.get(BASE_URL_ENV)
+    base_url = cfg.base_url or from_env or OPENAI_URL
+    url = urlsplit(base_url)
+    local = url.hostname in LOCAL_HOSTS
+    if url.scheme != "https" and not local:
+        raise SearchError(
+            f"embeddings.base_url {base_url} is not https, so the key in "
+            f"{cfg.api_key_env} is not sent to it: use https, or a server on localhost"
+        )
+    if not (local or url.hostname == OPENAI_HOST or base_url == from_env):
+        raise SearchError(
+            f"embeddings.base_url {base_url} is set in the config file, so the key in "
+            f"{cfg.api_key_env} is not sent to it: export {BASE_URL_ENV} with that "
+            f"URL in your own environment to send it there"
+        )
+    return key
+
+
 def build_provider(cfg: EmbeddingsConfig) -> EmbeddingProvider | None:
     model = cfg.model or DEFAULT_MODELS[cfg.provider]
     match cfg.provider:
         case EmbeddingProviderType.MOCK:
             return MockEmbeddingProvider(cfg.dimensions)
         case EmbeddingProviderType.OPENAI:
-            return OpenAIEmbeddingProvider(cfg.base_url, os.environ.get(cfg.api_key_env, ""), model)
+            return OpenAIEmbeddingProvider(cfg.base_url, lambda: _api_key(cfg), model)
         case EmbeddingProviderType.LOCAL:
             return LocalEmbeddingProvider(model)
         case _:

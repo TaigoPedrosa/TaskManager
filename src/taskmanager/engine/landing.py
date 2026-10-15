@@ -9,6 +9,8 @@ import argparse
 import logging
 import os
 import shlex
+import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -136,6 +138,11 @@ class Landing:
         with self._beating(job.node_id):
             try:
                 return self._sync(job) if job.kind == JobKind.SYNC else self._land(job)
+            except SystemExit, KeyboardInterrupt:
+                # Stopped from outside (an expired or released lease): nothing else removes the
+                # worktree this job left, and no later job reuses its path.
+                self._discard(job, self._worktree_path(job))
+                raise
             except Exception as exc:
                 # Whatever stops a step stops the job for an agent: an exception let through
                 # would leave it `running` with no process left to end it. The traceback goes to
@@ -185,14 +192,19 @@ class Landing:
                 409,
             )
         step = "push" if push else RESUME_AT.get(reason, "start")
-        if step == "start":
-            self._remove_worktree(job)
+        # Removed only after the compare-and-swap below is won: a resume that loses it must not
+        # delete the worktree the winner is building in.
+        stale = job.worktree if step == "start" else None
+        if stale:
+            job.worktree = None
         job.step = step
         job.state = JobState.RUNNING
         job.result.pop("push_tries", None)
         job.result["resumed"] = int(job.result.get("resumed", 0)) + 1
         if not self.jobs.set_state(job, {JobState.NEEDS_AGENT}):
             raise OperationError(f"job {job_id} moved while it was being resumed", 409)
+        if stale:
+            self._discard(job, Path(stale))
         self.claims.heartbeat(job.node_id)
         if self.detach:
             return self._spawn(job)
@@ -314,9 +326,11 @@ class Landing:
                 # and gated again.
                 gitops.fetch(repo_dir, remote, job.target)
                 subject = f"merge({job.node_id}): {moved} into its landing"
+                # Recorded before the merge: a conflict parks the job here, and the resumed gate
+                # attributes a red tip against the target it now contains.
+                job.result["base_sha"] = gitops.rev_parse(repo_dir, moved)
                 if not gitops.merge_no_ff(worktree, moved, subject):
                     return self._needs_agent(job, "conflict")
-                job.result["base_sha"] = gitops.rev_parse(repo_dir, moved)
                 return "gate"
             # A remote that answered with no such branch is one this push creates.
             if head or run.returncode == 0:
@@ -371,9 +385,9 @@ class Landing:
         finally:
             self.jobs.release_branch(job.repo, job.target, job.id)
         job.result["push_tries"] = tries + 1
+        job.result["base_sha"] = moved
         if not gitops.merge_no_ff(worktree, moved, f"merge({job.node_id}): {job.target} moved"):
             return self._needs_agent(job, "conflict")
-        job.result["base_sha"] = moved
         return "gate"
 
     def _verify(self, job: Job) -> JobState:
@@ -608,7 +622,12 @@ class Landing:
 
         def beat() -> None:
             while not stop.wait(HEARTBEAT_SECONDS):
-                self.claims.heartbeat(node_id)
+                try:
+                    self.claims.heartbeat(node_id)
+                except Exception:
+                    # One missed beat (a locked database) must not end them all: the lease would
+                    # lapse mid-gate.
+                    _logger.exception("heartbeat for %s failed", node_id)
 
         thread = threading.Thread(target=beat, daemon=True)
         thread.start()
@@ -645,12 +664,16 @@ class Landing:
             if cached is not None:
                 return cached
             worktree = self._worktree_path(job, "base")
+            self._discard(job, worktree)
             gitops.add_detached_worktree(self._dir(job), worktree, sha)
             try:
                 run = self._run_gate(gate, job, worktree)
             finally:
-                GitManager(self._dir(job)).remove_worktree(worktree, force=True)
-            self.cache.put_baseline(job.repo, sha, key, run)
+                self._discard(job, worktree)
+            # A timeout or a crash outside the tests names no failing set; cached, it would answer
+            # every later landing on this sha as unattributed until the target moves.
+            if run.exit_code == 0 or run.failing is not None:
+                self.cache.put_baseline(job.repo, sha, key, run)
             return run
         finally:
             self.jobs.release_branch(job.repo, lock, job.id)
@@ -722,9 +745,21 @@ class Landing:
         return job.worktree
 
     def _remove_worktree(self, job: Job) -> None:
-        if job.worktree and Path(job.worktree).exists():
-            GitManager(self._dir(job)).remove_worktree(Path(job.worktree), force=True)
+        if job.worktree:
+            self._discard(job, Path(job.worktree))
         job.worktree = None
+
+    def _discard(self, job: Job, path: Path) -> None:
+        """Removes one of this job's worktrees and its registration, whatever state a crash or a
+        hand deletion left it in: git refuses to add a path it still lists, or to remove a
+        directory it no longer owns."""
+        repo_dir = self._dir(job)
+        if path.exists():
+            try:
+                GitManager(repo_dir).remove_worktree(path, force=True)
+            except subprocess.CalledProcessError:
+                shutil.rmtree(path, ignore_errors=True)
+        gitops.prune_worktrees(repo_dir)
 
 
 def _git_failure(run: subprocess.CompletedProcess[str]) -> dict[str, Any]:
@@ -742,6 +777,8 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("job_id")
     run.add_argument("--root", type=Path, required=True)
     args = parser.parse_args(argv)
+    # `finally` blocks run only if the SIGTERM of an expired lease ends the process as an exit.
+    signal.signal(signal.SIGTERM, lambda signum, _frame: sys.exit(128 + signum))
     print(Landing.open(args.root.resolve()).run(args.job_id))
     return 0
 

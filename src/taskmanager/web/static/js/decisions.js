@@ -27,6 +27,14 @@ const decisionDrafts = new Map();
 // Decisions this page has sent an answer or a withdrawal for: the push that write causes is
 // its own echo, never a change made elsewhere, and their detail waits for the write's follow-up.
 const ownWrites = new Set();
+// An answer or withdrawal owns its decision from the moment it is sent until the follow-up
+// ends it, or the server refuses it and the pane goes back to showing what the server holds.
+writeObservers.push((phase, request) => {
+  const match = /^\/api\/decisions\/([^/]+)\/(answer|withdraw)$/.exec(request.path);
+  if (!match) return;
+  if (phase === 'send') ownWrites.add(match[1]);
+  else ownWrites.delete(match[1]);
+});
 // The decision another session closed while its form was on screen: the form stays, disabled
 // with its draft, until the owner asks for the closed record or moves on.
 let heldOpenId = null;
@@ -120,7 +128,7 @@ async function refreshDecisionsData() {
     }, LOADING_DELAY_MS);
   }
   if (isStaticMode) {
-    decisionsData = (window.STATIC_DATA && window.STATIC_DATA.decisions) || [];
+    decisionsData = staticDecisions();
     decisionsNextCursor = null;
   } else {
     try {
@@ -152,8 +160,12 @@ async function refreshDecisionsData() {
 async function loadMoreDecisions() {
   if (isStaticMode || !decisionsNextCursor || decisionsLoading) return;
   decisionsLoading = true;
+  const page = decisionsData;
   try {
     const res = await api('GET', `/api/decisions?${decisionsQueryParams(decisionsNextCursor)}`);
+    // A tab picked or a refresh landed while this page was in flight replaced the list, and
+    // this page's cursor and counts belong to the list it was asked for.
+    if (page !== decisionsData) return;
     decisionsData = decisionsData.concat(res.items);
     decisionsNextCursor = res.next;
     decisionsCounts = res.counts;
@@ -186,10 +198,14 @@ const viewDecisionsBtn = document.getElementById('view-decisions-btn');
 const decisionsBadgeEl = document.getElementById('decisions-badge');
 viewDecisionsBtn.addEventListener('click', () => onViewSegment(window.VIEW_MODES.DECISIONS, selectedDecisionId));
 
+function staticDecisions() {
+  return (window.STATIC_DATA && window.STATIC_DATA.decisions) || [];
+}
+
 function updateDecisionsBadge() {
   // Live everywhere the store is (decisions_open travels with every snapshot/update); a
   // static export has no store push at all, so it counts the one page it was seeded with.
-  const openCount = isStaticMode ? decisionsData.filter(d => d.status === 'OPEN').length : window.tmStore.decisionsOpen;
+  const openCount = isStaticMode ? staticDecisions().filter(d => d.status === 'OPEN').length : window.tmStore.decisionsOpen;
   if (openCount > 0) {
     decisionsBadgeEl.textContent = openCount > 99 ? '99+' : String(openCount);
     decisionsBadgeEl.classList.remove('hidden');
@@ -200,6 +216,9 @@ function updateDecisionsBadge() {
   // `sm`, a caption-less icon button) actually reads, so the count belongs there too.
   viewDecisionsBtn.setAttribute('aria-label', `Decisions view, ${openCount} open`);
 }
+
+// A static export has no push to draw its badge, so it is drawn on load, whichever view opens.
+if (isStaticMode) updateDecisionsBadge();
 
 if (typeof setViewMode === 'function') {
   const previousSetViewMode = setViewMode;
@@ -1052,7 +1071,6 @@ function wireDecisionAnswerForm(root, decisionId, data, waiting, held) {
       confirmEffect(decisionId, fx, waiting, request, () => afterDecisionClosed(decisionId, message, at));
       return;
     }
-    ownWrites.add(decisionId);
     submitWrite(submitBtn, request).then(() => afterDecisionClosed(decisionId, message, at));
   }
 
@@ -1113,7 +1131,6 @@ function confirmEffect(decisionId, effect, waiting, request, done) {
     destructive: true,
     bodyHtml: `<div class="space-y-2">${waiting.map(effectNodeHtml).join('')}</div>`,
     onSubmit: async (panel, close, write) => {
-      ownWrites.add(decisionId);
       await write(request.method, request.path, request.body);
       close();
       await done();
@@ -1136,7 +1153,6 @@ function openWithdrawDialog(decisionId, waitingCount) {
     onSubmit: async (panel, close, write) => {
       const reason = panel.querySelector('.wd-reason').value.trim();
       const at = decisionRowIndex(decisionId);
-      ownWrites.add(decisionId);
       await write('POST', `/api/decisions/${decisionId}/withdraw`, { reason });
       close();
       await afterDecisionClosed(decisionId, `${decisionId} withdrawn`, at);

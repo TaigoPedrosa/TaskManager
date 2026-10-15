@@ -250,7 +250,16 @@ class DatabaseManager:
 
     @contextmanager
     def get_state_connection(self) -> Generator[sqlite3.Connection]:
-        yield self._thread_conn("state", self.state_db, load_vec=True)
+        conn = self._thread_conn("state", self.state_db, load_vec=True)
+        try:
+            yield conn
+        except BaseException:
+            # A write that raised after sqlite3 opened its implicit transaction would otherwise
+            # keep the write lock for as long as this long-lived thread idles. Inside
+            # `spec_transaction()` the outermost frame owns the rollback.
+            if self._spec_tx_depth == 0 and conn.in_transaction:
+                conn.rollback()
+            raise
 
     def spec_commit(self, conn: sqlite3.Connection) -> None:
         """The commit every repository write ends with -- except while `spec_transaction()`

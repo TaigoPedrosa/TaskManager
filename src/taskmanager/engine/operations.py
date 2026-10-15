@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import re
 import subprocess
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -26,6 +27,7 @@ from taskmanager.core.models import (
 )
 from taskmanager.core.status import (
     SET_ASIDE,
+    Action,
     ConditionStage,
     DecisionEffect,
     DecisionStatus,
@@ -38,6 +40,7 @@ from taskmanager.db.node_repo import NodeRepository, declared_files_of
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine import git as gitops
 from taskmanager.engine.assets import (
+    ASSET_NAME_RE,
     AssetError,
     AttachmentSource,
     is_project_relative,
@@ -101,6 +104,19 @@ class OperationError(ValueError):
 
 
 MERGE_REFUSAL = "merge is parent or spec; main is now spec"
+
+# A node id becomes a worktree directory, a `tm/<id>` ref and one web path segment, so a slug is
+# one plain path component: no separator, no leading dot or dash, no `..`.
+_SLUG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def check_slug(slug: str) -> None:
+    if _SLUG_RE.fullmatch(slug) is None or ".." in slug:
+        raise OperationError(
+            f"slug {slug!r} must start with a letter or digit, hold only letters, digits, "
+            "'.', '_' and '-', and never '..'",
+            400,
+        )
 
 
 def _land_on(land_on: str | None) -> dict[str, Any]:
@@ -487,6 +503,19 @@ class Operations:
         if not 1 <= priority <= 100:
             raise OperationError("priority is 1-100", 400)
 
+    def _new_id(self, explicit: str | None, auto_prefix: str) -> str:
+        """The id a new node takes: `explicit`, refused when taken, else the first free
+        `<auto_prefix><n>`. Every add calls this inside its write transaction, so a concurrent
+        add cannot pick the same id and `save_node` cannot upsert over the other's node."""
+        if explicit is not None:
+            if self.node_repo.get_node(explicit) is not None:
+                raise OperationError(f"'{explicit}' already exists", 409)
+            return explicit
+        counter = 1
+        while self.node_repo.get_node(f"{auto_prefix}{counter}") is not None:
+            counter += 1
+        return f"{auto_prefix}{counter}"
+
     def add_spec(
         self,
         title: str,
@@ -499,30 +528,24 @@ class Operations:
     ) -> str:
         self._validate_priority(priority)
         if slug:
-            spec_id = slug
-            if self.node_repo.get_node(spec_id) is not None:
-                raise OperationError(f"'{spec_id}' already exists", 409)
-        else:
-            existing = {n.id for n in self.node_repo.list_nodes(kind=NodeKind.SPEC)}
-            counter = 1
-            while f"S{counter}" in existing:
-                counter += 1
-            spec_id = f"S{counter}"
-
-        node = Node(
-            id=spec_id,
-            kind=NodeKind.SPEC,
-            title=title,
-            priority=priority,
-            ordinal=order,
-            status=Status.READY,
-            review=review,
-            fix=fix,
-            merge=Merge.SPEC,
-            frontmatter=_land_on(land_on),
-        )
-        self._refuse_fix_without_review(node)
-        with self._checked({spec_id}):
+            check_slug(slug)
+        touched: set[str] = set()
+        with self._checked(touched):
+            spec_id = self._new_id(slug or None, "S")
+            touched.add(spec_id)
+            node = Node(
+                id=spec_id,
+                kind=NodeKind.SPEC,
+                title=title,
+                priority=priority,
+                ordinal=order,
+                status=Status.READY,
+                review=review,
+                fix=fix,
+                merge=Merge.SPEC,
+                frontmatter=_land_on(land_on),
+            )
+            self._refuse_fix_without_review(node)
             self.node_repo.save_node(node)
         self._ledger(
             LedgerCommand.SPEC_ADD,
@@ -554,35 +577,32 @@ class Operations:
         parent = self.node_repo.get_node(spec)
         if parent is None:
             raise OperationError(f"spec '{spec}' not found", 404)
+        if parent.kind != NodeKind.SPEC:
+            raise OperationError(f"'{spec}' is not a spec; a plan goes under a spec", 400)
         if slug:
-            plan_id = f"{spec}-{slug}"
-            if self.node_repo.get_node(plan_id) is not None:
-                raise OperationError(f"'{plan_id}' already exists", 409)
-        else:
-            children = set(self.node_repo.get_children(spec))
-            counter = 1
-            while f"{spec}-P{counter}" in children:
-                counter += 1
-            plan_id = f"{spec}-P{counter}"
-
-        plan_node = child_defaults(
-            Node(
-                id=plan_id,
-                kind=NodeKind.PLAN,
-                title=title,
-                priority=priority,
-                ordinal=order,
-                status=Status.READY,
-                frontmatter=_land_on(land_on),
-            ),
-            parent,
-            config=self.rules(),
-            review=review,
-            fix=fix,
-            merge=None if merge is None else parse_merge(merge),
-        )
-        self._refuse_fix_without_review(plan_node)
-        with self._checked({plan_id}):
+            check_slug(slug)
+        parsed_merge = None if merge is None else parse_merge(merge)
+        touched: set[str] = set()
+        with self._checked(touched):
+            plan_id = self._new_id(f"{spec}-{slug}" if slug else None, f"{spec}-P")
+            touched.add(plan_id)
+            plan_node = child_defaults(
+                Node(
+                    id=plan_id,
+                    kind=NodeKind.PLAN,
+                    title=title,
+                    priority=priority,
+                    ordinal=order,
+                    status=Status.READY,
+                    frontmatter=_land_on(land_on),
+                ),
+                parent,
+                config=self.rules(),
+                review=review,
+                fix=fix,
+                merge=parsed_merge,
+            )
+            self._refuse_fix_without_review(plan_node)
             self.node_repo.save_node(plan_node)
             self.node_repo.add_relation(
                 NodeRelation(source_id=spec, target_id=plan_id, relation_type=RelationType.CONTAINS)
@@ -622,41 +642,38 @@ class Operations:
         parent = self.node_repo.get_node(plan)
         if parent is None:
             raise OperationError(f"plan '{plan}' not found", 404)
+        if parent.kind != NodeKind.PLAN:
+            raise OperationError(f"'{plan}' is not a plan; a task goes under a plan", 400)
         missing_deps = [d for d in (depends_on or []) if self.node_repo.get_node(d) is None]
         if missing_deps:
             raise OperationError(f"dependency not found: {', '.join(missing_deps)}", 404)
         if slug:
-            task_id = f"{plan}-{slug}"
-            if self.node_repo.get_node(task_id) is not None:
-                raise OperationError(f"'{task_id}' already exists", 409)
-        else:
-            children = set(self.node_repo.get_children(plan))
-            counter = 1
-            while f"{plan}-T{counter}" in children:
-                counter += 1
-            task_id = f"{plan}-T{counter}"
-
-        task_node = child_defaults(
-            Node(
-                id=task_id,
-                kind=NodeKind.TASK,
-                title=title,
-                priority=priority,
-                ordinal=order,
-                acceptable_models=models or [],
-                frontmatter=frontmatter or {},
-                status=Status.READY,
-                requires=requires or [],
-                target_repo=repo,
-            ),
-            parent,
-            config=self.rules(),
-            review=review,
-            fix=fix,
-            merge=None if merge is None else parse_merge(merge),
-        )
-        self._refuse_fix_without_review(task_node)
-        with self._checked({task_id}):
+            check_slug(slug)
+        parsed_merge = None if merge is None else parse_merge(merge)
+        touched: set[str] = set()
+        with self._checked(touched):
+            task_id = self._new_id(f"{plan}-{slug}" if slug else None, f"{plan}-T")
+            touched.add(task_id)
+            task_node = child_defaults(
+                Node(
+                    id=task_id,
+                    kind=NodeKind.TASK,
+                    title=title,
+                    priority=priority,
+                    ordinal=order,
+                    acceptable_models=models or [],
+                    frontmatter=frontmatter or {},
+                    status=Status.READY,
+                    requires=requires or [],
+                    target_repo=repo,
+                ),
+                parent,
+                config=self.rules(),
+                review=review,
+                fix=fix,
+                merge=parsed_merge,
+            )
+            self._refuse_fix_without_review(task_node)
             self.node_repo.save_node(task_node)
             self.node_repo.add_relation(
                 NodeRelation(source_id=plan, target_id=task_id, relation_type=RelationType.CONTAINS)
@@ -691,59 +708,79 @@ class Operations:
         requires: list[str] | None = None,
         land_order: list[str] | None = None,
     ) -> dict[str, Any]:
-        node = self.node_repo.get_node(node_id)
-        if node is None:
-            raise OperationError(f"task '{node_id}' not found", 404)
-        changed: dict[str, Any] = {}
-        if title is not None:
-            node.title = title
-            changed["title"] = title
-        if priority is not None:
-            if not 1 <= priority <= 100:
-                raise OperationError("priority is 1-100", 400)
-            node.priority = priority
-            changed["priority"] = priority
-        if models is not None:
-            node.acceptable_models = models
-            changed["acceptable_models"] = node.acceptable_models
-        if repo is not None:
-            node.target_repo = repo
-            changed["target_repo"] = repo
-        for key, value in (frontmatter_set or {}).items():
-            node.frontmatter[key] = value
-            changed[f"frontmatter.{key}"] = value
-        for key in frontmatter_unset or []:
-            node.frontmatter.pop(key, None)
-            changed[f"frontmatter.{key}"] = None
-        if review is not None:
-            node.review = review
-            changed["review"] = review
-        if fix is not None:
-            node.fix = fix
-            changed["fix"] = fix
-        if merge is not None:
-            node.merge = parse_merge(merge)
-            changed["merge"] = node.merge.value
-        if requires is not None:
-            node.requires = requires
-            changed["requires"] = requires
-        if land_order is not None:
-            if node.kind not in CONTAINERS:
-                raise OperationError(
-                    "land_order orders a plan's or a spec's repositories; a task lands in its "
-                    "one target_repo",
-                    400,
-                )
-            node.land_order = land_order
-            changed["land_order"] = land_order
-        if not changed:
-            raise OperationError("nothing to update", 400)
-        self._refuse_fix_without_review(node)
-        node.updated_at = datetime.now(tz=UTC)
+        # The node is read under the write lock: a concurrent attach or update cannot be
+        # written back over by this copy.
         with self._checked({node_id}):
+            node = self.node_repo.get_node(node_id)
+            if node is None:
+                raise OperationError(f"task '{node_id}' not found", 404)
+            changed: dict[str, Any] = {}
+            if title is not None:
+                node.title = title
+                changed["title"] = title
+            if priority is not None:
+                if not 1 <= priority <= 100:
+                    raise OperationError("priority is 1-100", 400)
+                node.priority = priority
+                changed["priority"] = priority
+            if models is not None:
+                node.acceptable_models = models
+                changed["acceptable_models"] = node.acceptable_models
+            if repo is not None:
+                node.target_repo = repo
+                changed["target_repo"] = repo
+            for key, value in (frontmatter_set or {}).items():
+                node.frontmatter[key] = value
+                changed[f"frontmatter.{key}"] = value
+            for key in frontmatter_unset or []:
+                node.frontmatter.pop(key, None)
+                changed[f"frontmatter.{key}"] = None
+            if review is not None:
+                node.review = review
+                changed["review"] = review
+            if fix is not None:
+                node.fix = fix
+                changed["fix"] = fix
+            if merge is not None:
+                node.merge = parse_merge(merge)
+                changed["merge"] = node.merge.value
+            if requires is not None:
+                node.requires = requires
+                changed["requires"] = requires
+            if land_order is not None:
+                if node.kind not in CONTAINERS:
+                    raise OperationError(
+                        "land_order orders a plan's or a spec's repositories; a task lands in its "
+                        "one target_repo",
+                        400,
+                    )
+                node.land_order = land_order
+                changed["land_order"] = land_order
+            if not changed:
+                raise OperationError("nothing to update", 400)
+            self._refuse_fix_without_review(node)
+            node.updated_at = datetime.now(tz=UTC)
             self.node_repo.save_node(node, keep_cycle=True)
+            if "declared_files" in (frontmatter_set or {}):
+                self._lock_declared_files(node_id)
         self._ledger(LedgerCommand.TASK_UPDATE, target_id=node_id, payload=changed)
         return changed
+
+    def _lock_declared_files(self, node_id: str) -> None:
+        """A claim locks the files its node declares when it starts, so a file declared on a
+        node that already holds a lease is locked here, in the same write, or refused."""
+        lease = self.runtime_repo.get_lease(node_id)
+        if lease is None or lease.action not in (Action.IMPLEMENT, Action.FIX):
+            return
+        held = self.runtime_repo.lock_more(
+            node_id, SnapshotBuilder.lock_set(node_id, self.snapshots.build())
+        )
+        if held:
+            raise OperationError(
+                "Nothing changed: "
+                + "; ".join(f"{path} is held by {who}" for path, who in held.items()),
+                409,
+            )
 
     def set_dependencies(self, node_id: str, add: list[str], remove: list[str]) -> list[str]:
         if self.node_repo.get_node(node_id) is None:
@@ -774,32 +811,45 @@ class Operations:
     def supersede(
         self, old_id: str, new_id: str, transfer_blocks: str = TransferMode.ALL.value
     ) -> None:
-        old_node = self.node_repo.get_node(old_id)
-        if not old_node:
-            raise OperationError(f"Task '{old_id}' not found", 404)
-        if old_node.kind == NodeKind.DECISION:
-            raise OperationError(f"'{old_id}' is a decision; use `tm decision` to close it", 400)
-        if new_id == old_id or self.node_repo.get_node(new_id) is None:
-            raise OperationError(f"Replacement task '{new_id}' not found; nothing was changed", 400)
-
-        old_node.status = Status.SUPERSEDED
-        old_node.claimed_from = None
-        old_node.updated_at = datetime.now(tz=UTC)
-        touched = {old_id, new_id, *self.node_repo.get_blocked_by(old_id)}
+        touched = {old_id, new_id}
+        # The old node is read under the write lock, so a concurrent edit is not saved back over.
         with self._checked(touched):
+            old_node = self.node_repo.get_node(old_id)
+            if not old_node:
+                raise OperationError(f"Task '{old_id}' not found", 404)
+            if old_node.kind == NodeKind.DECISION:
+                raise OperationError(
+                    f"'{old_id}' is a decision; use `tm decision` to close it", 400
+                )
+            if new_id == old_id or self.node_repo.get_node(new_id) is None:
+                raise OperationError(
+                    f"Replacement task '{new_id}' not found; nothing was changed", 400
+                )
+            blocked = self.node_repo.get_blocked_by(old_id)
+            touched.update(blocked)
+            tb_val = transfer_blocks.strip().lower()
+            custom_ids = [x.strip() for x in transfer_blocks.split(",") if x.strip()]
+            if tb_val not in (TransferMode.ALL.value, TransferMode.NONE.value):
+                strangers = [i for i in custom_ids if i not in blocked]
+                if strangers or not custom_ids:
+                    raise OperationError(
+                        f"transfer_blocks is '{TransferMode.ALL}', '{TransferMode.NONE}' or a "
+                        f"comma-separated list of nodes waiting on '{old_id}'; got "
+                        f"'{transfer_blocks}'",
+                        400,
+                    )
+            old_node.status = Status.SUPERSEDED
+            old_node.claimed_from = None
+            old_node.updated_at = datetime.now(tz=UTC)
             self.node_repo.save_node(old_node)
             self.node_repo.add_relation(
                 NodeRelation(
                     source_id=new_id, target_id=old_id, relation_type=RelationType.SUPERSEDES
                 )
             )
-            tb_val = transfer_blocks.strip().lower()
-            if tb_val == TransferMode.ALL.value:
-                self.node_repo.transfer_blocks(old_id, new_id, TransferMode.ALL)
-            elif tb_val == TransferMode.NONE.value:
-                self.node_repo.transfer_blocks(old_id, new_id, TransferMode.NONE)
+            if tb_val in (TransferMode.ALL.value, TransferMode.NONE.value):
+                self.node_repo.transfer_blocks(old_id, new_id, TransferMode(tb_val))
             else:
-                custom_ids = [x.strip() for x in transfer_blocks.split(",") if x.strip()]
                 self.node_repo.transfer_blocks(
                     old_id, new_id, TransferMode.CUSTOM, custom_ids=custom_ids
                 )
@@ -812,19 +862,21 @@ class Operations:
         )
 
     def move_task(self, task_id: str, plan_id: str) -> None:
-        task_node = self.node_repo.get_node(task_id)
-        if task_node is None:
-            raise OperationError(f"Task '{task_id}' not found", 404)
-        if task_node.kind != NodeKind.TASK:
-            raise OperationError(f"'{task_id}' is not a task", 400)
-        plan_node = self.node_repo.get_node(plan_id)
-        if plan_node is None:
-            raise OperationError(f"Plan '{plan_id}' not found", 404)
-        if plan_node.kind != NodeKind.PLAN:
-            raise OperationError(f"'{plan_id}' is not a plan", 400)
-        parents = self.node_repo.get_parent_ids(task_id)
-        old_plan = parents[0] if parents else None
         with self._checked({task_id}):
+            task_node = self.node_repo.get_node(task_id)
+            if task_node is None:
+                raise OperationError(f"Task '{task_id}' not found", 404)
+            if task_node.kind != NodeKind.TASK:
+                raise OperationError(f"'{task_id}' is not a task", 400)
+            plan_node = self.node_repo.get_node(plan_id)
+            if plan_node is None:
+                raise OperationError(f"Plan '{plan_id}' not found", 404)
+            if plan_node.kind != NodeKind.PLAN:
+                raise OperationError(f"'{plan_id}' is not a plan", 400)
+            # The old parent is read under the write lock, or a concurrent move leaves the task
+            # with two parents.
+            parents = self.node_repo.get_parent_ids(task_id)
+            old_plan = parents[0] if parents else None
             if old_plan is not None:
                 self.node_repo.remove_relation(old_plan, task_id, RelationType.CONTAINS)
             self.node_repo.add_relation(
@@ -1030,7 +1082,7 @@ class Operations:
             ) from exc
         return DecisionOption(key=key, label=label, description=description, effect=effect)
 
-    def _refuse_unlinkable(self, node_id: str, decision_id: str) -> None:
+    def _refuse_unlinkable(self, node_id: str) -> None:
         node = self.node_repo.get_node(node_id)
         if node is None:
             raise OperationError(f"node '{node_id}' not found", 404)
@@ -1062,19 +1114,7 @@ class Operations:
         custom_effect: DecisionEffect = DecisionEffect.NONE,
     ) -> str:
         if slug:
-            if "/" in slug:
-                # The web routes take an id as one path segment.
-                raise OperationError(f"a decision slug cannot hold '/': '{slug}'", 400)
-            decision_id = f"decision-{slug}"
-            if self.node_repo.get_node(decision_id) is not None:
-                raise OperationError(f"'{decision_id}' already exists", 409)
-        else:
-            existing = {n.id for n in self.node_repo.list_nodes(kind=NodeKind.DECISION)}
-            counter = 1
-            while f"decision-D{counter}" in existing:
-                counter += 1
-            decision_id = f"decision-D{counter}"
-
+            check_slug(slug)
         parsed_options = [self._parse_option(o) for o in options or []]
         keys = [o.key for o in parsed_options]
         if len(keys) != len(set(keys)):
@@ -1086,7 +1126,7 @@ class Operations:
 
         blocked_tasks = blocks or []
         for task_id in blocked_tasks:
-            self._refuse_unlinkable(task_id, decision_id)
+            self._refuse_unlinkable(task_id)
         for named in (raised_by, subject):
             if named is not None and self.node_repo.get_node(named) is None:
                 raise OperationError(f"'{named}' not found", 404)
@@ -1098,15 +1138,16 @@ class Operations:
             subject=subject,
             custom_effect=custom_effect,
         )
-        node = Node(
-            id=decision_id,
-            kind=NodeKind.DECISION,
-            title=question,
-            status=DecisionStatus.OPEN,
-            priority=priority,
-            frontmatter={"decision": data.model_dump(mode="json")},
-        )
         with self.node_repo.transaction():
+            decision_id = self._new_id(f"decision-{slug}" if slug else None, "decision-D")
+            node = Node(
+                id=decision_id,
+                kind=NodeKind.DECISION,
+                title=question,
+                status=DecisionStatus.OPEN,
+                priority=priority,
+                frontmatter={"decision": data.model_dump(mode="json")},
+            )
             self.node_repo.save_node(node)
             if context:
                 self.node_repo.save_section(
@@ -1139,30 +1180,34 @@ class Operations:
         rationale: str = "",
         by: str = "cli",
     ) -> None:
-        node = self._get_decision(decision_id)
-        if stored_status(node) != DecisionStatus.OPEN:
-            raise OperationError(f"decision '{decision_id}' is not open; reopen it first", 409)
-        data = read_decision(node)
-        if option is not None:
-            if option not in {o.key for o in data.options}:
-                raise OperationError(f"'{option}' is not an option of '{decision_id}'", 400)
-        elif not data.allow_custom:
-            raise OperationError(f"decision '{decision_id}' does not allow a custom answer", 400)
-        elif not text:
-            raise OperationError("give --option or --custom", 400)
-
-        data.answer = DecisionAnswer(
-            option=option,
-            text=text,
-            rationale=rationale,
-            answered_by=by,
-            answered_at=datetime.now(tz=UTC),
-        )
-        write_decision(node, data)
-        node.status = DecisionStatus.ANSWERED
-        node.updated_at = datetime.now(tz=UTC)
-        effect = chosen_effect(data)
+        # The status check and the write share one transaction: two answers cannot both find
+        # the decision open.
         with self.node_repo.transaction():
+            node = self._get_decision(decision_id)
+            if stored_status(node) != DecisionStatus.OPEN:
+                raise OperationError(f"decision '{decision_id}' is not open; reopen it first", 409)
+            data = read_decision(node)
+            if option is not None:
+                if option not in {o.key for o in data.options}:
+                    raise OperationError(f"'{option}' is not an option of '{decision_id}'", 400)
+            elif not data.allow_custom:
+                raise OperationError(
+                    f"decision '{decision_id}' does not allow a custom answer", 400
+                )
+            elif not text:
+                raise OperationError("give --option or --custom", 400)
+
+            data.answer = DecisionAnswer(
+                option=option,
+                text=text,
+                rationale=rationale,
+                answered_by=by,
+                answered_at=datetime.now(tz=UTC),
+            )
+            write_decision(node, data)
+            node.status = DecisionStatus.ANSWERED
+            node.updated_at = datetime.now(tz=UTC)
+            effect = chosen_effect(data)
             self.node_repo.save_node(node)
             affected = apply_effect(self, decision_id, effect)
         self._ledger(
@@ -1172,30 +1217,34 @@ class Operations:
         )
 
     def reopen_decision(self, decision_id: str) -> None:
-        node = self._get_decision(decision_id)
-        if stored_status(node) == DecisionStatus.OPEN:
-            raise OperationError(f"decision '{decision_id}' is already open", 409)
-        data = read_decision(node)
-        data.answer = None
-        data.withdrawn_reason = ""
-        data.withdrawn_by = None
-        data.withdrawn_at = None
-        write_decision(node, data)
-        node.status = DecisionStatus.OPEN
-        node.updated_at = datetime.now(tz=UTC)
-        self.node_repo.save_node(node)
+        with self.node_repo.transaction():
+            node = self._get_decision(decision_id)
+            if stored_status(node) == DecisionStatus.OPEN:
+                raise OperationError(f"decision '{decision_id}' is already open", 409)
+            data = read_decision(node)
+            data.answer = None
+            data.withdrawn_reason = ""
+            data.withdrawn_by = None
+            data.withdrawn_at = None
+            write_decision(node, data)
+            node.status = DecisionStatus.OPEN
+            node.updated_at = datetime.now(tz=UTC)
+            self.node_repo.save_node(node)
         self._ledger(LedgerCommand.DECISION_REOPEN, target_id=decision_id)
 
     def withdraw_decision(self, decision_id: str, reason: str = "") -> None:
-        node = self._get_decision(decision_id)
-        data = read_decision(node)
-        data.withdrawn_reason = reason
-        data.withdrawn_by = self.actor
-        data.withdrawn_at = datetime.now(tz=UTC)
-        write_decision(node, data)
-        node.status = DecisionStatus.WITHDRAWN
-        node.updated_at = datetime.now(tz=UTC)
-        self.node_repo.save_node(node)
+        with self.node_repo.transaction():
+            node = self._get_decision(decision_id)
+            if stored_status(node) != DecisionStatus.OPEN:
+                raise OperationError(f"decision '{decision_id}' is not open", 409)
+            data = read_decision(node)
+            data.withdrawn_reason = reason
+            data.withdrawn_by = self.actor
+            data.withdrawn_at = datetime.now(tz=UTC)
+            write_decision(node, data)
+            node.status = DecisionStatus.WITHDRAWN
+            node.updated_at = datetime.now(tz=UTC)
+            self.node_repo.save_node(node)
         self._ledger(
             LedgerCommand.DECISION_WITHDRAW, target_id=decision_id, payload={"reason": reason}
         )
@@ -1207,7 +1256,7 @@ class Operations:
         add_ids = add or []
         remove_ids = remove or []
         for task_id in add_ids:
-            self._refuse_unlinkable(task_id, decision_id)
+            self._refuse_unlinkable(task_id)
         for task_id in remove_ids:
             if decision_id not in self.node_repo.get_dependencies(task_id):
                 raise OperationError(f"'{task_id}' does not wait on '{decision_id}'", 409)
@@ -1247,64 +1296,68 @@ class Operations:
         source: str | None = None,
         replace: str | None = None,
     ) -> dict[str, Any]:
-        node = self.node_repo.get_node(node_id)
-        if node is None:
-            raise OperationError(f"node '{node_id}' not found", 404)
-        if not file_path.is_file():
-            raise OperationError(f"'{file_path}' does not exist", 400)
+        # One transaction from the read of the node's attachments to the save, the stored file
+        # included: a concurrent attach keeps its entry, and a detach cannot delete this file
+        # between its storing and its entry.
+        with self.node_repo.transaction():
+            node = self.node_repo.get_node(node_id)
+            if node is None:
+                raise OperationError(f"node '{node_id}' not found", 404)
+            if not file_path.is_file():
+                raise OperationError(f"'{file_path}' does not exist", 400)
 
-        attachments = list(node.frontmatter.get("attachments") or [])
-        replace_idx: int | None = None
-        if replace is not None:
-            replace_idx = next(
-                (i for i, a in enumerate(attachments) if a.get("asset") == replace), None
-            )
-            if replace_idx is None:
-                raise OperationError(f"no attachment '{replace}' on '{node_id}'", 404)
+            attachments = list(node.frontmatter.get("attachments") or [])
+            replace_idx: int | None = None
+            if replace is not None:
+                replace_idx = next(
+                    (i for i, a in enumerate(attachments) if a.get("asset") == replace), None
+                )
+                if replace_idx is None:
+                    raise OperationError(f"no attachment '{replace}' on '{node_id}'", 404)
 
-        try:
-            asset_name, mime = store_asset(self._assets_dir(), file_path)
-        except AssetError as exc:
-            raise OperationError(str(exc), 400) from exc
-
-        prior = attachments[replace_idx] if replace_idx is not None else {}
-        effective_caption = caption or prior.get("caption", "")
-        effective_source = source or (prior.get("source") or {}).get("uri")
-        if effective_source is None:
             try:
-                effective_source = str(file_path.resolve().relative_to(self._project_root()))
-            except ValueError:
-                effective_source = None
+                asset_name, mime = store_asset(self._assets_dir(), file_path)
+            except AssetError as exc:
+                raise OperationError(str(exc), 400) from exc
 
-        source_sha: str | None = None
-        source_state = "unverifiable"
-        if effective_source is not None and is_project_relative(effective_source):
-            src_path = self._project_root() / effective_source
-            if src_path.is_file():
-                source_sha = hashlib.sha256(src_path.read_bytes()).hexdigest()
-                source_state = "fresh"
+            prior = attachments[replace_idx] if replace_idx is not None else {}
+            effective_caption = caption or prior.get("caption", "")
+            effective_source = source or (prior.get("source") or {}).get("uri")
+            if effective_source is None:
+                try:
+                    effective_source = str(file_path.resolve().relative_to(self._project_root()))
+                except ValueError:
+                    effective_source = None
+
+            source_sha: str | None = None
+            source_state = "unverifiable"
+            if effective_source is not None and is_project_relative(effective_source):
+                src_path = self._project_root() / effective_source
+                if src_path.is_file():
+                    source_sha = hashlib.sha256(src_path.read_bytes()).hexdigest()
+                    source_state = "fresh"
+                else:
+                    source_state = "missing"
+
+            entry = {
+                "asset": asset_name,
+                "name": file_path.name,
+                "caption": effective_caption,
+                "mime": mime,
+                "source": AttachmentSource(
+                    uri=effective_source,
+                    sha256=source_sha,
+                    captured_at=datetime.now(tz=UTC),
+                    state=source_state,  # type: ignore[arg-type]
+                ).model_dump(mode="json"),
+            }
+            if replace_idx is not None:
+                attachments[replace_idx] = entry
             else:
-                source_state = "missing"
-
-        entry = {
-            "asset": asset_name,
-            "name": file_path.name,
-            "caption": effective_caption,
-            "mime": mime,
-            "source": AttachmentSource(
-                uri=effective_source,
-                sha256=source_sha,
-                captured_at=datetime.now(tz=UTC),
-                state=source_state,  # type: ignore[arg-type]
-            ).model_dump(mode="json"),
-        }
-        if replace_idx is not None:
-            attachments[replace_idx] = entry
-        else:
-            attachments.append(entry)
-        node.frontmatter["attachments"] = attachments
-        node.updated_at = datetime.now(tz=UTC)
-        self.node_repo.save_node(node, keep_cycle=True)
+                attachments.append(entry)
+            node.frontmatter["attachments"] = attachments
+            node.updated_at = datetime.now(tz=UTC)
+            self.node_repo.save_node(node, keep_cycle=True)
         self._ledger(LedgerCommand.ATTACH, target_id=node_id, payload={"asset": asset_name})
         return entry
 
@@ -1316,33 +1369,41 @@ class Operations:
         )
 
     def detach(self, node_id: str, asset: str) -> None:
-        node = self.node_repo.get_node(node_id)
-        if node is None:
-            raise OperationError(f"node '{node_id}' not found", 404)
-        attachments = list(node.frontmatter.get("attachments") or [])
-        idx = next((i for i, a in enumerate(attachments) if a.get("asset") == asset), None)
-        if idx is None:
-            raise OperationError(f"no attachment '{asset}' on '{node_id}'", 404)
-        del attachments[idx]
-        node.frontmatter["attachments"] = attachments
-        node.updated_at = datetime.now(tz=UTC)
-        self.node_repo.save_node(node, keep_cycle=True)
+        with self.node_repo.transaction():
+            node = self.node_repo.get_node(node_id)
+            if node is None:
+                raise OperationError(f"node '{node_id}' not found", 404)
+            attachments = list(node.frontmatter.get("attachments") or [])
+            idx = next((i for i, a in enumerate(attachments) if a.get("asset") == asset), None)
+            if idx is None:
+                raise OperationError(f"no attachment '{asset}' on '{node_id}'", 404)
+            del attachments[idx]
+            node.frontmatter["attachments"] = attachments
+            node.updated_at = datetime.now(tz=UTC)
+            self.node_repo.save_node(node, keep_cycle=True)
+            # `save_node` above already persisted `node_id`'s attachments with the entry removed,
+            # so the check covers every node, this one included: a second entry on `node_id`
+            # pointing at the same content-addressed asset still keeps the file.
+            # An entry planted under another name (import, restored bundle) is dropped without
+            # touching the file system.
+            if ASSET_NAME_RE.fullmatch(asset) and not self._asset_referenced(asset):
+                (self._assets_dir() / asset).unlink(missing_ok=True)
         self._ledger(LedgerCommand.DETACH, target_id=node_id, payload={"asset": asset})
-        # `save_node` above already persisted `node_id`'s attachments with the entry removed,
-        # so checking every node (this one included) is correct: a second entry on `node_id`
-        # itself pointing at the same content-addressed asset is exactly the case a per-node
-        # exclusion used to miss, deleting the file while that second entry still referenced it.
-        if not self._asset_referenced(asset):
-            (self._assets_dir() / asset).unlink(missing_ok=True)
 
     def list_attachments(self, node_id: str, check: bool = False) -> list[dict[str, Any]]:
+        if not check:
+            node = self.node_repo.get_node(node_id)
+            if node is None:
+                raise OperationError(f"node '{node_id}' not found", 404)
+            return list(node.frontmatter.get("attachments") or [])
+        with self.node_repo.transaction():
+            return self._check_attachments(node_id)
+
+    def _check_attachments(self, node_id: str) -> list[dict[str, Any]]:
         node = self.node_repo.get_node(node_id)
         if node is None:
             raise OperationError(f"node '{node_id}' not found", 404)
         attachments = list(node.frontmatter.get("attachments") or [])
-        if not check:
-            return attachments
-
         changed = False
         for entry in attachments:
             source = dict(entry.get("source") or {})

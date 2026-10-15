@@ -828,9 +828,19 @@ def test_the_plan_guide_example_routes_on_a_current_model_id() -> None:
 VERIFY_DEFAULT_REF = [
     (
         "overview",
-        "With no `--ref`, it reads each task at `<remote>/<the branch its spec lands on>`",
+        (
+            "With no `--ref`, it reads each task at `<remote>/<the branch its spec lands on>`, "
+            "fetched first, or at the repository's default branch while that branch does not "
+            "exist yet"
+        ),
     ),
-    ("plan", "with no `--ref`, `<remote>/<the branch its spec lands on>`, fetched first"),
+    (
+        "plan",
+        (
+            "with no `--ref`, `<remote>/<the branch its spec lands on>`, fetched first, or the "
+            "repository's default branch while that branch does not exist yet"
+        ),
+    ),
     (
         "implement",
         (
@@ -1044,7 +1054,9 @@ BRIEF_RULES = [
         "Create, modify or delete nothing outside `declared_files`. Before touching another file, "
         "read the locks in `tm run list --yaml`. When another live node holds the file, release "
         "blocked and name that node (below). Otherwise add the file with `tm task update "
-        "<task-id> --set declared_files='[...]'` before the edit, and name it in the report.",
+        "<task-id> --set declared_files='[...]'` before the edit, and name it in the report. That "
+        "update locks the file for your lease, and tm refuses it, naming the holder, when another "
+        "live node took the file first: release blocked then.",
         id="implement:declared-files",
     ),
     pytest.param(
@@ -1353,3 +1365,42 @@ def test_readme_names_the_remote_migration_and_sensitive_area_keys() -> None:
     assert "matching one of its repository's `repos.<repo>.migrations` globs" in text
     assert "migrations/versions/" not in text
     assert "an `origin` remote" not in text
+
+
+def test_merge_guide_has_a_row_for_every_reason_a_job_stops_for_an_agent(
+    rendered: Callable[[str], str],
+) -> None:
+    from taskmanager.engine.landing import RESUME_AT
+
+    text = rendered("merge")
+    missing = [reason for reason in RESUME_AT if f"| `{reason}` |" not in text]
+    assert missing == []
+
+
+def test_plan_guide_read_back_does_not_export_the_estate() -> None:
+    block = rendered_plan_import_block()
+    assert "tm render <task-id> --view subagent" in block
+    assert "tm export" not in block
+
+
+def rendered_plan_import_block() -> str:
+    text = (REPO / "src/taskmanager/guides/plan.md").read_text(encoding="utf-8")
+    return text.split("## 9. Import it, then read it back", 1)[1].split("\n## ", 1)[0]
+
+
+def test_readme_gemini_link_condition_matches_install_sh() -> None:
+    text = " ".join(_doc_text("README.md").split())
+    assert (
+        "links the Gemini extension when `~/.gemini` exists, creating `~/.gemini/extensions` "
+        "if it is missing and leaving a link of yours there alone."
+    ) in text
+
+
+def test_the_overview_states_where_an_embedding_key_may_go_and_when_a_test_command_is_killed() -> (
+    None
+):
+    text = _guide_text("overview")
+    assert "the variable's name starts with `TASKMANAGER_`" in text
+    assert "the server is `https`, or on `localhost`" in text
+    assert "or the URL your own environment gives in `TASKMANAGER_OPENAI_BASE_URL`" in text
+    assert "A `test_command` still running after 600 seconds is killed" in text

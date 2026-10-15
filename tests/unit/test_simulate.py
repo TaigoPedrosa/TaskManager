@@ -1,6 +1,7 @@
 """Unit tests for `engine.simulate`: `depth` waves out from a live snapshot, each node's step
 assumed to succeed."""
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine import selection
+from taskmanager.engine import simulate as simulate_module
 from taskmanager.engine.simulate import Wave, WaveEntry, simulate
 from taskmanager.engine.snapshot import SnapshotBuilder
 from taskmanager.engine.stepgraph import Snapshot
@@ -253,3 +255,30 @@ def test_simulate_issues_no_sql_statement(estate: Estate) -> None:
             conn.set_trace_callback(None)
 
     assert calls == []
+
+
+@pytest.mark.parametrize("order", [("P1", "T2"), ("T2", "P1")])
+def test_a_grandparent_is_re_derived_after_a_deeper_changed_node_moves_its_sibling_container(
+    estate: Estate, monkeypatch: pytest.MonkeyPatch, order: tuple[str, str]
+) -> None:
+    # The real `rollup` never lets a container's roll-up alone move its parent, so this stands
+    # in for a rule that does: a container is COMPLETED once every child is.
+    def rollup_when_all_children_are_done(current: Status, children: list[Status]) -> Status:
+        done = {Status.COMPLETED, Status.IMPLEMENTED}
+        return Status.COMPLETED if children and all(c in done for c in children) else current
+
+    monkeypatch.setattr(simulate_module, "rollup", rollup_when_all_children_are_done)
+    estate.add("S", NodeKind.SPEC)
+    estate.add("P1", NodeKind.PLAN, parent="S")
+    estate.add("P2", NodeKind.PLAN, parent="S")
+    estate.add("T1", parent="P1")
+    estate.add("T2", parent="P2")
+    snap = estate.snap()
+    nodes = dict(snap.nodes)
+    nodes["P1"] = replace(nodes["P1"], status=Status.IMPLEMENTED)
+    nodes["T2"] = replace(nodes["T2"], status=Status.COMPLETED)
+
+    simulate_module._roll_up(nodes, dict(snap.graph_data().nodes), snap, order)
+
+    assert nodes["P2"].status == Status.COMPLETED
+    assert nodes["S"].status == Status.COMPLETED

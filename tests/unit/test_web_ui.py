@@ -1,3 +1,4 @@
+import json
 import re
 import shutil
 import subprocess
@@ -30,7 +31,25 @@ def test_static_data_escapes_a_closing_script_tag_inside_section_content() -> No
     # left on the way out to sanitise it.
     html = get_web_html(initial_data={"tree": [], "details": {"x": "</script><img src=x>"}})
     assert "</script><img" not in html
-    assert "<\\/script><img" in html
+    assert "\\u003c/script>\\u003cimg" in html
+
+
+def test_static_data_survives_a_comment_open_followed_by_a_script_open() -> None:
+    # `<!--` then `<script` puts the HTML parser in the double-escaped state, where the data
+    # tag's own `</script>` no longer closes it.
+    html = get_web_html(initial_data={"t": "a <!-- <script> b"})
+    data_tag = re.search(r"<script>window\.STATIC_DATA = (.*?);</script>", html)
+    assert data_tag is not None
+    assert "<" not in data_tag.group(1)
+    assert json.loads(data_tag.group(1)) == {"t": "a <!-- <script> b"}
+
+
+def test_static_data_holding_a_slot_marker_stays_text() -> None:
+    text = "see <!--slot:js-core--> and <!--slot:icon-sprite-->"
+    html = get_web_html(initial_data={"t": text})
+    data_tag = re.search(r"<script>window\.STATIC_DATA = (.*?);</script>", html)
+    assert data_tag is not None
+    assert json.loads(data_tag.group(1)) == {"t": text}
 
 
 def _function_body(html: str, name: str) -> str:
@@ -883,7 +902,8 @@ def test_expand_collapse_drive_the_stores_open_and_watch_sets_not_a_local_flag()
     assert "window.tmStore.watch(ids)" in expand
     assert "expandId(row)" in toggle
     assert "window.tmStore.close(closed)" in toggle
-    assert "window.tmStore.unwatch(closed)" in toggle
+    assert "unwatchUnlessInspected(closed)" in toggle
+    assert "window.tmStore.unwatch(" in _function_body(get_web_html(), "unwatchUnlessInspected")
 
 
 def test_sections_and_relations_render_only_once_a_watched_body_arrives() -> None:

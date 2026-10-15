@@ -9,10 +9,12 @@ from pydantic import BaseModel, ConfigDict
 
 MAX_ASSET_BYTES = 20 * 1024 * 1024
 
-# Content-addressed asset names are always 16 hex chars plus the source file's own extension
-# (`store_asset` below); anything else cannot be one of ours, so both the name a caller joins
-# onto `assets_dir` and the name `/assets/{name}` serves are checked against this one pattern.
+# Content-addressed asset names are always 16 hex chars plus the source file's own extension, or
+# `.bin` when the pattern does not take that one (`store_asset` below). Anything else cannot be one
+# of ours, so both the name a caller joins onto `assets_dir` and the name `/assets/{name}` serves
+# are checked against this one pattern.
 ASSET_NAME_RE = re.compile(r"^[0-9a-f]{16}\.[A-Za-z0-9]{1,8}$")
+_SUFFIX_RE = re.compile(r"\.[A-Za-z0-9]{1,8}")
 
 
 class AssetError(ValueError):
@@ -49,7 +51,10 @@ def store_asset(assets_dir: Path, source: Path) -> tuple[str, str]:
     if len(data) > MAX_ASSET_BYTES:
         raise AssetError(f"'{source.name}' is {len(data)} bytes, over the 20 MB attachment limit")
     digest = hashlib.sha256(data).hexdigest()[:16]
-    name = f"{digest}{source.suffix}"
+    # A file with no extension, a long one or one with punctuation (`Dockerfile`, `.c++`) would
+    # get a name the readers refuse.
+    suffix = source.suffix if _SUFFIX_RE.fullmatch(source.suffix) else ".bin"
+    name = f"{digest}{suffix}"
     assets_dir.mkdir(parents=True, exist_ok=True)
     dest = assets_dir / name
     if not dest.exists():

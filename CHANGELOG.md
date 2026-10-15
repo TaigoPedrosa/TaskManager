@@ -5,6 +5,102 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Upgrading
+
+- An embedding key is sent only from a variable whose name starts with `TASKMANAGER_`, over https
+  or to localhost, and only to api.openai.com, localhost or the URL `TASKMANAGER_OPENAI_BASE_URL`
+  names. A config whose `embeddings.api_key_env` or `embeddings.base_url` breaks this still loads,
+  but a `tm index` or `tm search` that would send the key refuses with the reason: rename the
+  variable, or set `TASKMANAGER_OPENAI_BASE_URL` in your own environment.
+- `tm spec|plan|task|decision add` and `tm import` refuse a new slug or id that is not one plain
+  path component (`[A-Za-z0-9][A-Za-z0-9._-]*`, no `..`). A stored id is still read and updated.
+
+### Changed
+
+- `tm decision withdraw` refuses a decision that is not open (409).
+- `tm task add` and `tm plan add` refuse a parent of the wrong kind.
+- `tm supersede --transfer-blocks` refuses a value that is not `all`, `none` or nodes waiting on
+  the superseded one.
+- Files added with `tm task update --set declared_files=...` on a claimed node are locked, or the
+  update is refused when another live node holds them.
+- `tm config unset repos.<repo>.gates.<gate>.command` removes a gate that has no other field.
+- A `test_command` verification is killed with its child processes after 600 seconds and fails.
+- `tm verify run` with no `--ref` reads the repository's default branch while the spec's
+  `land_on` branch does not exist yet, for path checks, codegraph queries and test commands.
+- `install.sh` repoints or removes only a `~/.gemini/extensions/taskmanager` link it made; an older
+  install's link to a `--from` checkout is left for you to remove.
+
+### Fixed
+
+- Concurrent adds pick their id inside the write transaction, so one can no longer overwrite the
+  other, and an auto-numbered task skips the id of a task moved out of its plan.
+- Answering, reopening or withdrawing a decision, attaching and detaching files, `tm task update`,
+  `supersede` and `move` read the node under the write lock, so concurrent changes are no longer
+  lost.
+- Adding a condition and sweeping expired leases hold the write lock from their read to their
+  write, and a repository write that raises rolls back its open transaction, so a web worker
+  thread no longer holds the SQLite write lock.
+- `tm task complete` and `tm task review` re-check the lease under the write lock, so a lease that
+  lapsed and was claimed again is never overwritten or deleted.
+- `config.yaml` is replaced atomically, and `tm config set`/`unset` and the config `tm restore`
+  writes serialize, so a concurrent reader never sees defaults and no writer loses another's
+  change.
+- `tm detach` never deletes a file outside the assets directory, and `tm attach` names a file with
+  no usable extension `<hash>.bin`.
+- Abandoning or deferring a decision's blocked nodes no longer opens a stranded-dependents
+  decision on a node that same answer rules.
+- A refused `tm task release --blocked` no longer expires or stops the node's landing job.
+- A refused `tm task reopen --new-branch`, or one whose later repository fails, puts back the
+  branches and worktrees it retired.
+- A claim or a reset to landed is refused when `git fetch` fails and only a stale tracking ref
+  remains; a `land_on` branch the remote deleted reads as the default branch again, and its stale
+  tracking ref is dropped. A refused container claim across several repositories leaves no
+  worktree.
+- A note appended to a section keeps the section's custom header.
+- Wave selection holds a node whose files overlap a container fix, using the claim's own lock set.
+- A landing that conflicts while merging a moved target records the moved sha as its baseline, and
+  a baseline gate run that timed out or failed outside the tests is no longer cached.
+- A landing merge that fails without a conflict stops for an agent with git's error.
+- A resume that loses the job swap no longer deletes the winner's worktree; a landing stopped from
+  outside removes its worktrees and kills its gate's process group; a landing recovers from a
+  worktree deleted by hand; one failed heartbeat no longer stops the later ones; gate reports are
+  found under a worktree path holding `[`, `*` or `?`.
+- `tm init` refuses a stored repo whose clone is gone, and migration globs match non-ASCII paths.
+- `tm export` names plan and spec files by percent-encoded id, writes nothing until every document
+  is built, and removes an earlier export's json files from its directory; `tm restore` is all or
+  nothing and copies assets only after the import commits.
+- `tm section set <id>:<key>` with no content refuses instead of writing an empty section, and
+  `tm section get` prints an id holding `[...]` verbatim.
+- `tm verify run --json` and `--yaml` keep stdout clean for a task with no verifications.
+- A markdown `tm import` refuses a file with text below its frontmatter rather than dropping it.
+- tm-wave briefs a single-repository container claim with that repository's worktree, reads the
+  landings of nested plans when reviewing a container, never re-sends a claim a runner already ran,
+  releases a step whose brief or agent throws, and names a review's scratch worktree after the
+  claim.
+- The web records the `X-TM-Actor` actor for reopen, reset, defer, abandon and lease release and
+  sweep, keeps live updates going after a failed refresh, stops rebuilding on every tick once a
+  condition or lease has expired, and delivers a broadcast and a concurrent subscribe reply in
+  order.
+- A served file's `Content-Disposition` carries non-ASCII and quoted filenames, and an attachment
+  filename holding a NUL byte or over 255 bytes is refused with a 400.
+- The static export escapes every `<` in its embedded data, and draws the Decisions badge on load.
+- A cancelled or failed confirm dialog no longer runs its action against the next node opened with
+  the same title, and a reopened edit dialog shows the node as it is now.
+- The edit dialog sends only the frontmatter fields you changed, and Flags on a plan or spec read
+  the full node first, so a save no longer clears `land_order` or `land_on`.
+- Creating a node selects it through its location and never navigates later on its own.
+- API validation failures show their messages instead of `[object Object]`, and a bar for a node
+  with only set-aside tasks draws.
+- A refused decision answer, withdrawal or effect confirm no longer leaves the decision marked as
+  your own write, and a late "Load more" no longer overwrites another tab's list.
+- A live status push no longer discards the wave size you are typing, and Enter and Space on a
+  filter row's Include and Exclude buttons reach the button.
+- An expanded row the server drops and sends back is watched again, and collapsing a node in the
+  tree no longer freezes the drawer showing it.
+- The init skill reads each repository's remote from `repos.<repo>.remote` and single-quotes
+  tracker text in the commands it runs; `uninstall` removes tm however long `uv tool list`'s output
+  is; the README, plan skill, merge guide and plan guide match the code.
+
 ## [0.3.9] - 2026-10-15
 
 ### Upgrading

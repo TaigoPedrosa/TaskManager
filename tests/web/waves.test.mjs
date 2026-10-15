@@ -11,6 +11,12 @@ const WAVES_SRC = fs.readFileSync(
   'utf8',
 );
 
+const CORE_SRC = fs.readFileSync(
+  path.join(here, '../../src/taskmanager/web/static/js/core.js'),
+  'utf8',
+);
+const detailText = new Function(`${CORE_SRC.match(/function detailText[\s\S]*?\n}\n/)[0]} return detailText;`)();
+
 // The shared renderers (core.js) are stand-ins here that echo their inputs: these tests read
 // what waves.js asks them for, and tests/web/kit.test.mjs reads the renderers themselves.
 
@@ -132,6 +138,7 @@ function freshContext(wavesPayload, { isStaticMode = false, shown = true, archiv
     fetch: makeFakeFetch(wavesPayload || oneEntryWave),
     filters: { specMode: new Map(), archived },
     esc: (s) => String(s ?? ''),
+    detailText,
     renderIcon: (name) => `<svg data-icon="${name}"></svg>`,
     statusIcon: (code) => `<span role="img" aria-label="${code}"></span>`,
     kindBadge: (kind) => (kind === 'task' ? '' : `<span class="kind-badge">${kind.toUpperCase()}</span>`),

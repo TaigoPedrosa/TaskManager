@@ -201,6 +201,28 @@ def test_semantic_search_without_a_provider_names_the_values_to_set(root: Path) 
     no_traceback(res)
 
 
+def test_a_config_naming_another_secret_refuses_index_in_one_line_and_leaves_fts_alone(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-secret")
+    assert tm(root, "config", "set", "embeddings.provider", "openai").exit_code == 0
+    assert (
+        tm(root, "config", "set", "embeddings.api_key_env", "AWS_SECRET_ACCESS_KEY").exit_code == 0
+    )
+    assert tm(root, "spec", "add", "Keys", "--slug", "S1").exit_code == 0
+
+    index = tm(root, "index")
+    fts = tm(root, "search", "--mode", "fts", "keys")
+    status = tm(root, "index", "--status")
+
+    assert index.exit_code == 1
+    assert index.stderr.startswith("embeddings.api_key_env names AWS_SECRET_ACCESS_KEY, ")
+    assert index.stderr.count("\n") == 1
+    no_traceback(index)
+    assert fts.exit_code == 0, fts.output
+    assert status.exit_code == 0, status.output
+
+
 def test_the_overview_says_how_to_turn_on_search_by_meaning(root: Path) -> None:
     res = tm(root, "guide", "overview")
 
@@ -289,3 +311,20 @@ def test_search_highlights_read_as_bold_not_as_a_link(root: Path) -> None:
     assert res.exit_code == 0, res.output
     assert "**rotate** (a, b)" in res.stdout
     assert "[rotate]" not in res.stdout
+
+
+@pytest.mark.parametrize("bad_id", ["../../esc", "S1/x", "/abs", "-x", "a..b"])
+def test_import_of_an_id_that_is_not_one_plain_path_component_writes_nothing(
+    root: Path, bad_id: str
+) -> None:
+    plan = root / "plan.json"
+    document = {"spec": {"id": "S1", "title": "Spec"}, "tasks": [{"id": bad_id, "title": "T"}]}
+    plan.write_text(json.dumps(document), encoding="utf-8")
+
+    res = tm(root, "import", "-f", str(plan))
+
+    assert res.exit_code == 1
+    assert res.stderr.startswith("import refused, nothing written: ")
+    assert "must start with a letter or digit" in res.stderr
+    assert tm(root, "task", "get", "S1").exit_code != 0
+    no_traceback(res)

@@ -12,7 +12,7 @@ runner = CliRunner()
 def _static_data(html: str) -> dict:  # type: ignore[type-arg]
     match = re.search(r"window\.STATIC_DATA = (.*);</script>", html)
     assert match is not None
-    return json.loads(match.group(1).replace("<\\/", "</"))  # type: ignore[no-any-return]
+    return json.loads(match.group(1))  # type: ignore[no-any-return]
 
 
 def test_web_export_embeds_a_decisions_body_with_context_and_options(tmp_path: Path) -> None:

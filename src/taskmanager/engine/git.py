@@ -140,13 +140,18 @@ def diff_quiet(repo: Path, base: str, branch: str) -> bool:
 
 def changed_files(repo: Path, base: str, branch: str) -> list[str]:
     """Every file `branch` changes against its merge base with `base`; none on a git error."""
-    res = _git(repo, "diff", "--name-only", f"{base}...{branch}")
-    return res.stdout.split("\n")[:-1] if res.returncode == 0 else []
+    # NUL-separated: git C-quotes a non-ASCII name otherwise, and the quoted form matches no glob.
+    res = _git(repo, "diff", "--name-only", "-z", f"{base}...{branch}")
+    return res.stdout.split("\0")[:-1] if res.returncode == 0 else []
 
 
 def tracking(remote: str | None, branch: str) -> str:
     """Where `branch` is read: its remote-tracking ref, or with no remote the local branch."""
     return f"{remote}/{branch}" if remote else branch
+
+
+def drop_tracking(repo: Path, remote: str, branch: str) -> None:
+    _git(repo, "update-ref", "-d", f"refs/remotes/{remote}/{branch}")
 
 
 def missing_remote(repo_dir: Path, repo: str | None, remote: str | None) -> str | None:
@@ -200,8 +205,14 @@ def move_worktree(repo: Path, old: Path, new: Path) -> None:
 
 
 def merge_no_ff(worktree: Path, ref: str, subject: str) -> bool:
-    """False on a conflict, leaving the merge in progress for an agent to resolve."""
-    return _git(worktree, "merge", "--no-ff", "--no-edit", "-m", subject, ref).returncode == 0
+    """False on a conflict, leaving the merge in progress for an agent to resolve; any other
+    refusal (a hook, a lock, unrelated histories) raises, since there is no merge to resolve."""
+    res = _git(worktree, "merge", "--no-ff", "--no-edit", "-m", subject, ref)
+    if res.returncode == 0:
+        return True
+    if rev_parse(worktree, "MERGE_HEAD"):
+        return False
+    raise subprocess.CalledProcessError(res.returncode, res.args, res.stdout, res.stderr)
 
 
 def update_ref_cas(repo: Path, ref: str, new: str, old: str) -> bool:
@@ -235,6 +246,10 @@ def push(worktree: Path, remote: str | None, target: str) -> subprocess.Complete
         ".",
         f"HEAD:refs/heads/{target}",
     )
+
+
+def prune_worktrees(repo: Path) -> None:
+    _git(repo, "worktree", "prune")
 
 
 def add_detached_worktree(repo: Path, path: Path, commit: str) -> None:

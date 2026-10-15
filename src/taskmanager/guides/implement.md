@@ -45,7 +45,7 @@ An instruction about a third-party artifact's structure (which layers a style ho
 
 Every read, edit, command and commit happens under the printed worktree path. Check the prefix of each path you edit, not just its basename: the same file exists in the project's own checkout. Commit on the branch with an explicit pathspec. Do not merge and do not push: tm lands the branch. You may rewrite your own branch until its first review, never after.
 
-Create, modify or delete nothing outside `declared_files`. Before touching another file, read the locks in `tm run list --yaml`. When another live node holds the file, release blocked and name that node (below). Otherwise add the file with `tm task update <task-id> --set declared_files='[...]'` before the edit, and name it in the report.
+Create, modify or delete nothing outside `declared_files`. Before touching another file, read the locks in `tm run list --yaml`. When another live node holds the file, release blocked and name that node (below). Otherwise add the file with `tm task update <task-id> --set declared_files='[...]'` before the edit, and name it in the report. That update locks the file for your lease, and tm refuses it, naming the holder, when another live node took the file first: release blocked then.
 
 ## 4. Keep the lease alive
 

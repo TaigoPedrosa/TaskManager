@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -158,6 +159,18 @@ def test_init_refuses_a_repo_that_is_not_a_git_repository(root: Path) -> None:
 
     assert res.exit_code == 1
     assert "not a git repository" in res.stderr
+    assert "Traceback" not in res.output
+
+
+def test_init_refuses_a_stored_repo_whose_clone_is_gone(root: Path) -> None:
+    config_set(root, "repo_order", "[api, web]")
+    shutil.rmtree(root / "web")
+
+    res = runner.invoke(app, ["init", "--yes", "-C", str(root)])
+
+    assert res.exit_code == 1
+    assert "not a git repository" in res.stderr
+    assert "web" in res.stderr
     assert "Traceback" not in res.output
 
 

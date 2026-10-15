@@ -82,7 +82,9 @@ def _repo_order(root: Path, store: ConfigStore, flags: Flags, ask: Ask | None) -
     if flags.repos:
         repos = flags.repos
     elif "repo_order" in store.read() or ask is None:
-        return list(store.resolve("repo_order").value)
+        repos = list(store.resolve("repo_order").value)
+        _require_repos(root, repos)
+        return repos
     else:
         answer = ask("repos", ", ".join(discover_repos(root)))
         repos = [r.strip() for r in answer.split(",") if r.strip()]

@@ -153,6 +153,26 @@ class RuntimeRepository:
             conn.commit()
             return True
 
+    def lock_more(self, task_id: str, file_paths: list[str]) -> dict[str, str]:
+        """Add `file_paths` to the locks `task_id`'s lease holds. When a live lease of another
+        task holds any of them, nothing is written and those files are returned with their
+        holders; an expired holder's row is taken over, as a claim's sweep would free it."""
+        own = {lock.file_path for lock in self.list_locks() if lock.task_id == task_id}
+        wanted = [f for f in file_paths if f not in own]
+        held = self.get_conflicting_tasks(wanted)
+        if held:
+            return held
+        with self.db.get_state_connection() as conn:
+            conn.executemany(
+                """
+                INSERT INTO file_locks (file_path, task_id, lock_type) VALUES (?, ?, ?)
+                ON CONFLICT(file_path) DO UPDATE SET task_id=excluded.task_id
+                """,
+                [(f, task_id, LockType.WRITE.value) for f in wanted],
+            )
+            self.db.spec_commit(conn)
+        return {}
+
     def set_worktree(self, task_id: str, token: str, path: str) -> None:
         """Only the claim named by `token`: a lease released or taken over meanwhile is left as
         its new holder wrote it."""
@@ -251,7 +271,9 @@ class RuntimeRepository:
 
     def sweep_expired_leases(self) -> list[str]:
         now = datetime.now(tz=UTC)
-        with self.db.get_state_connection() as conn:
+        # The write lock is taken before the read: a heartbeat landing between the read and the
+        # delete would otherwise be swept away with its lease.
+        with self.db.spec_transaction() as conn:
             rows = conn.execute(
                 "SELECT task_id, ttl_seconds, last_heartbeat FROM leases "
                 "WHERE ttl_seconds IS NOT NULL"
