@@ -74,7 +74,10 @@ const WORK_PHASE = { implement: 'Implement', review: 'Review', fix: 'Fix' }
 // agents as tm-op. A type the session does not know fails, so the first failure of each hands
 // this and every later command to the next, and the last to the generic runner.
 let opTypes = ['taskmanager:tm-op', 'tm-op']
-async function runner(prompt, opts) {
+// `once` is a command that must not run twice (a claim): it goes to the current runner type and
+// is never re-sent, since a failure after the command ran looks the same as an unknown type.
+async function runner(prompt, opts, once) {
+  if (once) return agent(prompt, opTypes.length ? { ...opts, agentType: opTypes[0] } : opts).catch(() => null)
   while (opTypes.length) {
     const type = opTypes[0]
     const r = await agent(prompt, { ...opts, agentType: type }).catch(() => null)
@@ -94,7 +97,7 @@ async function runner(prompt, opts) {
 // particular. `shape` (last group: the exit code) doubles as the schema pattern that rejects a
 // transcription of the wrong shape before the script sees it; `valid` rejects one of the right
 // shape but wrong bytes, and either rejection is retried while attempts remain.
-async function op(kind, id, cmd, shape, { attempts = 2, long = false, valid = () => true } = {}) {
+async function op(kind, id, cmd, shape, { attempts = 2, long = false, once = false, valid = () => true } = {}) {
   const schema = { type: 'object', properties: { stdout: { type: 'string', pattern: shape.source } }, required: ['stdout'] }
   const timeout = long ? ' Set the Bash tool timeout to 600000 ms: the command waits up to nine minutes.' : ''
   for (let attempt = 0; attempt < attempts; attempt++) {
@@ -105,7 +108,7 @@ Run this exact command once with the Bash tool, changing nothing in it, and run 
 ( export TM_ROOT=${q(ROOT)}; ${cmd} ); echo "__EXIT:$?"
 
 Return its complete stdout, character for character, in the stdout field: every line, unparsed and unreformatted, even where a line is JSON.`,
-      { label: `${kind}:${id}`, phase: PHASE[kind], model: 'haiku', effort: 'low', schema })
+      { label: `${kind}:${id}`, phase: PHASE[kind], model: 'haiku', effort: 'low', schema }, once)
     const m = r && typeof r.stdout === 'string' && r.stdout.match(shape)
     if (m && valid(m)) return { exit: Number(m[m.length - 1]), m }
   }
@@ -198,12 +201,20 @@ async function read(n) {
 // ponytail: whole list rows go through the runner's transcript; a --fields on tm task list and
 // tm plan list would cut a large spec's to its ids.
 async function lineage(n) {
-  const lists = n.kind === 'spec' ? ['plan list --spec', 'task list --spec'] : ['task list --plan']
   const ids = [q(n.id)]
-  for (const list of lists) {
-    const r = await opJson('read', n.id, `${TM} ${list} ${q(n.id)} --json`)
-    if (!r || r.exit !== 0 || !Array.isArray(r.data)) return null
-    ids.push(...r.data.map(row => q(row.id)))
+  const queue = [[n.id, n.kind]]
+  const rows = async list => {
+    const r = await opJson('read', n.id, `${TM} ${list} --json`)
+    return r && r.exit === 0 && Array.isArray(r.data) ? r.data.map(row => q(row.id)) : null
+  }
+  // Both list verbs return direct children only, and plans nest, so every plan found is listed in turn.
+  while (queue.length) {
+    const [id, kind] = queue.shift()
+    const plans = await rows(`plan list --spec ${q(id)}`)
+    const tasks = await rows(`task list --${kind === 'spec' ? 'spec' : 'plan'} ${q(id)}`)
+    if (!plans || !tasks) return null
+    for (const p of plans) if (!ids.includes(p)) (ids.push(p), queue.push([p, 'plan']))
+    for (const t of tasks) if (!ids.includes(t)) ids.push(t)
   }
   return ids
 }
@@ -220,7 +231,7 @@ async function release(n, trail, why, token) {
 async function start(n, trail) {
   const r = await opJson('start', n.id,
     `${TM} task start ${q(n.id)} --agent ${agentName(n)} --session ${q(SESSION)}${WT ? ` --worktree-dir ${q(WT)}` : ''} --json`,
-    { attempts: 1 })
+    { attempts: 1, once: true })
   if (!r) {
     await release(n, trail, 'its claim could not be read')
     return null
@@ -322,12 +333,14 @@ async function work(n, c, s, trail) {
     body += `\nFindings: append numbered findings to tm section ${n.id}:review; write it even when nothing is open, saying so.`
     // One scratch path per repository: a container review may execute code in several.
     const wtDir = WT || `<the directory ${TM} config get worktree_dir names>`
-    const scratch = repos.map(r => `${wtDir}/${r}-${n.id}-review`).join(' or ') || `${wtDir}/<repo>-${n.id}-review`
+    // The claim's token keeps a worktree an earlier, dead reviewer left behind from taking the path.
+    const tag = c.token ? `-${q(c.token)}` : ''
+    const scratch = repos.map(r => `${wtDir}/${r}-${n.id}-review${tag}`).join(' or ') || `${wtDir}/<repo>-${n.id}-review${tag}`
     body += `\nScratch: a worktree you cut to execute the code goes at ${scratch}, the one named for its repository, detached, and you remove it with git worktree remove before you close the step.`
   } else {
     // A container's step spans repositories, and tm cuts one worktree of its branch in each.
     const trees = Object.entries(c.worktrees || {})
-    const where = trees.length > 1
+    const where = trees.length > 1 || (trees.length === 1 && n.kind !== 'task')
       ? `Worktrees, one per repository, each on branch ${c.branch}: ${trees.map(([r, p]) => `${r} at ${p}, based on ${refOf(r)}`).join('; ')}. Work only there, and never cd in a Bash command.`
       : `Worktree: ${c.worktree} — branch ${c.branch}, based on ${refOf(repos[0])}. Work only there, and never cd in a Bash command.`
     body = c.action === 'fix'
@@ -392,15 +405,23 @@ async function run(n) {
   const c = await start(n, trail)
   if (!c) return end(s.status)
   if (c.action === 'blocked' && !c.job) return trail.push(`blocked: ${c.reason}`), end('blocked')
-  if (c.action in CLAIMED) {
-    const after = await work(n, c, s, trail)
+  // The claim holds a lease and a worktree from here on, so anything that throws releases it.
+  try {
+    if (c.action in CLAIMED) {
+      const after = await work(n, c, s, trail)
+      return end(after ? after.status : 'unreadable')
+    }
+    // A merge claim of a node already MERGING, and every sync claim, is a hand-over of a stopped job.
+    const handed = c.action === 'sync' || (c.action === 'merge' && s.status === 'MERGING')
+    await land(n, c.action === 'blocked' ? { ...c, action: 'sync' } : c, trail, handed)
+    const after = await read(n)
+    return end(after ? after.status : 'unreadable')
+  } catch (e) {
+    trail.push(`failed: ${clip(e && e.message)}`)
+    await release(n, trail, 'its step threw', c.token)
+    const after = await read(n)
     return end(after ? after.status : 'unreadable')
   }
-  // A merge claim of a node already MERGING, and every sync claim, is a hand-over of a stopped job.
-  const handed = c.action === 'sync' || (c.action === 'merge' && s.status === 'MERGING')
-  await land(n, c.action === 'blocked' ? { ...c, action: 'sync' } : c, trail, handed)
-  const after = await read(n)
-  return end(after ? after.status : 'unreadable')
 }
 
 phase('Discover')
