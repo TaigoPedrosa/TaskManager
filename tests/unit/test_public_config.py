@@ -169,7 +169,6 @@ def test_unsetting_the_last_repository_removes_the_repos_key(root: Path) -> None
         (("set", "repos.app.default_branch", "a..b"), "repos.app.default_branch: 'a..b'"),
         (("set", "repos.app.gates.main", "{command: ["), "repos.app.gates.main: not valid YAML"),
         (("set", "repos.app.gates.staging.command", "x"), "unknown key 'repos.app.gates.staging"),
-        (("unset", "repos.web.gates.main.command"), "repos.web.gates.main.command: Field"),
     ],
 )
 def test_a_bad_dotted_write_is_one_line_naming_the_key_and_writes_nothing(
@@ -183,6 +182,24 @@ def test_a_bad_dotted_write_is_one_line_naming_the_key_and_writes_nothing(
     assert message in out and "Traceback" not in out
     assert len(out.strip().splitlines()) == 1
     assert "repos.<repo>[.default_branch|.gates[.<main|parent>" in out
+    assert ConfigStore(root).path.read_text() == before
+
+
+def test_unsetting_the_only_field_of_a_gate_removes_the_gate(root: Path) -> None:
+    code, out = tm(root, "config", "unset", "repos.web.gates.main.command")
+
+    assert code == 0, out
+    assert stored_repos(root) == {"web": {"gates": {}}}
+
+
+def test_unsetting_the_command_of_a_gate_that_has_other_fields_is_refused(root: Path) -> None:
+    assert tm(root, "config", "set", "repos.web.gates.main.junit", "j")[0] == 0
+    before = ConfigStore(root).path.read_text()
+
+    code, out = tm(root, "config", "unset", "repos.web.gates.main.command")
+
+    assert code == 1
+    assert "repos.web.gates.main.command: Field" in out
     assert ConfigStore(root).path.read_text() == before
 
 

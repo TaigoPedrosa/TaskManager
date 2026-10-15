@@ -828,9 +828,19 @@ def test_the_plan_guide_example_routes_on_a_current_model_id() -> None:
 VERIFY_DEFAULT_REF = [
     (
         "overview",
-        "With no `--ref`, it reads each task at `<remote>/<the branch its spec lands on>`",
+        (
+            "With no `--ref`, it reads each task at `<remote>/<the branch its spec lands on>`, "
+            "fetched first, or at the repository's default branch while that branch does not "
+            "exist yet"
+        ),
     ),
-    ("plan", "with no `--ref`, `<remote>/<the branch its spec lands on>`, fetched first"),
+    (
+        "plan",
+        (
+            "with no `--ref`, `<remote>/<the branch its spec lands on>`, fetched first, or the "
+            "repository's default branch while that branch does not exist yet"
+        ),
+    ),
     (
         "implement",
         (
@@ -1353,3 +1363,13 @@ def test_readme_names_the_remote_migration_and_sensitive_area_keys() -> None:
     assert "matching one of its repository's `repos.<repo>.migrations` globs" in text
     assert "migrations/versions/" not in text
     assert "an `origin` remote" not in text
+
+
+def test_the_overview_states_where_an_embedding_key_may_go_and_when_a_test_command_is_killed() -> (
+    None
+):
+    text = _guide_text("overview")
+    assert "the variable's name starts with `TASKMANAGER_`" in text
+    assert "the server is `https`, or on `localhost`" in text
+    assert "or the URL your own environment gives in `TASKMANAGER_OPENAI_BASE_URL`" in text
+    assert "A `test_command` still running after 600 seconds is killed" in text

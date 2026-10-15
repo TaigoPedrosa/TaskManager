@@ -9,7 +9,7 @@ from test_selection import Estate, chosen, wave
 from taskmanager.core.enums import NodeKind
 from taskmanager.core.lifecycle import LifecycleError
 from taskmanager.core.models import Node
-from taskmanager.core.status import Action, Status
+from taskmanager.core.status import Action, Outcome, Status
 from taskmanager.engine import selection
 from taskmanager.engine.stepgraph import Snapshot
 
@@ -93,3 +93,43 @@ def test_select_with_an_excluded_node_the_lifecycle_cannot_read_reserves_nothing
     w = wave(estate, exclude=("A",))
     assert chosen(w) == [("B", "implement")]
     assert w.held == ["A: excluded by args"]
+
+
+def container_fix_estate(tmp_path: Path) -> Estate:
+    estate = Estate(tmp_path)
+    estate.add("S", kind=NodeKind.SPEC)
+    estate.add(
+        "P",
+        kind=NodeKind.PLAN,
+        parent="S",
+        status=Status.REVIEWED,
+        outcome=Outcome.REJECT,
+        review=True,
+        fix=True,
+    )
+    estate.add(
+        "DONE",
+        parent="P",
+        status=Status.COMPLETED,
+        frontmatter={"declared_files": ["api/shared.py"]},
+    )
+    estate.add("OTHER", parent="S", frontmatter={"declared_files": ["api/shared.py"]}, priority=1)
+    return estate
+
+
+def test_select_holds_a_node_sharing_a_file_with_a_container_fix_chosen_this_wave(
+    tmp_path: Path,
+) -> None:
+    w = wave(container_fix_estate(tmp_path))
+
+    assert chosen(w) == [("P", "fix")]
+    assert w.held == [f"OTHER: {OVERLAP}"]
+
+
+def test_select_holds_a_node_sharing_a_file_with_an_excluded_container_fix(
+    tmp_path: Path,
+) -> None:
+    w = wave(container_fix_estate(tmp_path), exclude=("P",))
+
+    assert chosen(w) == []
+    assert w.held == ["P: excluded by args", f"OTHER: {OVERLAP}"]

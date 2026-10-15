@@ -89,6 +89,7 @@ def test_the_plan_skill_gates_on_design_approval_and_proves_its_verifications() 
     assert "tm verify run <task-id>\n" in prove
     # With no `--ref`, tm reads `<remote>/<lands_on>`, or the local branch with no remote.
     assert "origin/" not in prove
+    assert "reads as the repository's default branch" in prove
     assert "must exit 1" in prove
     assert "rewrite it" in prove
     assert "no plan before the design is approved" in text

@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tarfile
 import tempfile
@@ -40,6 +41,9 @@ def retired_verification(verification_type: VerificationType) -> str:
     )
 
 
+# Seconds a test_command may run; a verification has no timeout field of its own.
+TEST_COMMAND_TIMEOUT = 600
+
 _PATH_VERIFICATION_TYPES = frozenset({VerificationType.FILE_EXISTS, VerificationType.FILE_ABSENT})
 
 
@@ -57,28 +61,44 @@ def _relative_to_repo(target_path: str, target_repo: str) -> str:
     return target_path.removeprefix(prefix)
 
 
+def _unborn(repo_root: Path, remote: str | None, branch: str, default: str) -> bool:
+    """Whether `branch` is a landing target nothing has created yet: not the default branch, and
+    not resolvable as `<remote>/<branch>` (or locally with no remote)."""
+    return branch != default and not gitops.rev_parse(repo_root, gitops.tracking(remote, branch))
+
+
 def _resolve_ref(
-    repo_root: Path, target_repo: str, remote: str | None, ref: str | None, branch: str
+    repo_root: Path,
+    target_repo: str,
+    remote: str | None,
+    ref: str | None,
+    branch: str,
+    default: str,
 ) -> tuple[str, str | None]:
     """The ref to read, and a fetch-failure message when the default ref could not be refreshed.
 
     A caller-supplied `ref` is read as-is, with no fetch. Otherwise the default is
     `<remote>/<branch>` after fetching it, or the local branch in a repository with no remote; a
-    failed fetch is reported and never falls back to the working tree.
+    failed fetch is reported and never falls back to the working tree. A `branch` that does not
+    exist yet reads as the repository's `default` branch, which the first landing on it creates.
     """
     if ref is not None:
         return ref, None
-    tracked = gitops.tracking(remote, branch)
     if remote is None:
-        return tracked, None
+        unborn = _unborn(repo_root, remote, branch, default)
+        return gitops.tracking(remote, default if unborn else branch), None
     fetched = _git(repo_root, "fetch", "-q", remote, branch)
-    if fetched.returncode != 0:
-        return tracked, (
-            gitops.missing_remote(repo_root, target_repo, remote)
-            or fetched.stderr.strip()
-            or f"exit code {fetched.returncode}"
-        )
-    return tracked, None
+    if fetched.returncode == 0:
+        return gitops.tracking(remote, branch), None
+    if _unborn(repo_root, remote, branch, default):
+        branch, fetched = default, _git(repo_root, "fetch", "-q", remote, default)
+        if fetched.returncode == 0:
+            return gitops.tracking(remote, branch), None
+    return gitops.tracking(remote, branch), (
+        gitops.missing_remote(repo_root, target_repo, remote)
+        or fetched.stderr.strip()
+        or f"exit code {fetched.returncode}"
+    )
 
 
 def codegraph_regex(pattern: str | None) -> re.Pattern[str]:
@@ -173,17 +193,30 @@ class VerificationEngine:
         if target_repo and ver.verification_type in _PATH_VERIFICATION_TYPES:
             return self._verify_at_ref(ver, target_repo, ref, branch or DEFAULT_BRANCH)
         if ref is None and branch is not None:
-            ref = gitops.tracking(self._remote(target_repo), branch)
+            repo_root = self.root / (target_repo or ".")
+            remote, default = self._remote(target_repo), self._default(target_repo)
+            # Fetched like the path checks read it, so a branch that exists only on the remote is
+            # not taken for one nothing has created.
+            gitops.fetch(repo_root, remote, branch)
+            if _unborn(repo_root, remote, branch, default):
+                branch = default
+                gitops.fetch(repo_root, remote, branch)
+            ref = gitops.tracking(remote, branch)
         return self._verify_in_tree(ver, ref)
 
     def _remote(self, target_repo: str | None) -> str | None:
         return ConfigStore(self.root).branches().remote(target_repo)
 
+    def _default(self, target_repo: str | None) -> str:
+        return ConfigStore(self.root).branches().default_branch(target_repo)
+
     def _verify_at_ref(
         self, ver: NodeVerification, target_repo: str, ref: str | None, branch: str
     ) -> VerificationResult:
         repo_root, remote = self.root / target_repo, self._remote(target_repo)
-        effective_ref, fetch_error = _resolve_ref(repo_root, target_repo, remote, ref, branch)
+        effective_ref, fetch_error = _resolve_ref(
+            repo_root, target_repo, remote, ref, branch, self._default(target_repo)
+        )
         mode_suffix = f" (git ref {effective_ref} in {target_repo})"
 
         if fetch_error is not None:
@@ -271,7 +304,9 @@ class VerificationEngine:
             )
 
         remote = self._remote(target_repo)
-        effective_ref, fetch_error = _resolve_ref(repo_root, target_repo, remote, ref, branch)
+        effective_ref, fetch_error = _resolve_ref(
+            repo_root, target_repo, remote, ref, branch, self._default(target_repo)
+        )
         if fetch_error is not None:
             return result(
                 False,
@@ -370,23 +405,38 @@ class VerificationEngine:
             # A stored command string has no placeholder to rewrite, so the ref reaches it
             # through the environment; unset when there is none to hand it.
             env = None if ref is None else {**os.environ, "TM_VERIFY_REF": ref}
-            res = subprocess.run(
+            # Its own process group, so a timeout kills what the shell started and not only the
+            # shell, which would leave a child holding the pipes.
+            proc = subprocess.Popen(
                 command,
                 cwd=self.root,
                 env=env,
                 shell=True,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                check=False,
+                start_new_session=True,
             )
-            passed = res.returncode == 0
+            try:
+                stdout, stderr = proc.communicate(timeout=TEST_COMMAND_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.communicate()
+                return VerificationResult(
+                    verification_id=ver.id,
+                    target_path=ver.target_path,
+                    verification_type=ver.verification_type,
+                    passed=False,
+                    message=f"Test command timed out after {TEST_COMMAND_TIMEOUT}s",
+                )
+            passed = proc.returncode == 0
             msg = (
-                res.stdout.strip()
-                or res.stderr.strip()
+                stdout.strip()
+                or stderr.strip()
                 or (
                     "Test command passed"
                     if passed
-                    else f"Test command failed with exit code {res.returncode}"
+                    else f"Test command failed with exit code {proc.returncode}"
                 )
             )
             return VerificationResult(

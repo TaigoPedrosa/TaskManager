@@ -308,3 +308,24 @@ def test_a_retired_type_fails_naming_the_test_command_idiom(
         assert result.passed is False
         assert result.message == retired_verification(v_type)
     assert '"${TM_VERIFY_REF:-origin/main}"' in at_ref.message
+
+
+def test_test_command_that_outlives_its_timeout_fails_and_leaves_no_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("taskmanager.engine.verification.TEST_COMMAND_TIMEOUT", 1)
+    pidfile = tmp_path / "child.pid"
+    ver = NodeVerification(
+        node_id="AUTH-T01",
+        verification_type=VerificationType.TEST_COMMAND,
+        target_path="",
+        expected_pattern=f"sleep 60 & echo $! > {pidfile}; wait",
+    )
+
+    res = VerificationEngine(tmp_path).verify_assertion(ver)
+
+    assert res.passed is False
+    assert res.message == "Test command timed out after 1s"
+    stat = Path(f"/proc/{pidfile.read_text().strip()}/stat")
+    # A killed child not yet reaped by init still has a stat file, in state Z.
+    assert not stat.exists() or stat.read_text().split(") ")[-1].startswith("Z")

@@ -9,7 +9,7 @@ same condition-result cache a display reads once per view) is the only signal it
 `repo_order` is threaded through so a container's `repos` matches a real claim's.
 """
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import partial
 
@@ -186,18 +186,19 @@ def _advance(
 
 
 def _roll_up(
-    nodes: dict[str, SnapNode], data_nodes: dict[str, Node], snap: Snapshot, changed: set[str]
+    nodes: dict[str, SnapNode], data_nodes: dict[str, Node], snap: Snapshot, changed: Iterable[str]
 ) -> None:
     """Every ancestor container above a status this wave changed, re-derived from its own
     children -- one level at a time, exactly as `rollup` decides, walked all the way to the root
-    regardless of whether a given level actually moved."""
-    seen: set[str] = set()
+    regardless of whether a given level actually moved.
+
+    A container reached again from another changed node is derived again: the first visit may
+    have read a sibling container's status before that one's own roll-up moved it."""
     queue = list(changed)
     while queue:
         parent_id = snap.parent(queue.pop(0))
-        if parent_id is None or parent_id in seen:
+        if parent_id is None:
             continue
-        seen.add(parent_id)
         parent = nodes[parent_id]
         if parent.kind in CONTAINERS and isinstance(parent.status, Status):
             children: list[Status] = [
