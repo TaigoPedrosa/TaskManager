@@ -6,6 +6,9 @@ import pytest
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import app
+from taskmanager.core.enums import NodeKind, RelationType
+from taskmanager.core.models import Node, NodeRelation
+from taskmanager.db.node_repo import NodeRepository
 from taskmanager.di.container import create_container
 from taskmanager.engine.operations import Operations
 
@@ -216,27 +219,22 @@ def test_task_list_and_next_take_a_spec_filter(tmp_path: Path) -> None:
 
 
 def test_spec_filter_walks_a_plan_nested_under_another_plan(tmp_path: Path) -> None:
-    """`plan add --spec <id>` never checks that `<id>` is a spec, so a plan nested under another
-    plan (its own `--spec` pointed at a plan id) is real data, not a fixture contrivance."""
+    """A plan nested under another plan is data an older store can hold, so the walk to the spec
+    still has to cross it."""
     runner.invoke(app, ["init", "--path", str(tmp_path)])
     runner.invoke(app, ["spec", "add", "Spec A", "--slug", "SPECA", "--path", str(tmp_path)])
     runner.invoke(
         app,
         ["plan", "add", "Outer", "--spec", "SPECA", "--slug", "OUTER", "--path", str(tmp_path)],
     )
-    runner.invoke(
-        app,
-        [
-            "plan",
-            "add",
-            "Inner",
-            "--spec",
-            "SPECA-OUTER",
-            "--slug",
-            "INNER",
-            "--path",
-            str(tmp_path),
-        ],
+    nodes = create_container(tmp_path).get(NodeRepository)
+    nodes.save_node(Node(id="SPECA-OUTER-INNER", kind=NodeKind.PLAN, title="Inner"))
+    nodes.add_relation(
+        NodeRelation(
+            source_id="SPECA-OUTER",
+            target_id="SPECA-OUTER-INNER",
+            relation_type=RelationType.CONTAINS,
+        )
     )
     runner.invoke(
         app,

@@ -29,6 +29,7 @@ from taskmanager.engine.config import ProjectConfig
 from taskmanager.engine.operations import (
     OperationError,
     Operations,
+    check_slug,
     child_defaults,
     is_owed_key,
     owed_refusal,
@@ -171,6 +172,11 @@ class BulkImporter:
                 else None
             )
             existing = self.node_repo.get_node(raw["id"])
+            if existing is None:
+                try:
+                    check_slug(str(raw["id"]))
+                except OperationError as exc:
+                    raise ValueError(f"{REFUSED}id {exc}") from None
             node = self._parse_node(raw, kind, config, existing, parent, stated or ())
             nodes.append(node)
             (imported.created if existing is None else imported.updated).append(node.id)

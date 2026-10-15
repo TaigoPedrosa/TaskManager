@@ -374,3 +374,25 @@ def test_a_defer_answer_leaves_a_dependent_already_deferred_and_defers_the_rest(
     kit.ops.answer_decision(decision_id, option="defer")
     assert (kit.node("X1").status, kit.node("X2").status) == (Status.DEFERRED, Status.DEFERRED)
     assert kit.section("X1", "deferral") == ""
+
+
+def test_abandoning_a_node_and_its_dependent_in_one_answer_leaves_no_open_decision(
+    kit: Kit,
+) -> None:
+    kit.add("A", status=Status.READY)
+    kit.add("B", status=Status.READY)
+    kit.depend("B", "A")
+    decision_id = kit.ops.add_decision(
+        "Drop both?",
+        slug="both",
+        options=[DecisionOption(key="abandon", label="Abandon", effect=DecisionEffect.ABANDON)],
+        blocks=["A", "B"],
+    )
+    kit.ops.answer_decision(decision_id, option="abandon")
+    assert (kit.node("A").status, kit.node("B").status) == (Status.ABANDONED, Status.ABANDONED)
+    open_decisions = [
+        n.id
+        for n in kit.nodes.list_nodes(kind=NodeKind.DECISION)
+        if n.status == DecisionStatus.OPEN
+    ]
+    assert open_decisions == []

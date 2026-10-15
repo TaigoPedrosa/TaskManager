@@ -289,3 +289,20 @@ def test_search_highlights_read_as_bold_not_as_a_link(root: Path) -> None:
     assert res.exit_code == 0, res.output
     assert "**rotate** (a, b)" in res.stdout
     assert "[rotate]" not in res.stdout
+
+
+@pytest.mark.parametrize("bad_id", ["../../esc", "S1/x", "/abs", "-x", "a..b"])
+def test_import_of_an_id_that_is_not_one_plain_path_component_writes_nothing(
+    root: Path, bad_id: str
+) -> None:
+    plan = root / "plan.json"
+    document = {"spec": {"id": "S1", "title": "Spec"}, "tasks": [{"id": bad_id, "title": "T"}]}
+    plan.write_text(json.dumps(document), encoding="utf-8")
+
+    res = tm(root, "import", "-f", str(plan))
+
+    assert res.exit_code == 1
+    assert res.stderr.startswith("import refused, nothing written: ")
+    assert "must start with a letter or digit" in res.stderr
+    assert tm(root, "task", "get", "S1").exit_code != 0
+    no_traceback(res)

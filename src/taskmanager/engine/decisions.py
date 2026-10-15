@@ -205,6 +205,7 @@ def apply_effect(ops: Operations, decision_id: str, effect: DecisionEffect) -> l
     note = _note(decision_id, data)
     # The effect moves every node the decision blocks, so every write rule judges them.
     with validated_write(ops.node_repo, ops.snapshots, set(blocked)):
+        set_aside: dict[str, Status] = {}
         for node_id in blocked:
             if effect == DecisionEffect.DROP_EDGE:
                 if data.subject is None:
@@ -237,9 +238,12 @@ def apply_effect(ops: Operations, decision_id: str, effect: DecisionEffect) -> l
             ops.node_repo.save_node(updated)
             clear_red_targets(ops.node_repo, node_id)
             ops.append_section(node_id, _NOTE_SECTION[effect], note)
-            if cycle.status in (Status.ABANDONED, Status.DEFERRED) and (
-                dependents := stranded_dependents(ops, node_id)
-            ):
-                open_stranded_decision(ops, node_id, cycle.status, dependents)
+            if cycle.status in (Status.ABANDONED, Status.DEFERRED):
+                set_aside[node_id] = cycle.status
             roll_up_ancestors(ops, node_id)
+        # Read once every blocked node holds its ruling: a dependent this same effect rules is
+        # not stranded, and a decision opened on it would block a node that is already set aside.
+        for node_id, status in set_aside.items():
+            if dependents := stranded_dependents(ops, node_id):
+                open_stranded_decision(ops, node_id, status, dependents)
     return blocked
