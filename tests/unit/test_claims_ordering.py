@@ -229,6 +229,35 @@ def test_a_failed_fetch_of_a_branch_with_no_tracking_ref_is_not_stale(tmp_path: 
     claims._fetch("api", "origin", "tm/never-pushed", fresh=True)
 
 
+def test_a_land_on_branch_the_remote_deleted_reads_as_the_default_branch(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    add(claims, "S", NodeKind.SPEC)
+    add(claims, "T1", parent="S")
+    claims.ops.update_node("S", frontmatter_set={"land_on": "release/2"})
+    api, origin = claims.root / "api", claims.root.parent / "origins" / "api.git"
+    git(api, "push", "-q", "origin", "main:release/2")
+    git(api, "fetch", "-q", "origin", "release/2")
+    git(origin, "update-ref", "-d", "refs/heads/release/2")
+
+    assert claims.fetched_top("T1", "api", fresh=True) == "main"
+    assert git(api, "branch", "-r", "--list", "origin/release/2") == ""
+
+
+def test_a_stale_ref_stays_refused_when_the_remote_cannot_say_whether_it_has_the_branch(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    api = claims.root / "api"
+    git(api, "push", "-q", "origin", "main:release/2")
+    git(api, "fetch", "-q", "origin", "release/2")
+    break_origin(claims, "api")
+
+    with pytest.raises(OperationError, match="could not fetch release/2"):
+        claims._fetch("api", "origin", "release/2", fresh=True)
+
+    assert git(api, "branch", "-r", "--list", "origin/release/2").strip() == "origin/release/2"
+
+
 def test_a_container_claim_refused_by_its_second_repository_cuts_no_worktree_in_the_first(
     tmp_path: Path,
 ) -> None:
@@ -279,7 +308,7 @@ def test_complete_after_the_lease_was_swept_without_a_new_claim_is_refused(
 
     monkeypatch.setattr(Claims, "_with_written_migrations", swept)
 
-    with pytest.raises(OperationError, match="claimed again"):
+    with pytest.raises(OperationError, match="holds no lease: it was swept or released"):
         claims.complete("T1", agent="first", token=first.token)
 
 

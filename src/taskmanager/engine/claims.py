@@ -706,15 +706,20 @@ class Claims:
 
     def _fetch(self, repo: str, remote: str | None, branch: str, fresh: bool) -> None:
         """A failed fetch leaves the tracking ref an earlier fetch wrote, which `fresh` refuses to
-        read as current. A branch the remote lacks fails the fetch too, but has no ref to go
-        stale."""
-        if gitops.fetch(self.root / repo, remote, branch) or not fresh:
+        read as current. A branch the remote answers that it lacks fails the fetch too: its
+        tracking ref, if one is left, names a branch that is gone and is dropped."""
+        if gitops.fetch(self.root / repo, remote, branch) or not fresh or remote is None:
             return
-        ref = gitops.tracking(remote, branch)
-        if gitops.rev_parse(self.root / repo, ref):
-            raise OperationError(
-                f"could not fetch {branch} from {remote} in {repo}: {ref} may be behind it", 409
-            )
+        repo_dir, ref = self.root / repo, gitops.tracking(remote, branch)
+        if not gitops.rev_parse(repo_dir, ref):
+            return
+        sha, listed = gitops.ls_remote(repo_dir, remote, f"refs/heads/{branch}")
+        if listed.returncode == 0 and not sha:
+            gitops.drop_tracking(repo_dir, remote, branch)
+            return
+        raise OperationError(
+            f"could not fetch {branch} from {remote} in {repo}: {ref} may be behind it", 409
+        )
 
     def _unclaim(self, original: Node) -> None:
         # A landing job created before the failure would otherwise hold the node forever.
@@ -1029,7 +1034,9 @@ class Claims:
         a lease that lapsed since may belong to a successor, whose row and locks this write would
         overwrite."""
         current = self.runtime.get_lease(node_id)
-        if current is None or current.token != held.token:
+        if current is None:
+            raise OperationError(f"{node_id} holds no lease: it was swept or released", 409)
+        if current.token != held.token:
             raise OperationError(
                 f"{node_id} was claimed again while this step closed: another claim holds it now",
                 409,

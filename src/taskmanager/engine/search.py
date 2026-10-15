@@ -72,12 +72,18 @@ class OpenAIEmbeddingProvider:
     def __init__(
         self,
         base_url: str | None = None,
-        api_key: str | None = None,
+        api_key: str | Callable[[], str] | None = None,
         model: str | None = None,
     ) -> None:
         self.base_url = (base_url or os.getenv(BASE_URL_ENV) or OPENAI_URL).rstrip("/")
-        self.api_key = api_key if api_key is not None else os.getenv(DEFAULT_KEY_ENV, "")
+        self._api_key = api_key if api_key is not None else os.getenv(DEFAULT_KEY_ENV, "")
         self.model = model or os.getenv("TASKMANAGER_OPENAI_MODEL") or "text-embedding-3-small"
+
+    @property
+    def api_key(self) -> str:
+        # Resolved only when a request is about to go out, so a search or status that sends
+        # nothing never refuses over a key it would not send.
+        return self._api_key() if callable(self._api_key) else self._api_key
 
     def get_embedding(self, text: str) -> list[float]:
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
@@ -150,7 +156,7 @@ def build_provider(cfg: EmbeddingsConfig) -> EmbeddingProvider | None:
         case EmbeddingProviderType.MOCK:
             return MockEmbeddingProvider(cfg.dimensions)
         case EmbeddingProviderType.OPENAI:
-            return OpenAIEmbeddingProvider(cfg.base_url, _api_key(cfg), model)
+            return OpenAIEmbeddingProvider(cfg.base_url, lambda: _api_key(cfg), model)
         case EmbeddingProviderType.LOCAL:
             return LocalEmbeddingProvider(model)
         case _:

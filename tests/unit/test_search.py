@@ -230,10 +230,16 @@ def test_the_key_goes_to_a_host_the_users_own_environment_names(
     ],
 )
 def test_a_config_naming_another_secret_or_server_sends_no_key(
-    fields: dict[str, Any], why: str
+    fields: dict[str, Any], why: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    def no_post(self: httpx.Client, url: str, **kwargs: Any) -> httpx.Response:
+        raise AssertionError(f"a request went to {url}")
+
+    monkeypatch.setattr(httpx.Client, "post", no_post)
+    provider = build_provider(_openai(**fields))
+    assert provider is not None
     with pytest.raises(SearchError, match=why):
-        build_provider(_openai(**fields))
+        provider.get_embedding("text")
 
 
 @pytest.mark.usefixtures("keyed")

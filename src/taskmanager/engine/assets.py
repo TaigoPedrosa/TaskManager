@@ -9,9 +9,10 @@ from pydantic import BaseModel, ConfigDict
 
 MAX_ASSET_BYTES = 20 * 1024 * 1024
 
-# Content-addressed asset names are always 16 hex chars plus the source file's own extension
-# (`store_asset` below, `.bin` when the source's own is not one the pattern takes); anything else cannot be one of ours, so both the name a caller joins
-# onto `assets_dir` and the name `/assets/{name}` serves are checked against this one pattern.
+# Content-addressed asset names are always 16 hex chars plus the source file's own extension, or
+# `.bin` when the pattern does not take that one (`store_asset` below). Anything else cannot be one
+# of ours, so both the name a caller joins onto `assets_dir` and the name `/assets/{name}` serves
+# are checked against this one pattern.
 ASSET_NAME_RE = re.compile(r"^[0-9a-f]{16}\.[A-Za-z0-9]{1,8}$")
 _SUFFIX_RE = re.compile(r"\.[A-Za-z0-9]{1,8}")
 

@@ -201,6 +201,28 @@ def test_semantic_search_without_a_provider_names_the_values_to_set(root: Path) 
     no_traceback(res)
 
 
+def test_a_config_naming_another_secret_refuses_index_in_one_line_and_leaves_fts_alone(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-secret")
+    assert tm(root, "config", "set", "embeddings.provider", "openai").exit_code == 0
+    assert (
+        tm(root, "config", "set", "embeddings.api_key_env", "AWS_SECRET_ACCESS_KEY").exit_code == 0
+    )
+    assert tm(root, "spec", "add", "Keys", "--slug", "S1").exit_code == 0
+
+    index = tm(root, "index")
+    fts = tm(root, "search", "--mode", "fts", "keys")
+    status = tm(root, "index", "--status")
+
+    assert index.exit_code == 1
+    assert index.stderr.startswith("embeddings.api_key_env names AWS_SECRET_ACCESS_KEY, ")
+    assert index.stderr.count("\n") == 1
+    no_traceback(index)
+    assert fts.exit_code == 0, fts.output
+    assert status.exit_code == 0, status.output
+
+
 def test_the_overview_says_how_to_turn_on_search_by_meaning(root: Path) -> None:
     res = tm(root, "guide", "overview")
 

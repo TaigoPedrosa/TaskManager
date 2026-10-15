@@ -371,3 +371,46 @@ def test_two_writers_at_once_both_keep_their_change(
 
     monkeypatch.undo()
     assert (store.read()["lease_ttl"], store.read()["worktree_dir"]) == (10, "wt")
+
+
+def test_a_replace_waits_for_a_set_that_read_before_it(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = ConfigStore(root)
+    first_read, second_arrived, go = threading.Event(), threading.Event(), threading.Event()
+    read, flock = ConfigStore.read, fcntl.flock
+
+    def read_pausing_the_set(self: ConfigStore) -> dict[str, object]:
+        loaded = read(self)
+        if threading.current_thread().name == "set":
+            first_read.set()
+            go.wait(timeout=30)
+        return loaded
+
+    # Locked, the replace announces itself before it blocks on the set's lock; unlocked, it
+    # announces itself once it has written over the file the set has not written yet.
+    def flock_announcing_the_replace(fd: int, op: int) -> None:
+        if threading.current_thread().name == "replace" and op == fcntl.LOCK_EX:
+            second_arrived.set()
+        flock(fd, op)
+
+    def replace() -> None:
+        try:
+            store.replace({"worktree_dir": "wt"})
+        finally:
+            second_arrived.set()
+
+    monkeypatch.setattr(ConfigStore, "read", read_pausing_the_set)
+    monkeypatch.setattr("taskmanager.engine.config.fcntl.flock", flock_announcing_the_replace)
+    first = threading.Thread(target=store.set, args=("lease_ttl", "10"), name="set")
+    second = threading.Thread(target=replace, name="replace")
+    first.start()
+    assert first_read.wait(timeout=30)
+    second.start()
+    assert second_arrived.wait(timeout=30)
+    go.set()
+    first.join(timeout=30)
+    second.join(timeout=30)
+
+    monkeypatch.undo()
+    assert store.document() == {"worktree_dir": "wt"}

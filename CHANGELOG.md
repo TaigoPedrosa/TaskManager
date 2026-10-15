@@ -10,8 +10,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - An embedding key is sent only from a variable whose name starts with `TASKMANAGER_`, over https
   or to localhost, and only to api.openai.com, localhost or the URL `TASKMANAGER_OPENAI_BASE_URL`
   names. A config whose `embeddings.api_key_env` or `embeddings.base_url` breaks this still loads,
-  but `tm index` and `tm search` refuse with the reason: rename the variable, or set
-  `TASKMANAGER_OPENAI_BASE_URL` in your own environment.
+  but a `tm index` or `tm search` that would send the key refuses with the reason: rename the
+  variable, or set `TASKMANAGER_OPENAI_BASE_URL` in your own environment.
 - `tm spec|plan|task|decision add` and `tm import` refuse a new slug or id that is not one plain
   path component (`[A-Za-z0-9][A-Za-z0-9._-]*`, no `..`). A stored id is still read and updated.
 
@@ -42,8 +42,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   thread no longer holds the SQLite write lock.
 - `tm task complete` and `tm task review` re-check the lease under the write lock, so a lease that
   lapsed and was claimed again is never overwritten or deleted.
-- `config.yaml` is replaced atomically and `tm config set`/`unset` serialize, so a concurrent
-  reader never sees defaults and two writers keep both changes.
+- `config.yaml` is replaced atomically, and `tm config set`/`unset` and the config `tm restore`
+  writes serialize, so a concurrent reader never sees defaults and no writer loses another's
+  change.
 - `tm detach` never deletes a file outside the assets directory, and `tm attach` names a file with
   no usable extension `<hash>.bin`.
 - Abandoning or deferring a decision's blocked nodes no longer opens a stranded-dependents
@@ -52,7 +53,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - A refused `tm task reopen --new-branch`, or one whose later repository fails, puts back the
   branches and worktrees it retired.
 - A claim or a reset to landed is refused when `git fetch` fails and only a stale tracking ref
-  remains, and a refused container claim across several repositories leaves no worktree.
+  remains; a `land_on` branch the remote deleted reads as the default branch again, and its stale
+  tracking ref is dropped. A refused container claim across several repositories leaves no
+  worktree.
 - A note appended to a section keeps the section's custom header.
 - Wave selection holds a node whose files overlap a container fix, using the claim's own lock set.
 - A landing that conflicts while merging a moved target records the moved sha as its baseline, and

@@ -644,4 +644,5 @@ class ConfigStore:
     def replace(self, document: dict[str, Any]) -> None:
         flat = {key: _typed(key, value) for key, value in _flatten(document)}
         _check_all_bounds(flat)
-        self._write(flat)
+        with self._locked():
+            self._write(flat)

@@ -150,6 +150,10 @@ def tracking(remote: str | None, branch: str) -> str:
     return f"{remote}/{branch}" if remote else branch
 
 
+def drop_tracking(repo: Path, remote: str, branch: str) -> None:
+    _git(repo, "update-ref", "-d", f"refs/remotes/{remote}/{branch}")
+
+
 def missing_remote(repo_dir: Path, repo: str | None, remote: str | None) -> str | None:
     """Why `repos.<repo>.remote` cannot be used in `repo_dir`, or None when it can."""
     if remote is None or _git(repo_dir, "remote", "get-url", remote).returncode == 0:
