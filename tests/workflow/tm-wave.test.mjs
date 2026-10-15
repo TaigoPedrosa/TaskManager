@@ -994,3 +994,110 @@ for (const [from, first] of [['IMPLEMENTED', true], ['FIXED', false]]) {
     assert.equal(REPORT_AFTER_FINDINGS.test(work[0].prompt), first)
   })
 }
+
+test("a container fix claim covering one repository works in that repository's tree, not the container directory", async () => {
+  const P1 = { id: 'P1', kind: 'plan', action: 'fix', model: 'claude-sonnet-5-5', repos: ['core'], requires: [], job: null, migration: false }
+  const tm = makeTm({
+    chosen: [P1],
+    nodes: { P1: { ...node('REVIEWED', 'fix', { outcome: 'reject' }), id: 'P1', kind: 'plan' } },
+    start: { P1: [() => (tm.set('P1', { status: 'FIXING', next_action: null }), claim('fix', { branch: 'tm/P1', worktree: '/wt/P1', worktrees: { core: '/wt/P1/core' } }))] },
+  })
+  const agents = () => (tm.set('P1', { status: 'FIXED', next_action: null }), 'done')
+  const { work } = await runWave({ args: ARGS, tm, agents })
+  assert.ok(work[0].prompt.includes('core at /wt/P1/core, based on origin/main'), work[0].prompt)
+  assert.ok(!work[0].prompt.includes('Worktree: /wt/P1 '), work[0].prompt)
+})
+
+test("a landed spec's review reads the landings of a plan nested under its plan, and of the tasks under that", async () => {
+  const tm = makeTm({
+    chosen: [{ id: 'S2', kind: 'spec', action: 'review', model: 'claude-opus-5-5', repos: ['core'], requires: [], job: null, migration: false }],
+    nodes: { S2: { ...node('LANDED', 'review'), id: 'S2', kind: 'spec' } },
+    lists: { 'plan list --spec S2': ['P1'], 'plan list --spec P1': ['P2'], 'task list --plan P1': ['C1'], 'task list --plan P2': ['C2'] },
+    start: { S2: [() => (tm.set('S2', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'claude-opus-5-5', branch: 'origin/main', base: 'main' }))] },
+  })
+  const agents = () => (tm.set('S2', { status: 'COMPLETED', next_action: null }), 'done')
+  const { work, errors } = await runWave({ args: { ...ARGS, reviewerTypes: REVIEWERS }, tm, agents })
+  assert.deepEqual(errors, [])
+  assert.ok(scopeOf(work[0]).includes('^merge[(](S2|P1|P2|C1|C2)[)]: land '), scopeOf(work[0]))
+})
+
+test("a landed plan's review reads a nested plan's own landing and its tasks", async () => {
+  const tm = makeTm({
+    chosen: [{ id: 'P1', kind: 'plan', action: 'review', model: 'claude-opus-5-5', repos: ['core'], requires: [], job: null, migration: false }],
+    nodes: { P1: { ...node('LANDED', 'review'), id: 'P1', kind: 'plan' } },
+    lists: { 'plan list --spec P1': ['P2'], 'task list --plan P1': ['C1'], 'task list --plan P2': ['C2'] },
+    start: { P1: [() => (tm.set('P1', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'claude-opus-5-5', branch: 'origin/main', base: 'main' }))] },
+  })
+  const agents = () => (tm.set('P1', { status: 'COMPLETED', next_action: null }), 'done')
+  const { work } = await runWave({ args: { ...ARGS, reviewerTypes: REVIEWERS }, tm, agents })
+  assert.ok(scopeOf(work[0]).includes('^merge[(](P1|P2|C1|C2)[)]: land '), scopeOf(work[0]))
+})
+
+test('a claim whose runner returned nothing after the command ran is sent once, never to the next runner type', async () => {
+  const tm = makeTm({
+    chosen: [T1],
+    nodes: { T1: node('READY', 'implement') },
+    start: { T1: [() => (tm.set('T1', { status: 'IMPLEMENTING', next_action: null }), claim('implement', { worktree: '/wt/core-T1' }))] },
+  })
+  const { ops, work } = await runWave({ args: ARGS, tm, lose: (o, cmd) => / task start /.test(cmd) })
+  assert.equal(starts(ops).length, 1)
+  assert.deepEqual(work, [])
+})
+
+test('a claim sent to a runner type the session rejects is not re-sent to another type', async () => {
+  const tm = makeTm({
+    chosen: [T1],
+    nodes: { T1: node('READY', 'implement') },
+    start: { T1: [() => claim('implement', { worktree: '/wt/core-T1' })] },
+  })
+  const { ops } = await runWave({ args: ARGS, tm, refuse: o => o.label === 'start:T1' && o.agentType === 'taskmanager:tm-op' })
+  assert.equal(starts(ops).length, 0)
+})
+
+test('a step whose agent type the session rejects is released under its claim', async () => {
+  const tm = makeTm({
+    chosen: [T1],
+    nodes: { T1: node('READY', 'implement') },
+    start: { T1: [() => (tm.set('T1', { status: 'IMPLEMENTING', next_action: null }), claim('implement', { worktree: '/wt/core-T1' }))] },
+  })
+  const { ops, result } = await runWave({ args: { ...ARGS, agentTypes: { core: 'ghost' } }, tm, refuse: o => o.agentType === 'ghost' })
+  assert.deepEqual(releases(ops), [releaseOf('k1')])
+  assert.match(result.results[0].trail.join('\n'), /failed: .*ghost/)
+})
+
+test('a review whose claimed branch holds a character the shell quoting refuses is released under its claim', async () => {
+  const tm = makeTm({
+    chosen: [{ ...T1, action: 'review' }],
+    nodes: { T1: node('IMPLEMENTED', 'review') },
+    start: { T1: [() => (tm.set('T1', { status: 'REVIEWING', next_action: null }), claim('review', { branch: 'tm/T1+hotfix' }))] },
+  })
+  const { ops, work } = await runWave({ args: ARGS, tm })
+  assert.deepEqual(work, [])
+  assert.deepEqual(releases(ops), [releaseOf('k1')])
+})
+
+test('a landing agent that throws releases the claim that parked the job', async () => {
+  const tm = makeTm({
+    chosen: [{ ...T1, action: 'sync' }],
+    nodes: { T1: node('MERGING', 'sync') },
+    start: { T1: [claim('sync', { job: 'J1' })] },
+    parked: ['J1'],
+    job: { J1: [jobAt('needs_agent')] },
+  })
+  const { ops } = await runWave({ args: ARGS, tm, agents: () => { throw new Error('ghost') } })
+  assert.deepEqual(releases(ops), [releaseOf('k1')])
+})
+
+test("a review's scratch worktree path is unique to the claim, so a dead reviewer's leftover cannot block the next round", async () => {
+  const scratchFor = async token => {
+    const tm = makeTm({
+      chosen: [{ ...T1, action: 'review' }],
+      nodes: { T1: node('IMPLEMENTED', 'review') },
+      start: { T1: [() => (tm.set('T1', { status: 'REVIEWING', next_action: null }), claim('review', { token }))] },
+    })
+    const { work } = await runWave({ args: ARGS, tm, agents: () => (tm.set('T1', { status: 'REVIEWED', next_action: null }), 'done') })
+    return work[0].prompt.match(/goes at (\S+),/)[1]
+  }
+  assert.equal(await scratchFor('k1'), '/wt/core-T1-review-k1')
+  assert.equal(await scratchFor('k2'), '/wt/core-T1-review-k2')
+})

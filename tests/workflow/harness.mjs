@@ -93,7 +93,7 @@ function queue(list) {
 }
 
 // `parked` names jobs already stopped for an agent before the run starts, as an earlier tick left them.
-// `lists` maps a list command, as `task list --plan P1`, to the ids of the rows it prints.
+// `lists` maps a list command, as `task list --plan P1`, to the ids of the rows it prints; a list not named prints none.
 export function makeTm({ chosen = [], nodes = {}, start = {}, job = {}, parked = [], lists = {}, releaseExit = 0, discover, corrupt = () => false } = {}) {
   const state = structuredClone(nodes)
   const starts = Object.fromEntries(Object.entries(start).map(([id, list]) => [id, queue(list)]))
@@ -130,7 +130,7 @@ export function makeTm({ chosen = [], nodes = {}, start = {}, job = {}, parked =
       return json(picked)
     }
     m = inner.match(/^\S+ ((?:task|plan) list --(?:plan|spec) \S+) --json$/)
-    if (m && lists[m[1]]) return json(lists[m[1]].map(id => ({ id, kind: m[1].split(' ')[0] })))
+    if (m) return json((lists[m[1]] || []).map(id => ({ id, kind: m[1].split(' ')[0] })))
     m = inner.match(/^\S+ task start (\S+) --agent wf-\S+ --session \S+(?: --worktree-dir \S+)? --json$/)
     if (m && starts[m[1]]) {
       const reply = starts[m[1]]()
@@ -185,8 +185,9 @@ const RUNNER = /^\( (.*) \); echo "__EXIT:\$\?"$/m
 const TM_ROOT = /^export TM_ROOT=(\S+); (.*)$/
 
 // `refuse(opts)` true makes that call fail as the harness fails an agent type the session does not
-// know; a refused call is never recorded.
-export async function runWave({ args, tm, agents = () => 'done', refuse = () => false }) {
+// know; a refused call is never recorded. `lose(opts, cmd)` true makes a runner command that did
+// run return nothing, as an agent that dies after its Bash call.
+export async function runWave({ args, tm, agents = () => 'done', refuse = () => false, lose = () => false }) {
   const calls = []
   const logs = []
   const errors = []
@@ -199,7 +200,7 @@ export async function runWave({ args, tm, agents = () => 'done', refuse = () => 
       const reply = tm.reply(cmd)
       // stdout is what a checked read actually copies back, so a test bounds that rather than cmd.
       calls.push({ kind: 'op', cmd, prompt, opts, stdout: reply.stdout })
-      return reply
+      return lose(opts, cmd) ? null : reply
     }
     calls.push({ kind: 'agent', prompt, opts })
     return agents(prompt, opts)
