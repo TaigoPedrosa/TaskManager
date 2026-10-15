@@ -84,6 +84,7 @@ def test_start_claims_implement_then_complete_and_a_review_that_approves(tmp_pat
         "branch",
         "base",
         "bases",
+        "remotes",
         "worktree",
         "worktrees",
         "token",

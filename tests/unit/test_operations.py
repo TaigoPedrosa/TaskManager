@@ -435,6 +435,16 @@ def test_add_decision_without_slug_numbers_itself(ops_setup: tuple) -> None:
     assert second == "decision-D2"
 
 
+def test_add_decision_refuses_a_slug_with_a_slash_and_writes_nothing(ops_setup: tuple) -> None:
+    node_repo, _runtime_repo, ledger_repo, ops = ops_setup
+    before = len(ledger_repo.list_events(limit=1000))
+    with pytest.raises(OperationError) as exc:
+        ops.add_decision("Q", slug="red-target-worktrees/api")
+    assert exc.value.status_code == 400
+    assert node_repo.get_node("decision-red-target-worktrees/api") is None
+    assert len(ledger_repo.list_events(limit=1000)) == before
+
+
 def test_add_decision_bad_recommend_refuses_and_writes_nothing(ops_setup: tuple) -> None:
     node_repo, _runtime_repo, ledger_repo, ops = ops_setup
     before = len(ledger_repo.list_events(limit=1000))

@@ -70,12 +70,13 @@ The import is all or nothing. On a refusal, nothing was written: fix the documen
 
 ## 6. Prove
 
-Every task's verifications must fail before its change. For each task, read its landing target and run its checks against it:
+Every task's verifications must fail before its change. For each task, run its checks against its landing target:
 
 ```
-tm task get <task-id> --yaml        # lands_on
-tm verify run <task-id> --ref origin/<lands_on>
+tm verify run <task-id>
 ```
+
+With no `--ref`, this reads the branch `tm task get <task-id> --yaml` prints as `lands_on`, on the repository's remote after a fetch, or the local branch where `repos.<repo>.remote` is null.
 
 Each run must exit 1 with at least one of the task's checks `FAILED`, and none failing for a reason other than the missing deliverable (a typo in a path, a command that cannot run). A verification that passes on the target proves nothing: rewrite it so it checks this task's own deliverable, put it back with `tm verify remove` and `tm verify add` (or fix the document and re-import while nothing is claimed), and run it again. `No verifications to run.` is a miss from step 4: add one. Do the same for each plan's joined verification.
 

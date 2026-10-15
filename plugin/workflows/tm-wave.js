@@ -286,9 +286,11 @@ async function work(n, c, s, trail) {
   const repos = c.repos || []
   // A claim's base is a branch name, one per repository in `bases`, since a container's
   // repositories can land on different default branches. A parent's branch is local to the
-  // shared clones, while a chain's top target is only read as fetched from origin.
+  // shared clones, while a chain's top target is read as fetched from the repository's remote,
+  // or locally where `repos.<repo>.remote` is null. A tm whose claim prints no `remotes` reads origin.
   const baseOf = r => (c.bases && c.bases[r]) || c.base
-  const refOf = r => s.merge === 'parent' ? baseOf(r) : `origin/${baseOf(r)}`
+  const remoteOf = r => c.remotes && r in c.remotes ? c.remotes[r] : 'origin'
+  const refOf = r => s.merge === 'parent' || !remoteOf(r) ? baseOf(r) : `${remoteOf(r)}/${baseOf(r)}`
   let type = AGENT_TYPE[repos[0]]
   let body
   if (c.action === 'review') {

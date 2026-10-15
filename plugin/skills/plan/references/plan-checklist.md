@@ -4,7 +4,7 @@ Go through every item against the import document before `tm import`, and fix ea
 
 - [ ] **`target_repo` on every task.** It is not inherited from the plan or spec; a task without one cannot be implemented. (`tm guide plan` §1)
 - [ ] **`declared_files` complete and disjoint.** Every path each task creates or modifies, tests included, and no path listed by two tasks that can run together. (`tm guide plan` §2)
-- [ ] **A verification that fails before the change.** Every task carries at least one verification that checks its own deliverable, and after the import `tm verify run <task-id> --ref origin/<lands_on>` shows it failing on the landing target. (`tm guide plan` §6)
+- [ ] **A verification that fails before the change.** Every task carries at least one verification that checks its own deliverable, and after the import `tm verify run <task-id>` shows it failing on the landing target. (`tm guide plan` §6)
 - [ ] **A joined verification on a reviewed plan.** A plan with `review: true` carries its own verification that runs its tasks' behaviour together. (`tm guide plan` §6)
 - [ ] **Contracts and shared decisions in the plan's `overview`.** A shape, name or id scheme one task writes and another reads, and a ruling several tasks share, sit on the plan, where every child's brief reads them. (`tm guide plan` §2, §8)
 - [ ] **An invariant names every write path.** Acceptance of an invariant or a refusal names the one function every write passes through, or each write path by name, with a check for each. (`tm guide plan` §8)

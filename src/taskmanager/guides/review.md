@@ -28,7 +28,7 @@ That is the brief the implementer was given, and the only standard you review ag
 
 ## 3. Read the branch
 
-In each repository the claim's `repos` names, `<base>` is that repository's entry in the claim's `bases`, since a container's repositories can land on different default branches (`base` is the first repository's): the branch the node's spec lands on, or the container branch the node lands on. A spec's target that its remote does not have yet reads as the repository's default branch, which the branch was cut from. `<base-ref>` is where it is read: `<remote>/<base>` for the spec's target (the local `<base>` in a repository with no remote), and `<base>` itself for a container branch, which is local to the clone:
+In each repository the claim's `repos` names, `<base>` is that repository's entry in the claim's `bases`, since a container's repositories can land on different default branches (`base` is the first repository's): the branch the node's spec lands on, or the container branch the node lands on. A spec's target that its remote does not have yet reads as the repository's default branch, which the branch was cut from. `<base-ref>` is where it is read: `<remote>/<base>` for the spec's target, `<remote>` being that repository's entry in the claim's `remotes` (the local `<base>` where it is null), and `<base>` itself for a container branch, which is local to the clone:
 
 ```
 git -C <repo> log --oneline <base-ref>..<branch>

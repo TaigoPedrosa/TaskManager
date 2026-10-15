@@ -728,6 +728,18 @@ test("a container's review and fix read each repository against that repository'
   assert.ok(fixed.work[0].prompt.includes('core at /wt/P1/core, based on origin/trunk; web at /wt/P1/web, based on origin/main.'), fixed.work[0].prompt)
 })
 
+test("a review reads the spec's target on each repository's own remote, and locally where it has none", async () => {
+  const P1 = { id: 'P1', kind: 'plan', action: 'review', model: 'claude-opus-5-5', repos: ['core', 'web'], requires: [], job: null, migration: false }
+  const tm = makeTm({
+    chosen: [P1],
+    nodes: { P1: { ...node('IMPLEMENTED', 'review'), id: 'P1', kind: 'plan' } },
+    start: { P1: [() => (tm.set('P1', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'claude-opus-5-5', repos: ['core', 'web'], branch: 'tm/P1', base: 'trunk', bases: { core: 'trunk', web: 'main' }, remotes: { core: null, web: 'upstream' } }))] },
+  })
+  const { work } = await runWave({ args: { ...ARGS, reviewerTypes: REVIEWERS }, tm, agents: () => (tm.set('P1', { status: 'REVIEWED', next_action: null }), 'done') })
+  const scope = scopeOf(work[0])
+  assert.ok(scope.includes('git -C /est/core diff trunk...tm/P1') && scope.includes('git -C /est/web diff upstream/main...tm/P1'), scope)
+})
+
 test('a landed container whose children cannot be read is released, never reviewed on a partial scope', async () => {
   const P1 = { id: 'P1', kind: 'plan', action: 'review', model: 'claude-opus-5-5', repos: ['core'], requires: [], job: null, migration: false }
   const tm = makeTm({

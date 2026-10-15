@@ -298,3 +298,14 @@ def test_a_hand_written_repos_block_reads_back_whole(root: Path) -> None:
         "main": Gate(command="npm test", timeout=900),
         "parent": Gate(command="npm run lint"),
     }
+
+
+@pytest.mark.parametrize("remote", ["up+stream", "a(b)", "up@stream"])
+def test_a_remote_name_tm_wave_cannot_quote_is_refused(remote: str) -> None:
+    with pytest.raises(ValueError, match="holds a character tm does not quote"):
+        RepoConfig(remote=remote)
+
+
+@pytest.mark.parametrize("remote", ["origin", "up.stream_2", "team/fork", None])
+def test_a_remote_name_of_quotable_characters_or_none_is_kept(remote: str | None) -> None:
+    assert RepoConfig(remote=remote).remote == remote

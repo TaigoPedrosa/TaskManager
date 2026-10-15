@@ -399,6 +399,30 @@ def test_a_review_of_a_container_landed_across_targets_names_each_repository_s_o
     assert claim["bases"] == {"web": "main", "api": "trunk"}
 
 
+def test_a_claim_prints_each_repository_s_remote_and_none_where_it_has_none(
+    tmp_path: Path,
+) -> None:
+    config = ProjectConfig(
+        repo_order=["web", "api"],
+        repos={
+            "api": RepoConfig(gates={"main": TRUE}),
+            "web": RepoConfig(remote=None, gates={"main": TRUE}),
+        },
+    )
+    claims = make_estate(tmp_path, repos=("api", "web"), config=config)
+    add(claims, "P", NodeKind.PLAN, review=True, fix=True, status=Status.LANDED)
+    add(claims, "A", parent="P", repo="api", merge=Merge.PARENT, status=Status.COMPLETED)
+    add(claims, "W", parent="P", repo="web", merge=Merge.PARENT, status=Status.COMPLETED)
+
+    res = CliRunner().invoke(
+        cli_app,
+        ["task", "start", "P", "--agent", "r", "--session", "s1", "--json", "-C", str(claims.root)],
+    )
+
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.output)["remotes"] == {"web": None, "api": "origin"}
+
+
 def test_verify_run_with_no_ref_fetches_and_reads_each_task_s_target_on_origin(
     tmp_path: Path,
 ) -> None:

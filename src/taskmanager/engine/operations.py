@@ -1062,6 +1062,9 @@ class Operations:
         custom_effect: DecisionEffect = DecisionEffect.NONE,
     ) -> str:
         if slug:
+            if "/" in slug:
+                # The web routes take an id as one path segment.
+                raise OperationError(f"a decision slug cannot hold '/': '{slug}'", 400)
             decision_id = f"decision-{slug}"
             if self.node_repo.get_node(decision_id) is not None:
                 raise OperationError(f"'{decision_id}' already exists", 409)

@@ -569,6 +569,29 @@ def test_reopen_and_withdraw_decision(
     assert node2.status == DecisionStatus.WITHDRAWN
 
 
+def test_every_decision_route_reaches_a_stored_decision_whose_id_holds_a_slash(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, node_repo, _ledger_repo = api
+    decision_id = "decision-red-target-worktrees/api-main-aaaaaaaaaaaa"
+    _seed_decision(node_repo, decision_id)
+    base = f"/api/decisions/{decision_id}"
+
+    assert client.get(f"/api/nodes/{decision_id}").json()["display"] == "OPEN"
+    assert [t["id"] for t in client.get(f"{base}/candidates").json()["items"]] == [
+        "SPEC-P1-T1",
+        "SPEC-P1-T2",
+    ]
+    assert client.post(f"{base}/blocks", json={"add": ["SPEC-P1-T1"]}).status_code == 200
+    assert node_repo.get_blocked_by(decision_id) == ["SPEC-P1-T1"]
+    assert client.post(f"{base}/answer", json={"option": "a"}).status_code == 200
+    assert node_repo.get_node(decision_id).status == DecisionStatus.ANSWERED
+    assert client.post(f"{base}/reopen", headers=JSON).status_code == 200
+    assert node_repo.get_node(decision_id).status == DecisionStatus.OPEN
+    assert client.post(f"{base}/withdraw", json={"reason": "gone"}).status_code == 200
+    assert node_repo.get_node(decision_id).status == DecisionStatus.WITHDRAWN
+
+
 def test_decision_blocks_add_and_remove(
     api: tuple[TestClient, NodeRepository, LedgerRepository],
 ) -> None:

@@ -1169,6 +1169,7 @@ def task_start(
             "branch": result.branch,
             "base": result.base,
             "bases": result.bases,
+            "remotes": result.remotes,
             "worktree": result.worktree,
             "worktrees": result.worktrees,
             "token": result.token,

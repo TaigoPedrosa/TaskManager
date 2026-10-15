@@ -269,6 +269,9 @@ class ClaimResult:
     # Repository name to its `base`: the repositories of a container can land on different
     # default branches. `base` is the first repository's.
     bases: dict[str, str] = field(default_factory=dict)
+    # Repository name to `repos.<repo>.remote`, None for a repository with no remote: a ref on
+    # the spec's target is `<remote>/<base>` only where there is one.
+    remotes: dict[str, str | None] = field(default_factory=dict)
     # `codegraph_lines` for each worktree the claim cut: advice only, the claim stands either way.
     codegraph: list[str] = field(default_factory=list)
 
@@ -507,6 +510,7 @@ class Claims:
             {job.repo: job.worktree} if job.worktree else {},
             token,
             {job.repo: base},
+            {job.repo: self.config.remote(job.repo)},
         )
 
     def _claim(
@@ -609,6 +613,7 @@ class Claims:
             worktree,
             worktrees,
             bases=bases,
+            remotes={repo: self.config.remote(repo) for repo in repos},
         )
 
     def _landing(self) -> LandingJobs:
@@ -904,9 +909,12 @@ class Claims:
             if (now - oldest).total_seconds() < self.config.red_target_decision_after:
                 continue
             # Main and a container branch can be red at one sha; each needs its own fixer.
-            slug = f"red-target-{repo}-{target.replace('/', '-')}-{sha[:12]}"
+            slug = f"red-target-{repo.replace('/', '-')}-{target.replace('/', '-')}-{sha[:12]}"
             held = [node_id for node_id, _, _ in entries if not self.ops.busy(node_id)]
-            existing = self.nodes.get_node(f"decision-{slug}")
+            # An open decision stored before the repository's `/` was replaced keeps its id.
+            existing = self.nodes.get_node(f"decision-{slug}") or self.nodes.get_node(
+                f"decision-red-target-{repo}-{target.replace('/', '-')}-{sha[:12]}"
+            )
             try:
                 if existing is None and held:
                     opened.append(

@@ -36,7 +36,7 @@ CHECKLIST_ITEMS = {
     "declared_files": r"`declared_files` complete and disjoint",
     "tests count": r"tests included",
     "fails before the change": r"verification that fails before the change",
-    "proved after import": r"tm verify run <task-id> --ref",
+    "proved after import": r"`tm verify run <task-id>` shows it failing",
     "joined verification": r"joined verification on a reviewed plan",
     "overview": r"plan's `overview`",
     "write paths": r"invariant names every write path",
@@ -86,7 +86,9 @@ def test_the_plan_skill_gates_on_design_approval_and_proves_its_verifications() 
     assert "`ANSWERED` and its `answer.option` is `approve`" in gate
     assert "stop and name it" in gate
     prove = _section(text, "Prove")
-    assert "tm verify run <task-id> --ref origin/<lands_on>" in prove
+    assert "tm verify run <task-id>\n" in prove
+    # With no `--ref`, tm reads `<remote>/<lands_on>`, or the local branch with no remote.
+    assert "origin/" not in prove
     assert "must exit 1" in prove
     assert "rewrite it" in prove
     assert "no plan before the design is approved" in text

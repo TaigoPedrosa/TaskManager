@@ -608,7 +608,9 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         finally:
             live_hub.close_session(session)
 
-    @app.get("/api/nodes/{node_id}")
+    # `:path` on this and the decision routes: a stored decision id can hold a `/` from its
+    # repository's path, and the decision pane reads its detail here.
+    @app.get("/api/nodes/{node_id:path}")
     def get_node_detail(node_id: str) -> dict[str, Any]:
         view = new_view()
         detail = _node_details([node_id], view, _body_repos()).get(node_id)
@@ -1011,7 +1013,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             )
         return {"id": decision_id}
 
-    @app.post("/api/decisions/{decision_id}/answer")
+    @app.post("/api/decisions/{decision_id:path}/answer")
     def post_decision_answer(
         decision_id: str, body: DecisionAnswerRequest, actor: Actor
     ) -> dict[str, str]:
@@ -1021,13 +1023,13 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             )
         return {"id": decision_id}
 
-    @app.post("/api/decisions/{decision_id}/reopen")
+    @app.post("/api/decisions/{decision_id:path}/reopen")
     def post_decision_reopen(decision_id: str, actor: Actor) -> dict[str, str]:
         with _refusals():
             operations.with_actor(actor).reopen_decision(decision_id)
         return {"id": decision_id}
 
-    @app.post("/api/decisions/{decision_id}/withdraw")
+    @app.post("/api/decisions/{decision_id:path}/withdraw")
     def post_decision_withdraw(
         decision_id: str, body: DecisionWithdrawRequest, actor: Actor
     ) -> dict[str, str]:
@@ -1035,7 +1037,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             operations.with_actor(actor).withdraw_decision(decision_id, body.reason)
         return {"id": decision_id}
 
-    @app.get("/api/decisions/{decision_id}/candidates")
+    @app.get("/api/decisions/{decision_id:path}/candidates")
     def get_decision_candidates(decision_id: str) -> dict[str, Any]:
         """The tasks `+ Add task` offers: every task not already waiting on the decision and not
         finished or set aside, in id order."""
@@ -1056,7 +1058,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             ]
         }
 
-    @app.post("/api/decisions/{decision_id}/blocks")
+    @app.post("/api/decisions/{decision_id:path}/blocks")
     def post_decision_blocks(
         decision_id: str, body: DecisionBlocksUpdate, actor: Actor
     ) -> dict[str, str]:

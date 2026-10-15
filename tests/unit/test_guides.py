@@ -695,7 +695,8 @@ def test_review_guide_reads_a_spec_s_target_on_its_remote_and_a_container_branch
         "the branch the node's spec lands on, or the container branch the node lands on. A spec's "
         "target that its remote does not have yet reads as the repository's default branch, which "
         "the branch was cut from. `<base-ref>` is where it is read: `<remote>/<base>` for the "
-        "spec's target (the local `<base>` in a repository with no remote), and `<base>` itself "
+        "spec's target, `<remote>` being that repository's entry in the claim's `remotes` (the "
+        "local `<base>` where it is null), and `<base>` itself "
         "for a container branch, which is local to the clone:"
     ) in text
     assert "git -C <repo> diff <base-ref>...<branch>" in text
@@ -930,6 +931,18 @@ def test_overview_lands_a_reviewed_container_before_its_one_review(
         "LANDED ──claim──▶ REVIEWING"
     ) in text
     assert "| `review` | `IMPLEMENTED` for a task, `LANDED` for a plan or spec," in text
+
+
+def test_overview_names_the_remote_a_claim_prints_for_each_repository(
+    rendered: Callable[[str], str],
+) -> None:
+    assert (
+        "`remotes` naming each repository's `repos.<repo>.remote`, null for one with no remote"
+    ) in rendered("overview")
+    assert (
+        "Its name is letters, digits, `.`, `_`, `/` and `-`, the characters tm-wave quotes into a "
+        "git command; tm refuses any other."
+    ) in rendered("overview")
 
 
 def test_overview_lands_a_fix_without_a_re_review_unless_the_node_is_sensitive(

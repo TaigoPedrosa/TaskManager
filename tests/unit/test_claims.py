@@ -17,7 +17,7 @@ from lifecycle_estate import (
 )
 
 from taskmanager.core.enums import NodeKind, RelationType, VerificationType
-from taskmanager.core.models import Condition, Job, NodeRelation, NodeVerification
+from taskmanager.core.models import Condition, Job, Node, NodeRelation, NodeVerification
 from taskmanager.core.status import (
     Action,
     ConditionStage,
@@ -28,7 +28,7 @@ from taskmanager.core.status import (
     Status,
 )
 from taskmanager.engine.claims import Blocker, ClaimResult, Claims
-from taskmanager.engine.config import ProjectConfig
+from taskmanager.engine.config import Gate, ProjectConfig, RepoConfig
 from taskmanager.engine.operations import OperationError
 from taskmanager.engine.snapshot import DisplayView
 
@@ -197,6 +197,30 @@ def test_a_child_landing_on_its_parent_is_cut_from_the_parent_branch(tmp_path: P
     assert git(api, "rev-parse", "tm/P") == git(api, "rev-parse", "origin/main")
     assert result.worktree is not None
     assert git(Path(result.worktree), "rev-parse", "HEAD") == git(api, "rev-parse", "tm/P")
+
+
+def test_a_claim_on_an_existing_parent_branch_never_reads_the_remote_from_git(
+    tmp_path: Path,
+) -> None:
+    """A child landing on its parent's branch never fetches, so a remote the clone lacks
+    leaves its claim, and the worktree it cuts, standing."""
+    config = ProjectConfig(
+        repos={"api": RepoConfig(remote="gone", gates={"main": Gate(command="true")})}
+    )
+    claims = make_estate(tmp_path, config=config)
+    api = claims.root / "api"
+    git(api, "branch", "tm/P", "origin/main")
+    add(claims, "P", NodeKind.PLAN)
+    add(claims, "T1", parent="P", merge=Merge.PARENT)
+
+    result = claims.start("T1", "agent-1", "s1")
+
+    assert (result.action, result.base, result.remotes) == (
+        Action.IMPLEMENT,
+        "tm/P",
+        {"api": "gone"},
+    )
+    assert result.worktree is not None and Path(result.worktree).is_dir()
 
 
 @pytest.mark.parametrize(
@@ -610,7 +634,11 @@ def test_a_landing_waiting_for_an_agent_is_handed_to_the_next_claimant(tmp_path:
         "/tmp/landing-worktree",
         {"api": "/tmp/landing-worktree"},
     )
-    assert (handed.base, handed.bases) == ("main", {"api": "main"})
+    assert (handed.base, handed.bases, handed.remotes) == (
+        "main",
+        {"api": "main"},
+        {"api": "origin"},
+    )
     lease = claims.runtime.get_lease("T1")
     assert lease is not None
     assert (lease.agent_id, lease.ttl_seconds, lease.model) == (
@@ -1061,6 +1089,90 @@ def test_main_and_a_container_branch_red_at_one_sha_each_get_their_own_decision(
     for node_id, target in (("T1", "main"), ("T2", "tm/P")):
         [decision] = [d for d in opened if d in claims.nodes.get_dependencies(node_id)]
         assert stored(claims, decision).title.startswith(f"{target} of api is red")
+
+
+def test_a_red_target_decision_id_holds_no_slash_from_its_repository_or_target(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    sha = "a" * 40
+    add(claims, "T1")
+    claims.nodes.add_condition(
+        Condition(
+            node_id="T1",
+            idx=0,
+            needs=f"red-target: worktrees/api tm/P at {sha[:12]} fails the 1 test(s)",
+            command="true",
+            stage=ConditionStage.LANDING,
+        )
+    )
+    mark = {
+        "repo": "worktrees/api",
+        "target": "tm/P",
+        "sha": sha,
+        "since": "2000-01-01T00:00:00+00:00",
+        "failing": ["suite.t"],
+    }
+    claims.jobs.create(
+        Job(
+            kind=JobKind.LAND,
+            node_id="T1",
+            repo="api",
+            target="tm/P",
+            state=JobState.EXPIRED,
+            result={"red_target": mark},
+        )
+    )
+
+    opened = claims._escalate_red_targets()
+
+    assert opened == [f"decision-red-target-worktrees-api-tm-P-{sha[:12]}"]
+
+
+def test_an_open_red_target_decision_stored_with_its_repository_s_slash_is_reused(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    sha = "a" * 40
+    legacy = f"decision-red-target-worktrees/api-main-{sha[:12]}"
+    claims.nodes.save_node(
+        Node(
+            id=legacy,
+            kind=NodeKind.DECISION,
+            title="main of worktrees/api is red",
+            frontmatter={"decision": {"options": [], "allow_custom": True, "answer": None}},
+        )
+    )
+    add(claims, "T1")
+    claims.nodes.add_condition(
+        Condition(
+            node_id="T1",
+            idx=0,
+            needs=f"red-target: worktrees/api main at {sha[:12]} fails the 1 test(s)",
+            command="true",
+            stage=ConditionStage.LANDING,
+        )
+    )
+    mark = {
+        "repo": "worktrees/api",
+        "target": "main",
+        "sha": sha,
+        "since": "2000-01-01T00:00:00+00:00",
+        "failing": ["suite.t"],
+    }
+    claims.jobs.create(
+        Job(
+            kind=JobKind.LAND,
+            node_id="T1",
+            repo="api",
+            target="main",
+            state=JobState.EXPIRED,
+            result={"red_target": mark},
+        )
+    )
+
+    assert claims._escalate_red_targets() == []
+    assert claims.nodes.get_dependencies("T1") == [legacy]
 
 
 def test_escalating_red_targets_selects_every_node_only_once(tmp_path: Path) -> None:

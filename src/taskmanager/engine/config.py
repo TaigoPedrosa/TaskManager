@@ -207,6 +207,9 @@ class Gate(BaseModel):
         return value
 
 
+_REMOTE_NAME = re.compile(r"[A-Za-z0-9._/-]+")
+
+
 class RepoConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -234,6 +237,12 @@ class RepoConfig(BaseModel):
     def _is_a_remote_name(cls, value: str | None) -> str | None:
         if value is not None and not valid_branch(value):
             raise ValueError(f"'{value}' is not a remote name git accepts")
+        # tm-wave quotes `<remote>/<base>` into its git commands only from these characters.
+        if value is not None and not _REMOTE_NAME.fullmatch(value):
+            raise ValueError(
+                f"'{value}' holds a character tm does not quote: a remote name is letters, "
+                "digits, '.', '_', '/' and '-'"
+            )
         return value
 
 
