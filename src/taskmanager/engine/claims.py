@@ -217,6 +217,10 @@ def codegraph_lines(
     return lines
 
 
+def _nothing() -> None:
+    return None
+
+
 def _stop_process(job: Job) -> None:
     """Stops the detached process running `job`, with its git children, so a job expired under
     it cannot push or keep heartbeating a lease it no longer owns. The pid is matched against
@@ -634,17 +638,23 @@ class Claims:
         base_dir = self.root / (worktree_dir or self.config.worktree_dir)
         branch = self.branch_of(node.id)
 
-        def cut(repo: str, path: Path) -> str:
-            base = self._base_ref(node.id, repo)
+        def cut(repo: str, path: Path, base: str) -> str:
             if fix and self._spent(self.root / repo, branch, base):
                 self._retire(repo, branch)
             return str(GitManager(self.root / repo).create_worktree(branch, path, base))
 
         if not self.is_container(node):
             repo = repos[0]
-            path = cut(repo, base_dir / (node.id if repo == "." else f"{repo}-{node.id}"))
+            path = cut(
+                repo,
+                base_dir / (node.id if repo == "." else f"{repo}-{node.id}"),
+                self._base_ref(node.id, repo),
+            )
             return path, {repo: path}
-        worktrees = {repo: cut(repo, base_dir / node.id / repo) for repo in repos}
+        # Every base resolves before the first worktree, so a repository that refuses leaves none
+        # behind in the repositories before it.
+        bases = {repo: self._base_ref(node.id, repo) for repo in repos}
+        worktrees = {repo: cut(repo, base_dir / node.id / repo, bases[repo]) for repo in repos}
         return str(base_dir / node.id), worktrees
 
     @staticmethod
@@ -662,7 +672,7 @@ class Claims:
         repo_dir = self.root / repo
         parent = self.ops.landing_parent(self.node(node_id).id)
         if parent is None:
-            top, remote = self.fetched_top(node_id, repo), self.ops.remote(repo)
+            top, remote = self.fetched_top(node_id, repo, fresh=True), self.ops.remote(repo)
             ref = gitops.tracking(remote, top)
             if not gitops.rev_parse(repo_dir, ref):
                 lands = f"by pushing to {remote}" if remote else f"on {top}"
@@ -682,17 +692,29 @@ class Claims:
         parent = self.ops.landing_parent(node_id)
         return self.branch_of(parent) if parent else self.fetched_top(node_id, repo)
 
-    def fetched_top(self, node_id: str, repo: str) -> str:
+    def fetched_top(self, node_id: str, repo: str, *, fresh: bool = False) -> str:
         """The branch `node_id`'s chain lands on at the top in `repo`, fetched. One that does not
         exist yet reads as the repository's default branch, which the first landing on it
         creates."""
         repo_dir, remote = self.root / repo, self.ops.remote(repo)
         top, default = self.ops.landing_branch(node_id, repo), self.ops.default_branch(repo)
-        gitops.fetch(repo_dir, remote, top)
+        self._fetch(repo, remote, top, fresh)
         if top != default and not gitops.rev_parse(repo_dir, gitops.tracking(remote, top)):
-            gitops.fetch(repo_dir, remote, default)
+            self._fetch(repo, remote, default, fresh)
             return default
         return top
+
+    def _fetch(self, repo: str, remote: str | None, branch: str, fresh: bool) -> None:
+        """A failed fetch leaves the tracking ref an earlier fetch wrote, which `fresh` refuses to
+        read as current. A branch the remote lacks fails the fetch too, but has no ref to go
+        stale."""
+        if gitops.fetch(self.root / repo, remote, branch) or not fresh:
+            return
+        ref = gitops.tracking(remote, branch)
+        if gitops.rev_parse(self.root / repo, ref):
+            raise OperationError(
+                f"could not fetch {branch} from {remote} in {repo}: {ref} may be behind it", 409
+            )
 
     def _unclaim(self, original: Node) -> None:
         # A landing job created before the failure would otherwise hold the node forever.
@@ -733,8 +755,13 @@ class Claims:
             )
 
     def complete(self, node_id: str, agent: str | None = None, token: str | None = None) -> Status:
-        node, _ = self._held(node_id, (Status.IMPLEMENTING, Status.FIXING), agent, token)
-        return self._advance(self._with_written_migrations(node), Event.COMPLETE, "task complete")
+        node, lease = self._held(node_id, (Status.IMPLEMENTING, Status.FIXING), agent, token)
+        return self._advance(
+            self._with_written_migrations(node),
+            Event.COMPLETE,
+            "task complete",
+            holding=(lease, agent, token),
+        )
 
     def _with_written_migrations(self, node: Node) -> Node:
         """`node` declaring each file under its repository's `migrations` its branch changes: a
@@ -776,7 +803,14 @@ class Claims:
             )
         event = Event.APPROVE if approve else Event.REJECT
         evidence = self._section_text(node_id, "review")
-        return self._advance(node, event, "task review", verdict=verdict, evidence=evidence)
+        return self._advance(
+            node,
+            event,
+            "task review",
+            verdict=verdict,
+            evidence=evidence,
+            holding=(lease, agent, token),
+        )
 
     def release(
         self,
@@ -807,9 +841,11 @@ class Claims:
         has_job = any(j.state in LIVE_JOBS for j in self.jobs.for_node(node_id))
         if Status(node.status) not in IN_STEP and not has_job:
             raise OperationError(f"{node_id} is {node.status}, not mid-step", 409)
-        self._expire_jobs(node_id)
         event = Event.RELEASE_BLOCKED if blocked is not None else Event.RELEASE
-        return self._advance(node, event, "task release", blocker=blocked)
+        with self.nodes.transaction():
+            # The job rows roll back with a refused release; the process stops only on commit.
+            self._expire_jobs(node_id)
+            return self._advance(node, event, "task release", blocker=blocked)
 
     def heartbeat(self, node_id: str) -> bool:
         return self.runtime.heartbeat(node_id)
@@ -945,7 +981,8 @@ class Claims:
         live = [j for j in self.jobs.for_node(node_id) if j.state in LIVE_JOBS]
         for job in live:
             if self.jobs.set_state(job.model_copy(update={"state": JobState.EXPIRED}), LIVE_JOBS):
-                _stop_process(job)
+                # Inside a transaction the process outlives a rollback of its job's row.
+                self.nodes.db.after_commit(partial(_stop_process, job))
             self.jobs.release_branch(job.repo, job.target, job.id)
         return len(live)
 
@@ -959,6 +996,7 @@ class Claims:
         note: tuple[str, str] | None = None,
         blocker: Blocker | None = None,
         evidence: str = "",
+        holding: tuple[Lease, str | None, str | None] | None = None,
     ) -> Status:
         try:
             nxt = lifecycle.advance(self.snapshots.cycle(node), event, self.caps)
@@ -968,6 +1006,8 @@ class Claims:
         if verdict is not None:
             after = after.model_copy(update={"verdict": verdict})
         with self.nodes.transaction():
+            if holding is not None:
+                self._still_held(node.id, *holding)
             self.nodes.save_node(after)
             # Every event that moves a node ends the step its lease was for.
             self.runtime.release_lease(node.id)
@@ -983,6 +1023,18 @@ class Claims:
             command, node.id, {"event": event.value, "from": node.status, "to": nxt.status}
         )
         return nxt.status
+
+    def _still_held(self, node_id: str, held: Lease, agent: str | None, token: str | None) -> None:
+        """The claim `_held` saw is still the node's lease: it was read before the write lock, and
+        a lease that lapsed since may belong to a successor, whose row and locks this write would
+        overwrite."""
+        current = self.runtime.get_lease(node_id)
+        if current is None or current.token != held.token:
+            raise OperationError(
+                f"{node_id} was claimed again while this step closed: another claim holds it now",
+                409,
+            )
+        self.own(node_id, current, agent, token)
 
     def _write_blocker(self, node_id: str, blocker: Blocker) -> None:
         for dep in blocker.depends:
@@ -1048,9 +1100,13 @@ class Claims:
             nxt = lifecycle.reopen(self.snapshots.cycle(node), all_done)
         except LifecycleError as exc:
             raise OperationError(str(exc), 409) from exc
-        if new_branch:
-            self._retire_branch(node_id)
-        return self._rewrite(node, nxt, ("reopen", note), "task reopen", clear_verdict=True)
+        undo = self._retire_branch(node_id) if new_branch else _nothing
+        try:
+            return self._rewrite(node, nxt, ("reopen", note), "task reopen", clear_verdict=True)
+        except BaseException:
+            # A refused write leaves the node as it was, so its branches and worktrees stay too.
+            undo()
+            raise
 
     def reset(self, node_id: str, to: Status, note: str, outcome: Outcome | None = None) -> Status:
         node = self.node(node_id)
@@ -1126,7 +1182,7 @@ class Claims:
             repo_dir = self.root / repo
             target, ref = self.target_of(node_id, repo), self.target_ref(node_id, repo)
             if at_top:
-                gitops.fetch(repo_dir, self.ops.remote(repo), target)
+                self._fetch(repo, self.ops.remote(repo), target, fresh=True)
             if gitops.rev_parse(repo_dir, f"refs/heads/{branch}"):
                 if not gitops.is_ancestor(repo_dir, branch, ref):
                     raise OperationError(
@@ -1139,32 +1195,57 @@ class Claims:
             if not passed:
                 raise OperationError(f"verifications red on {target} in {repo}:\n{report}", 409)
 
-    def _retire_branch(self, node_id: str) -> None:
+    def _retire_branch(self, node_id: str) -> Callable[[], None]:
         """Keeps the old branch as `<branch>@<n>`, and its worktree beside the old path under the
         same suffix, so the reopened node is cut clean where its worktree always goes. Every
         cloned repository is swept: a set-aside child that later comes back would otherwise build
-        on the old branch in a repository only it touched."""
+        on the old branch in a repository only it touched. The result puts every repository back
+        as it was."""
         branch = self.branch_of(node_id)
-        for repo in self.known_repos():
-            self._retire(repo, branch)
+        undos: list[Callable[[], None]] = []
 
-    def _retire(self, repo: str, branch: str) -> None:
+        def undo_all() -> None:
+            for undo in undos:
+                undo()
+
+        try:
+            for repo in self.known_repos():
+                undos.append(self._retire(repo, branch))
+        except BaseException:
+            undo_all()
+            raise
+        return undo_all
+
+    def _retire(self, repo: str, branch: str) -> Callable[[], None]:
+        """Retires `branch` in `repo`; the result moves it back, and raises nothing."""
         repo_dir = self.root / repo
         if not gitops.rev_parse(repo_dir, f"refs/heads/{branch}"):
-            return
+            return _nothing
         n = 1
         while gitops.rev_parse(repo_dir, f"refs/heads/{branch}@{n}"):
             n += 1
         worktree = GitManager(repo_dir).find_worktree(branch)
+        retired = worktree.with_name(f"{worktree.name}@{n}") if worktree is not None else None
+
+        def undo() -> None:
+            try:
+                if gitops.rev_parse(repo_dir, f"refs/heads/{branch}@{n}"):
+                    gitops.rename_branch(repo_dir, f"{branch}@{n}", branch)
+                if worktree is not None and retired is not None and retired.exists():
+                    gitops.move_worktree(repo_dir, retired, worktree)
+            except CalledProcessError as exc:
+                _log.warning("could not restore %s in %s: %s", branch, repo, exc.stderr or exc)
+
         try:
-            if worktree is not None:
-                retired = worktree.with_name(f"{worktree.name}@{n}")
+            if worktree is not None and retired is not None:
                 gitops.move_worktree(repo_dir, worktree, retired)
             gitops.rename_branch(repo_dir, branch, f"{branch}@{n}")
         except CalledProcessError as exc:
+            undo()
             raise OperationError(
                 f"could not retire {branch} in {repo}: {exc.stderr or exc}".strip(), 409
             ) from exc
+        return undo
 
     def _strand(self, node_id: str, status: Status) -> None:
         dependents = stranded_dependents(self.ops, node_id)
@@ -1278,9 +1359,16 @@ class Claims:
 
     def note(self, node_id: str, key: str, text: str) -> None:
         """Appends a timestamped entry to `node_id:key`, keeping what earlier entries said."""
-        existing = self._section_text(node_id, key)
+        found = self.nodes.get_section(node_id, key)
+        existing = found.content if found else ""
         entry = f"{datetime.now(tz=UTC):%Y-%m-%d %H:%M} {text}"
-        self.ops.set_section(node_id, key, f"{existing}\n\n{entry}" if existing else entry)
+        # set_section rewrites the header unless it is passed, and a note must keep the user's.
+        self.ops.set_section(
+            node_id,
+            key,
+            f"{existing}\n\n{entry}" if existing else entry,
+            found.header if found else None,
+        )
 
     def _ledger(self, command: str, node_id: str, payload: dict[str, Any]) -> None:
         self.ops.ledger_repo.append(
