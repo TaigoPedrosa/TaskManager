@@ -10,7 +10,7 @@ import threading
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from fastapi.testclient import TestClient
@@ -543,12 +543,25 @@ class GatedSocket(FakeSocket):
         await super().send_json(message)
 
 
+class WatchedLock(asyncio.Lock):
+    def __init__(self) -> None:
+        super().__init__()
+        self.contended = asyncio.Event()
+
+    async def acquire(self) -> Literal[True]:
+        if self.locked():
+            self.contended.set()
+        return await super().acquire()
+
+
 @run_async
 async def test_a_subscribe_during_a_broadcast_is_answered_after_the_broadcast(
     estate: Estate,
 ) -> None:
     estate.add("S1", NodeKind.SPEC)
     hub = estate.hub()
+    lock = WatchedLock()
+    hub._lock = lock
     await hub.refresh()
     first = hub.open_session(FakeSocket())
     gated = GatedSocket()
@@ -565,7 +578,13 @@ async def test_a_subscribe_during_a_broadcast_is_answered_after_the_broadcast(
     broadcast = asyncio.create_task(hub.refresh())
     await gated.entered.wait()
     reply = asyncio.create_task(subscribe(hub, second, 2, reset=True))
-    await asyncio.wait({reply}, timeout=1)
+    contended = asyncio.create_task(lock.contended.wait())
+    # Returns when the subscribe is either answered or queued on the lock the broadcast holds;
+    # no time decides which.
+    await asyncio.wait({reply, contended}, return_when=asyncio.FIRST_COMPLETED)
+    assert not reply.done()
+    assert lock.locked()
+    assert _socket(second).sent == []
     gated.release.set()
     await asyncio.gather(broadcast, reply)
 
