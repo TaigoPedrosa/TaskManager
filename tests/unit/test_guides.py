@@ -1044,7 +1044,9 @@ BRIEF_RULES = [
         "Create, modify or delete nothing outside `declared_files`. Before touching another file, "
         "read the locks in `tm run list --yaml`. When another live node holds the file, release "
         "blocked and name that node (below). Otherwise add the file with `tm task update "
-        "<task-id> --set declared_files='[...]'` before the edit, and name it in the report.",
+        "<task-id> --set declared_files='[...]'` before the edit, and name it in the report. That "
+        "update locks the file for your lease, and tm refuses it, naming the holder, when another "
+        "live node took the file first: release blocked then.",
         id="implement:declared-files",
     ),
     pytest.param(
