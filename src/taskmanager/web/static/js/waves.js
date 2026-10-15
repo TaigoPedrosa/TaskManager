@@ -322,6 +322,15 @@ function wireWavesHandlers(root) {
 function renderWaves() {
   const content = document.getElementById('waves-content');
   if (!content) return;
+  // A re-render the user did not ask for (a live status push) must not take the size they are
+  // still typing, which only commits on 'change'.
+  const active = document.activeElement;
+  const typing = active && active.id === 'wave-size-input' ? active.value : null;
   content.innerHTML = wavesHtml();
   wireWavesHandlers(content);
+  if (typing !== null) {
+    const input = content.querySelector('#wave-size-input');
+    input.value = typing;
+    input.focus();
+  }
 }
