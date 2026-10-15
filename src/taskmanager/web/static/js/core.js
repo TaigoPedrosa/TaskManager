@@ -679,11 +679,16 @@ const SPINNER = '<span class="inline-block w-3.5 h-3.5 rounded-full border-2 bor
 // `request` again, so the promise resolves on whichever attempt succeeds. Disabling the control
 // dropped focus, so `onRefused` is where a caller puts it back; by default it goes back on the
 // control, unless it never left a field the write was fired from.
+// `writeObservers` hear each attempt as 'send' before the request goes out and 'refused' when it
+// fails, so state tied to a write in flight ends with a refusal and starts again on Retry.
+const writeObservers = [];
+
 function submitWrite(control, request, onRefused = () => {
   if (!document.activeElement || document.activeElement === document.body) control.focus();
 }) {
   return new Promise((resolve) => {
     const send = () => {
+      writeObservers.forEach(observe => observe('send', request));
       const label = control.innerHTML;
       if (control.offsetWidth) control.style.minWidth = `${control.offsetWidth}px`;
       control.disabled = true;
@@ -700,6 +705,7 @@ function submitWrite(control, request, onRefused = () => {
         resolve(data);
       }, (err) => {
         restore();
+        writeObservers.forEach(observe => observe('refused', request));
         toast(err.message, { tone: 'error', retry: send, owner: control });
         if (onRefused) onRefused();
       });
