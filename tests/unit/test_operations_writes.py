@@ -1,3 +1,4 @@
+import sqlite3
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -256,19 +257,32 @@ def test_a_detach_cannot_delete_a_file_an_attach_stored_but_not_yet_entered(
     real_store = operations_module.store_asset
     detached: list[threading.Thread] = []
 
+    def write_lock_held() -> bool:
+        probe = sqlite3.connect(kit.nodes.db.state_db, timeout=0)
+        try:
+            probe.execute("BEGIN IMMEDIATE")
+        except sqlite3.OperationalError:
+            return True
+        finally:
+            probe.close()
+        return False
+
+    # With the attach holding the write lock, the detach waits for it to commit; without it,
+    # the detach runs to the end here, between the attach's storing and its entry.
     def store_then_detach(assets_dir: Path, source: Path) -> tuple[str, str]:
         stored = real_store(assets_dir, source)
         thread = threading.Thread(target=lambda: kit.ops.detach(holder, asset))
-        thread.start()
-        # A detach that is not held out by the attach's transaction finishes here; one that is
-        # held out waits for the attach to commit, and the join only gives up.
-        thread.join(timeout=1)
         detached.append(thread)
+        held = write_lock_held()
+        thread.start()
+        if not held:
+            thread.join(timeout=30)
         return stored
 
     monkeypatch.setattr(operations_module, "store_asset", store_then_detach)
     kit.ops.attach(newcomer, path)
-    detached[0].join(timeout=10)
+    detached[0].join(timeout=30)
+    assert not detached[0].is_alive()
     assert (kit.ops._assets_dir() / asset).is_file()
     assert _attachments(kit, newcomer) == ["same.txt"]
 

@@ -1382,9 +1382,8 @@ class Operations:
             node.updated_at = datetime.now(tz=UTC)
             self.node_repo.save_node(node, keep_cycle=True)
             # `save_node` above already persisted `node_id`'s attachments with the entry removed,
-            # so checking every node (this one included) is correct: a second entry on `node_id`
-            # itself pointing at the same content-addressed asset is exactly the case a per-node
-            # exclusion used to miss, deleting the file while that second entry still referenced it.
+            # so the check covers every node, this one included: a second entry on `node_id`
+            # pointing at the same content-addressed asset still keeps the file.
             # An entry planted under another name (import, restored bundle) is dropped without
             # touching the file system.
             if ASSET_NAME_RE.fullmatch(asset) and not self._asset_referenced(asset):
