@@ -98,10 +98,13 @@ def _next_deadline(
     cache_conn: sqlite3.Connection,
     condition_ttl: int,
     archive_boundary: datetime | None,
+    now: datetime,
 ) -> datetime | None:
-    """The earliest instant a display could flip on its own, with no write to trigger a
-    rebuild: a live lease going stale, a cached condition result ageing out of its TTL, or a
-    completed spec crossing into the archive."""
+    """The earliest instant after `now` a display could flip on its own, with no write to
+    trigger a rebuild: a live lease going stale, a cached condition result ageing out of its
+    TTL, or a completed spec crossing into the archive. An instant already past has flipped in
+    the rebuild that asks, and the rows behind it (an expired result is never deleted) would
+    otherwise keep the deadline in the past and rebuild on every tick."""
     deadlines = [] if archive_boundary is None else [archive_boundary]
     deadlines += [
         lease.last_heartbeat + timedelta(seconds=lease.ttl_seconds)
@@ -112,7 +115,7 @@ def _next_deadline(
     if rows:
         earliest_checked = min(parse_db_datetime(r[0]) for r in rows)
         deadlines.append(earliest_checked + timedelta(seconds=condition_ttl))
-    return min(deadlines) if deadlines else None
+    return min((d for d in deadlines if d > now), default=None)
 
 
 class SubscribeFrame(BaseModel):
@@ -427,19 +430,26 @@ class LiveHub:
     async def refresh(self) -> None:
         if not self._should_rebuild():
             return
+        # Sent under the lock: a subscribe answered after the diff step must not reach a client
+        # before the broadcast whose diff it was computed against.
         async with self._lock:
-            broadcasts = await asyncio.to_thread(self._rebuild_and_diff)
-        for session, items in broadcasts:
-            if items:
-                await self._send(
-                    session,
-                    {
-                        "type": "update",
-                        "re": None,
-                        "hash": self.hash_by_mode[session.filters.archived],
-                        "items": items,
-                    },
-                )
+            try:
+                broadcasts = await asyncio.to_thread(self._rebuild_and_diff)
+            except Exception:
+                # The change that failed must still read as unseen on the next tick.
+                self._last_versions = None
+                raise
+            for session, items in broadcasts:
+                if items:
+                    await self._send(
+                        session,
+                        {
+                            "type": "update",
+                            "re": None,
+                            "hash": self.hash_by_mode[session.filters.archived],
+                            "items": items,
+                        },
+                    )
 
     def _should_rebuild(self) -> bool:
         versions = tuple(
@@ -462,10 +472,11 @@ class LiveHub:
     def _rebuild(self) -> None:
         view = DisplayView(self._snapshots, self._cache, self._condition_ttl())
         data = view.snapshot.graph_data()
+        now = self._clock()
         archive = archived_specs(
             view.snapshot,
             self._ledger,
-            self._clock(),
+            now,
             self._config.project().web.archive_after_days,
         )
         new_rows = build_rows(view, archive.nodes)
@@ -510,5 +521,5 @@ class LiveHub:
         self.decisions_open = decisions_open(view)
         self._raw_edges = raw_edges
         self._deadline = _next_deadline(
-            data.leases, self._cache_conn, self._condition_ttl(), archive.next_boundary
+            data.leases, self._cache_conn, self._condition_ttl(), archive.next_boundary, now
         )

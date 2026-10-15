@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from taskmanager.core.enums import NodeKind, RelationType, VerificationType
-from taskmanager.core.models import Job, Lease, Node, NodeRelation, NodeVerification
+from taskmanager.core.models import Job, Lease, LedgerEvent, Node, NodeRelation, NodeVerification
 from taskmanager.core.status import Action, DecisionStatus, JobKind, JobState, Status
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
@@ -434,6 +434,80 @@ def test_post_sweep_returns_swept_list(
     assert res.json() == {"swept": []}
 
 
+def _event_count(ledger_repo: LedgerRepository) -> int:
+    return len(ledger_repo.list_events(limit=1000))
+
+
+def _events_since(ledger_repo: LedgerRepository, before: int) -> list[LedgerEvent]:
+    events = ledger_repo.list_events(limit=1000)
+    return events[: len(events) - before]
+
+
+def _claim_t1(node_repo: NodeRepository) -> None:
+    node = node_repo.get_node("SPEC-P1-T1")
+    assert node is not None
+    node.status, node.claimed_from = Status.IMPLEMENTING, Status.READY
+    lease = Lease(
+        task_id="SPEC-P1-T1",
+        agent_id="a",
+        session_id="s",
+        branch_name="tm/SPEC-P1-T1",
+        action=Action.IMPLEMENT,
+        ttl_seconds=3600,
+    )
+    assert RuntimeRepository(node_repo.db).claim(lease, [], node)
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("post", "/api/nodes/SPEC-P1-T1/defer", {"note": "later"}),
+        ("post", "/api/nodes/SPEC-P1-T1/abandon", {"note": "no"}),
+        ("post", "/api/nodes/SPEC-P1-T1/reset", {"note": "back", "to": "READY"}),
+        ("delete", "/api/nodes/SPEC-P1-T1/lease", None),
+        ("post", "/api/leases/sweep", None),
+    ],
+)
+def test_claims_routes_record_the_requesting_actor_in_the_ledger(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+    method: str,
+    path: str,
+    body: dict[str, str] | None,
+) -> None:
+    client, node_repo, ledger_repo = api
+    if method == "delete" or path.endswith("sweep"):
+        _claim_t1(node_repo)
+        if path.endswith("sweep"):
+            RuntimeRepository(node_repo.db).release_lease("SPEC-P1-T1")
+    before = _event_count(ledger_repo)
+
+    res = client.request(method, path, json=body, headers={**JSON, "X-TM-Actor": "alice"})
+
+    assert res.status_code == 200
+    new_events = _events_since(ledger_repo, before)
+    assert new_events
+    assert {event.actor_id for event in new_events} == {"alice"}
+
+
+def test_reopen_records_the_requesting_actor_in_the_ledger(
+    api: tuple[TestClient, NodeRepository, LedgerRepository],
+) -> None:
+    client, _node_repo, ledger_repo = api
+    client.post("/api/nodes/SPEC-P1-T1/defer", json={"note": "later"})
+    before = _event_count(ledger_repo)
+
+    res = client.post(
+        "/api/nodes/SPEC-P1-T1/reopen",
+        json={"note": "now", "new_branch": False},
+        headers={"X-TM-Actor": "alice"},
+    )
+
+    assert res.status_code == 200
+    new_events = _events_since(ledger_repo, before)
+    assert new_events
+    assert {event.actor_id for event in new_events} == {"alice"}
+
+
 # -- decisions ----------------------------------------------------------------------------------
 
 
@@ -761,6 +835,24 @@ _PNG_1PX = base64.b64decode(
 )
 
 
+@pytest.mark.parametrize("filename", ["a\u0000b.png", "x" * 300 + ".png"])
+def test_post_attachment_with_an_unwritable_filename_is_a_400(
+    api: tuple[TestClient, NodeRepository, LedgerRepository], filename: str
+) -> None:
+    client, node_repo, _ledger_repo = api
+    res = client.post(
+        "/api/nodes/SPEC-P1-T1/attachments",
+        json={
+            "filename": filename,
+            "content_base64": base64.b64encode(_PNG_1PX).decode("ascii"),
+        },
+    )
+    assert res.status_code == 400
+    node = node_repo.get_node("SPEC-P1-T1")
+    assert node is not None
+    assert not node.frontmatter.get("attachments")
+
+
 def test_post_attachment_stores_content_addressed_asset(
     api: tuple[TestClient, NodeRepository, LedgerRepository],
 ) -> None:
@@ -967,6 +1059,30 @@ def test_get_file_serves_an_image_inside_root(
     res = client.get("/api/file", params={"path": "shot.png"})
     assert res.status_code == 200
     assert res.content == _PNG_1PX
+
+
+def test_get_file_serves_a_non_latin1_filename_with_an_rfc_5987_disposition(
+    api: tuple[TestClient, NodeRepository, LedgerRepository], tmp_path: Path
+) -> None:
+    client, _node_repo, _ledger_repo = api
+    (tmp_path / "\u56fe.png").write_bytes(_PNG_1PX)
+    res = client.get("/api/file", params={"path": "\u56fe.png"})
+    assert res.status_code == 200
+    assert res.headers["content-disposition"] == (
+        "inline; filename=\"_.png\"; filename*=UTF-8''%E5%9B%BE.png"
+    )
+
+
+def test_get_file_keeps_a_quote_in_a_filename_out_of_the_disposition_value(
+    api: tuple[TestClient, NodeRepository, LedgerRepository], tmp_path: Path
+) -> None:
+    client, _node_repo, _ledger_repo = api
+    (tmp_path / 'a"b.png').write_bytes(_PNG_1PX)
+    res = client.get("/api/file", params={"path": 'a"b.png'})
+    assert res.status_code == 200
+    assert res.headers["content-disposition"] == (
+        "inline; filename=\"a_b.png\"; filename*=UTF-8''a%22b.png"
+    )
 
 
 def test_get_file_refuses_traversal_outside_root(
