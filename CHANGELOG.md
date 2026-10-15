@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.10] - 2026-10-15
+
 ### Upgrading
 
 - An embedding key is sent only from a variable whose name starts with `TASKMANAGER_`, over https
@@ -533,9 +535,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - A web visualizer with a live socket, and a static exporter.
 - The taskmanager and dispatcher skills, packaged as a Claude Code plugin.
 
-[Unreleased]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.9...HEAD
-[0.3.9]: https://github.com/TaigoPedrosa/TaskManager/compare/c804a97...v0.3.9
-[0.3.8]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.7...c804a97
+[Unreleased]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.10...HEAD
+[0.3.10]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.9...v0.3.10
+[0.3.9]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.8...v0.3.9
+[0.3.8]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.4...v0.3.5
