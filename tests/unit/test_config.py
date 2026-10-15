@@ -1,3 +1,4 @@
+import fcntl
 import json
 import os
 import threading
@@ -337,8 +338,8 @@ def test_two_writers_at_once_both_keep_their_change(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = ConfigStore(root)
-    first_read, second_read, go = threading.Event(), threading.Event(), threading.Event()
-    read = ConfigStore.read
+    first_read, second_arrived, go = threading.Event(), threading.Event(), threading.Event()
+    read, flock = ConfigStore.read, fcntl.flock
 
     def read_pausing_the_first(self: ConfigStore) -> dict[str, object]:
         loaded = read(self)
@@ -346,18 +347,24 @@ def test_two_writers_at_once_both_keep_their_change(
             first_read.set()
             go.wait(timeout=30)
         elif threading.current_thread().name == "second":
-            second_read.set()
+            second_arrived.set()
         return loaded
 
+    # Locked, the second announces itself before it blocks on the first's lock; unlocked, it
+    # announces itself by reading the file the first has not written yet.
+    def flock_announcing_the_second(fd: int, op: int) -> None:
+        if threading.current_thread().name == "second" and op == fcntl.LOCK_EX:
+            second_arrived.set()
+        flock(fd, op)
+
     monkeypatch.setattr(ConfigStore, "read", read_pausing_the_first)
+    monkeypatch.setattr("taskmanager.engine.config.fcntl.flock", flock_announcing_the_second)
     first = threading.Thread(target=store.set, args=("lease_ttl", "10"), name="first")
     second = threading.Thread(target=store.set, args=("worktree_dir", "wt"), name="second")
     first.start()
     assert first_read.wait(timeout=30)
     second.start()
-    # Unlocked, the second reads while the first is held and writes without the first's change;
-    # locked, it waits here until the timeout and reads after the first has written.
-    second_read.wait(timeout=1)
+    assert second_arrived.wait(timeout=30)
     go.set()
     first.join(timeout=30)
     second.join(timeout=30)
