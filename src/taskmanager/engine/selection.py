@@ -25,12 +25,11 @@ from taskmanager.core.status import (
     Status,
 )
 from taskmanager.db.cache_repo import _command_hash
-from taskmanager.db.node_repo import declared_files_of
 from taskmanager.db.runtime_repo import lease_alive
 from taskmanager.engine.chains import satisfied
 from taskmanager.engine.config import STRONG_MODELS, ModelsConfig, ProjectConfig
 from taskmanager.engine.routing import model_for
-from taskmanager.engine.snapshot import SnapshotBuilder, apply_cycle, cycle_in, locked_keys
+from taskmanager.engine.snapshot import SnapshotBuilder, apply_cycle, cycle_in
 from taskmanager.engine.stepgraph import Snapshot, migration_holders
 
 # Later steps first, so a wave drains work already under way before it starts more.
@@ -321,13 +320,6 @@ def candidates(
     return sorted(found, key=lambda c: (_STAGE[c.action], -c.node.priority, c.node.id)), held
 
 
-def _wave_files(node: Node, action: Action | None, snap: Snapshot) -> list[str]:
-    if action not in (Action.IMPLEMENT, Action.FIX):
-        return []
-    files = declared_files_of(node, snap.graph_data().verifications.get(node.id, []))
-    return locked_keys(snap, node.target_repo, files)
-
-
 def _reserved(exclude: Sequence[str], snap: Snapshot) -> set[str]:
     """The files the excluded nodes' next claims lock. An excluded node is one a concurrent run of
     the same tick is about to claim, and that run may be scoped to another spec, so each is read
@@ -343,7 +335,7 @@ def _reserved(exclude: Sequence[str], snap: Snapshot) -> set[str]:
         except LifecycleError:
             # A node the lifecycle cannot read cannot be claimed either, so it locks nothing.
             continue
-        taken.update(_wave_files(node, action, snap))
+        taken.update(_locked_files(node.id, action, snap))
     return taken
 
 
@@ -376,7 +368,7 @@ def select(
             continue
         repo = node.target_repo or ""
         migration = snap.nodes[node.id].writes_migration
-        files = _wave_files(node, cand.action, snap)
+        files = _locked_files(node.id, cand.action, snap)
         why: list[str] = []
         if cand.action == Action.IMPLEMENT and migration:
             if repo not in chain_holders:

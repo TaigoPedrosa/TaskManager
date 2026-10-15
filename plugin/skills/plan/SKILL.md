@@ -76,7 +76,7 @@ Every task's verifications must fail before its change. For each task, run its c
 tm verify run <task-id>
 ```
 
-With no `--ref`, this reads the branch `tm task get <task-id> --yaml` prints as `lands_on`, on the repository's remote after a fetch, or the local branch where `repos.<repo>.remote` is null.
+With no `--ref`, this reads the branch `tm task get <task-id> --yaml` prints as `lands_on`, on the repository's remote after a fetch, or the local branch where `repos.<repo>.remote` is null. A `lands_on` branch tm has not created yet (it creates it on the first landing) reads as the repository's default branch, so a check fails for its missing deliverable and not for a missing ref; `--ref <ref>` reads any other ref.
 
 Each run must exit 1 with at least one of the task's checks `FAILED`, and none failing for a reason other than the missing deliverable (a typo in a path, a command that cannot run). A verification that passes on the target proves nothing: rewrite it so it checks this task's own deliverable, put it back with `tm verify remove` and `tm verify add` (or fix the document and re-import while nothing is claimed), and run it again. `No verifications to run.` is a miss from step 4: add one. Do the same for each plan's joined verification.
 

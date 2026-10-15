@@ -475,18 +475,18 @@ def test_the_openai_provider_reads_the_key_from_the_variable_the_config_names(
         )
 
     monkeypatch.setattr(httpx.Client, "post", answer)
-    monkeypatch.setenv("MY_EMBED_KEY", "sekret-value")
+    monkeypatch.setenv("TASKMANAGER_EMBED_KEY", "sekret-value")
     for key, value in [
         ("embeddings.provider", "openai"),
-        ("embeddings.api_key_env", "MY_EMBED_KEY"),
-        ("embeddings.base_url", "http://local.test/v1"),
+        ("embeddings.api_key_env", "TASKMANAGER_EMBED_KEY"),
+        ("embeddings.base_url", "http://localhost:8080/v1"),
         ("embeddings.model", "nomic"),
         ("embeddings.dimensions", "4"),
     ]:
         _cli(project, "config", "set", key, value)
     code, out = _cli(project, "index")
     assert code == 0, out
-    assert seen[0]["url"] == "http://local.test/v1/embeddings"
+    assert seen[0]["url"] == "http://localhost:8080/v1/embeddings"
     assert seen[0]["headers"] == {"Authorization": "Bearer sekret-value"}
     assert seen[0]["json"] == {"input": "Auth spec", "model": "nomic"}
     assert "sekret-value" not in (project / ".taskmanager" / "config.yaml").read_text()

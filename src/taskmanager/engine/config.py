@@ -1,7 +1,9 @@
 import copy
+import fcntl
 import os
 import re
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Final, Literal, NamedTuple
 
@@ -393,6 +395,11 @@ def _without(repos: dict[str, Any], key: RepoKey) -> dict[str, Any]:
         if not isinstance(node, dict):
             return out
     node.pop(leaf, None)
+    # A gate left with no field is not a gate: `command` is required, so it would fail the
+    # validation that follows. Only a gate is dropped, the other mappings stay as written.
+    if not node and len(key.path) == 3 and key.path[0] == "gates":
+        gates = out[key.repo]["gates"]
+        gates.pop(key.path[1])
     return out
 
 
@@ -514,12 +521,36 @@ class ConfigStore:
         if moved_defaults(before, after):
             self.guard(before, after)
 
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        """Holds an exclusive lock on the estate directory, so two read-modify-writes of the
+        file run one after the other and neither loses the other's change."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.path.parent, os.O_RDONLY)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)
+
     def _write(self, flat: dict[str, Any]) -> None:
         self._check_branches(flat)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(yaml.safe_dump(_nest(flat), sort_keys=True), encoding="utf-8")
+        # Replaced whole, so a concurrent reader sees the old file or the new one and never an
+        # empty one, which would read as every default.
+        staged = self.path.with_name(f"{self.path.name}.tmp")
+        staged.write_text(yaml.safe_dump(_nest(flat), sort_keys=True), encoding="utf-8")
+        os.replace(staged, self.path)
 
     def set(self, key: str, raw: str) -> None:
+        with self._locked():
+            self._set(key, raw)
+
+    def unset(self, key: str) -> None:
+        with self._locked():
+            self._unset(key)
+
+    def _set(self, key: str, raw: str) -> None:
         flat = self.read()
         stored = flat.get("repos", {})
         found = _repo_key(key)
@@ -533,7 +564,7 @@ class ConfigStore:
         _check_bounds(key, flat)
         self._write(flat)
 
-    def unset(self, key: str) -> None:
+    def _unset(self, key: str) -> None:
         found = _repo_key(key)
         if found is None:
             _require_key(key)

@@ -1,4 +1,6 @@
 import json
+import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -309,3 +311,56 @@ def test_a_remote_name_tm_wave_cannot_quote_is_refused(remote: str) -> None:
 @pytest.mark.parametrize("remote", ["origin", "up.stream_2", "team/fork", None])
 def test_a_remote_name_of_quotable_characters_or_none_is_kept(remote: str | None) -> None:
     assert RepoConfig(remote=remote).remote == remote
+
+
+def test_a_reader_never_sees_the_file_empty_while_it_is_rewritten(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = ConfigStore(root)
+    store.set("lease_ttl", "10")
+    seen: list[str] = []
+    replace = os.replace
+
+    def replace_after_checking(src: Path, dst: Path) -> None:
+        seen.append(store.path.read_text(encoding="utf-8"))
+        replace(src, dst)
+
+    monkeypatch.setattr("taskmanager.engine.config.os.replace", replace_after_checking)
+
+    store.set("lease_ttl", "20")
+
+    assert seen == ["lease_ttl: 10\n"]
+    assert store.read()["lease_ttl"] == 20
+
+
+def test_two_writers_at_once_both_keep_their_change(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = ConfigStore(root)
+    first_read, second_read, go = threading.Event(), threading.Event(), threading.Event()
+    read = ConfigStore.read
+
+    def read_pausing_the_first(self: ConfigStore) -> dict[str, object]:
+        loaded = read(self)
+        if threading.current_thread().name == "first":
+            first_read.set()
+            go.wait(timeout=30)
+        elif threading.current_thread().name == "second":
+            second_read.set()
+        return loaded
+
+    monkeypatch.setattr(ConfigStore, "read", read_pausing_the_first)
+    first = threading.Thread(target=store.set, args=("lease_ttl", "10"), name="first")
+    second = threading.Thread(target=store.set, args=("worktree_dir", "wt"), name="second")
+    first.start()
+    assert first_read.wait(timeout=30)
+    second.start()
+    # Unlocked, the second reads while the first is held and writes without the first's change;
+    # locked, it waits here until the timeout and reads after the first has written.
+    second_read.wait(timeout=1)
+    go.set()
+    first.join(timeout=30)
+    second.join(timeout=30)
+
+    monkeypatch.undo()
+    assert (store.read()["lease_ttl"], store.read()["worktree_dir"]) == (10, "wt")
