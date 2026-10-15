@@ -11,6 +11,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Any, NoReturn, cast
+from urllib.parse import quote
 
 import typer
 from dishka import Container, make_container
@@ -1557,7 +1558,7 @@ def section_get(
     if not qp.section_key:
         secs = node_repo.get_all_sections(qp.node_id)
         if not secs:
-            print(f"[yellow]No sections found for node '{qp.node_id}'[/yellow]")
+            print(f"[yellow]No sections found for node '{escape(qp.node_id)}'[/yellow]")
             return
         for s in secs:
             sys.stdout.write(f"{s.header}\n{s.content}\n\n")
@@ -1600,13 +1601,15 @@ def section_set(
         )
         raise typer.Exit(code=1)
 
-    text_content = ""
     if file:
         text_content = file.read()
     elif content_opt is not None:
         text_content = content_opt
     elif content is not None:
         text_content = content
+    else:
+        _stderr.print("[red]Give the content as an argument, --content or --file[/red]")
+        raise typer.Exit(code=1)
 
     # Without --header the stored one stays, so `section get | section set --file -` round-trips.
     stored = container.get(NodeRepository).get_section(qp.node_id, qp.section_key)
@@ -1896,7 +1899,7 @@ def verify_run(
     try:
         all_passed, results = ops.run_verifications(target_tid, ref=ref)
     except OperationError as exc:
-        print(f"[yellow]{exc}[/yellow]")
+        _stderr.print(f"[yellow]{escape(str(exc))}[/yellow]")
         raise typer.Exit(code=2) from exc
 
     if json_output or yaml_output:
@@ -2444,6 +2447,12 @@ def _export_node(node_repo: NodeRepository, node: Node, supersedes: list[str]) -
     }
 
 
+def _export_file_name(node_id: str, prefix: str = "") -> str:
+    # Percent-encoding is injective and leaves no separator, so a stored id of any shape names
+    # a file inside the export directory and two ids never share one.
+    return f"{prefix}{quote(node_id, safe='')}.json"
+
+
 @app.command("export")
 def export_cmd(
     directory: Path,
@@ -2459,10 +2468,10 @@ def export_cmd(
     container = _get_container(root)
     node_repo = container.get(NodeRepository)
 
+    documents: dict[str, dict[str, Any]] = {}
+
     def dump(name: str, doc: dict[str, Any]) -> None:
-        (directory / name).write_text(
-            json.dumps(doc, indent=1, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8"
-        )
+        documents[name] = doc
 
     with _user_errors():
         caps = Claims.open(root).caps
@@ -2484,7 +2493,6 @@ def export_cmd(
             doc["completed_at"] = to_db_timestamp(completed_at[node.id])
         return doc
 
-    directory.mkdir(parents=True, exist_ok=True)
     dump("_format.json", EXPORT_FORMAT)
     specs = {n.id: n for n in node_repo.list_nodes(kind=NodeKind.SPEC)}
     tasks = node_repo.list_nodes(kind=NodeKind.TASK)
@@ -2492,20 +2500,13 @@ def export_cmd(
     decisions = sorted(node_repo.list_nodes(kind=NodeKind.DECISION), key=lambda n: n.id)
     if decisions:
         dump("_decisions.json", {"decisions": [entry(d) for d in decisions]})
-    assets_src = root / ".taskmanager" / "assets"
-    if assets_src.is_dir():
-        assets_dst = directory / "assets"
-        assets_dst.mkdir(parents=True, exist_ok=True)
-        for f in sorted(assets_src.iterdir()):
-            if f.is_file():
-                (assets_dst / f.name).write_bytes(f.read_bytes())
     for plan in plans:
         children = set(node_repo.get_children(plan.id))
         plan_doc = entry(plan)
         plan_doc["tasks"] = [entry(t) for t in tasks if t.id in children]
         owner = next((sid for sid in sorted(specs) if plan.id in node_repo.get_children(sid)), None)
         dump(
-            f"{plan.id}.json",
+            _export_file_name(plan.id),
             {
                 "spec": {"id": owner, "title": specs[owner].title} if owner else None,
                 "plans": [plan_doc],
@@ -2517,12 +2518,31 @@ def export_cmd(
         # Import accepts tasks straight under a spec, or under nothing; the archive keeps both.
         if spec_tasks := [entry(t) for t in tasks if t.id in children]:
             spec_doc["tasks"] = spec_tasks
-        dump(f"_spec-{spec_id}.json", spec_doc)
+        dump(_export_file_name(spec_id, prefix="_spec-"), spec_doc)
     parented = {c for n in [*specs.values(), *plans] for c in node_repo.get_children(n.id)}
     if lone := [entry(t) for t in tasks if t.id not in parented]:
         dump("_tasks.json", {"tasks": lone})
     if settings is not None:
         dump("_config.json", {k: v for k, v in settings.items() if k not in MACHINE_LOCAL_KEYS})
+
+    directory.mkdir(parents=True, exist_ok=True)
+    # Restore reads every *.json, so a file an earlier export wrote and this one no longer emits
+    # would be imported as current state. Only a directory carrying the export marker is swept:
+    # any other json in it belongs to someone else.
+    if (directory / "_format.json").is_file():
+        for stale in directory.glob("*.json"):
+            stale.unlink()
+    for name, doc in documents.items():
+        (directory / name).write_text(
+            json.dumps(doc, indent=1, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+    assets_src = root / ".taskmanager" / "assets"
+    if assets_src.is_dir():
+        assets_dst = directory / "assets"
+        assets_dst.mkdir(parents=True, exist_ok=True)
+        for f in sorted(assets_src.iterdir()):
+            if f.is_file():
+                (assets_dst / f.name).write_bytes(f.read_bytes())
     print(f"[green]Exported {len(plans)} plans and {len(specs)} specs to {directory}[/green]")
 
 
@@ -2547,14 +2567,6 @@ def restore_cmd(
     container = _get_container(root)
     container.get(DatabaseManager).init_all()
     importer = _RefusingImporter(container.get(BulkImporter), str(directory))
-
-    assets_dir = directory / "assets"
-    if assets_dir.is_dir():
-        assets_dest = root / ".taskmanager" / "assets"
-        assets_dest.mkdir(parents=True, exist_ok=True)
-        for f in sorted(assets_dir.iterdir()):
-            if f.is_file():
-                (assets_dest / f.name).write_bytes(f.read_bytes())
 
     files = [
         f
@@ -2596,17 +2608,27 @@ def restore_cmd(
     plan_docs = [d for d in docs if d.get("plans")]
     spec_docs = [d for d in docs if not d.get("plans")]
 
-    for doc in [*plan_docs, *spec_docs]:
-        first = copy.deepcopy(doc)
-        own = {n["id"] for n in nodes_of(first)}
-        for n in nodes_of(first):
-            for edges in ("depends_on", "supersedes"):
-                n[edges] = [d for d in n.get(edges, []) if d in own]
-        importer.import_dict(first, restoring=True)
-    if decisions_doc is not None:
-        importer.import_dict(decisions_doc, restoring=True)
-    for doc in [*plan_docs, *spec_docs]:
-        importer.import_dict(doc, restoring=True)
+    # One transaction across every document: a refusal partway leaves the estate as it was, so
+    # the restore can be run again once the export is fixed.
+    with container.get(NodeRepository).transaction():
+        for doc in [*plan_docs, *spec_docs]:
+            first = copy.deepcopy(doc)
+            own = {n["id"] for n in nodes_of(first)}
+            for n in nodes_of(first):
+                for edges in ("depends_on", "supersedes"):
+                    n[edges] = [d for d in n.get(edges, []) if d in own]
+            importer.import_dict(first, restoring=True)
+        if decisions_doc is not None:
+            importer.import_dict(decisions_doc, restoring=True)
+        for doc in [*plan_docs, *spec_docs]:
+            importer.import_dict(doc, restoring=True)
+    assets_dir = directory / "assets"
+    if assets_dir.is_dir():
+        assets_dest = root / ".taskmanager" / "assets"
+        assets_dest.mkdir(parents=True, exist_ok=True)
+        for f in sorted(assets_dir.iterdir()):
+            if f.is_file():
+                (assets_dest / f.name).write_bytes(f.read_bytes())
     ledger = container.get(LedgerRepository)
     for node_id, at in sorted(completed_at.items()):
         ledger.append(
@@ -2789,6 +2811,12 @@ _IMPORT_SUFFIXES = {
 }
 
 
+# The fences are whole lines, so a `---` inside a frontmatter value does not end the block.
+_FRONTMATTER = re.compile(
+    r"\A---[ \t]*\n(?P<frontmatter>.*?)^---[ \t]*$(?:\n(?P<body>.*))?\Z", re.DOTALL | re.MULTILINE
+)
+
+
 def _parse_import(content: str, format: ImportFormat) -> Any:
     import yaml
 
@@ -2796,10 +2824,15 @@ def _parse_import(content: str, format: ImportFormat) -> Any:
         return json.loads(content)
     if format == ImportFormat.YAML:
         return yaml.safe_load(content)
-    parts = content.split("---", 2)
-    if not content.startswith("---") or len(parts) < 3:
+    match = _FRONTMATTER.match(content)
+    if not match:
         raise ValueError("a markdown import needs a `---` frontmatter block")
-    return yaml.safe_load(parts[1])
+    if (match["body"] or "").strip():
+        raise ValueError(
+            "a markdown import reads only the frontmatter block; put the text below it in a "
+            "section of the document"
+        )
+    return yaml.safe_load(match["frontmatter"])
 
 
 @app.command("import")

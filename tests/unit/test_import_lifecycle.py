@@ -9,8 +9,9 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from taskmanager.cli.main import EXPORT_FORMAT
+from taskmanager.cli.main import EXPORT_FORMAT, _parse_import
 from taskmanager.cli.main import app as cli_app
+from taskmanager.core.enums import ImportFormat
 from taskmanager.core.lifecycle import next_action
 from taskmanager.core.status import Action, ConditionStage, DecisionStatus, Merge, Status
 from taskmanager.db.connection import DatabaseManager
@@ -147,10 +148,8 @@ def _via_json(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _via_markdown(data: dict[str, Any]) -> dict[str, Any]:
-    # A markdown import's document lives in the frontmatter block, parsed the same way as yaml.
-    content = f"---\n{yaml.safe_dump(data)}---\n\nbody\n"
-    _, frontmatter, _ = content.split("---", 2)
-    return cast("dict[str, Any]", yaml.safe_load(frontmatter))
+    content = f"---\n{yaml.safe_dump(data)}---\n"
+    return cast("dict[str, Any]", _parse_import(content, ImportFormat.MARKDOWN))
 
 
 @pytest.mark.parametrize(
