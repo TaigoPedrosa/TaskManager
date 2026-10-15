@@ -60,7 +60,7 @@ def test_oversized_attachment_is_not_embedded(tmp_path: Path, monkeypatch) -> No
 def _static_data(html: str) -> dict:  # type: ignore[type-arg]
     match = re.search(r"window\.STATIC_DATA = (.*);</script>", html)
     assert match is not None
-    return json.loads(match.group(1).replace("<\\/", "</"))  # type: ignore[no-any-return]
+    return json.loads(match.group(1))  # type: ignore[no-any-return]
 
 
 def test_export_holds_every_decision_past_the_http_pages_default_limit(tmp_path: Path) -> None:

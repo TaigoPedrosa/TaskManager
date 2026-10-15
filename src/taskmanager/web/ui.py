@@ -5,6 +5,7 @@ order so the served page and the static export both stay a single self-contained
 """
 
 import json
+import re
 from importlib.resources import files
 from typing import Any
 
@@ -38,8 +39,11 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         # A section's own content is user-writable (`PUT /api/nodes/{id}/sections/{key}`) and
         # ends up inside `initial_data` verbatim; a `</script>` in it would otherwise close this
         # tag early and run whatever text follows as markup, in the one output (the static
-        # export) that has no server left to sanitise on the way out.
-        raw_json = json.dumps(initial_data).replace("</", "<\\/")
+        # export) that has no server left to sanitise on the way out. Every `<` is escaped, not
+        # only `</`: a `<!--` followed by `<script` switches the HTML parser into a state where
+        # even the tag's own `</script>` no longer closes it. `<` only occurs inside JSON
+        # strings, where `<` decodes to the same character.
+        raw_json = json.dumps(initial_data).replace("<", "\\u003c")
         embedded_script = f"<script>window.STATIC_DATA = {raw_json};</script>"
 
     runtime_data = (
@@ -59,13 +63,16 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
         "<!--slot:status-css-->", StatusVisual.css() + PhaseVisual.css()
     )
 
-    html = _read_static("index.html")
-    html = html.replace("<!--slot:tailwind-css-->", _read_static("tailwind.css"))
-    html = html.replace("<!--slot:app-css-->", css)
-    html = html.replace("<!--slot:runtime-data-->", runtime_data)
-    html = html.replace("<!--slot:static-data-->", embedded_script)
-    html = html.replace("<!--slot:icon-sprite-->", AppIcon.generate_svg_sprite())
-    for name in _JS_FILES:
-        slot = f"<!--slot:js-{name.removesuffix('.js')}-->"
-        html = html.replace(slot, _read_static("js", name))
-    return html
+    slots = {
+        "<!--slot:tailwind-css-->": _read_static("tailwind.css"),
+        "<!--slot:app-css-->": css,
+        "<!--slot:runtime-data-->": runtime_data,
+        "<!--slot:static-data-->": embedded_script,
+        "<!--slot:icon-sprite-->": AppIcon.generate_svg_sprite(),
+        **{
+            f"<!--slot:js-{name.removesuffix('.js')}-->": _read_static("js", name)
+            for name in _JS_FILES
+        },
+    }
+    # One pass: a slot marker inside substituted text (a section quoting one) stays text.
+    return re.sub(r"<!--slot:[\w-]+-->", lambda m: slots[m[0]], _read_static("index.html"))

@@ -2,10 +2,13 @@
 
 import asyncio
 import base64
+import copy
 import hashlib
 import ipaddress
 import json
+import logging
 import mimetypes
+import re
 import subprocess
 import tempfile
 from collections.abc import AsyncGenerator, Callable, Iterator, Mapping
@@ -14,7 +17,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from dishka import make_container
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -44,6 +47,7 @@ from taskmanager.db.node_repo import NodeRepository
 from taskmanager.di.container import TaskManagerProvider
 from taskmanager.engine.archive import Archive, archived_specs
 from taskmanager.engine.assets import ASSET_NAME_RE
+from taskmanager.engine.claims import Claims
 from taskmanager.engine.config import ConfigStore, DispatchConfig
 from taskmanager.engine.decisions import read_decision
 from taskmanager.engine.landing import Landing
@@ -307,6 +311,12 @@ def _refusals() -> Iterator[None]:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
+_logger = logging.getLogger(__name__)
+
+# Header values are latin-1 on the wire: anything outside printable ASCII, a quote or a
+# backslash cannot sit inside the quoted `filename=` form; `filename*` carries the real name.
+_ASCII_UNSAFE = re.compile(r'[^\x20-\x7e]|["\\]')
+
 _RESET_TARGETS = (
     Status.READY,
     Status.IMPLEMENTED,
@@ -529,6 +539,12 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     snapshots = container.get(SnapshotBuilder)
     # A verb or a lease release may start or stop a landing, so the claims carry the engine.
     claims = Landing.open(project_root).claims
+
+    def claims_as(actor: str) -> Claims:
+        scoped = copy.copy(claims)
+        scoped.ops = claims.ops.with_actor(actor)
+        return scoped
+
     jobs = container.get(JobRepository)
     cache = container.get(CacheRepository)
     ledger = container.get(LedgerRepository)
@@ -557,6 +573,10 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
                 await live_hub.refresh()
             except asyncio.CancelledError:
                 break
+            except Exception:
+                # One failed rebuild (a locked database, a half-written row) must not end live
+                # updates for every client until the server restarts; the next tick retries.
+                _logger.exception("live refresh failed")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
@@ -915,25 +935,25 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     @app.post("/api/nodes/{node_id}/reopen")
     def post_reopen(node_id: str, body: ReopenRequest, actor: Actor) -> dict[str, str]:
         with _refusals():
-            claims.reopen(node_id, body.note, new_branch=body.new_branch)
+            claims_as(actor).reopen(node_id, body.note, new_branch=body.new_branch)
         return _moved(node_id)
 
     @app.post("/api/nodes/{node_id}/reset")
     def post_reset(node_id: str, body: ResetRequest, actor: Actor) -> dict[str, str]:
         with _refusals():
-            claims.reset(node_id, body.to, body.note, outcome=body.outcome)
+            claims_as(actor).reset(node_id, body.to, body.note, outcome=body.outcome)
         return _moved(node_id)
 
     @app.post("/api/nodes/{node_id}/defer")
     def post_defer(node_id: str, body: NoteRequest, actor: Actor) -> dict[str, str]:
         with _refusals():
-            claims.defer(node_id, body.note)
+            claims_as(actor).defer(node_id, body.note)
         return _moved(node_id)
 
     @app.post("/api/nodes/{node_id}/abandon")
     def post_abandon(node_id: str, body: NoteRequest, actor: Actor) -> dict[str, str]:
         with _refusals():
-            claims.abandon(node_id, body.note)
+            claims_as(actor).abandon(node_id, body.note)
         return _moved(node_id)
 
     @app.post("/api/nodes/{node_id}/conditions", status_code=201)
@@ -953,13 +973,13 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     @app.delete("/api/nodes/{node_id}/lease")
     def delete_lease(node_id: str, actor: Actor) -> dict[str, str]:
         with _refusals():
-            claims.release(node_id)
+            claims_as(actor).release(node_id)
         return _moved(node_id)
 
     @app.post("/api/leases/sweep")
     def post_sweep(actor: Actor) -> dict[str, list[str]]:
         with _refusals():
-            swept = claims.sweep()
+            swept = claims_as(actor).sweep()
         return {"swept": swept}
 
     @app.get("/api/jobs/{job_id}")
@@ -1083,7 +1103,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         # the dir itself, so `write_bytes` hit an uncaught IsADirectoryError -- a 500, not the
         # 400 a bad filename should be.
         filename = Path(body.filename).name or "attachment"
-        if filename in (".", ".."):
+        if filename in (".", "..") or "\0" in filename or len(filename.encode()) > 255:
             raise HTTPException(400, "filename is not valid")
         with _refusals(), tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir) / filename
@@ -1120,7 +1140,10 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         return {
             "X-Content-Type-Options": "nosniff",
             "Content-Security-Policy": "sandbox",
-            "Content-Disposition": f'{disposition}; filename="{filename}"',
+            "Content-Disposition": (
+                f'{disposition}; filename="{_ASCII_UNSAFE.sub("_", filename)}"; '
+                f"filename*=UTF-8''{quote(filename, safe='')}"
+            ),
         }
 
     @app.get("/assets/{name}")

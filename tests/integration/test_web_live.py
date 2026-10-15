@@ -4,7 +4,9 @@
 import asyncio
 import functools
 import json
+import sqlite3
 import sys
+import threading
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -467,6 +469,109 @@ async def test_a_lease_expiring_with_no_write_sends_its_stale_row_once_the_deadl
     assert stale_rows and stale_rows[0]["display"] == "STALE"
 
 
+@run_async
+async def test_an_expired_condition_result_does_not_keep_the_hub_rebuilding(
+    estate: Estate, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    estate.add("T1", NodeKind.TASK)
+    estate.cache.put_condition("T1", 0, "true", 0)
+    with estate.db.get_cache_connection() as conn:
+        conn.execute("UPDATE condition_results SET checked_at = '2000-01-01 00:00:00'")
+        conn.commit()
+    hub = estate.hub()
+    rebuilds: list[None] = []
+    original = hub._rebuild
+    monkeypatch.setattr(hub, "_rebuild", lambda: (rebuilds.append(None), original())[1])
+
+    await hub.refresh()
+    await hub.refresh()
+    await hub.refresh()
+
+    assert len(rebuilds) == 1
+
+
+@run_async
+async def test_a_stale_lease_does_not_keep_the_hub_rebuilding(
+    estate: Estate, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    estate.add("T1", NodeKind.TASK, status=Status.IMPLEMENTING, claimed_from=Status.READY)
+    estate.lease("T1", ttl_seconds=1, last_heartbeat=datetime.now(tz=UTC) - timedelta(hours=1))
+    hub = estate.hub()
+    rebuilds: list[None] = []
+    original = hub._rebuild
+    monkeypatch.setattr(hub, "_rebuild", lambda: (rebuilds.append(None), original())[1])
+
+    await hub.refresh()
+    await hub.refresh()
+
+    assert len(rebuilds) == 1
+
+
+@run_async
+async def test_a_failed_rebuild_is_retried_on_the_next_tick_without_a_new_write(
+    estate: Estate, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    estate.add("S1", NodeKind.SPEC)
+    hub = estate.hub()
+    original = hub._rebuild
+    failures = [True]
+
+    def flaky() -> None:
+        if failures:
+            failures.pop()
+            raise sqlite3.OperationalError("database is locked")
+        original()
+
+    monkeypatch.setattr(hub, "_rebuild", flaky)
+
+    with pytest.raises(sqlite3.OperationalError):
+        await hub.refresh()
+    await hub.refresh()
+
+    assert "S1" in hub.rows
+
+
+class GatedSocket(FakeSocket):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def send_json(self, message: dict[str, Any]) -> None:
+        self.entered.set()
+        await self.release.wait()
+        await super().send_json(message)
+
+
+@run_async
+async def test_a_subscribe_during_a_broadcast_is_answered_after_the_broadcast(
+    estate: Estate,
+) -> None:
+    estate.add("S1", NodeKind.SPEC)
+    hub = estate.hub()
+    await hub.refresh()
+    first = hub.open_session(FakeSocket())
+    gated = GatedSocket()
+    gated.release.set()
+    slow = hub.open_session(gated)
+    second = hub.open_session(FakeSocket())
+    for session in (first, slow, second):
+        await subscribe(hub, session, 1, reset=True)
+    gated.release.clear()
+    gated.entered.clear()
+    _socket(second).sent.clear()
+
+    estate.add("S2", NodeKind.SPEC)
+    broadcast = asyncio.create_task(hub.refresh())
+    await gated.entered.wait()
+    reply = asyncio.create_task(subscribe(hub, second, 2, reset=True))
+    await asyncio.wait({reply}, timeout=1)
+    gated.release.set()
+    await asyncio.gather(broadcast, reply)
+
+    assert [m["type"] for m in _socket(second).sent] == ["update", "snapshot"]
+
+
 # -- a landed dependency, watched from its dependent's side ------------------------------------
 
 
@@ -594,6 +699,27 @@ def test_ledger_watcher_last_event_id_and_connection_manager_are_gone_from_app_p
     source = Path(app_module.__file__).read_text()
     for gone in ("ledger_watcher", "last_event_id", "ConnectionManager"):
         assert gone not in source
+
+
+def test_the_live_loop_survives_a_refresh_that_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = DatabaseManager(tmp_path / ".taskmanager")
+    db.init_all()
+    calls: list[int] = []
+    recovered = threading.Event()
+
+    async def flaky_refresh(self: LiveHub) -> None:
+        calls.append(1)
+        if len(calls) == 2:
+            raise sqlite3.OperationalError("database is locked")
+        if len(calls) >= 3:
+            recovered.set()
+
+    monkeypatch.setattr(LiveHub, "refresh", flaky_refresh)
+
+    with TestClient(create_app(tmp_path)):
+        assert recovered.wait(timeout=10)
 
 
 def test_the_real_app_answers_ws_with_the_protocol(tmp_path: Path) -> None:
