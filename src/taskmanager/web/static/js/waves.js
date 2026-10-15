@@ -43,15 +43,6 @@ async function getJson(path) {
   return res.json();
 }
 
-// FastAPI answers a validation failure (422) with `detail` as a list of {loc, msg, type}
-// objects, and an HTTPException with a plain string.
-function detailText(detail) {
-  if (detail == null) return null;
-  if (typeof detail === 'string') return detail;
-  if (Array.isArray(detail)) return detail.map((d) => (d && d.msg ? d.msg : JSON.stringify(d))).join('; ');
-  return JSON.stringify(detail);
-}
-
 async function loadWaveMeta() {
   try {
     const meta = await getJson('/api/meta');

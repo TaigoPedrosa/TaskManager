@@ -31,7 +31,9 @@ function fieldRow(labelText, innerHtml) {
 // Form dialog -----------------------------------------------------------------------------
 // core.js's openDialog shows it, traps focus and returns focus on close. A dialog closed
 // without a successful submit keeps its fields: opening the same one again (same `key`,
-// default its title) brings the draft back. onSubmit(panel, close, write) sends its writes
+// default its title) brings the draft back, unless the form it would show differs from the
+// one the draft was built from (the node changed since), and always submits through the
+// latest caller's onSubmit, which is bound to what that caller meant to act on. onSubmit(panel, close, write) sends its writes
 // through `write(method, path, body)`, which is submitWrite on the submit button; a throw
 // (a missing field) shows its message in the form and as a toast, and the form stays open.
 // Either refusal puts focus on the `refusedFocus` field, else on the submit button, which
@@ -42,6 +44,10 @@ const dialogDrafts = new Map();
 function formDialog({ title, bodyHtml, onMount, onSubmit, submitLabel = 'Save', cancelLabel = 'Cancel', destructive = false, key = title, refusedFocus = null }) {
   const opener = document.activeElement;
   let draft = dialogDrafts.get(key);
+  if (draft && draft.bodyHtml !== bodyHtml) {
+    dialogDrafts.delete(key);
+    draft = null;
+  }
   if (!draft) {
     const overlay = document.createElement('div');
     overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4';
@@ -63,7 +69,7 @@ function formDialog({ title, bodyHtml, onMount, onSubmit, submitLabel = 'Save', 
         </form>
       </div>
     `;
-    draft = { overlay, close: () => {} };
+    draft = { overlay, bodyHtml, onSubmit, close: () => {} };
     const panel = overlay.querySelector('[role="dialog"]');
     const errorEl = panel.querySelector('.dlg-error');
     const submitBtn = panel.querySelector('.dlg-submit');
@@ -80,7 +86,7 @@ function formDialog({ title, bodyHtml, onMount, onSubmit, submitLabel = 'Save', 
       errorEl.classList.add('hidden');
       submitBtn.disabled = true;
       try {
-        await onSubmit(panel, done, write);
+        await draft.onSubmit(panel, done, write);
       } catch (err) {
         const message = err && err.message ? err.message : 'Request failed.';
         errorEl.textContent = message;
@@ -94,6 +100,7 @@ function formDialog({ title, bodyHtml, onMount, onSubmit, submitLabel = 'Save', 
     });
     dialogDrafts.set(key, draft);
   }
+  draft.onSubmit = onSubmit;
   draft.close = openDialog(draft.overlay, opener).close;
   return { panel: draft.overlay.querySelector('[role="dialog"]'), close: () => draft.close() };
 }
@@ -121,33 +128,14 @@ function confirmDialog({ title, message = '', confirmLabel = 'Confirm', destruct
   });
 }
 
-// No write here ever reloads anything: its effect reaches every open view as a row/body
-// update over the store's own subscription. A created node is the one case with nothing yet
-// to update -- its row does not exist until the store says so -- so this opens its container
-// and selects it the moment that row arrives, immediately if the store already has it.
-function openAndSelectCreated(id, containerId) {
-  if (containerId) window.tmStore.open([containerId]);
-  const trySelect = () => {
-    const row = window.tmStore.rows.get(id);
-    if (!row) return false;
-    if (row.kind !== 'task' && !expandedIds.has(id)) toggleExpand(row);
-    selectNode(id);
-    return true;
-  };
-  if (trySelect()) return;
-  const unsubscribe = window.tmStore.onChange((patch) => {
-    if (patch.rowIds.includes(id) && trySelect()) unsubscribe();
-  });
-}
-
-
 // Frontmatter editor -----------------------------------------------------------------------
 // declared_files (and any array-of-strings value) edits as one path per line. A value that is
 // an object, or an array holding anything but strings (attachments, decision, ...), edits as
 // pretty-printed JSON instead -- `[value].join('\n')` on an array of objects stringifies each
 // element to the literal text "[object Object]", so treating every array as a path list lost
 // that data on save. Anything else edits as a single field, parsed back through JSON.parse so
-// a number/bool round-trips, and falls back to the raw string when it doesn't parse as JSON.
+// a number/bool typed into it round-trips, and falls back to the raw string when it doesn't
+// parse as JSON.
 
 function frontmatterValueKind(key, value) {
   if (key === 'declared_files' || (Array.isArray(value) && value.every(v => typeof v === 'string'))) {
@@ -165,12 +153,12 @@ function frontmatterRowHtml(key, value) {
       ? JSON.stringify(value, null, 2)
       : (typeof value === 'string' ? value : JSON.stringify(value ?? ''));
   const valueField = kind === 'scalar'
-    ? `<input type="text" class="fm-value ${INPUT_CLS} font-mono" value="${esc(valueText)}" aria-label="Value">`
-    : `<textarea rows="${kind === 'json' ? 6 : 3}" class="fm-value ${TEXTAREA_CLS}" data-fm-kind="${kind}" aria-label="Value">${esc(valueText)}</textarea>`;
+    ? `<input type="text" class="fm-value ${INPUT_CLS} font-mono" value="${esc(valueText)}" data-fm-orig="${esc(valueText)}" aria-label="Value">`
+    : `<textarea rows="${kind === 'json' ? 6 : 3}" class="fm-value ${TEXTAREA_CLS}" data-fm-kind="${kind}" data-fm-orig="${esc(valueText)}" aria-label="Value">${esc(valueText)}</textarea>`;
   return `
     <div class="fm-row flex items-start gap-2">
       <div class="flex-1 space-y-1 min-w-0">
-        <input type="text" class="fm-key ${INPUT_CLS} font-mono" value="${esc(key)}" aria-label="Key">
+        <input type="text" class="fm-key ${INPUT_CLS} font-mono" value="${esc(key)}" data-fm-orig="${esc(key)}" aria-label="Key">
         ${valueField}
       </div>
       <label class="flex items-center gap-1 text-[10px] text-zinc-400 pt-1.5 flex-shrink-0">
@@ -204,6 +192,9 @@ function readFrontmatterEditor(panel) {
       return;
     }
     const valueEl = row.querySelector('.fm-value');
+    // A row the user left alone is not re-sent: re-parsing its text would re-type a string
+    // that reads as JSON ("1.0", "true") and turn a null into ''.
+    if (row.querySelector('.fm-key').dataset.fmOrig === key && valueEl.dataset.fmOrig === valueEl.value) return;
     const kind = valueEl.tagName === 'TEXTAREA' ? valueEl.dataset.fmKind : 'scalar';
     if (kind === 'list') {
       set[key] = valueEl.value.split('\n').map(s => s.trim()).filter(Boolean);
@@ -255,7 +246,7 @@ function openNewSpecDialog() {
       });
       toast(`Spec ${res.id} created.`, { tone: 'success' });
       close();
-      openAndSelectCreated(res.id, null);
+      selectNode(res.id);
     }
   });
 }
@@ -300,7 +291,7 @@ async function openNewPlanDialog() {
       });
       toast(`Plan ${res.id} created.`, { tone: 'success' });
       close();
-      openAndSelectCreated(res.id, panel.querySelector('.np-spec').value);
+      selectNode(res.id);
     }
   });
 }
@@ -346,7 +337,7 @@ async function openNewTaskDialog() {
       });
       toast(`Task ${res.id} created.`, { tone: 'success' });
       close();
-      openAndSelectCreated(res.id, panel.querySelector('.nt-plan').value);
+      selectNode(res.id);
     }
   });
 }
@@ -452,6 +443,16 @@ function openResetDialog(node) {
 async function openFlagsDialog(node) {
   const isSpec = node.kind === 'spec';
   const isContainer = node.kind === 'plan' || isSpec;
+  // A list row carries neither land_order nor frontmatter; saving from it would write an
+  // empty land_order over the stored one, so a container is read in full first.
+  if (isContainer && node.land_order === undefined) {
+    try {
+      node = (await api('GET', `/api/nodes/${encodeURIComponent(node.id)}`)).node;
+    } catch (e) {
+      toast(e.message, { tone: 'error' });
+      return;
+    }
+  }
   const landOn = (node.frontmatter && node.frontmatter.land_on) || '';
   let mergeTargets = [];
   if (!isSpec) {
