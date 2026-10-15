@@ -883,7 +883,8 @@ def test_expand_collapse_drive_the_stores_open_and_watch_sets_not_a_local_flag()
     assert "window.tmStore.watch(ids)" in expand
     assert "expandId(row)" in toggle
     assert "window.tmStore.close(closed)" in toggle
-    assert "window.tmStore.unwatch(closed)" in toggle
+    assert "unwatchUnlessInspected(closed)" in toggle
+    assert "window.tmStore.unwatch(" in _function_body(get_web_html(), "unwatchUnlessInspected")
 
 
 def test_sections_and_relations_render_only_once_a_watched_body_arrives() -> None:
