@@ -46,7 +46,7 @@ Slice the design into plans and tasks, and write them as one import document in 
 doc="$(mktemp -d)/plan.yaml"
 ```
 
-The document opens with `spec:` holding only `id: <spec-id>`: a key the document omits keeps the spec's current value, and plans in a document with no `spec` land under no spec at all.
+The document opens with `spec:` holding only `id: <spec-id>`: a key the document omits keeps the spec's current value, and a document with no `spec` has its plans refused unless they already sit under a spec.
 
 - A **plan** is a slice that ships on its own: once its tasks land, something the design promised works. Pick its landing shape from `tm guide plan` §4: each task reviewed and landed alone, or one review for the whole plan.
 - A **task** is one agent's unit, sized by `tm guide plan` §7: an objective of one sentence, a handful of acceptance lines, a `declared_files` list no sibling wants.

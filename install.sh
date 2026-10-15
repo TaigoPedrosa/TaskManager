@@ -75,6 +75,8 @@ GEMINI_DIR=$HOME/.gemini/extensions
 GEMINI_LINK=$GEMINI_DIR/taskmanager
 # Present only when install made GEMINI_DIR, so uninstall never removes a folder it did not create.
 GEMINI_MARKER=$GEMINI_DIR/.taskmanager-created
+# The target install last linked GEMINI_LINK to, so a link the user made is never repointed or removed.
+GEMINI_OWNED=$GEMINI_DIR/.taskmanager-link
 
 has() { command -v "$1" >/dev/null 2>&1; }
 
@@ -132,6 +134,15 @@ is_install_source() {
         || { [ -z "$FROM" ] && [ "$REF" = "$DEFAULT_REF" ] && [ "$1" = "https://github.com/$REPO.git" ]; }
 }
 
+# A link install made: it points where install last pointed it, or at the marketplace copy.
+gemini_link_is_ours() {
+    local target
+    [ -L "$GEMINI_LINK" ] || return 1
+    target=$(readlink "$GEMINI_LINK")
+    [ "$target" = "$PROFILE/plugins/marketplaces/$MARKETPLACE" ] \
+        || { [ -f "$GEMINI_OWNED" ] && [ "$(cat "$GEMINI_OWNED")" = "$target" ]; }
+}
+
 gemini_source() {
     if [ -n "$FROM" ]; then
         printf '%s\n' "$FROM"
@@ -182,6 +193,8 @@ install() {
         say "gemini: skipped, ~/.gemini does not exist"
     elif [ -e "$GEMINI_LINK" ] && [ ! -L "$GEMINI_LINK" ]; then
         say "gemini: skipped, $GEMINI_LINK exists and is not a link"
+    elif [ -L "$GEMINI_LINK" ] && ! gemini_link_is_ours; then
+        say "gemini: skipped, $GEMINI_LINK is a link install did not make"
     elif [ -z "$source" ]; then
         say "gemini: skipped, no local copy of the extension (install the plugin or use --from)"
     else
@@ -190,6 +203,7 @@ install() {
             : >"$GEMINI_MARKER"
         fi
         ln -sfn "$source" "$GEMINI_LINK"
+        printf '%s\n' "$source" >"$GEMINI_OWNED"
         say "gemini: $GEMINI_LINK -> $source"
     fi
 
@@ -249,7 +263,7 @@ status() {
 }
 
 uninstall() {
-    if has uv && uv tool list 2>/dev/null | grep -q '^taskmanager '; then
+    if has uv && uv tool list 2>/dev/null | grep '^taskmanager ' >/dev/null; then
         uv tool uninstall taskmanager
     fi
     if has claude; then
@@ -260,9 +274,10 @@ uninstall() {
             claude plugin marketplace remove "$MARKETPLACE"
         fi
     fi
-    if [ -L "$GEMINI_LINK" ]; then
+    if gemini_link_is_ours; then
         rm "$GEMINI_LINK"
     fi
+    rm -f "$GEMINI_OWNED"
     if [ -f "$GEMINI_MARKER" ]; then
         rm "$GEMINI_MARKER"
         rmdir "$GEMINI_DIR" 2>/dev/null || true

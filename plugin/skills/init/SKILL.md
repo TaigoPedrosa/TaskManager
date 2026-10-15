@@ -28,11 +28,12 @@ Read `tm guide intake` first: it says how to read a source and how to split its 
 Create the spec, then write its sections from files:
 
 ```
-tm spec add "<title>" --slug <SPEC-ID>
+tm spec add '<title>' --slug <SPEC-ID>
 tm section set <spec-id>:source --file <source-file> --header "## Source"
 tm section set <spec-id>:context --file <context-file> --header "## Context"
 ```
 
+- A title, a question or any other text from the source goes into a command in single quotes, with each `'` in it written `'\''`. Double quotes let the shell run a `$(...)` or a backtick the source carries.
 - `source` holds the source verbatim: every word as read, never translated, tidied or summarised, with where it came from on the first line. When the source is a file, also keep the file itself with `tm attach <spec-id> <file> --source <uri> --caption "<what it is>"`.
 - `context` follows `references/spec-template.md`: what, why, scope in and out with the source line each comes from, contracts and constraints only as the source states them, and the repos. Where the source is silent, write "not stated in the source". Never fill a gap with a guess.
 
@@ -40,7 +41,7 @@ Then split the open questions:
 
 - **The code answers it.** Read the code, answer it in `context` under its question, and cite `file:line`.
 - **Only a person can answer it.** Raise each one, all at once, one question per decision, holding the spec:
-  `tm decision add "<question>" --context-file <path> --option "a|Do X|why" --option "b|Do Y|why" --recommend a --blocks <spec-id>`
+  `tm decision add '<question>' --context-file <path> --option "a|Do X|why" --option "b|Do Y|why" --recommend a --blocks <spec-id>`
 
   Then write each question and the decision id tm printed into `context` under Open questions, and set the section again.
 
@@ -48,14 +49,15 @@ Then split the open questions:
 
 Propose the repos the work touches, from what the source names and from a search of the repositories under `tm root`. When the `codegraph` CLI is on PATH and a repo has a `.codegraph/` index, ask the index (`codegraph explore -p <repo> --max-files 5 "<what the source asks for>"`) before reading files. Show the list with the reason for each, and take the user's list over yours.
 
-Validate every repo before any node names it. A repo is a directory under the root that is its own git working tree with an `origin` remote:
+Validate every repo before any node names it. A repo is a directory under the root that is its own git working tree:
 
 ```
 git -C <root>/<repo> rev-parse --show-toplevel   # prints <root>/<repo>
-git -C <root>/<repo> remote get-url origin
+tm config get repos.<repo>.remote                # the remote's name, `origin` unless set; null is no remote
+git -C <root>/<repo> remote get-url <remote>     # skipped when the remote is null
 ```
 
-`.` names the root itself when it is the repository. A repo that fails either check is reported to the user and left out: a repo missing from the list is never reviewed or landed. A repo with no `repos.<repo>.gates.main` (`tm config get repos.<repo>.gates.main`) stops every landing: set it with the user as `tm guide overview` describes. Record the validated list as the spec's landing order and in `context`:
+`.` names the root itself when it is the repository. A repo with no remote (`null`) is valid: tm lands in its local branch. A repo that fails a check it owes is reported to the user and left out: a repo missing from the list is never reviewed or landed. A repo with no `repos.<repo>.gates.main` (`tm config get repos.<repo>.gates.main`) stops every landing: set it with the user as `tm guide overview` describes. Record the validated list as the spec's landing order and in `context`:
 
 ```
 tm task update <spec-id> --land-order <repo>,<repo>
@@ -63,16 +65,18 @@ tm task update <spec-id> --land-order <repo>,<repo>
 
 ## 5. Landing branch
 
-Propose the spec's `land_on`: a work branch named from the source's id or title, such as `feature/<id>-<short-title>` or `fix/<id>-<short-title>`. Its base is each repo's default branch, freshly fetched:
+Propose the spec's `land_on`: a work branch named from the source's id or title, such as `feature/<id>-<short-title>` or `fix/<id>-<short-title>`, written with only letters, digits, `.`, `_`, `/` and `-`: any other character in the id or title becomes `-`, so the name is safe in a shell command. Its base is each repo's default branch, freshly fetched:
 
 ```
 tm config get repos.<repo>.default_branch
-git -C <root>/<repo> fetch origin <default-branch>
-git -C <root>/<repo> ls-remote --heads origin <branch>
+git -C <root>/<repo> fetch <remote> <default-branch>
+git -C <root>/<repo> ls-remote --heads <remote> <branch>
 git -C <root>/<repo> branch --list <branch>
 ```
 
-When the branch exists already, locally or on `origin`, in any repo, it holds someone's work: show the user, and either land on it as it is or pick another name. Never move or delete an existing branch, and never check anything out over a dirty tree. Set it on the spec once the user agrees:
+`<remote>` is `repos.<repo>.remote`. A repo whose remote is null runs neither `fetch` nor `ls-remote` and is read from its local branches only.
+
+When the branch exists already, locally or on its remote, in any repo, it holds someone's work: show the user, and either land on it as it is or pick another name. Never move or delete an existing branch, and never check anything out over a dirty tree. Set it on the spec once the user agrees:
 
 ```
 tm task update <spec-id> --set land_on=<branch>

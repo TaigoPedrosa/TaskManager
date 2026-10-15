@@ -133,3 +133,22 @@ def test_taskmanager_skill_points_to_init_for_starting_work() -> None:
         if "/taskmanager:init" in line
     )
     assert "start" in row.lower()
+
+
+def test_init_skill_reads_each_repos_remote_from_config_and_treats_null_as_none() -> None:
+    text = SKILL.read_text(encoding="utf-8")
+    assert "tm config get repos.<repo>.remote" in text
+    assert "fetch <remote> <default-branch>" in text
+    assert "ls-remote --heads <remote> <branch>" in text
+    assert "A repo with no remote (`null`) is valid" in text
+    assert "origin <" not in text
+    assert "get-url origin" not in text
+
+
+def test_init_skill_single_quotes_source_text_and_restricts_the_branch_alphabet() -> None:
+    text = SKILL.read_text(encoding="utf-8")
+    assert "tm spec add '<title>'" in text
+    assert "tm decision add '<question>'" in text
+    assert 'add "' not in text
+    assert "written `'\\''`" in text
+    assert "only letters, digits, `.`, `_`, `/` and `-`" in text

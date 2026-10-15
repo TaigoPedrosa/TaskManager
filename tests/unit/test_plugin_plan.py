@@ -174,3 +174,9 @@ def test_plan_text_names_no_tracker_language_runner_package_manager_or_editor(pa
     text = path.read_text(encoding="utf-8")
     named = [w for w in DENIED if re.search(rf"\b{re.escape(w)}\b", text, re.IGNORECASE)]
     assert named == []
+
+
+def test_plan_skill_says_a_document_without_spec_has_its_plans_refused() -> None:
+    text = SKILL.read_text(encoding="utf-8")
+    assert "has its plans refused unless they already sit under a spec" in text
+    assert "no spec at all" not in text
