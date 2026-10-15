@@ -43,15 +43,6 @@ async function getJson(path) {
   return res.json();
 }
 
-// FastAPI answers a validation failure (422) with `detail` as a list of {loc, msg, type}
-// objects, and an HTTPException with a plain string.
-function detailText(detail) {
-  if (detail == null) return null;
-  if (typeof detail === 'string') return detail;
-  if (Array.isArray(detail)) return detail.map((d) => (d && d.msg ? d.msg : JSON.stringify(d))).join('; ');
-  return JSON.stringify(detail);
-}
-
 async function loadWaveMeta() {
   try {
     const meta = await getJson('/api/meta');
@@ -331,6 +322,15 @@ function wireWavesHandlers(root) {
 function renderWaves() {
   const content = document.getElementById('waves-content');
   if (!content) return;
+  // A re-render the user did not ask for (a live status push) must not take the size they are
+  // still typing, which only commits on 'change'.
+  const active = document.activeElement;
+  const typing = active && active.id === 'wave-size-input' ? active.value : null;
   content.innerHTML = wavesHtml();
   wireWavesHandlers(content);
+  if (typing !== null) {
+    const input = content.querySelector('#wave-size-input');
+    input.value = typing;
+    input.focus();
+  }
 }

@@ -1169,3 +1169,123 @@ test('from sm up the list stays beside the detail and the Drawer button is hidde
   assert.equal(wide.$('#dialog-root').children.length, 0, 'a row selects in place, with no drawer');
   assert.equal(path(wide), '/decisions/decision-D41');
 });
+
+
+// Writes, pages and the badge in flight ----------------------------------------------------
+
+test('a refused answer gives the decision back: a closing by another session then shows, and a Retry owns it again until it lands', async () => {
+  const server = fakeServer(frameDecisions());
+  const page = await openPage(server);
+  card(page, 'a').click();
+  server.failNext(409, "decision 'decision-D43' is not open");
+  submitBtn(page).click();
+  await page.settle();
+  assert.equal(page.run("ownWrites.has('decision-D43')"), false);
+
+  await closeElsewhere(page, server, 'decision-D43', {
+    status: 'ANSWERED', answer: { option: 'a', text: '', rationale: '', answered_by: 'Ana', answered_at: at(52) },
+  });
+  assert.equal(page.$('#toast-root .toast span').textContent, 'decision-D43 answered by Ana');
+
+  const retryServer = fakeServer(frameDecisions());
+  const retrying = await openPage(retryServer);
+  card(retrying, 'a').click();
+  retryServer.failNext(500, 'Disk full');
+  submitBtn(retrying).click();
+  await retrying.settle();
+  const release = retryServer.hold();
+  retrying.$('#toast-root .toast-retry').click();
+  await retrying.settle();
+  assert.equal(retrying.run("ownWrites.has('decision-D43')"), true, 'the Retry in flight owns it');
+  release();
+  await retrying.settle();
+  assert.equal(retrying.run("ownWrites.has('decision-D43')"), false);
+});
+
+test('a withdrawal owns its decision while sent and gives it back when refused', async () => {
+  const server = fakeServer(frameDecisions());
+  const page = await openPage(server);
+  const release = server.hold();
+  page.$('.dec-withdraw-btn').click();
+  page.$('#dialog-root .dlg-submit').click();
+  await page.settle();
+  assert.equal(page.run("ownWrites.has('decision-D43')"), true);
+  server.failNext(409, 'decision-D43 is not open');
+  release();
+  await page.settle();
+  assert.equal(page.run("ownWrites.has('decision-D43')"), false);
+});
+
+test('a destructive answer owns its decision while sent and gives it back when refused', async () => {
+  const server = fakeServer(frameDecisions());
+  const page = await openPage(server, { url: '/decisions/decision-D42' });
+  card(page, 'abandon').click();
+  submitBtn(page).click();
+  await page.settle();
+  const release = server.hold();
+  page.$('#dialog-root .dlg-submit').click();
+  await page.settle();
+  assert.equal(page.run("ownWrites.has('decision-D42')"), true);
+  server.failNext(409, 'decision-D42 is not open');
+  release();
+  await page.settle();
+  assert.equal(page.run("ownWrites.has('decision-D42')"), false);
+});
+
+function pagedServer(server) {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const row = (id) => ({ id, title: id, status: 'OPEN', priority: 50, created_at: at(1) });
+  const fetch = async (url, opts) => {
+    if (url.startsWith('/api/decisions?')) {
+      const params = new URLSearchParams(url.split('?')[1]);
+      if (params.get('status') === 'OPEN' && !params.get('cursor')) {
+        return jsonResponse(200, { items: [row('decision-D1')], next: 'open-2', counts: { open: 2, answered: 1, withdrawn: 0 } });
+      }
+      if (params.get('cursor') === 'open-2') {
+        await gate;
+        return jsonResponse(200, { items: [row('decision-D2')], next: 'open-3', counts: { open: 2, answered: 1, withdrawn: 0 } });
+      }
+    }
+    return server.fetch(url, opts);
+  };
+  return { fetch, release, byId: server.byId, counts: server.counts };
+}
+
+test("a Load more answered after another tab was picked leaves that tab's list, cursor and counts alone", async () => {
+  const paged = pagedServer(fakeServer(frameDecisions()));
+  const page = await openPage(paged, { url: '/decisions' });
+  assert.equal(page.run('decisionsNextCursor'), 'open-2');
+  page.$('#dec-load-more-btn').click();
+  page.$('#dec-tab-answered').click();
+  await page.settle();
+  assert.equal(page.run('decisionsNextCursor'), null);
+  paged.release();
+  await page.settle();
+  assert.equal(page.run('decisionsNextCursor'), null);
+  assert.equal(page.run('decisionsData.map(d => d.id).join()'), 'decision-D39');
+  assert.equal(page.$('#dec-load-more-btn'), null);
+});
+
+test('a Load more answered after a refresh replaced the list does not append to it', async () => {
+  const paged = pagedServer(fakeServer(frameDecisions()));
+  const page = await openPage(paged, { url: '/decisions' });
+  page.$('#dec-load-more-btn').click();
+  await page.run('refreshDecisionsData()');
+  paged.release();
+  await page.settle();
+  assert.equal(page.run('decisionsData.map(d => d.id).join()'), 'decision-D1');
+  assert.equal(page.run('decisionsNextCursor'), 'open-2');
+});
+
+test('a static export with open decisions counts them in the badge on load, before the Decisions view is ever shown', async () => {
+  const open = (id) => ({ id, title: id, status: 'OPEN', priority: 50, created_at: at(1) });
+  const page = loadPage({
+    url: 'file:///tmp/export.html',
+    beforeScripts: (w) => { w.STATIC_DATA = { rows: [], edges: [], statuses: [], bodies: {}, decisions: [open('decision-A'), open('decision-B'), { ...open('decision-C'), status: 'ANSWERED' }] }; },
+  });
+  await page.settle();
+  assert.equal(page.$('#decisions-badge').textContent, '2');
+  assert.equal(page.$('#decisions-badge').classList.contains('hidden'), false);
+  assert.equal(page.$('#view-decisions-btn').getAttribute('aria-label'), 'Decisions view, 2 open');
+});

@@ -511,7 +511,9 @@ function progressText(counts) {
 function progressBar(counts, height = 'h-1.5') {
   const p = progressParts(counts);
   const text = esc(progressText(counts));
-  const segs = p.codes.map(c => `<span class="st-seg st-${c}" style="width:${(p.counts[c] / p.total) * 100}%"></span>`).join('');
+  // A node whose tasks are all set aside has no total, but its set-aside segments still draw.
+  const denominator = p.total || p.codes.reduce((a, c) => a + p.counts[c], 0);
+  const segs = p.codes.map(c => `<span class="st-seg st-${c}" style="width:${(p.counts[c] / denominator) * 100}%"></span>`).join('');
   return `<div class="flex w-full ${height} rounded-full overflow-hidden bg-zinc-800" role="img" aria-label="${text}" title="${text}">${segs}</div>`;
 }
 
@@ -579,6 +581,15 @@ function canEdit() {
   return !isStaticMode;
 }
 
+// FastAPI answers a validation failure (422) with `detail` as a list of {loc, msg, type}
+// objects, and an HTTPException with a plain string.
+function detailText(detail) {
+  if (detail == null) return null;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) return detail.map((d) => (d && d.msg ? d.msg : JSON.stringify(d))).join('; ');
+  return JSON.stringify(detail);
+}
+
 // One JSON round trip for every write route: throws with the server's own `detail` message
 // (OperationError's text, per the write guard's refusal contract) so a caller can show it
 // verbatim in a toast rather than a generic "request failed".
@@ -597,7 +608,7 @@ async function api(method, path, body) {
     try { data = JSON.parse(text); } catch (e) { /* non-JSON body */ }
   }
   if (!res.ok) {
-    const err = new Error((data && data.detail) || `${method} ${path} failed (${res.status})`);
+    const err = new Error(detailText(data && data.detail) || `${method} ${path} failed (${res.status})`);
     err.status = res.status;
     throw err;
   }
@@ -668,11 +679,16 @@ const SPINNER = '<span class="inline-block w-3.5 h-3.5 rounded-full border-2 bor
 // `request` again, so the promise resolves on whichever attempt succeeds. Disabling the control
 // dropped focus, so `onRefused` is where a caller puts it back; by default it goes back on the
 // control, unless it never left a field the write was fired from.
+// `writeObservers` hear each attempt as 'send' before the request goes out and 'refused' when it
+// fails, so state tied to a write in flight ends with a refusal and starts again on Retry.
+const writeObservers = [];
+
 function submitWrite(control, request, onRefused = () => {
   if (!document.activeElement || document.activeElement === document.body) control.focus();
 }) {
   return new Promise((resolve) => {
     const send = () => {
+      writeObservers.forEach(observe => observe('send', request));
       const label = control.innerHTML;
       if (control.offsetWidth) control.style.minWidth = `${control.offsetWidth}px`;
       control.disabled = true;
@@ -689,6 +705,7 @@ function submitWrite(control, request, onRefused = () => {
         resolve(data);
       }, (err) => {
         restore();
+        writeObservers.forEach(observe => observe('refused', request));
         toast(err.message, { tone: 'error', retry: send, owner: control });
         if (onRefused) onRefused();
       });
