@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.12] - 2026-10-16
+
 ### Changed
 
 - The implement and fix guides have the agent delete each guard, bound, filter and escape in its diff
@@ -558,7 +560,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - A web visualizer with a live socket, and a static exporter.
 - The taskmanager and dispatcher skills, packaged as a Claude Code plugin.
 
-[Unreleased]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.11...HEAD
+[Unreleased]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.12...HEAD
+[0.3.12]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.11...v0.3.12
 [0.3.11]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.10...v0.3.11
 [0.3.10]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.9...v0.3.10
 [0.3.9]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.8...v0.3.9
