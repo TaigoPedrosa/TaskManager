@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.11] - 2026-10-16
+
 ### Changed
 
 - An implement or fix claim on a repository with no codegraph index runs `codegraph init -y` on it
@@ -550,7 +552,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - A web visualizer with a live socket, and a static exporter.
 - The taskmanager and dispatcher skills, packaged as a Claude Code plugin.
 
-[Unreleased]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.10...HEAD
+[Unreleased]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.11...HEAD
+[0.3.11]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.10...v0.3.11
 [0.3.10]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.9...v0.3.10
 [0.3.9]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.7...v0.3.8
