@@ -10,7 +10,7 @@ A local task tracker for agents: a SQLite graph of specs, plans and tasks that c
 
 macOS or Linux; Windows is not supported: tm runs gates, conditions and landings in POSIX process groups and checks them with `ps`. Python 3.14 (uv fetches it); git; every repository tm lands into holds its default branch (`repos.<repo>.default_branch`, `main` unless set) on the remote `repos.<repo>.remote` names, `origin` unless set, or sets that key to `null` to land on its local branches with no remote. The plugin runs in Claude Code.
 
-Optional: [codegraph](https://www.npmjs.com/package/@colbymchenry/codegraph), a code index that implement, fix, review and plan agents query before reading files, and that `codegraph_query` verifications run against.
+Optional: [codegraph](https://www.npmjs.com/package/@colbymchenry/codegraph), a code index that implement, fix, review and plan agents query before reading files, and that `codegraph_query` verifications run against. tm uses codegraph as a CLI only: it indexes a repository on its first implement or fix claim, and it never wires codegraph's MCP server into an agent.
 
 ## Install
 
@@ -28,12 +28,13 @@ or, from a clone, `./install.sh`. It installs `tm` with uv and the Claude Code p
 
 The plugin carries the skills, the `/taskmanager:init`, `:design`, `:plan`, `:tm`, `:task` and `:board` commands, the `tm-op` agent and the `tm-wave` workflow. `tm` and the plugin run at the same version; `install.sh` installs both, and `tm doctor` reports when they differ.
 
-codegraph, the optional extra, installs on its own and indexes each repository once:
+codegraph, the optional extra, installs on its own:
 
 ```bash
 npm install -g @colbymchenry/codegraph
-codegraph init <repository>
 ```
+
+The first implement or fix claim on a repository without an index runs `codegraph init -y <repository>`; `tm guide codegraph` prints how agents use the CLI.
 
 `tm doctor` lists what tm found: the required tools, and codegraph and each repository's index when present.
 

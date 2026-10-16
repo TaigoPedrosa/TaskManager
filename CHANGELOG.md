@@ -5,6 +5,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Changed
+
+- An implement or fix claim on a repository with no codegraph index runs `codegraph init -y` on it
+  first (once, even when claims race), and a failure or timeout prints `unavailable (...)` without
+  blocking the claim.
+- A review claim prints `codegraph: ready <path>` for an index of the commit under review, from
+  the cache `codegraph_query` verifications use, and `tm-wave` forwards it in the review brief.
+- `tm guide implement|fix|review|plan` carries its codegraph block whenever the `codegraph` CLI is
+  on PATH, indexed or not. The blocks and `tm guide codegraph` teach the CLI only: `explore`
+  first, `callers` and `impact` before a change, `affected` for the tests to run first, and when
+  to `sync`.
+- `tm doctor` recommends `codegraph init -y <repo>` for a missing index, as do the init and design
+  skills, and the dispatcher and taskmanager skills point agents to `tm guide codegraph`.
+- The README says tm uses codegraph as a CLI only and never wires its MCP server.
+
 ## [0.3.10] - 2026-10-15
 
 ### Upgrading

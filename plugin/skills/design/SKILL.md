@@ -41,7 +41,7 @@ When in doubt, take architectural. Record the scale as the first line of the `de
 
 ## 3. Explore
 
-Read the code the work touches before asking anything the code can answer. When `tm doctor` prints a `codegraph index (<repo>)` line that is not `missing`, ask the index first (`codegraph explore -p <repo> "<what the source asks for>"`, `codegraph query`) and read only the files it points to; otherwise search and read the files directly.
+Read the code the work touches before asking anything the code can answer. When the `codegraph` CLI is on PATH (`tm doctor` lists it) and a repo has no index (`codegraph status <repo>` prints `Not initialized`), run `codegraph init -y <repo>` first, then ask the index first (`codegraph explore -p <repo> "<what the source asks for>"`, `codegraph query`) and read only the files it points to; without the CLI, search and read the files directly.
 
 Record every answer the code gives, with its `file:line`, under **Code read** in the `design` section. A question the code answers is never raised as a decision.
 

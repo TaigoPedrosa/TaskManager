@@ -82,8 +82,8 @@ def test_facts_with_codegraph_and_no_index_recommend_codegraph_init(
     found = doctor.facts(repo)
 
     index = _by_name(found)["codegraph index (.)"]
-    assert (index.ok, index.required, index.fix) == (False, False, f"codegraph init {repo}")
-    assert index.line() == f"codegraph index (.): missing (recommended) -> codegraph init {repo}"
+    assert (index.ok, index.required, index.fix) == (False, False, f"codegraph init -y {repo}")
+    assert index.line() == f"codegraph index (.): missing (recommended) -> codegraph init -y {repo}"
     assert doctor.exit_code(found) == 0
 
 
@@ -97,7 +97,7 @@ def test_facts_with_a_codegraph_directory_holding_no_database_recommend_codegrap
 
     index = _by_name(doctor.facts(repo))["codegraph index (.)"]
 
-    assert (index.ok, index.fix) == (False, f"codegraph init {repo}")
+    assert (index.ok, index.fix) == (False, f"codegraph init -y {repo}")
 
 
 def test_facts_without_codegraph_recommend_its_install_and_exit_zero(
@@ -185,32 +185,6 @@ def test_facts_without_git_leave_the_configured_repos_unread(tmp_path: Path, bin
     valid_branch.cache_clear()
 
     assert [f.name for f in doctor.facts(root)] == ["git", "python", "plugin", "codegraph"]
-
-
-def test_codegraph_facts_without_git_leave_the_configured_repos_unread(
-    tmp_path: Path, bin_dir: Path
-) -> None:
-    _git(bin_dir)
-    _codegraph(bin_dir)
-    root = tmp_path / "estate"
-    _git_init(root / "api")
-    ConfigStore(root).set("repos", "{api: {default_branch: trunk}}")
-    (bin_dir / "git").unlink()
-    valid_branch.cache_clear()
-
-    assert [f.name for f in doctor.codegraph_facts(root)] == ["codegraph"]
-
-
-def test_codegraph_facts_read_the_tool_and_the_indexes_alone(repo: Path, bin_dir: Path) -> None:
-    _git(bin_dir)
-    _codegraph(bin_dir)
-    (repo / ".codegraph").mkdir()
-    (repo / ".codegraph" / "codegraph.db").touch()
-
-    assert [f.name for f in doctor.codegraph_facts(repo) if f.ok] == [
-        "codegraph",
-        "codegraph index (.)",
-    ]
 
 
 def test_facts_check_no_index_where_the_root_is_no_clone(tmp_path: Path, bin_dir: Path) -> None:

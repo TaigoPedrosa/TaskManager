@@ -109,7 +109,7 @@ def codegraph_index(repo: Path) -> Path:
 def _index(root: Path, repo: str) -> Fact:
     index = root / repo / ".codegraph"
     ok = codegraph_index(root / repo).is_file()
-    fix = f"codegraph init {root / repo}"
+    fix = f"codegraph init -y {root / repo}"
     return Fact(
         f"codegraph index ({repo})", False, ok, str(index) if ok else None, None if ok else fix
     )
@@ -119,10 +119,6 @@ def _codegraph(root: Path, git: bool) -> list[Fact]:
     # Reading the configured repositories validates their branch names with git.
     indexes = [_index(root, repo) for repo in _repos(root)] if git else []
     return [_tool("codegraph", False, CODEGRAPH_INSTALL), *indexes]
-
-
-def codegraph_facts(root: Path) -> list[Fact]:
-    return _codegraph(root, shutil.which("git") is not None)
 
 
 def facts(root: Path) -> list[Fact]:

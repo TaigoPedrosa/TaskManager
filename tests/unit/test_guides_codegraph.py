@@ -19,14 +19,24 @@ from typer.testing import CliRunner
 from taskmanager.cli.main import app
 
 ROLES = ["fix", "implement", "plan", "review"]
-NEEDED_COMMANDS = {"explore", "node", "callers", "impact", "affected", "sync"}
+NEEDED_COMMANDS = {
+    "explore",
+    "node",
+    "callers",
+    "impact",
+    "affected",
+    "sync",
+    "init",
+    "status",
+    "query",
+}
 SEPARATOR = "\n\n---\n\n"
-OPENING = "The repository has a codegraph index"
+OPENING = "Ask codegraph, from its CLI only"
 # Resolved before any test narrows PATH to its fake tools.
 GIT = shutil.which("git") or "git"
 
 # `codegraph --help`, then `codegraph <command> --help` for each command a block runs, of
-# codegraph 1.6.0, verbatim.
+# codegraph 1.6.2, verbatim.
 TOP_HELP_1_6 = """\
 Usage: codegraph [options] [command]
 
@@ -149,6 +159,42 @@ Options:
   -q, --quiet           Only output file paths, no decoration
   -h, --help            display help for command
 """,
+    "init": """\
+Usage: codegraph init [options] [path]
+
+Initialize CodeGraph in a project directory and build the initial index
+
+Options:
+  -i, --index    Deprecated: indexing now runs by default; flag accepted for
+                 backward compatibility
+  -f, --force    Initialize even if the path looks like your home directory or a
+                 filesystem root
+  -v, --verbose  Show detailed worker lifecycle and memory info
+  -y, --yes      Non-interactive: skip every prompt and take the defaults (for
+                 scripts / CI / container bootstraps)
+  -h, --help     display help for command
+""",
+    "status": """\
+Usage: codegraph status [options] [path]
+
+Show index status and statistics
+
+Options:
+  -j, --json  Output as JSON
+  -h, --help  display help for command
+""",
+    "query": """\
+Usage: codegraph query [options] <search>
+
+Search for symbols in the codebase
+
+Options:
+  -p, --path <path>     Project path
+  -l, --limit <number>  Maximum results (default: "10")
+  -k, --kind <kind>     Filter by node kind (function, class, etc.)
+  -j, --json            Output as JSON
+  -h, --help            display help for command
+""",
     "sync": """\
 Usage: codegraph sync [options] [path]
 
@@ -268,6 +314,11 @@ def _builtin(topic: str) -> str:
     return files("taskmanager").joinpath(f"guides/{topic}.md").read_text(encoding="utf-8").rstrip()
 
 
+def _section(name: str) -> str:
+    parts = re.split(r"^## (\w+)\n", _builtin("codegraph"), flags=re.MULTILINE)[1:]
+    return dict(zip(parts[::2], parts[1::2], strict=True))[name].strip()
+
+
 def _block(project: Path, topic: str) -> str:
     out = _guide(project, topic)
     head = _builtin(topic) + SEPARATOR
@@ -283,15 +334,22 @@ def ready(project: Path, bin_dir: Path) -> Path:
 
 
 @pytest.mark.parametrize("topic", ROLES)
-def test_guide_with_codegraph_and_an_index_appends_the_role_s_block(
-    topic: str, ready: Path
+def test_guide_with_codegraph_appends_the_general_section_and_the_role_s_own(
+    topic: str, project: Path, bin_dir: Path
 ) -> None:
-    block = _block(ready, topic)
+    _install_codegraph(bin_dir)
 
+    block = _block(project, topic)
+
+    assert block == f"{_section('general')}\n\n{_section(topic)}"
     assert block.startswith(OPENING)
     assert not re.search(r"^#", block, re.MULTILINE), "a block carries a heading of the file"
-    assert f"## {topic}\n\n{block}\n" in _builtin("codegraph") + "\n", "another role's block"
     assert _codegraph_commands(block)
+
+
+@pytest.mark.parametrize("topic", ROLES)
+def test_guide_with_codegraph_and_an_index_appends_the_same_block(topic: str, ready: Path) -> None:
+    assert _block(ready, topic).startswith(OPENING)
 
 
 @pytest.mark.parametrize("topic", ROLES)
@@ -302,23 +360,14 @@ def test_guide_without_codegraph_prints_the_builtin_guide_alone(topic: str, proj
 
 
 @pytest.mark.parametrize("topic", ROLES)
-def test_guide_with_codegraph_and_no_index_prints_the_builtin_guide_alone(
-    topic: str, project: Path, bin_dir: Path
-) -> None:
-    _install_codegraph(bin_dir)
-
-    assert _guide(project, topic) == _builtin(topic) + "\n"
-
-
-@pytest.mark.parametrize("topic", ROLES)
-def test_guide_with_a_codegraph_directory_holding_no_database_prints_the_builtin_guide_alone(
+def test_guide_with_a_codegraph_directory_holding_no_database_appends_the_block(
     topic: str, project: Path, bin_dir: Path
 ) -> None:
     _install_codegraph(bin_dir)
     (project / ".codegraph").mkdir()
     (project / ".codegraph" / ".gitignore").write_text("*\n!.gitignore\n", encoding="utf-8")
 
-    assert _guide(project, topic) == _builtin(topic) + "\n"
+    assert _block(project, topic).startswith(OPENING)
 
 
 @pytest.mark.parametrize("topic", ROLES)
@@ -370,15 +419,62 @@ def test_guide_puts_the_block_between_the_builtin_text_and_the_project_addendum(
     assert _guide(ready, "implement", "--project") == "Local rule: ask first.\n"
 
 
-def test_guide_lists_no_codegraph_topic(ready: Path) -> None:
-    assert "codegraph" not in _guide(ready)
-    assert CliRunner().invoke(app, ["guide", "codegraph", "-C", str(ready)]).exit_code != 0
+def test_guide_codegraph_prints_the_general_section_alone_with_or_without_the_cli(
+    project: Path, bin_dir: Path
+) -> None:
+    without = _guide(project, "codegraph")
+    _install_codegraph(bin_dir)
+
+    assert without == _section("general") + "\n"
+    assert _guide(project, "codegraph") == without
+    assert re.search(r"^codegraph: How to ask the codegraph CLI", _guide(project), re.MULTILINE)
+
+
+def test_the_general_section_teaches_each_cli_rule_an_agent_needs(project: Path) -> None:
+    general = _section("general")
+
+    for rule in (
+        "codegraph status <path>",
+        "codegraph init -y <path>",
+        "wait for it to finish before the first query",
+        "codegraph explore -p <path>",
+        "codegraph query ",
+        "codegraph callers -p <path>",
+        "codegraph impact -p <path>",
+        "A method is `Class.method`",
+        "git -C <path> diff --name-only <base>...HEAD | codegraph affected --stdin --quiet",
+        "--filter '<test-glob>'",
+        "The whole test gate still runs",
+        "Nothing watches the files",
+        "codegraph sync --quiet <path>",
+        "Pending Changes: Modified: N files",
+        "a symbol you added reads `not found`",
+        "changed since last index sync",
+        "Never run `codegraph unlock`",
+        "another process is indexing; wait for it",
+    ):
+        assert rule in general, rule
+
+
+def test_the_review_section_names_the_commit_index_and_the_unchanged_dependent_finding() -> None:
+    review = _section("review")
+
+    assert "an index of the commit under review" in review
+    assert "that the branch neither changed nor covers with a test is a finding" in review
+
+
+def test_the_plan_section_authors_declared_files_from_impact() -> None:
+    plan = _section("plan")
+
+    assert "codegraph impact -p <repo> --depth 2 <symbol>" in plan
+    assert "`declared_files`" in plan
 
 
 @pytest.mark.parametrize("topic", ROLES)
 def test_codegraph_block_commands_run_on_codegraph_1_6(topic: str, ready: Path) -> None:
     for command in _codegraph_commands(_block(ready, topic)):
-        _assert_runs_on_codegraph_1_6(command)
+        if command != "codegraph unlock":
+            _assert_runs_on_codegraph_1_6(command)
 
 
 def test_codegraph_blocks_name_every_command_an_agent_needs(ready: Path) -> None:

@@ -125,7 +125,7 @@ def codegraph_flags(query_json: str | None) -> list[str]:
         ) from None
 
 
-def _index_tree(repo_root: Path, sha: str, tree: Path) -> str | None:
+def _index_tree(repo_root: Path, sha: str, tree: Path, timeout: float | None = None) -> str | None:
     """Export `sha` into `tree` and index it there, since codegraph reads a directory and never a
     git ref. The failure, or None once `tree` holds the index."""
     build = Path(tempfile.mkdtemp(prefix=f".{sha}-", dir=tree.parent))
@@ -139,9 +139,16 @@ def _index_tree(repo_root: Path, sha: str, tree: Path) -> str | None:
         # outgrows RAM.
         with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
             tar.extractall(build, filter="data")
-        init = subprocess.run(
-            ["codegraph", "init", "-y", str(build)], capture_output=True, text=True, check=False
-        )
+        try:
+            init = subprocess.run(
+                ["codegraph", "init", "-y", str(build)],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return f"`codegraph init` timed out after {timeout} seconds"
         if init.returncode != 0:
             detail = init.stderr.strip() or init.stdout.strip()
             return f"`codegraph init` failed with exit code {init.returncode}: {detail}"
@@ -164,6 +171,30 @@ def _evict(cache: Path, keep: int) -> None:
     )
     for stale in trees[keep:]:
         shutil.rmtree(stale, ignore_errors=True)
+
+
+class TreeIndexError(Exception):
+    pass
+
+
+def indexed_tree(root: Path, repo_root: Path, sha: str, timeout: float | None = None) -> Path:
+    """The directory holding the export of `sha` and its codegraph index, built on first use and
+    kept for the `codegraph.cache_commits` most recently used commits."""
+    cache = root / ".taskmanager" / "cache" / "codegraph"
+    tree = cache / sha
+    if not tree.is_dir():
+        cache.mkdir(parents=True, exist_ok=True)
+        # Keeps the exported trees out of git and out of the repository's own index.
+        (cache / ".gitignore").write_text("*\n", encoding="utf-8")
+        failure = _index_tree(repo_root, sha, tree, timeout)
+        if failure is not None:
+            raise TreeIndexError(failure)
+    # A tree's mtime is when its commit was last queried, the order eviction reads. The
+    # clock is read here because a filesystem's own touch can give two trees one tick.
+    now = time.time_ns()
+    os.utime(tree, ns=(now, now))
+    _evict(cache, ConfigStore(root).resolve("codegraph.cache_commits").value)
+    return tree
 
 
 class VerificationEngine:
@@ -300,7 +331,7 @@ class VerificationEngine:
         repo_root = self.root / target_repo
         if not codegraph_index(repo_root).is_file():
             return result(
-                False, f"{target_repo} has no codegraph index; run `codegraph init` in {repo_root}"
+                False, f"{target_repo} has no codegraph index; run `codegraph init -y {repo_root}`"
             )
 
         remote = self._remote(target_repo)
@@ -320,20 +351,10 @@ class VerificationEngine:
         if not sha:
             return result(False, f"Ref {effective_ref} does not resolve in {target_repo}")
 
-        cache = self.root / ".taskmanager" / "cache" / "codegraph"
-        tree = cache / sha
-        if not tree.is_dir():
-            cache.mkdir(parents=True, exist_ok=True)
-            # Keeps the exported trees out of git and out of the repository's own index.
-            (cache / ".gitignore").write_text("*\n", encoding="utf-8")
-            failure = _index_tree(repo_root, sha, tree)
-            if failure is not None:
-                return result(False, failure + mode_suffix)
-        # A tree's mtime is when its commit was last queried, the order eviction reads. The
-        # clock is read here because a filesystem's own touch can give two trees one tick.
-        now = time.time_ns()
-        os.utime(tree, ns=(now, now))
-        _evict(cache, ConfigStore(self.root).resolve("codegraph.cache_commits").value)
+        try:
+            tree = indexed_tree(self.root, repo_root, sha)
+        except TreeIndexError as e:
+            return result(False, f"{e}{mode_suffix}")
 
         query = subprocess.run(
             ["codegraph", "query", *flags, "--json", "-p", str(tree), "--", ver.target_path],

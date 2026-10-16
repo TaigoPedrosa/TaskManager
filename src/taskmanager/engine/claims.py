@@ -4,6 +4,7 @@ Every verb reads the stored cycle, asks the pure lifecycle rules for the next on
 with its lease change and the parents' rollup in one state.db transaction.
 """
 
+import fcntl
 import hashlib
 import json
 import logging
@@ -14,15 +15,16 @@ import signal
 import sqlite3
 import subprocess
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from subprocess import CalledProcessError
 from typing import Any, Final, Protocol, cast
+from urllib.parse import quote
 
 from taskmanager.core import lifecycle
 from taskmanager.core.enums import CONTAINERS, NodeKind, RelationType
@@ -78,6 +80,7 @@ from taskmanager.engine.snapshot import (
 )
 from taskmanager.engine.stepgraph import Snapshot
 from taskmanager.engine.validation import Refusal, validate
+from taskmanager.engine.verification import TreeIndexError, indexed_tree
 
 LIVE_JOBS = frozenset({JobState.RUNNING, JobState.NEEDS_AGENT})
 # (source, base, carrier): see Claims._sync_pairs.
@@ -94,6 +97,9 @@ _FAILED_BECAUSE: dict[Event, str] = {
 
 # Seconds a claim waits on one codegraph call before it reports codegraph unavailable.
 CODEGRAPH_TIMEOUT: Final = 120
+# `init -y` took 15 s on a 650-file service and 19 s on a 1,150-file one; the rest is headroom for
+# a slower or busier host.
+CODEGRAPH_INIT_TIMEOUT: Final = 300
 # `codegraph node --symbols-only` lists one symbol per line as "- `name` (kind) ...".
 _SYMBOL_LINE = re.compile(r"^- `([^`]+)` \((\w+)\)", re.MULTILINE)
 # Its first line ends "used by N files: a.py, b.py", with "+N more" past the eighth, or with
@@ -106,14 +112,14 @@ class CodegraphUnavailable(Exception):
     pass
 
 
-def _codegraph(*args: str) -> str:
+def _codegraph(*args: str, timeout: float | None = None) -> str:
     try:
         run = subprocess.run(
             ["codegraph", *args],
             capture_output=True,
             text=True,
             check=False,
-            timeout=CODEGRAPH_TIMEOUT,
+            timeout=timeout or CODEGRAPH_TIMEOUT,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise CodegraphUnavailable(f"codegraph {args[0]}: {exc}") from exc
@@ -123,6 +129,27 @@ def _codegraph(*args: str) -> str:
             f"codegraph {args[0]} failed with exit code {run.returncode}: {detail}"
         )
     return run.stdout
+
+
+@contextmanager
+def _exclusive(lock: Path) -> Iterator[None]:
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with lock.open("a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        yield
+
+
+def _init_once(checkout: Path, lock: Path) -> None:
+    """Indexes `checkout` unless it has an index. Claims are separate processes, so the check and
+    the init run under one lock: the claim that waits finds the first one's index."""
+    if codegraph_index(checkout).is_file():
+        return
+    with _exclusive(lock):
+        if codegraph_index(checkout).is_file():
+            return
+        _codegraph("init", "-y", str(checkout), timeout=CODEGRAPH_INIT_TIMEOUT)
+        if not codegraph_index(checkout).is_file():
+            raise CodegraphUnavailable(f"codegraph init left no index in {checkout}")
 
 
 def _seed_index(checkout: Path, worktree: Path) -> None:
@@ -200,15 +227,17 @@ def _reaches(worktree: Path, declared: list[str], held: dict[str, str]) -> list[
 
 
 def codegraph_lines(
-    checkout: Path, worktree: Path, declared: list[str], held: dict[str, str]
+    checkout: Path, worktree: Path, declared: list[str], held: dict[str, str], lock: Path
 ) -> list[str]:
-    """What a claim prints after `codegraph: ` for a worktree of `checkout`: nothing when the
-    checkout has no codegraph index, and one `unavailable` line for any failure, never a raise.
-    `declared` and `held` are repository-relative; `held` maps a file to the node holding it."""
-    if not codegraph_index(checkout).is_file():
+    """What a claim prints after `codegraph: ` for a worktree of `checkout`: nothing when neither
+    the CLI nor an index exists, and one `unavailable` line for any failure, never a raise.
+    `declared` and `held` are repository-relative; `held` maps a file to the node holding it;
+    `lock` serialises the first claim's `init` of `checkout` across processes."""
+    if shutil.which("codegraph") is None and not codegraph_index(checkout).is_file():
         return []
     lines: list[str] = []
     try:
+        _init_once(checkout, lock)
         _seed_index(checkout, worktree)
         lines.append(f"ready {worktree}")
         lines += _reaches(worktree, declared, held)
@@ -276,7 +305,8 @@ class ClaimResult:
     # Repository name to `repos.<repo>.remote`, None for a repository with no remote: a ref on
     # the spec's target is `<remote>/<base>` only where there is one.
     remotes: dict[str, str | None] = field(default_factory=dict)
-    # `codegraph_lines` for each worktree the claim cut: advice only, the claim stands either way.
+    # `codegraph_lines` for each worktree the claim cut, or for a review the index of each commit
+    # under review: advice only, the claim stands either way.
     codegraph: list[str] = field(default_factory=list)
 
 
@@ -558,7 +588,10 @@ class Claims:
         if begun.worktree is not None:
             self.runtime.set_worktree(node.id, lease.token, begun.worktree)
         own = [lock.file_path for lock in locks]
-        lines = self._codegraph(own, begun.worktrees, snap)
+        if action == Action.REVIEW:
+            lines = self._review_index(begun)
+        else:
+            lines = self._codegraph(own, begun.worktrees, snap)
         return replace(begun, token=lease.token, codegraph=lines)
 
     def _codegraph(self, own: list[str], worktrees: dict[str, str], snap: Snapshot) -> list[str]:
@@ -575,7 +608,27 @@ class Claims:
                 Path(worktree),
                 [key.removeprefix(prefix) for key in own if key.startswith(prefix)],
                 held,
+                self.root / ".taskmanager" / "locks" / f"codegraph-{quote(repo, safe='')}.lock",
             )
+        return lines
+
+    def _review_index(self, begun: ClaimResult) -> list[str]:
+        """One `ready <tree>` per repository: the index of the commit under review, from the cache
+        a `codegraph_query` verification reads. Advice only, like `_codegraph`."""
+        if shutil.which("codegraph") is None:
+            return []
+        lines: list[str] = []
+        for repo in begun.repos:
+            repo_dir = self.root / repo
+            sha = gitops.rev_parse(repo_dir, begun.branch or "")
+            try:
+                if not sha:
+                    raise TreeIndexError(f"{begun.branch} names no commit in {repo}")
+                tree = indexed_tree(self.root, repo_dir, sha, CODEGRAPH_INIT_TIMEOUT)
+            except (TreeIndexError, OSError) as exc:
+                lines.append(f"unavailable ({exc})")
+            else:
+                lines.append(f"ready {tree}")
         return lines
 
     def _step_branch(self, node: Node, action: Action) -> str:

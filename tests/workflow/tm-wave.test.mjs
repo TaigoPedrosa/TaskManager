@@ -234,10 +234,11 @@ test('an implement brief names the worktree, the branch, its base and the verb t
 const STEPS = {
   implement: { before: node('READY', 'implement'), during: 'IMPLEMENTING', after: 'IMPLEMENTED' },
   fix: { before: node('REVIEWED', 'fix', { outcome: 'reject' }), during: 'FIXING', after: 'FIXED' },
+  review: { before: node('IMPLEMENTED', 'review'), during: 'REVIEWING', after: 'REVIEWED' },
 }
 for (const [action, { before, during, after }] of Object.entries(STEPS)) {
   test(`the ${action} brief carries the claim's codegraph lines verbatim under its Brief line, and a claim without them changes nothing`, async () => {
-    const lines = ['ready /wt/core-T1', 'Store.save reaches api/routes.py held by T2']
+    const lines = ['ready /wt/core-T1', 'Store.save reaches api/routes.py held by T2', 'unavailable (codegraph init left no index in /est/core)']
     const brief = async extra => {
       const tm = makeTm({
         chosen: [{ ...T1, action }],

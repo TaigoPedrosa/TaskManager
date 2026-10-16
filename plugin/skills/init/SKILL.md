@@ -47,7 +47,7 @@ Then split the open questions:
 
 ## 4. Repos
 
-Propose the repos the work touches, from what the source names and from a search of the repositories under `tm root`. When the `codegraph` CLI is on PATH and a repo has a `.codegraph/` index, ask the index (`codegraph explore -p <repo> --max-files 5 "<what the source asks for>"`) before reading files. Show the list with the reason for each, and take the user's list over yours.
+Propose the repos the work touches, from what the source names and from a search of the repositories under `tm root`. When the `codegraph` CLI is on PATH and a repo has no index (`codegraph status <repo>` prints `Not initialized`), run `codegraph init -y <repo>` first, then ask the index (`codegraph explore -p <repo> --max-files 5 "<what the source asks for>"`) before reading files. Show the list with the reason for each, and take the user's list over yours.
 
 Validate every repo before any node names it. A repo is a directory under the root that is its own git working tree:
 

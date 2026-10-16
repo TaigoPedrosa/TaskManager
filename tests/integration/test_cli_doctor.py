@@ -50,7 +50,7 @@ def test_doctor_prints_each_fact_and_exits_zero_without_codegraph(
     assert lines[2:] == [
         f"plugin: missing (recommended) -> {INSTALL}",
         "codegraph: missing (recommended) -> npm install -g @colbymchenry/codegraph",
-        f"codegraph index (.): missing (recommended) -> codegraph init {project}",
+        f"codegraph index (.): missing (recommended) -> codegraph init -y {project}",
     ]
 
 
@@ -109,7 +109,7 @@ def test_init_ends_with_the_doctor_summary(project: Path, bin_dir: Path) -> None
     assert lines[3:] == [
         f"plugin: missing (recommended) -> {INSTALL}",
         "codegraph: 1.6.0",
-        f"codegraph index (.): missing (recommended) -> codegraph init {project}",
+        f"codegraph index (.): missing (recommended) -> codegraph init -y {project}",
         (
             "next: read `tm guide overview`, then give every repository a task lands in a main "
             'gate: tm config set repos.<repo>.gates.main.command "<command>"'

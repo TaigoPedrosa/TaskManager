@@ -41,3 +41,5 @@ tm guide <topic>    # the built-in guidance, then this project's addendum
 | anything else, or first contact with `tm` | `tm doctor`, then `tm guide overview` |
 
 Run it before your first `tm` command, not after: it names the flags, what each refusal means, and the verb that closes your step. A project's own conventions are appended to the same output, so the guide you read is the one that applies here.
+
+With `codegraph` on PATH, agents take its usage from `tm guide <role>` (or `tm guide codegraph`), and a brief forwards the claim's `codegraph:` lines.

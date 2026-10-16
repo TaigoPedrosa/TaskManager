@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -2325,26 +2326,27 @@ def _guide_topics() -> dict[str, str]:
 
     topics: dict[str, str] = {}
     for entry in sorted(files("taskmanager").joinpath("guides").iterdir(), key=lambda e: e.name):
-        if entry.name.endswith(".md") and entry.name != "codegraph.md":
+        if entry.name.endswith(".md"):
             lines = [ln.strip() for ln in entry.read_text(encoding="utf-8").splitlines()]
             body = next((ln for ln in lines[1:] if ln), "")
             topics[entry.name[: -len(".md")]] = body.split(". ")[0].rstrip(".")
     return topics
 
 
-def _codegraph_blocks() -> dict[str, str]:
-    """Role -> the codegraph block `tm guide <role>` appends, one `## <role>` section each."""
+def _codegraph_sections() -> dict[str, str]:
+    """Heading -> body of each `## <heading>` section of the codegraph guide."""
     from importlib.resources import files
 
     text = files("taskmanager").joinpath("guides/codegraph.md").read_text(encoding="utf-8")
     parts = re.split(r"^## (\w+)\n", text, flags=re.MULTILINE)[1:]
-    return {role: body.strip() for role, body in zip(parts[::2], parts[1::2], strict=True)}
+    return {name: body.strip() for name, body in zip(parts[::2], parts[1::2], strict=True)}
 
 
-def _codegraph_ready(root: Path) -> bool:
-    with _user_errors():
-        ok = {fact.name for fact in doctor.codegraph_facts(root) if fact.ok}
-    return "codegraph" in ok and any(name.startswith("codegraph index") for name in ok)
+def _codegraph_blocks() -> dict[str, str]:
+    """Role -> the codegraph block `tm guide <role>` appends: the general section, then the role's."""
+    sections = _codegraph_sections()
+    general = sections.pop("general")
+    return {role: f"{general}\n\n{body}" for role, body in sections.items()}
 
 
 @app.command("guide")
@@ -2362,8 +2364,8 @@ def guide(
 
     The addendum is the section named after the topic on the node `guide`
     (`tm section set guide:<topic> --file ...`), so a project's conventions live and version with
-    its tasks. With the codegraph CLI on PATH and the repository indexed, implement, fix, review
-    and plan also carry how to use codegraph, between the two.
+    its tasks. With the codegraph CLI on PATH, implement, fix, review and plan also carry how to
+    use it, between the two; `tm guide codegraph` prints that usage alone.
     """
     from importlib.resources import files
 
@@ -2389,12 +2391,15 @@ def guide(
         raise typer.BadParameter(f"no guide '{topic}'; topics: {', '.join(topics)}")
     parts: list[str] = []
     if topic in topics and not project_only:
-        text = files("taskmanager").joinpath(f"guides/{topic}.md").read_text(encoding="utf-8")
+        if topic == "codegraph":
+            text = _codegraph_sections()["general"]
+        else:
+            text = files("taskmanager").joinpath(f"guides/{topic}.md").read_text(encoding="utf-8")
         if topic == "dispatch":
             text = _dispatch_targets(text, _get_root(path, must_exist=False))
         parts.append(text)
         block = _codegraph_blocks().get(topic)
-        if block is not None and _codegraph_ready(_get_root(path, must_exist=False)):
+        if block is not None and shutil.which("codegraph") is not None:
             parts.append(block)
     if overlay is not None and not builtin_only:
         parts.append(overlay.content)

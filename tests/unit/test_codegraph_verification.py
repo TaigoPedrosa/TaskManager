@@ -199,7 +199,7 @@ def test_codegraph_query_in_a_repo_without_an_index_fails_naming_codegraph_init(
     (root / "app" / ".codegraph" / ".gitignore").write_text("*\n!.gitignore\n", encoding="utf-8")
     result = VerificationEngine(root).verify_assertion(_check(), target_repo="app")
     assert result.passed is False
-    assert "`codegraph init`" in result.message
+    assert "`codegraph init -y " in result.message
     assert not log.exists()
 
 

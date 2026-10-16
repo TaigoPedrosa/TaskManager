@@ -31,6 +31,8 @@ Run `tm guide dispatch` before the first dispatch of the session. It names the a
 
 The subagents you dispatch read `tm guide implement`, `review`, `fix` or `merge` themselves. Do not carry their guidance into the prompt.
 
+With `codegraph` on PATH, agents take its usage from `tm guide <role>` (or `tm guide codegraph`), and a brief forwards the claim's `codegraph:` lines.
+
 ## The mechanism is the `tm-wave` workflow
 
 Orchestrate the queue with the `Workflow` tool running the plugin's `tm-wave` workflow, by name, `Workflow({name: 'taskmanager:tm-wave', args: {session, worktreeDir, ...}})` with the plugin installed, or by `scriptPath`, the plugin's `workflows/tm-wave.js`. This is required rather than preferred: chaining one-off `Agent` calls by hand appoints the session as the scheduler — the job the script exists to do — and rebuilds, a notification at a time, the barrier a per-node loop removes.

@@ -280,7 +280,7 @@ const head = (n, c, model, role) => {
   const gate = lane ? `\nGate lane: ${lane}` : ''
   const requires = n.requires || []
   const needs = requires.length ? `\nRequires: ${requires.join(', ')}; load the tools that provide it with ToolSearch before the first step that needs them.` : ''
-  // Only a claim that cut a worktree, implement or fix, prints these; tm's own wording reaches the agent.
+  // Implement and fix claims print these for their worktree, a review claim for the commit under review; tm's own wording reaches the agent.
   const codegraph = (c.codegraph || []).map(line => `\ncodegraph: ${line}`).join('')
   const blocked = c.action in CLAIMED
     ? `, or, when something outside this step must happen first, with ${TM} task release ${n.id} ${owner(n, c.token)} --blocked naming the edge, decision or condition it waits on`
