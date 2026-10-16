@@ -5,6 +5,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Changed
+
+- The implement and fix guides have the agent delete each guard, bound, filter and escape in its diff
+  one at a time before closing and confirm a test turns red, with null, empty and whitespace as
+  separate inputs and a filter a mock stands in for tested through the real component.
+
 ## [0.3.11] - 2026-10-16
 
 ### Changed

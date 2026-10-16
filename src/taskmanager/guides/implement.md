@@ -71,6 +71,7 @@ The path checks and codegraph queries read the ref, never your worktree, so with
 
 - A generated file (a built stylesheet, a lockfile, a schema dump) is regenerated, never edited or hand-merged: a branch that changes any of its inputs rebuilds it before closing, and a conflict on it is resolved by rebuilding it on the merged tree.
 - A UI test reaches a control another file owns by what it shows the user (role, accessible name), never by its implementation.
+- Before closing, delete each guard, bound, filter and escape in your diff one at a time (one branch, one statement; null, empty and whitespace as separate inputs) and confirm a test turns red. A deletion that stays green gets a test before the step closes, and a filter a mock stands in for (a repository query, an HTTP route) gets a test through the real component. :report lists each deletion and the test that failed.
 - After removing something, search for every file, symbol, field, and computation or load whose last reader was the removed code, and delete each one in the same step, a payload field's producer included. Name them in the report.
 - When the task writes or reads a format another task also writes or reads (an id scheme, a URL key, a payload), run the round trip across both ends before closing the step: write it with one end, read it back with the other, get back the same thing, and put that run in the report. A mismatch with the other end is a decision (below), never a local reinterpretation.
 

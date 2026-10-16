@@ -188,6 +188,19 @@ def test_overview_carries_the_cycle_and_the_cutover_runbook() -> None:
         assert needle in text, needle
 
 
+@pytest.mark.parametrize("topic", ["implement", "fix"])
+def test_implement_and_fix_guides_delete_each_guard_and_watch_a_test_turn_red(topic: str) -> None:
+    """Neither agent reads the other's guide, so each carries the deletion runs before closing."""
+    steps = _guide_text(topic).split("## Never", 1)[0]
+    assert (
+        "- Before closing, delete each guard, bound, filter and escape in your diff one at a time"
+        " (one branch, one statement; null, empty and whitespace as separate inputs) and confirm a"
+        " test turns red. A deletion that stays green gets a test before the step closes, and a"
+        " filter a mock stands in for (a repository query, an HTTP route) gets a test through the"
+        " real component. :report lists each deletion and the test that failed.\n"
+    ) in steps
+
+
 def test_fix_guide_requires_a_test_per_branch_that_fails_when_reverted() -> None:
     """A finding closes only with a test per branch, each proven to fail when that branch alone is undone."""
     text = _guide_text("fix")
