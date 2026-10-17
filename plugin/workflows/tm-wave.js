@@ -130,12 +130,17 @@ function cksum(s) {
   return `${(~crc) >>> 0} ${bytes.length}`
 }
 
+// `$(…)` strips every trailing newline, so the payload never ends in one: a blank line the runner
+// adds before __CHECK or __EXIT is not payload, and the lazy group leaves it out of the cksum.
+const checked = cmd => `out=$(${cmd} 2>&1); rc=$?; printf '%s\\n' "$out"; printf '__CHECK '; printf '%s' "$out" | cksum; exit $rc`
+const CHECKED = /^([\s\S]*?)\n+__CHECK (\d+ \d+)\n+__EXIT:(\d+)\s*$/
+
 // A tm command whose stdout is JSON, checked against a cksum the same shell computed over the same
 // bytes, so a paraphrased field never reaches a decision.
 async function opJson(kind, id, cmd, opts = {}) {
   const r = await op(kind, id,
-    `out=$(${cmd} 2>&1); rc=$?; printf '%s\\n' "$out"; printf '__CHECK '; printf '%s' "$out" | cksum; exit $rc`,
-    /^([\s\S]*)\n__CHECK (\d+ \d+)\n__EXIT:(\d+)\s*$/,
+    checked(cmd),
+    CHECKED,
     { ...opts, valid: m => cksum(m[1]) === m[2] })
   if (!r) return null
   let data = null
@@ -161,8 +166,8 @@ async function discover(attempt) {
     ...[...HOLD_MERGE].map(x => `--hold-merge ${q(x)}`),
   ].join(' ')
   const r = await op('discover', `attempt-${attempt}`,
-    `out=$(${cmd} 2>&1); rc=$?; printf '%s\\n' "$out"; printf '__CHECK '; printf '%s' "$out" | cksum; exit $rc`,
-    /^([\s\S]*)\n__CHECK (\d+ \d+)\n__EXIT:(\d+)\s*$/,
+    checked(cmd),
+    CHECKED,
     { attempts: 1, valid: m => cksum(m[1]) === m[2] })
   if (!r || r.exit !== 0) return null
   const plan = { chosen: [], held: [], waiting_for_slot: 0 }

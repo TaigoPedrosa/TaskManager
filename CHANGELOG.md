@@ -5,6 +5,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+
+- tm-wave accepts a checked transcript whose runner added blank lines before `__CHECK` or
+  `__EXIT`, instead of releasing a valid claim as unreadable and counting a step failure.
+
 ## [0.3.12] - 2026-10-16
 
 ### Changed

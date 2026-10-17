@@ -94,7 +94,7 @@ function queue(list) {
 
 // `parked` names jobs already stopped for an agent before the run starts, as an earlier tick left them.
 // `lists` maps a list command, as `task list --plan P1`, to the ids of the rows it prints; a list not named prints none.
-export function makeTm({ chosen = [], nodes = {}, start = {}, job = {}, parked = [], lists = {}, releaseExit = 0, discover, corrupt = () => false } = {}) {
+export function makeTm({ chosen = [], nodes = {}, start = {}, job = {}, parked = [], lists = {}, releaseExit = 0, discover, corrupt = () => false, reshape = (inner, stdout) => stdout } = {}) {
   const state = structuredClone(nodes)
   const starts = Object.fromEntries(Object.entries(start).map(([id, list]) => [id, queue(list)]))
   const jobs = Object.fromEntries(Object.entries(job).map(([id, list]) => [id, queue(list)]))
@@ -169,7 +169,8 @@ export function makeTm({ chosen = [], nodes = {}, start = {}, job = {}, parked =
         // line of the caller's own choosing (a djb2, or one hashed over different bytes).
         const bad = corrupt(m[1], text)
         const check = typeof bad === 'string' ? bad : bad ? wrongCksum(realCksum(text)) : realCksum(text)
-        return { stdout: `${text}\n__CHECK ${check}\n__EXIT:${exit}\n` }
+        // reshape stands in for a runner that retypes the right bytes in a different layout.
+        return { stdout: reshape(m[1], `${text}\n__CHECK ${check}\n__EXIT:${exit}\n`) }
       }
       if (/^\S+ task release \S+ --agent wf-\S+(?: --token \S+)? >\/dev\/null 2>&1$/.test(cmd)) {
         return { stdout: `__EXIT:${releaseExit}\n` }

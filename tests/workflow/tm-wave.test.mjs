@@ -328,6 +328,20 @@ test('a claim whose transcription fails its checksum is released and never acted
   assert.deepEqual(releases(ops), [RELEASE_T1])
 })
 
+test('a claim transcribed with blank lines around its check line is acted on', async () => {
+  const tm = makeTm({
+    chosen: [T1],
+    nodes: { T1: node('READY', 'implement') },
+    start: { T1: [() => (tm.set('T1', { status: 'IMPLEMENTING', next_action: null }), claim('implement', { worktree: '/wt/core-T1' }))] },
+    reshape: (inner, stdout) => (/ task start /.test(inner) ? stdout.replace('\n__CHECK', '\n\n__CHECK').replace('\n__EXIT', '\n\n__EXIT') : stdout),
+  })
+  const agents = () => (tm.set('T1', { status: 'IMPLEMENTED', next_action: null }), 'done')
+  const { ops, work, result } = await runWave({ args: ARGS, tm, agents })
+  assert.deepEqual(releases(ops), [])
+  assert.equal(work.length, 1)
+  assert.equal(result.results[0].status, 'IMPLEMENTED')
+})
+
 test("the script's cksum agrees with the stock cksum binary", () => {
   for (const text of ['', 'aguardando a decisão D1 — não é assim', 'x'.repeat(70_000)]) {
     assert.equal(scriptCksum(text), realCksum(text))
