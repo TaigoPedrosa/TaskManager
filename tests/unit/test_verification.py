@@ -1,4 +1,5 @@
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -321,10 +322,25 @@ def test_test_command_that_outlives_its_timeout_fails_and_leaves_no_child(
         expected_pattern=f"sleep 60 & echo $! > {pidfile}; wait",
     )
 
+    started = time.monotonic()
     res = VerificationEngine(tmp_path).verify_assertion(ver, timeout=1)
+    # Well short of the child's 60s: the run returns because the child was killed, not because
+    # it ended.
+    assert time.monotonic() - started < 30
 
     assert (res.passed, res.timed_out) == (False, True)
     assert res.message == "Test command timed out after 1s"
     stat = Path(f"/proc/{pidfile.read_text().strip()}/stat")
-    # A killed child not yet reaped by init still has a stat file, in state Z.
-    assert not stat.exists() or stat.read_text().split(") ")[-1].startswith("Z")
+
+    def gone() -> bool:
+        # A killed child not yet reaped by init still has a stat file, in state Z. It closes its
+        # pipe, which is what lets the run return, a moment before the kernel marks it Z.
+        try:
+            return stat.read_text().split(") ")[-1].startswith(("Z", "X"))
+        except FileNotFoundError:
+            return True
+
+    deadline = time.monotonic() + 10
+    while not gone() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert gone()
