@@ -20,7 +20,7 @@ function body(node, parts = {}) {
       requires: [], land_order: [], base_chain: ['MAIN'], frontmatter: {}, ...node,
     },
     display: node.display, phase: node.phase,
-    sections: [], dependency_details: [], dependent_details: [], verifications: [], conditions: [], jobs: [], findings: [], lease: null,
+    sections: [], dependency_details: [], dependent_details: [], verifications: [], conditions: [], jobs: [], findings: [], checks: [], notes: [], lease: null,
     ...parts,
   };
 }
@@ -65,6 +65,12 @@ const BODIES = {
       { number: 1, source: 'review', severity: 'blocking', at: 'api/x.py:read', breaks: 'reads <b>every</b> tenant', rule: null, state: 'open', answer: null },
       { number: 2, source: 'landing', severity: 'minor', at: 'landing', breaks: 'gate red', rule: null, state: 'disputed', answer: 'the gate was flaky' },
     ],
+    checks: [
+      { number: 1, deleted: 'a.py:<b>guard</b>', result: 'green', test: null },
+      { number: 2, deleted: 'a.py:escape', result: 'green', test: null },
+      { number: 3, deleted: 'a.py:<b>guard</b>', result: 'red', test: 'test_<b>guard</b>' },
+    ],
+    notes: ['verify row 1 <b>red</b>'],
   }),
   U: body({ ...LEASED, step_failures: 1, base_chain: ['P', 'main'] }, {
     lease: { agent_id: 'wf-u', action: 'implement', acquired_at: BEAT, last_heartbeat: BEAT },
@@ -154,6 +160,8 @@ const EXPECTED_GROUPS = {
     { group: 'dependencies', header: 'Dependencies 2', open: true },
     { group: 'dependents', header: 'Dependents 1', open: false },
     { group: 'findings', header: 'Findings 2', open: true },
+    { group: 'checks', header: 'Checks 3', open: true },
+    { group: 'notes', header: 'Notes 1', open: false },
     { group: 'conditions', header: 'Conditions 1', open: false },
     { group: 'jobs', header: 'Jobs 1', open: false },
     { group: 'attachments', header: 'Attachments 1', open: false },
@@ -270,6 +278,31 @@ test('a finding row reads its number, severity, where, what breaks escaped, stat
   assert.deepEqual(cells(rows[1]), ['#2', 'minor', 'landing gate red', 'disputed', 'the gate was flaky']);
   const header = page.$('#inspector-body [data-group="findings"]').children[0];
   assert.ok(text(header).endsWith('1 open'), text(header));
+});
+
+test('a check row reads its number, deletion, result and test escaped, and the header counts the deletions still green', async () => {
+  const page = await openAt('/graph/T');
+  const rows = page.$$('#inspector-body [data-group="checks"] [data-check]');
+  const cells = (r) => [...r.children].map((c) => text(c));
+  assert.deepEqual(rows.map(cells), [
+    ['#1', 'a.py:<b>guard</b>', 'green', ''],
+    ['#2', 'a.py:escape', 'green', ''],
+    ['#3', 'a.py:<b>guard</b>', 'red', 'test_<b>guard</b>'],
+  ]);
+  assert.equal(page.$('#inspector-body [data-group="checks"] b'), null);
+  assert.ok(rows[1].children[2].className.includes('text-amber-400'), rows[1].children[2].className);
+  assert.ok(!rows[0].children[2].className.includes('text-amber-400'), rows[0].children[2].className);
+  const header = page.$('#inspector-body [data-group="checks"]').children[0];
+  assert.ok(text(header).endsWith('1 green'), text(header));
+});
+
+test('a note reads as its text, escaped', async () => {
+  const page = await openAt('/graph/T');
+  const group = page.$('#inspector-body [data-group="notes"]');
+  group.children[0].querySelector('button')?.click();
+  const rows = page.$$('#inspector-body [data-group="notes"] [data-note]');
+  assert.deepEqual(rows.map((r) => text(r)), ['verify row 1 <b>red</b>']);
+  assert.equal(page.$('#inspector-body [data-group="notes"] b'), null);
 });
 
 test('jobs show their time', async () => {

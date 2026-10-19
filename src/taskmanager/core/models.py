@@ -17,6 +17,7 @@ from taskmanager.core.status import (
     IN_STEP,
     ON_TARGET,
     Action,
+    CheckResult,
     ConditionStage,
     DecisionStatus,
     FindingSource,
@@ -146,6 +147,30 @@ class Finding(BaseModel):
     state: FindingState = FindingState.OPEN
     # The commit that closed it, or the evidence that disputes it.
     answer: str | None = None
+
+
+class Check(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str
+    number: int = 0
+    deleted: str = Field(pattern=r"\S")
+    result: CheckResult
+    test: str | None = None
+
+    @model_validator(mode="after")
+    def _red_names_its_test(self) -> Self:
+        if (self.result == CheckResult.RED) != bool(self.test and self.test.strip()):
+            raise ValueError("a red check names the test that failed; a green one names none")
+        return self
+
+
+class Note(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str
+    number: int = 0
+    text: str = Field(pattern=r"\S")
 
 
 class NodeSection(BaseModel):

@@ -104,6 +104,8 @@ audit_app = typer.Typer(name="audit", help="Audit ledger event logs")
 web_app = typer.Typer(name="web", help="Interactive web visualizer and exporter")
 config_app = typer.Typer(name="config", help="Project configuration (.taskmanager/config.yaml)")
 finding_app = typer.Typer(name="finding", help="A review's findings and the answers to them")
+check_app = typer.Typer(name="check", help="The deletions an implement or fix red-checked")
+note_app = typer.Typer(name="note", help="One-line notes an implement or fix leaves")
 decision_app = typer.Typer(name="decision", help="Raise and answer decisions")
 job_app = typer.Typer(name="job", help="Landing and sync jobs")
 land_app = typer.Typer(name="land", help="Start a node's landing")
@@ -124,6 +126,8 @@ app.add_typer(audit_app)
 app.add_typer(web_app)
 app.add_typer(config_app)
 app.add_typer(finding_app)
+app.add_typer(check_app)
+app.add_typer(note_app)
 app.add_typer(decision_app)
 app.add_typer(job_app)
 app.add_typer(land_app)
@@ -1114,6 +1118,11 @@ def task_get(
                     for c in node_repo.get_conditions(task_id)
                 ],
                 "declared_files": node_repo.declared_files(task_id),
+                "checks": [
+                    c.model_dump(mode="json", exclude={"node_id"})
+                    for c in node_repo.get_checks(task_id)
+                ],
+                "notes": [n.text for n in node_repo.get_notes(task_id)],
                 "sections": [s.section_key for s in node_repo.get_all_sections(task_id)],
                 "verifications": [
                     {
@@ -1248,6 +1257,94 @@ _AgentOption = Annotated[
 _TokenOption = Annotated[
     str | None, typer.Option("--token", help="Refused unless the node's live lease is this claim's")
 ]
+
+
+@check_app.command("add")
+def check_add(
+    node_id: str,
+    deleted: Annotated[
+        str, typer.Option("--deleted", help="What was deleted: <file>:<symbol>, one branch")
+    ],
+    red: Annotated[
+        str | None, typer.Option("--red", help="The test that failed with it deleted")
+    ] = None,
+    green: Annotated[
+        bool, typer.Option("--green", help="Every test still passed with it deleted")
+    ] = False,
+    agent: _AgentOption = None,
+    token: _TokenOption = None,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Record one red-check deletion of the implement or fix step holding the node."""
+    if (red is None) != green:
+        raise typer.BadParameter("give exactly one of --red <test> or --green")
+    with _refusing():
+        added = _claims(_get_root(path), agent).add_check(
+            node_id, deleted, red, agent=agent, token=token
+        )
+    print(added.number)
+
+
+@check_app.command("list")
+def check_list(
+    node_id: str,
+    json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+    yaml_output: Annotated[
+        bool, typer.Option("--yaml", help="Output as YAML (fewer tokens than JSON)")
+    ] = False,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """A node's red-check deletions, in the order they were recorded."""
+    node_repo = _get_container(_get_root(path)).get(NodeRepository)
+    if node_repo.get_node(node_id) is None:
+        _stderr.print(f"[red]Node '{node_id}' not found[/red]")
+        raise typer.Exit(code=1)
+    rows = [c.model_dump(mode="json", exclude={"node_id"}) for c in node_repo.get_checks(node_id)]
+    if json_output or yaml_output:
+        _emit(rows, yaml_output)
+        return
+    table = Table(title=f"Checks of {escape(node_id)}")
+    for column in ("#", "Deleted", "Result", "Test"):
+        table.add_column(column)
+    for r in rows:
+        table.add_row(str(r["number"]), escape(r["deleted"]), r["result"], escape(r["test"] or ""))
+    print(table)
+
+
+@note_app.command("add")
+def note_add(
+    node_id: str,
+    text: str,
+    agent: _AgentOption = None,
+    token: _TokenOption = None,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Leave one line on the node from the implement or fix step holding it."""
+    with _refusing():
+        added = _claims(_get_root(path), agent).add_note(node_id, text, agent=agent, token=token)
+    print(added.number)
+
+
+@note_app.command("list")
+def note_list(
+    node_id: str,
+    json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+    yaml_output: Annotated[
+        bool, typer.Option("--yaml", help="Output as YAML (fewer tokens than JSON)")
+    ] = False,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """A node's notes, oldest first."""
+    node_repo = _get_container(_get_root(path)).get(NodeRepository)
+    if node_repo.get_node(node_id) is None:
+        _stderr.print(f"[red]Node '{node_id}' not found[/red]")
+        raise typer.Exit(code=1)
+    notes = node_repo.get_notes(node_id)
+    if json_output or yaml_output:
+        _emit([n.model_dump(mode="json", exclude={"node_id"}) for n in notes], yaml_output)
+        return
+    for n in notes:
+        print(f"{n.number}. {escape(n.text)}")
 
 
 @finding_app.command("add")
@@ -2587,6 +2684,12 @@ def _export_node(node_repo: NodeRepository, node: Node, supersedes: list[str]) -
         ],
         "findings": [
             f.model_dump(mode="json", exclude={"node_id"}) for f in node_repo.get_findings(node.id)
+        ],
+        "checks": [
+            c.model_dump(mode="json", exclude={"node_id"}) for c in node_repo.get_checks(node.id)
+        ],
+        "notes": [
+            n.model_dump(mode="json", exclude={"node_id"}) for n in node_repo.get_notes(node.id)
         ],
     }
 

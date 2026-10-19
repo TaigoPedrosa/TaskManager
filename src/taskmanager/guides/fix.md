@@ -32,9 +32,9 @@ One commit per finding, or one commit naming them all — either way on the node
 - A finding you judge wrong is answered with the evidence that refutes it, `tm finding dispute <node-id> <n> --agent <name> --token <token> --evidence "<what was read>"`, and the code is left alone. It is never silently skipped. Evidence is what was read; a derived claim refutes nothing until it is read. A claim that something is absent (no caller, no other reader, not reachable) names the search that would have found it: the command, the path and pattern, and the range it covered.
 - A finding you close starts with its test: write it first, run it on the unfixed branch and watch it fail for the reason the finding names, then fix and watch it pass. A test first seen green proves nothing about the finding.
 - A finding you close lands with a test for each branch the fix adds (each stage a fold adds, each guard, each argument threaded through a call), and each test fails when its branch alone is reverted: revert each branch on its own, watch the suite go red, then restore it. Reverting the whole fix at once proves nothing about its parts.
-- Before closing, delete each guard, bound, filter and escape in your diff one at a time (one branch, one statement; null, empty and whitespace as separate inputs) and confirm a test turns red. A deletion that stays green gets a test before the step closes, and a filter a mock stands in for (a repository query, an HTTP route) gets a test through the real component. :report lists each deletion and the test that failed.
-- Anything else you notice goes in the report, not in the diff. Widening the scope is what spends the next round.
-- A landing failure whose red lies in files this node does not declare belongs to the node that caused it: find or file that node, then `tm task release <node-id> --agent <name> --token <token> --blocked --depends <that-node>`, and say so in the report.
+- Before closing, delete each guard, bound, filter and escape in your diff one at a time (one branch, one statement; null, empty and whitespace as separate inputs) and confirm a test turns red. A deletion that stays green gets a test before the step closes, and a filter a mock stands in for (a repository query, an HTTP route) gets a test through the real component. Record each deletion as it runs: `tm check add <node-id> --agent <name> --token <token> --deleted <file>:<symbol> --red <test>`, or `--green` in place of `--red` when every test still passed. A green one is answered by the test you then add and a `--red` record of the same `--deleted`: `tm task complete` refuses while a deletion's latest record is green.
+- Anything else you notice goes in a note, not in the diff. Widening the scope is what spends the next round.
+- A landing failure whose red lies in files this node does not declare belongs to the node that caused it: find or file that node, then `tm task release <node-id> --agent <name> --token <token> --blocked --depends <that-node>`, and say so in a note.
 - A finding whose fix needs a call only the owner can make: `tm task release <node-id> --agent <name> --token <token> --blocked --decision "<question>" --option "a|Do X|why" --recommend a`, and leave the finding open: the fix claimed after the owner answers closes it. A finding that turns on "the brief doesn't say" or "which of these is correct" is exactly that call, raised at once rather than guessed at.
 - A test of behaviour runs the code it tests: it calls the function, drives the page's scripts, or runs the command, and asserts what comes out. Searching the source for a call or a string is not a test of behaviour, even when it fails once the line is deleted.
 - A test that checks a generated artifact against its generator fails, never skips, when the generator is missing: a skipped check reads as a pass in every gate that runs it.
@@ -48,20 +48,17 @@ tm verify run <node-id> --ref tm/<node-id>
 
 Exit 1 names the failing rows. `No verifications to run.` exits 2 and is no evidence at all.
 
-Before closing, read `tm verify list <node-id>` against the fix, and for a plan or spec the list of each task under it, since its landing runs them all. A row that checks what the fix replaced (an identifier, a file, a pattern) is updated in the same step, with `tm verify remove` and `tm verify add`, and named in the report.
+Before closing, read `tm verify list <node-id>` against the fix, and for a plan or spec the list of each task under it, since its landing runs them all. A row that checks what the fix replaced (an identifier, a file, a pattern) is updated in the same step, with `tm verify remove` and `tm verify add`, and named in a note.
 
 ## 4. Report
 
-Every finding is answered by `tm finding close` or `tm finding dispute`, not in the report. Append to the report what the findings do not carry:
+Every finding is answered by `tm finding close` or `tm finding dispute`, and every deletion by `tm check add`. What neither carries is one line each:
 
 ```
-tm section get <node-id>:report > <path>
-tm section set <node-id>:report --file <path> --header "## Report"
+tm note add <node-id> --agent <name> --token <token> "<one line>"
 ```
 
-`tm section get` writes the header to stderr and the content alone to stdout, so `> <path>` captures content only and the round trip above never folds the header back in.
-
-Then the `tm verify run` exit code, and anything you found and did not touch.
+A note for each `tm verify run` row that failed, and for anything you found and did not touch.
 
 ## 5. Close the step
 

@@ -155,6 +155,13 @@ class FindingSource(StrEnum):
     LANDING = "landing"
 
 
+class CheckResult(StrEnum):
+    """What the suite did with one deletion in place: `red` names the test that failed."""
+
+    RED = "red"
+    GREEN = "green"
+
+
 class FindingState(StrEnum):
     OPEN = "open"
     CLOSED = "closed"

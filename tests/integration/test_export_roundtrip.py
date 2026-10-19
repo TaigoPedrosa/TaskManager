@@ -7,8 +7,8 @@ from typer.testing import CliRunner
 from taskmanager.cli.main import app
 from taskmanager.core.enums import NodeKind, RelationType
 from taskmanager.core.lifecycle import claim, next_action
-from taskmanager.core.models import Finding, Lease
-from taskmanager.core.status import FindingState, Outcome, Severity, Status
+from taskmanager.core.models import Check, Finding, Lease, Note
+from taskmanager.core.status import CheckResult, FindingState, Outcome, Severity, Status
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.di.container import create_container
@@ -67,6 +67,13 @@ def seeded(root: Path) -> None:
             Finding(node_id="S-P1-review", severity=severity, at="a.py:1", breaks=breaks)
         )
     node_repo.answer_finding("S-P1-review", 1, FindingState.DISPUTED, "the id is never null")
+    node_repo.add_check(
+        Check(node_id="S-P1-review", deleted="a.py:guard", result=CheckResult.GREEN)
+    )
+    node_repo.add_check(
+        Check(node_id="S-P1-review", deleted="a.py:guard", result=CheckResult.RED, test="test_g")
+    )
+    node_repo.add_note(Note(node_id="S-P1-review", text="verify row 1 red"))
     in_step(root, "S-P1-build", Status.READY)
     in_step(root, "S-P1-review", Status.IMPLEMENTED)
     tm("config", "set", "worktree_dir", str(root / "worktrees"), "-C", str(root))
@@ -102,6 +109,9 @@ def test_export_restore_export_round_trips_steps_supersedes_ordinals_and_config(
         0,
     )
     assert restored.get_findings("S-P1-review") == repo(source).get_findings("S-P1-review")
+    assert len(restored.get_checks("S-P1-review")) == 2
+    assert restored.get_checks("S-P1-review") == repo(source).get_checks("S-P1-review")
+    assert [n.text for n in restored.get_notes("S-P1-review")] == ["verify row 1 red"]
     assert [f.state for f in restored.get_findings("S-P1-review")] == [
         FindingState.DISPUTED,
         FindingState.OPEN,

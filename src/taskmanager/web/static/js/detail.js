@@ -227,6 +227,24 @@ function renderFindings(node, findings) {
   return detailGroupHtml(node.id, 'findings', 'Findings', rows.length, !open, relationTableHtml(rows), open ? relationMetaHtml(`${open} open`) : '');
 }
 
+// A check reads as the deletion an implement or fix ran and the test that failed with it; a
+// deletion whose latest check stayed green is what `tm task complete` refuses on.
+function renderChecks(node, checks) {
+  const list = checks || [];
+  const latest = new Map(list.map(c => [c.deleted, c.result]));
+  const rows = list.map((c) => {
+    const tone = c.result === 'red' ? 'text-zinc-300' : latest.get(c.deleted) === 'green' ? 'text-amber-400' : 'text-zinc-400';
+    return `<div class="${RELATION_ROW} text-[11px] leading-4" data-check="${esc(c.number)}"><span class="flex-shrink-0 font-mono text-zinc-200">#${esc(c.number)}</span><span class="flex-1 min-w-0 truncate font-mono text-zinc-300" title="${esc(c.deleted)}">${esc(c.deleted)}</span><span class="flex-shrink-0 ${tone}">${esc(c.result)}</span><span class="flex-shrink-0 max-w-[40%] truncate font-mono text-zinc-400" title="${esc(c.test || '')}">${esc(c.test || '')}</span></div>`;
+  });
+  const green = [...latest.values()].filter(r => r === 'green').length;
+  return detailGroupHtml(node.id, 'checks', 'Checks', rows.length, !green, relationTableHtml(rows), green ? relationMetaHtml(`${green} green`) : '');
+}
+
+function renderNotes(node, notes) {
+  const rows = (notes || []).map(n => `<div class="${RELATION_ROW} text-[11px] leading-4" data-note><span class="flex-1 min-w-0 text-zinc-300 whitespace-pre-wrap break-words">${esc(n)}</span></div>`);
+  return detailGroupHtml(node.id, 'notes', 'Notes', rows.length, true, relationTableHtml(rows));
+}
+
 // A job names what it lands where, its state and step, and how long ago it last beat.
 function renderJobs(node, jobs) {
   const rows = (jobs || []).map((j) => {
@@ -259,6 +277,8 @@ function nodeDetailHtml(node, body, row, { surface, byParent } = {}) {
     renderDependencies(node, body.dependency_details, status, editable),
     renderDependents(node, body.dependent_details),
     renderFindings(node, body.findings),
+    renderChecks(node, body.checks),
+    renderNotes(node, body.notes),
     renderConditions(node, body.conditions, editable),
     renderJobs(node, body.jobs),
     renderAttachmentsGroup(node, editable),

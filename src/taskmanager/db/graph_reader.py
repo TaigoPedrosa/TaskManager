@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 
 from taskmanager.core.enums import RelationType, VerificationType
 from taskmanager.core.models import (
+    Check,
     Condition,
     FileLock,
     Finding,
@@ -10,12 +11,22 @@ from taskmanager.core.models import (
     Lease,
     Node,
     NodeVerification,
+    Note,
 )
 from taskmanager.core.status import ConditionStage, JobState
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import _COLUMNS as _JOB_COLUMNS
 from taskmanager.db.job_repo import _row_to_job
-from taskmanager.db.node_repo import _NODE_COLUMNS, FINDING_COLUMNS, NodeRepository, row_to_finding
+from taskmanager.db.node_repo import (
+    _NODE_COLUMNS,
+    CHECK_COLUMNS,
+    FINDING_COLUMNS,
+    NOTE_COLUMNS,
+    NodeRepository,
+    row_to_check,
+    row_to_finding,
+    row_to_note,
+)
 from taskmanager.db.runtime_repo import _LEASE_COLUMNS, _row_to_lease
 
 _LIVE_JOB_STATES = (JobState.RUNNING.value, JobState.NEEDS_AGENT.value)
@@ -23,9 +34,9 @@ _LIVE_JOB_STATES = (JobState.RUNNING.value, JobState.NEEDS_AGENT.value)
 
 @dataclass(frozen=True)
 class GraphData:
-    """Every node, relation, verification, condition, lease, file lock, live job and finding: one
-    read of `state.db`, grouped the way every reader already asks for it, so `SnapshotBuilder`
-    and its callers need no query per node."""
+    """Every node, relation, verification, condition, lease, file lock, live job, finding, check
+    and note: one read of `state.db`, grouped the way every reader already asks for it, so
+    `SnapshotBuilder` and its callers need no query per node."""
 
     nodes: dict[str, Node]
     # SQLite's own count of changes to a node or to a section, verification, condition or
@@ -38,6 +49,8 @@ class GraphData:
     file_locks: list[FileLock]
     jobs: dict[str, list[Job]]
     findings: dict[str, list[Finding]]
+    checks: dict[str, list[Check]]
+    notes: dict[str, list[Note]]
     # One instant for the whole snapshot: every lease's liveness is judged against it, not
     # against the time each reader happens to ask.
     built_at: datetime = field(default_factory=lambda: datetime.now(tz=UTC))
@@ -128,6 +141,20 @@ def read_graph(db: DatabaseManager) -> GraphData:
             ).fetchall():
                 finding = row_to_finding(r)
                 findings.setdefault(finding.node_id, []).append(finding)
+
+            checks: dict[str, list[Check]] = {}
+            for r in conn.execute(
+                f"SELECT {CHECK_COLUMNS} FROM node_checks ORDER BY node_id, number"
+            ).fetchall():
+                check = row_to_check(r)
+                checks.setdefault(check.node_id, []).append(check)
+
+            notes: dict[str, list[Note]] = {}
+            for r in conn.execute(
+                f"SELECT {NOTE_COLUMNS} FROM node_notes ORDER BY node_id, number"
+            ).fetchall():
+                note = row_to_note(r)
+                notes.setdefault(note.node_id, []).append(note)
         finally:
             if opened:
                 conn.execute("COMMIT")
@@ -141,5 +168,7 @@ def read_graph(db: DatabaseManager) -> GraphData:
         file_locks=file_locks,
         jobs=jobs,
         findings=findings,
+        checks=checks,
+        notes=notes,
         built_at=built_at,
     )

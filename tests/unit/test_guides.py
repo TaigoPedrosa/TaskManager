@@ -188,6 +188,9 @@ def test_overview_carries_the_cycle_and_the_cutover_runbook() -> None:
         assert needle in text, needle
 
 
+_ID = {"implement": "task-id", "fix": "node-id"}
+
+
 @pytest.mark.parametrize("topic", ["implement", "fix"])
 def test_implement_and_fix_guides_delete_each_guard_and_watch_a_test_turn_red(topic: str) -> None:
     """Neither agent reads the other's guide, so each carries the deletion runs before closing."""
@@ -197,7 +200,11 @@ def test_implement_and_fix_guides_delete_each_guard_and_watch_a_test_turn_red(to
         " (one branch, one statement; null, empty and whitespace as separate inputs) and confirm a"
         " test turns red. A deletion that stays green gets a test before the step closes, and a"
         " filter a mock stands in for (a repository query, an HTTP route) gets a test through the"
-        " real component. :report lists each deletion and the test that failed.\n"
+        " real component. Record each deletion as it runs: `tm check add <ID> --agent <name>"
+        " --token <token> --deleted <file>:<symbol> --red <test>`, or `--green` in place of"
+        " `--red` when every test still passed. A green one is answered by the test you then add"
+        " and a `--red` record of the same `--deleted`: `tm task complete` refuses while a"
+        " deletion's latest record is green.\n".replace("<ID>", f"<{_ID[topic]}>")
     ) in steps
 
 
@@ -335,8 +342,11 @@ def test_dispatch_guide_rewrites_an_overridden_section_and_turns_a_repeat_findin
     rulings = rendered("dispatch").split("## 8. Write rulings down where the work is", 1)[1]
     rulings = rulings.split("## Never", 1)[0]
     assert "The overridden sentence goes, and the decision keeps the history" in rulings
-    assert "Only `:report` and `:merge` are appended to" in rulings
-    assert "findings are records, written with `tm finding`" in rulings
+    assert "Only `:merge` is appended to" in rulings
+    assert (
+        "findings, checks and notes are records, written with `tm finding`, `tm check` and "
+        "`tm note`" in rulings
+    )
     assert "When findings under one rule reach review on two nodes" in rulings
     assert 'tm decision add "Add to guide:<topic>: <line>?"' in rulings
     assert "tm section set guide:<topic> --file <path>" in rulings
@@ -1050,7 +1060,7 @@ BRIEF_RULES = [
         "Before closing, read `tm verify list <node-id>` against the fix, and for a plan or spec "
         "the list of each task under it, since its landing runs them all. A row that checks what "
         "the fix replaced (an identifier, a file, a pattern) is updated in the same step, with "
-        "`tm verify remove` and `tm verify add`, and named in the report.",
+        "`tm verify remove` and `tm verify add`, and named in a note.",
         id="fix:stale-verifications",
     ),
     pytest.param(
@@ -1068,7 +1078,7 @@ BRIEF_RULES = [
         "Create, modify or delete nothing outside `declared_files`. Before touching another file, "
         "read the locks in `tm run list --yaml`. When another live node holds the file, release "
         "blocked and name that node (below). Otherwise add the file with `tm task update "
-        "<task-id> --set declared_files='[...]'` before the edit, and name it in the report. That "
+        "<task-id> --set declared_files='[...]'` before the edit, and name it in a note. That "
         "update locks the file for your lease, and tm refuses it, naming the holder, when another "
         "live node took the file first: release blocked then.",
         id="implement:declared-files",
@@ -1076,7 +1086,7 @@ BRIEF_RULES = [
     pytest.param(
         "implement",
         "## 6. Report",
-        "A report that fixes a contract its dependents build on (a shape, a name, an id scheme) "
+        "A step that fixes a contract its dependents build on (a shape, a name, an id scheme) "
         "adds the contract to what `tm section get <plan-id>:overview` prints, or replaces the "
         "earlier wording of the same contract, and writes the whole of it back with `tm section set <plan-id>:overview --file <path>` before the step "
         "closes. Only the parent's `context` "
@@ -1096,7 +1106,7 @@ BRIEF_RULES = [
         "## 5. Verify",
         "- After removing something, search for every file, symbol, field, and computation or "
         "load whose last reader was the removed code, and delete each one in the same step, a "
-        "payload field's producer included. Name them in the report.",
+        "payload field's producer included. Name them in a note.",
         id="implement:last-reader",
     ),
     pytest.param(
@@ -1105,7 +1115,7 @@ BRIEF_RULES = [
         "- When the task writes or reads a format another task also writes or reads (an id scheme, "
         "a URL key, a payload), run the round trip across both ends before closing the step: write "
         "it with one end, read it back with the other, get back the same thing, and put that run "
-        "in the report. A mismatch with the other end is a decision (below), never a local "
+        "in a note. A mismatch with the other end is a decision (below), never a local "
         "reinterpretation.",
         id="implement:format-round-trip",
     ),

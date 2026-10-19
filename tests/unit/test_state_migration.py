@@ -83,7 +83,7 @@ def test_migrated_v1_estate_matches_a_fresh_init(tmp_path: Path) -> None:
     migrated = DatabaseManager(old)
     assert migrated.migrate_state() == 1
     with migrated.get_state_connection() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 6
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 7
         assert conn.execute("SELECT merge FROM nodes").fetchall() == [("spec",)]
 
     fresh = DatabaseManager(tmp_path / "fresh")
@@ -328,10 +328,10 @@ def _dump(state_db: Path) -> list[str]:
         conn.close()
 
 
-def _dump_as_schema_6(state_db: Path, scratch: Path) -> list[str]:
+def _dump_as_schema_7(state_db: Path, scratch: Path) -> list[str]:
     """`state_db`'s dump with every `main` merge value, and the column's CHECK, read as schema
-    4 holds them, then schema 5's `on_target` and schema 6's findings added; every other line
-    as it is."""
+    4 holds them, then schema 5's `on_target`, schema 6's findings and schema 7's checks and notes added;
+    every other line as it is."""
     shutil.copyfile(state_db, scratch)
     conn = sqlite3.connect(scratch)
     try:
@@ -346,6 +346,7 @@ def _dump_as_schema_6(state_db: Path, scratch: Path) -> list[str]:
         conn.commit()
         conn.executescript(STATE_MIGRATIONS[5])
         conn.executescript(STATE_MIGRATIONS[6])
+        conn.executescript(STATE_MIGRATIONS[7])
     finally:
         conn.close()
     return sorted(line.replace(_MERGE_COLUMN_V3, _MERGE_COLUMN_V4) for line in _dump(scratch))
@@ -362,7 +363,7 @@ def test_migrate_schema_3_estate_rewrites_main_to_spec_and_changes_nothing_else(
     on_main = sorted(row[1] for row in before["nodes"] if row[_MERGE_AT] == "main")
     assert {"M1", "D-OPEN"} <= set(on_main)
     assert any(row[_MERGE_AT] == "parent" for row in before["nodes"])
-    expected = _dump_as_schema_6(state_db, tmp_path / "expected.db")
+    expected = _dump_as_schema_7(state_db, tmp_path / "expected.db")
     assert expected != before_dump
 
     db = DatabaseManager(old)
@@ -371,7 +372,7 @@ def test_migrate_schema_3_estate_rewrites_main_to_spec_and_changes_nothing_else(
 
     conn = sqlite3.connect(state_db)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 6
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 7
         merges = dict(conn.execute("SELECT id, merge FROM nodes").fetchall())
     finally:
         conn.close()
@@ -462,7 +463,7 @@ def test_open_current_schema_estate_leaves_the_file_bytes_untouched(tmp_path: Pa
 
     again = DatabaseManager(estate)
     with again.get_state_connection() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 6
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 7
     again.close()
 
     assert (estate / "state.db").read_bytes() == before
@@ -639,6 +640,8 @@ _ESTATE_COMMANDS: dict[str, list[str]] = {
     "web export": ["web", "export", "-o", "out.html"],
     "decision": ["decision", "list"],
     "finding": ["finding", "list", "S1"],
+    "check": ["check", "list", "S1"],
+    "note": ["note", "list", "S1"],
     "job": ["job", "status", "J1"],
     "land": ["land", "start", "S1"],
     "next": ["next"],

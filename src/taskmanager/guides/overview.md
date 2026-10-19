@@ -51,9 +51,9 @@ set by a verb, from any stable status but COMPLETED: DEFERRED, ABANDONED, SUPERS
 
 | `action` | Claimed from | Locks the declared files | Closed with |
 |:--|:--|:--|:--|
-| `implement` | `READY` | yes | `tm task complete <id> --agent <name> --token <token>` |
+| `implement` | `READY` | yes | `tm task complete <id> --agent <name> --token <token>`, over the deletions `tm check add` recorded and the lines `tm note add` left; refused while a deletion's latest check is green |
 | `review` | `IMPLEMENTED` for a task, `LANDED` for a plan or spec, `FIXED` for a sensitive node | no | `tm task review <id> --agent <name> --token <token> --approve`, or `--reject`, over the findings `tm finding add` recorded, or `--clean` |
-| `fix` | `REVIEWED` | yes | `tm task complete <id> --agent <name> --token <token>` |
+| `fix` | `REVIEWED` | yes | `tm task complete <id> --agent <name> --token <token>`, refused while a finding is open or a deletion's latest check is green |
 | `merge` | `IMPLEMENTED`, `REVIEWED`, `FIXED` | no | nothing: tm lands it as a job, and hands the job to an agent only when it stops |
 | `sync` | a container branch behind its base | no | nothing: tm merges it as a job, and hands the job to an agent only when it stops |
 | `blocked` | nothing is claimed; exit 3 | | the printed `reason` says what it waits on |

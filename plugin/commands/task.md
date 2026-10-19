@@ -12,7 +12,7 @@ task: it names what each command refuses and the verb that closes your step.
   `tm task heartbeat <task-id>`
 - `verify <task-id>`: run the task's verifications against its own branch, exit 1 on a failure:
   `tm verify run <task-id> --ref tm/<task-id>`
-- `complete <task-id>`: close an implement or fix step, refused unless the lease is `<name>`'s and this claim's:
+- `complete <task-id>`: close an implement or fix step, refused unless the lease is `<name>`'s and this claim's, and while a deletion its red-check recorded with `tm check add` still stands green:
   `tm task complete <task-id> --agent <name> --token <token>`
 - `review <task-id>`: close a review step once its findings are recorded with `tm finding add`, approving or rejecting:
   `tm task review <task-id> --agent <name> --token <token> --approve`

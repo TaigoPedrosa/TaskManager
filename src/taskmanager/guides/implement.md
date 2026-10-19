@@ -45,7 +45,7 @@ An instruction about a third-party artifact's structure (which layers a style ho
 
 Every read, edit, command and commit happens under the printed worktree path. Check the prefix of each path you edit, not just its basename: the same file exists in the project's own checkout. Commit on the branch with an explicit pathspec. Do not merge and do not push: tm lands the branch. You may rewrite your own branch until its first review, never after.
 
-Create, modify or delete nothing outside `declared_files`. Before touching another file, read the locks in `tm run list --yaml`. When another live node holds the file, release blocked and name that node (below). Otherwise add the file with `tm task update <task-id> --set declared_files='[...]'` before the edit, and name it in the report. That update locks the file for your lease, and tm refuses it, naming the holder, when another live node took the file first: release blocked then.
+Create, modify or delete nothing outside `declared_files`. Before touching another file, read the locks in `tm run list --yaml`. When another live node holds the file, release blocked and name that node (below). Otherwise add the file with `tm task update <task-id> --set declared_files='[...]'` before the edit, and name it in a note. That update locks the file for your lease, and tm refuses it, naming the holder, when another live node took the file first: release blocked then.
 
 ## 4. Keep the lease alive
 
@@ -67,13 +67,13 @@ A table of the task's checks against your branch, exit 1 if any failed. What eac
 - `test_command` — the command runs in a shell from the project root; exit 0 passes.
 - `codegraph_query` — `codegraph query --json` for the search in `target_path`, run over the ref's tree, matches the regex in `expected_pattern`.
 
-The path checks and codegraph queries read the ref, never your worktree, so without `--ref` they read `<remote>/<the branch the task's spec lands on>` and stay red until the task's code reaches it. A `test_command` reads the same ref from `TM_VERIFY_REF`, which every run exports: the `--ref` given, that landing branch without one, and the landing target when tm lands the task. So write `"${TM_VERIFY_REF:-origin/main}"` into the command rather than a branch name. `No verifications to run.` exits 2: a task with no checks has not passed anything, and that is worth a line in your report.
+The path checks and codegraph queries read the ref, never your worktree, so without `--ref` they read `<remote>/<the branch the task's spec lands on>` and stay red until the task's code reaches it. A `test_command` reads the same ref from `TM_VERIFY_REF`, which every run exports: the `--ref` given, that landing branch without one, and the landing target when tm lands the task. So write `"${TM_VERIFY_REF:-origin/main}"` into the command rather than a branch name. `No verifications to run.` exits 2: a task with no checks has not passed anything, and that is worth a note.
 
 - A generated file (a built stylesheet, a lockfile, a schema dump) is regenerated, never edited or hand-merged: a branch that changes any of its inputs rebuilds it before closing, and a conflict on it is resolved by rebuilding it on the merged tree.
 - A UI test reaches a control another file owns by what it shows the user (role, accessible name), never by its implementation.
-- Before closing, delete each guard, bound, filter and escape in your diff one at a time (one branch, one statement; null, empty and whitespace as separate inputs) and confirm a test turns red. A deletion that stays green gets a test before the step closes, and a filter a mock stands in for (a repository query, an HTTP route) gets a test through the real component. :report lists each deletion and the test that failed.
-- After removing something, search for every file, symbol, field, and computation or load whose last reader was the removed code, and delete each one in the same step, a payload field's producer included. Name them in the report.
-- When the task writes or reads a format another task also writes or reads (an id scheme, a URL key, a payload), run the round trip across both ends before closing the step: write it with one end, read it back with the other, get back the same thing, and put that run in the report. A mismatch with the other end is a decision (below), never a local reinterpretation.
+- Before closing, delete each guard, bound, filter and escape in your diff one at a time (one branch, one statement; null, empty and whitespace as separate inputs) and confirm a test turns red. A deletion that stays green gets a test before the step closes, and a filter a mock stands in for (a repository query, an HTTP route) gets a test through the real component. Record each deletion as it runs: `tm check add <task-id> --agent <name> --token <token> --deleted <file>:<symbol> --red <test>`, or `--green` in place of `--red` when every test still passed. A green one is answered by the test you then add and a `--red` record of the same `--deleted`: `tm task complete` refuses while a deletion's latest record is green.
+- After removing something, search for every file, symbol, field, and computation or load whose last reader was the removed code, and delete each one in the same step, a payload field's producer included. Name them in a note.
+- When the task writes or reads a format another task also writes or reads (an id scheme, a URL key, a payload), run the round trip across both ends before closing the step: write it with one end, read it back with the other, get back the same thing, and put that run in a note. A mismatch with the other end is a decision (below), never a local reinterpretation.
 
 ## Waiting on something that takes time
 
@@ -95,20 +95,19 @@ Release the step and name what it waits on, in one call; the task returns to `RE
 - Only the owner can answer: `tm task release <task-id> --agent <name> --token <token> --blocked --decision "<question>" --option "a|Do X|why" --option "b|Do Y|why" --recommend a`. Name the options you considered and the one you recommend. A blocker that turns on "the brief doesn't say" or "which of these is correct" is that same call, raised at once — never a guess spent on a review cycle.
 - A state outside the corpus: `tm task release <task-id> --agent <name> --token <token> --blocked --needs "<what must hold>" --command "<a command that exits 0 once it holds>"`.
 
-`--blocked` with nothing named is refused. `tm task release <task-id> --agent <name> --token <token>` alone is a failed step, counted towards `FAILED`: use it only when you cannot go on and nothing names why, and say why in the report. A release or close refused for `--agent` or `--token` means the step is no longer yours: stop and report.
+`--blocked` with nothing named is refused. `tm task release <task-id> --agent <name> --token <token>` alone is a failed step, counted towards `FAILED`: use it only when you cannot go on and nothing names why, and say why in a note. A release or close refused for `--agent` or `--token` means the step is no longer yours: stop and report.
 
 ## 6. Report
 
-Write the report before closing the step, appending to what is there:
+The step's report is records, not prose: the deletions `tm check add` recorded, and one line per fact the code and the checks do not carry:
 
 ```
-tm section get <task-id>:report
-tm section set <task-id>:report --file <path> --header "## Report"
+tm note add <task-id> --agent <name> --token <token> "<one line>"
 ```
 
-The branch, the commits you made, the `tm verify run` exit code and which rows failed, and anything you could not do. Where the brief contradicts the tree — a file that does not exist, an interface that already differs — record the discrepancy, implement against the tree, and keep going.
+A note for each `tm verify run` row that failed, and for anything you could not do. Where the brief contradicts the tree — a file that does not exist, an interface that already differs — note the discrepancy, implement against the tree, and keep going. The branch and its commits need no note: tm and git hold them.
 
-A report that fixes a contract its dependents build on (a shape, a name, an id scheme) adds the contract to what `tm section get <plan-id>:overview` prints, or replaces the earlier wording of the same contract, and writes the whole of it back with `tm section set <plan-id>:overview --file <path>` before the step closes. Only the parent's `context` and `overview` reach a dependent's brief, and no step runs between tasks to copy it there.
+A step that fixes a contract its dependents build on (a shape, a name, an id scheme) adds the contract to what `tm section get <plan-id>:overview` prints, or replaces the earlier wording of the same contract, and writes the whole of it back with `tm section set <plan-id>:overview --file <path>` before the step closes. Only the parent's `context` and `overview` reach a dependent's brief, and no step runs between tasks to copy it there.
 
 ## 7. Close the step
 
@@ -116,7 +115,7 @@ A report that fixes a contract its dependents build on (a shape, a name, an id s
 tm task complete <task-id> --agent <name> --token <token>
 ```
 
-After the last commit and the report, on every path that finished the work. The task moves to `IMPLEMENTED`, and what follows — a review, or the landing — is tm's to choose. Leave the worktree in place: a fix round reuses it.
+After the last commit, check and note, on every path that finished the work. The task moves to `IMPLEMENTED`, and what follows — a review, or the landing — is tm's to choose. Leave the worktree in place: a fix round reuses it.
 
 ## Never
 

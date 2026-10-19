@@ -15,6 +15,7 @@ from taskmanager.core.enums import ImportFormat
 from taskmanager.core.lifecycle import next_action
 from taskmanager.core.status import (
     Action,
+    CheckResult,
     ConditionStage,
     DecisionStatus,
     FindingState,
@@ -170,6 +171,43 @@ REFUSED = [
         ),
         "needs its number",
         id="finding-without-number",
+    ),
+    pytest.param(
+        doc(
+            {
+                "id": "S-P-a",
+                "title": "a",
+                "checks": [{"number": 1, "deleted": "a.py:g", "result": "red"}],
+            }
+        ),
+        "check on 'S-P-a'",
+        id="red-check-without-test",
+    ),
+    pytest.param(
+        doc(
+            {
+                "id": "S-P-a",
+                "title": "a",
+                "checks": [{"number": 1, "deleted": " ", "result": "green"}],
+            }
+        ),
+        "check on 'S-P-a'",
+        id="check-empty-deleted",
+    ),
+    pytest.param(
+        doc({"id": "S-P-a", "title": "a", "checks": [{"deleted": "a.py:g", "result": "green"}]}),
+        "check on 'S-P-a' needs its number",
+        id="check-without-number",
+    ),
+    pytest.param(
+        doc({"id": "S-P-a", "title": "a", "notes": [{"number": 0, "text": "x"}]}),
+        "note on 'S-P-a' needs its number",
+        id="note-number-zero",
+    ),
+    pytest.param(
+        doc({"id": "S-P-a", "title": "a", "notes": [{"number": 1, "text": " "}]}),
+        "note on 'S-P-a'",
+        id="note-empty-text",
     ),
 ]
 
@@ -558,3 +596,40 @@ def test_reimporting_a_node_in_a_step_at_a_stable_status_ends_the_step(
     importer.import_dict(doc({"id": "S-P-a", "title": "a", "status": "READY"}))
     node = repo.get_node("S-P-a")
     assert node is not None and (node.status, node.claimed_from) == (Status.READY, None)
+
+
+def test_an_imported_node_keeps_each_check_and_note_with_its_number(
+    repo: NodeRepository,
+) -> None:
+    BulkImporter(repo).import_dict(
+        doc(
+            {
+                "id": "S-P-a",
+                "title": "a",
+                "checks": [
+                    {"number": 2, "deleted": "a.py:g", "result": "green", "test": None},
+                    {"number": 5, "deleted": "a.py:g", "result": "red", "test": "test_g"},
+                ],
+                "notes": [{"number": 3, "text": "verify row 1 red"}],
+            }
+        )
+    )
+    assert [(c.number, c.result, c.test) for c in repo.get_checks("S-P-a")] == [
+        (2, CheckResult.GREEN, None),
+        (5, CheckResult.RED, "test_g"),
+    ]
+    assert [(n.number, n.text) for n in repo.get_notes("S-P-a")] == [(3, "verify row 1 red")]
+
+
+@pytest.mark.parametrize("given", ["checks", "notes"])
+def test_a_reimport_naming_only_checks_or_notes_keeps_the_other(
+    repo: NodeRepository, given: str
+) -> None:
+    both = {
+        "checks": [{"number": 1, "deleted": "a.py:g", "result": "red", "test": "test_g"}],
+        "notes": [{"number": 1, "text": "kept"}],
+    }
+    BulkImporter(repo).import_dict(doc({"id": "S-P-a", "title": "a", **both}))
+    BulkImporter(repo).import_dict(doc({"id": "S-P-a", "title": "a", given: []}))
+    assert (repo.get_checks("S-P-a") == []) == (given == "checks")
+    assert (repo.get_notes("S-P-a") == []) == (given == "notes")

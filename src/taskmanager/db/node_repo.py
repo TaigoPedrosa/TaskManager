@@ -10,14 +10,17 @@ from taskmanager.core.enums import (
     VerificationType,
 )
 from taskmanager.core.models import (
+    Check,
     Condition,
     Finding,
     Node,
     NodeRelation,
     NodeSection,
     NodeVerification,
+    Note,
 )
 from taskmanager.core.status import (
+    CheckResult,
     ConditionStage,
     DecisionStatus,
     FindingSource,
@@ -688,6 +691,53 @@ class NodeRepository:
             self.db.spec_commit(conn)
             return cursor.rowcount > 0
 
+    def get_checks(self, node_id: str) -> list[Check]:
+        with self.db.get_state_connection() as conn:
+            rows = conn.execute(
+                f"SELECT {CHECK_COLUMNS} FROM node_checks WHERE node_id = ? ORDER BY number",
+                (node_id,),
+            ).fetchall()
+        return [row_to_check(r) for r in rows]
+
+    def get_notes(self, node_id: str) -> list[Note]:
+        with self.db.get_state_connection() as conn:
+            rows = conn.execute(
+                f"SELECT {NOTE_COLUMNS} FROM node_notes WHERE node_id = ? ORDER BY number",
+                (node_id,),
+            ).fetchall()
+        return [row_to_note(r) for r in rows]
+
+    def add_check(self, check: Check) -> Check:
+        with self.db.spec_transaction() as conn:
+            numbered = check.model_copy(
+                update={"number": _next_number(conn, "node_checks", check.node_id)}
+            )
+            _insert_check(conn, numbered)
+        return numbered
+
+    def add_note(self, note: Note) -> Note:
+        with self.db.spec_transaction() as conn:
+            numbered = note.model_copy(
+                update={"number": _next_number(conn, "node_notes", note.node_id)}
+            )
+            _insert_note(conn, numbered)
+        return numbered
+
+    def replace_report(
+        self, node_id: str, checks: list[Check] | None, notes: list[Note] | None
+    ) -> None:
+        """`node_id`'s checks and notes become these, each keeping its number; None keeps what
+        is stored."""
+        with self.db.spec_transaction() as conn:
+            if checks is not None:
+                conn.execute("DELETE FROM node_checks WHERE node_id = ?", (node_id,))
+                for check in checks:
+                    _insert_check(conn, check)
+            if notes is not None:
+                conn.execute("DELETE FROM node_notes WHERE node_id = ?", (node_id,))
+                for note in notes:
+                    _insert_note(conn, note)
+
     def update_ordinal(self, node_id: str, ordinal: int) -> None:
         with self.db.get_state_connection() as conn:
             conn.execute(
@@ -729,3 +779,37 @@ def row_to_finding(row: Any) -> Finding:
         state=FindingState(row[7]),
         answer=row[8],
     )
+
+
+CHECK_COLUMNS = "node_id, number, deleted, result, test"
+NOTE_COLUMNS = "node_id, number, text"
+
+
+def _next_number(conn: Any, table: str, node_id: str) -> int:
+    (number,) = conn.execute(
+        f"SELECT COALESCE(MAX(number), 0) + 1 FROM {table} WHERE node_id = ?", (node_id,)
+    ).fetchone()
+    return int(number)
+
+
+def _insert_check(conn: Any, c: Check) -> None:
+    conn.execute(
+        f"INSERT INTO node_checks ({CHECK_COLUMNS}) VALUES (?, ?, ?, ?, ?)",
+        (c.node_id, c.number, c.deleted, c.result.value, c.test),
+    )
+
+
+def _insert_note(conn: Any, n: Note) -> None:
+    conn.execute(
+        f"INSERT INTO node_notes ({NOTE_COLUMNS}) VALUES (?, ?, ?)", (n.node_id, n.number, n.text)
+    )
+
+
+def row_to_check(row: Any) -> Check:
+    return Check(
+        node_id=row[0], number=row[1], deleted=row[2], result=CheckResult(row[3]), test=row[4]
+    )
+
+
+def row_to_note(row: Any) -> Note:
+    return Note(node_id=row[0], number=row[1], text=row[2])

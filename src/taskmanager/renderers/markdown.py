@@ -86,6 +86,8 @@ class MarkdownRenderer:
                 else:
                     out.append(sec.content)
 
+            out.extend(self._report(node_id, hide_notes=blind))
+
             verifications = self.node_repo.get_verifications(node_id)
             if verifications:
                 v_lines = ["### Verifications"]
@@ -118,6 +120,7 @@ class MarkdownRenderer:
                     out.append(f"{sec.header}\n\n{sec.content}")
                 else:
                     out.append(sec.content)
+            out.extend(self._report(node_id, hide_notes=False))
             return "\n\n".join(out) + "\n"
 
         raise ValueError(f"Unknown view '{view}'. Supported views: summary, subagent, full")
@@ -139,6 +142,27 @@ class MarkdownRenderer:
         for child_id in self.node_repo.get_children(node_id):
             parts.append(self.render_recursive(child_id, view, seen))
         return "\n\n---\n\n".join(parts)
+
+    def _report(self, node_id: str, hide_notes: bool) -> list[str]:
+        out = []
+        checks = self.node_repo.get_checks(node_id)
+        if checks:
+            out.append(
+                "\n".join(
+                    [
+                        "### Checks",
+                        *(
+                            f"- #{c.number} `{c.deleted}`: "
+                            + (f"red, `{c.test}` failed" if c.test else "green")
+                            for c in checks
+                        ),
+                    ]
+                )
+            )
+        notes = [] if hide_notes else self.node_repo.get_notes(node_id)
+        if notes:
+            out.append("\n".join(["### Notes", *(f"- {n.text}" for n in notes)]))
+        return out
 
     def _superseded(self, node: Node) -> list[str]:
         # Ahead of every section, so a superseded node's old deferral reads as history.

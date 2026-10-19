@@ -220,3 +220,73 @@ def test_fresh_estate_defaults_merge_to_spec_and_refuses_main(tmp_path: Path) ->
         conn.commit()
         rows = conn.execute("SELECT id, merge FROM nodes").fetchall()
     assert rows == [("T1", "spec")]
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        "('T1', 1, 'a.py:g', 'red', NULL)",
+        "('T1', 1, 'a.py:g', 'red', ' ')",
+        "('T1', 1, 'a.py:g', 'green', 'test_g')",
+        "('T1', 1, ' ', 'green', NULL)",
+        "('T1', 1, 'a.py:g', 'amber', NULL)",
+        "('T1', 0, 'a.py:g', 'green', NULL)",
+    ],
+)
+def test_a_check_row_holds_a_deletion_and_a_test_exactly_when_red(
+    tmp_path: Path, values: str
+) -> None:
+    db_mgr = DatabaseManager(tmp_path)
+    db_mgr.init_all()
+
+    with db_mgr.get_state_connection() as conn:
+        conn.execute("INSERT INTO nodes (id, kind, title) VALUES ('T1', 'task', 'T')")
+        conn.execute(
+            "INSERT INTO node_checks (node_id, number, deleted, result, test) "
+            "VALUES ('T1', 9, 'a.py:g', 'red', 'test_g'), ('T1', 8, 'a.py:g', 'green', NULL)"
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+            conn.execute(
+                f"INSERT INTO node_checks (node_id, number, deleted, result, test) VALUES {values}"
+            )
+
+
+@pytest.mark.parametrize("values", ["('T1', 1, ' ')", "('T1', 0, 'x')"])
+def test_a_note_row_holds_text_and_a_positive_number(tmp_path: Path, values: str) -> None:
+    db_mgr = DatabaseManager(tmp_path)
+    db_mgr.init_all()
+
+    with db_mgr.get_state_connection() as conn:
+        conn.execute("INSERT INTO nodes (id, kind, title) VALUES ('T1', 'task', 'T')")
+        conn.execute("INSERT INTO node_notes (node_id, number, text) VALUES ('T1', 9, 'x')")
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+            conn.execute(f"INSERT INTO node_notes (node_id, number, text) VALUES {values}")
+
+
+@pytest.mark.parametrize("table", ["node_checks", "node_notes"])
+def test_inserting_updating_or_deleting_a_check_or_note_moves_its_nodes_rev(
+    tmp_path: Path, table: str
+) -> None:
+    db_mgr = DatabaseManager(tmp_path)
+    db_mgr.init_all()
+    row = (
+        "(node_id, number, deleted, result) VALUES ('T1', 1, 'a.py:g', 'green')"
+        if table == "node_checks"
+        else "(node_id, number, text) VALUES ('T1', 1, 'x')"
+    )
+
+    with db_mgr.get_state_connection() as conn:
+        conn.execute("INSERT INTO nodes (id, kind, title) VALUES ('T1', 'task', 'T')")
+
+        def rev() -> int:
+            (value,) = conn.execute("SELECT rev FROM nodes WHERE id = 'T1'").fetchone()
+            return int(value)
+
+        revs = [rev()]
+        conn.execute(f"INSERT INTO {table} {row}")
+        revs.append(rev())
+        conn.execute(f"UPDATE {table} SET number = 2")
+        revs.append(rev())
+        conn.execute(f"DELETE FROM {table}")
+        revs.append(rev())
+    assert revs == [revs[0], revs[0] + 1, revs[0] + 2, revs[0] + 3]

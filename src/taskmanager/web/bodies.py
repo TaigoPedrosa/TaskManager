@@ -37,6 +37,8 @@ _BODY_PARTS = (
     "verifications",
     "conditions",
     "findings",
+    "checks",
+    "notes",
     "jobs",
     "lease",
 )
@@ -360,6 +362,10 @@ def build_bodies(
                 f.model_dump(mode="json", exclude={"node_id"})
                 for f in data.findings.get(node_id, [])
             ],
+            "checks": [
+                c.model_dump(mode="json", exclude={"node_id"}) for c in data.checks.get(node_id, [])
+            ],
+            "notes": [n.text for n in data.notes.get(node_id, [])],
             "jobs": [j.model_dump(mode="json") for j in jobs.get(node_id, [])],
             "lease": lease_dict(data.leases.get(node_id)),
         }

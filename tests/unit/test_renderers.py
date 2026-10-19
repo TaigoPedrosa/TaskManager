@@ -132,6 +132,7 @@ def test_markdown_renderer_subagent_with_parent_and_verifications(tmp_path: Path
     assert "# Task Brief: Issue JWT" in brief
     assert "### Verifications" in brief
     assert "file_exists: `src/jwt.py`" in brief
+    assert "### Checks" not in brief and "### Notes" not in brief
 
 
 def test_markdown_renderer_errors(tmp_path: Path) -> None:

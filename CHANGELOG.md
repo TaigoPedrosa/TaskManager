@@ -10,6 +10,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - `tm init` asks for the project's `name`, the folder's name unless changed, or takes `--name`;
   `tm web` and its export show it in the header and the browser tab, so open estates differ.
 
+### Changed
+
+- An implement or fix records its red-check runs with `tm check add <node> --deleted
+  <file>:<symbol> --red <test>`, or `--green` when every test still passed, and `tm task complete`
+  refuses while a deletion's latest check is green. What the code and checks do not carry is a
+  one-line `tm note add <node> "…"`. Both replace writing the `report` section, which stays
+  readable where it was written.
+- A review's brief shows the checks; with `review.blind` on it leaves out the notes, as it did the
+  report. `tm check list`, `tm note list`, `tm task get`, the web detail view, `tm export` and
+  `tm restore` carry both.
+
 ### Fixed
 
 - `tm init --ignore-estate` or `--track-estate` leaves a `.gitignore` that already says so as it
@@ -19,6 +30,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   node's landing as its own defect.
 - tm-wave names each agent its own scratch folder, `<node>-<step>-<token>/`, so agents running at
   once no longer overwrite each other's scripts.
+
+### Upgrading
+
+- The state schema is 7: run `tm db migrate` once per estate.
 
 ## [0.3.15] - 2026-10-19
 

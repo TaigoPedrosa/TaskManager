@@ -37,7 +37,7 @@ Never write `kind`: position decides it. Never write `status`: a new node is `RE
 
 ## 2. Sections and frontmatter
 
-Section keys, in this order where they apply: `objective` (what is true when it is done), `acceptance` (the checks a reviewer runs, one per line), `body` (how, where the how is not obvious), `context` (what the agent would otherwise have to go and read), `attestation` (a signed claim for work no assertion can measure). The header is `## <Key>` unless a section is given as `{header, content, ordinal}` instead of plain text. tm writes `:report`, `:merge`, `:reopen` and `:deferral` itself, or its agents do; a review's findings are records (`tm finding list <id>`), not a section.
+Section keys, in this order where they apply: `objective` (what is true when it is done), `acceptance` (the checks a reviewer runs, one per line), `body` (how, where the how is not obvious), `context` (what the agent would otherwise have to go and read), `attestation` (a signed claim for work no assertion can measure). The header is `## <Key>` unless a section is given as `{header, content, ordinal}` instead of plain text. tm writes `:merge`, `:reopen` and `:deferral` itself, or its agents do; a review's findings and an implement's checks and notes are records (`tm finding list`, `tm check list`, `tm note list`), not sections.
 
 Work this node deliberately leaves open is never a section: it is its own spec, plan or task, with `depends_on` naming this node so it waits on it instead of hiding in prose nobody discovers. tm refuses a section keyed `owed` and says so.
 
@@ -169,7 +169,7 @@ tm verify list <id>
 tm verify remove <id> <verification-id>
 ```
 
-A section is rewritten in place, never extended with a second generation: `tm section get <id>:<key>`, edit it, set the whole back, with every sentence the change overrides gone. Only `:report` and `:merge` grow by appended entries.
+A section is rewritten in place, never extended with a second generation: `tm section get <id>:<key>`, edit it, set the whole back, with every sentence the change overrides gone. Only `:merge` grows by appended entries.
 
 A ruling (a decision's answer, or a fix round's instruction) that changes a landed task's approach updates that task's verifications in the same step: `tm verify list <id>`, then `tm verify remove` for each row that checks the old approach, then `tm verify add` for the new one. A verification still checking the old approach fails the plan's landing on a green fix.
 

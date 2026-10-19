@@ -26,10 +26,13 @@ from subprocess import CalledProcessError
 from typing import Any, Final, NamedTuple, Protocol, cast
 from urllib.parse import quote
 
+from pydantic import ValidationError
+
 from taskmanager.core import lifecycle
 from taskmanager.core.enums import CONTAINERS, NodeKind, RelationType
 from taskmanager.core.lifecycle import Caps, Cycle, LifecycleError
 from taskmanager.core.models import (
+    Check,
     Condition,
     FileLock,
     Finding,
@@ -39,11 +42,13 @@ from taskmanager.core.models import (
     LedgerEvent,
     Node,
     NodeRelation,
+    Note,
 )
 from taskmanager.core.status import (
     EXITS,
     IN_STEP,
     Action,
+    CheckResult,
     ConditionStage,
     DecisionStatus,
     Event,
@@ -836,6 +841,14 @@ class Claims:
                 f"`tm finding close` or `tm finding dispute` first",
                 409,
             )
+        left_green = _left_green(self.nodes.get_checks(node_id))
+        if left_green:
+            raise OperationError(
+                f"{node_id} has deletions that left every test passing: {', '.join(left_green)}. "
+                "Add a test that fails without each, then record "
+                "`tm check add --deleted <same> --red <test>`",
+                409,
+            )
         return self._advance(
             self._with_written_migrations(node),
             Event.COMPLETE,
@@ -933,6 +946,47 @@ class Claims:
             )
         self._ledger("finding add", node_id, {"number": found.number, "severity": severity.value})
         return found
+
+    def add_check(
+        self,
+        node_id: str,
+        deleted: str,
+        test: str | None,
+        agent: str | None = None,
+        token: str | None = None,
+    ) -> Check:
+        """Records one red-check deletion of the implement or fix step holding `node_id`: `test`
+        is the test that failed with it, or None when every test still passed."""
+        try:
+            check = Check(
+                node_id=node_id,
+                deleted=deleted.strip(),
+                result=CheckResult.GREEN if test is None else CheckResult.RED,
+                test=test,
+            )
+        except ValidationError:
+            raise OperationError(
+                "a check names what was deleted (--deleted <file>:<symbol>) and either the test "
+                "that failed (--red <test>) or --green"
+            ) from None
+        _, lease = self._held(node_id, (Status.IMPLEMENTING, Status.FIXING), agent, token)
+        with self.nodes.transaction():
+            self._still_held(node_id, lease, agent, token)
+            added = self.nodes.add_check(check)
+        self._ledger("check add", node_id, {"number": added.number, "result": added.result.value})
+        return added
+
+    def add_note(
+        self, node_id: str, text: str, agent: str | None = None, token: str | None = None
+    ) -> Note:
+        if not text.strip() or "\n" in text.strip():
+            raise OperationError("a note is one line of text")
+        _, lease = self._held(node_id, (Status.IMPLEMENTING, Status.FIXING), agent, token)
+        with self.nodes.transaction():
+            self._still_held(node_id, lease, agent, token)
+            added = self.nodes.add_note(Note(node_id=node_id, text=text.strip()))
+        self._ledger("note add", node_id, {"number": added.number})
+        return added
 
     def answer_finding(
         self,
@@ -1560,6 +1614,13 @@ def _hash_of(findings: list[Finding]) -> str:
 
 def _numbers(numbers: list[int]) -> str:
     return ", ".join(f"#{n}" for n in numbers)
+
+
+def _left_green(checks: list[Check]) -> list[str]:
+    """Each deletion whose latest check left every test passing: a later red check of the same
+    deletion answers an earlier green one."""
+    latest = {c.deleted: c.result for c in checks}
+    return [deleted for deleted, result in latest.items() if result == CheckResult.GREEN]
 
 
 def _line(f: Finding) -> str:

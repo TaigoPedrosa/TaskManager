@@ -21,6 +21,7 @@ from taskmanager.core.enums import NodeKind, RelationType, VerificationType
 from taskmanager.core.models import Condition, Job, Node, NodeRelation, NodeVerification
 from taskmanager.core.status import (
     Action,
+    CheckResult,
     ConditionStage,
     FindingSource,
     FindingState,
@@ -1497,3 +1498,127 @@ def test_two_counts_racing_below_the_cap_fail_the_node_that_reaches_it(
 
     node = stored(claims, "T1")
     assert (node.status, node.step_failures) == (Status.FAILED, claims.caps.step_failures)
+
+
+def test_a_complete_is_refused_while_a_deletion_s_latest_check_is_green(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    add(claims, "T1")
+    claims.start("T1", "implementer", "s1")
+    claims.add_check("T1", "a.py:guard_null", "test_null_id")
+    claims.add_check("T1", "a.py:guard_empty", None)
+    claims.add_check("T1", "a.py:escape", None)
+
+    with pytest.raises(OperationError, match="a.py:guard_empty, a.py:escape") as refused:
+        claims.complete("T1")
+    assert refused.value.status_code == 409
+
+    claims.add_check("T1", " a.py:guard_empty ", "test_empty_id")
+    with pytest.raises(OperationError, match="passing: a.py:escape. Add"):
+        claims.complete("T1")
+    claims.add_check("T1", "a.py:escape", "test_quote")
+    assert claims.complete("T1") == Status.IMPLEMENTED
+    assert [(c.number, c.deleted, c.result, c.test) for c in claims.nodes.get_checks("T1")] == [
+        (1, "a.py:guard_null", CheckResult.RED, "test_null_id"),
+        (2, "a.py:guard_empty", CheckResult.GREEN, None),
+        (3, "a.py:escape", CheckResult.GREEN, None),
+        (4, "a.py:guard_empty", CheckResult.RED, "test_empty_id"),
+        (5, "a.py:escape", CheckResult.RED, "test_quote"),
+    ]
+
+
+def test_a_green_check_after_a_red_one_of_the_same_deletion_refuses_the_complete(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    add(claims, "T1")
+    claims.start("T1", "implementer", "s1")
+    claims.add_check("T1", "a.py:guard", "test_guard")
+    claims.add_check("T1", "a.py:guard", None)
+
+    with pytest.raises(OperationError, match="passing: a.py:guard"):
+        claims.complete("T1")
+
+
+def test_a_fix_complete_is_refused_while_its_deletion_stands_green(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    _rejected_and_fixing(claims)
+    claims.answer_finding("T1", 1, FindingState.DISPUTED, "the id is never null")
+    claims.answer_finding("T1", 2, FindingState.DISPUTED, "the unit is in the type")
+    claims.add_check("T1", "a.py:scope", None)
+
+    with pytest.raises(OperationError, match="passing: a.py:scope"):
+        claims.complete("T1")
+
+
+def test_a_check_and_a_note_are_recorded_only_under_the_implement_or_fix_lease(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    add(claims, "T1")
+    add(claims, "T2", status=Status.IMPLEMENTED)
+    claims.start("T1", "implementer", "s1")
+    claims.start("T2", "reviewer", "s1")
+
+    with pytest.raises(OperationError, match="IMPLEMENTING"):
+        claims.add_check("T2", "a.py:guard", "test_guard")
+    with pytest.raises(OperationError, match="IMPLEMENTING"):
+        claims.add_note("T2", "x")
+    with pytest.raises(OperationError, match="holds no live lease"):
+        claims.add_check("T1", "a.py:guard", "test_guard", agent="intruder")
+    with pytest.raises(OperationError, match="holds no live lease"):
+        claims.add_note("T1", "x", agent="intruder")
+    assert claims.nodes.get_checks("T1") == [] and claims.nodes.get_notes("T1") == []
+
+
+@pytest.mark.parametrize(
+    ("deleted", "test"), [("", "t"), (" ", "t"), ("a.py:g", ""), ("a.py:g", " ")]
+)
+def test_a_check_names_its_deletion_and_a_red_one_its_test(
+    tmp_path: Path, deleted: str, test: str
+) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    add(claims, "T1")
+    claims.start("T1", "implementer", "s1")
+
+    with pytest.raises(OperationError, match="--deleted"):
+        claims.add_check("T1", deleted, test)
+    assert claims.nodes.get_checks("T1") == []
+
+
+@pytest.mark.parametrize("text", ["", " ", "two\nlines"])
+def test_a_note_is_one_line(tmp_path: Path, text: str) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    add(claims, "T1")
+    claims.start("T1", "implementer", "s1")
+
+    with pytest.raises(OperationError, match="one line"):
+        claims.add_note("T1", text)
+    assert claims.add_note("T1", "  the brief names a.py; the tree has b.py ").text == (
+        "the brief names a.py; the tree has b.py"
+    )
+    assert claims.add_note("T1", "verify row 2 red").number == 2
+
+
+@pytest.mark.parametrize("write", ["check", "note"])
+def test_a_check_or_note_is_refused_when_the_lease_lapses_before_the_write_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write: str
+) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    add(claims, "T1")
+    claims.start("T1", "implementer", "s1")
+    lease = claims.runtime.get_lease("T1")
+    assert lease is not None
+    checks: list[bool] = []
+
+    def lapses_after_the_first_check(_lease: object) -> bool:
+        checks.append(True)
+        return len(checks) == 1
+
+    monkeypatch.setattr(Claims, "live", staticmethod(lapses_after_the_first_check))
+
+    with pytest.raises(OperationError, match="holds no live lease"):
+        if write == "check":
+            claims.add_check("T1", "a.py:g", "t", token=lease.token)
+        else:
+            claims.add_note("T1", "x", token=lease.token)
+    assert claims.nodes.get_checks("T1") == [] and claims.nodes.get_notes("T1") == []

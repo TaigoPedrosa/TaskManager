@@ -7,12 +7,14 @@ from pydantic import ValidationError
 
 from taskmanager.core.enums import NodeKind, RelationType, VerificationType
 from taskmanager.core.models import (
+    Check,
     Condition,
     Finding,
     Node,
     NodeRelation,
     NodeSection,
     NodeVerification,
+    Note,
 )
 from taskmanager.core.status import (
     IN_STEP,
@@ -88,6 +90,8 @@ class BulkImporter:
             "requires",
             "conditions",
             "findings",
+            "checks",
+            "notes",
             "land_order",
             "branch",
             "outcome",
@@ -165,6 +169,7 @@ class BulkImporter:
         verifications: dict[str, list[NodeVerification]] = {}
         conditions: dict[str, list[Condition]] = {}
         findings: dict[str, list[Finding]] = {}
+        reports: dict[str, tuple[list[Check] | None, list[Note] | None]] = {}
         imported = Imported()
         config = self.ops.rules()
 
@@ -214,6 +219,15 @@ class BulkImporter:
                 conditions[node.id] = [self._parse_condition(node.id, c) for c in raw["conditions"]]
             if "findings" in raw:
                 findings[node.id] = [self._parse_finding(node.id, f) for f in raw["findings"]]
+            if "checks" in raw or "notes" in raw:
+                reports[node.id] = (
+                    [self._parse_numbered(Check, node.id, c) for c in raw["checks"]]
+                    if "checks" in raw
+                    else None,
+                    [self._parse_numbered(Note, node.id, n) for n in raw["notes"]]
+                    if "notes" in raw
+                    else None,
+                )
             return node
 
         spec_data = data.get("spec")
@@ -289,6 +303,8 @@ class BulkImporter:
                     self.node_repo.add_condition(cond)
             for node_id, found in findings.items():
                 self.node_repo.replace_findings(node_id, found)
+            for node_id, (checks, notes) in reports.items():
+                self.node_repo.replace_report(node_id, checks, notes)
             for node in nodes:
                 roll_up_ancestors(self.ops, node.id, arrived=node.id in arrived)
         return imported
@@ -348,6 +364,18 @@ class BulkImporter:
             return Finding.model_validate({**raw, "node_id": node_id})
         except ValidationError as exc:
             raise ValueError(f"{REFUSED}finding on {node_id!r}: {exc}") from None
+
+    @staticmethod
+    def _parse_numbered[M: (Check, Note)](model: type[M], node_id: str, raw: dict[str, Any]) -> M:
+        # `tm task complete` reads a deletion's latest check by its number, so a restore never
+        # renumbers.
+        name = model.__name__.lower()
+        if not isinstance(raw.get("number"), int) or raw["number"] < 1:
+            raise ValueError(f"{REFUSED}{name} on {node_id!r} needs its number, 1 or more")
+        try:
+            return model.model_validate({**raw, "node_id": node_id})
+        except ValidationError as exc:
+            raise ValueError(f"{REFUSED}{name} on {node_id!r}: {exc}") from None
 
     @staticmethod
     def _parse_status(node_id: str, kind: NodeKind, value: Any) -> Status | DecisionStatus:

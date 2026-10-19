@@ -125,7 +125,7 @@ tm section set <plan-id>:context --file <path>
 
 A plan's `context` reaches every task's brief. Anything a `tm` command can answer — what is claimed, what is ready, who holds a file — is not written down at all.
 
-A ruling that changes what a section states rewrites it: `tm section get` it, edit it, and set the whole back in the present tense. The overridden sentence goes, and the decision keeps the history. Only `:report` and `:merge` are appended to, because each entry records a round; findings are records, written with `tm finding`.
+A ruling that changes what a section states rewrites it: `tm section get` it, edit it, and set the whole back in the present tense. The overridden sentence goes, and the decision keeps the history. Only `:merge` is appended to, because each entry records a round; findings, checks and notes are records, written with `tm finding`, `tm check` and `tm note`.
 
 When findings under one rule reach review on two nodes, the rule is missing from the guide. Raise it, and on a yes add the line to the project's addendum:
 

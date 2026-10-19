@@ -8,6 +8,7 @@ import pytest
 
 from taskmanager.core.enums import NodeKind, RelationType
 from taskmanager.core.models import (
+    Check,
     Condition,
     Finding,
     Job,
@@ -15,8 +16,17 @@ from taskmanager.core.models import (
     Node,
     NodeRelation,
     NodeSection,
+    Note,
 )
-from taskmanager.core.status import Action, FindingState, JobKind, JobState, Severity, Status
+from taskmanager.core.status import (
+    Action,
+    CheckResult,
+    FindingState,
+    JobKind,
+    JobState,
+    Severity,
+    Status,
+)
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
@@ -240,6 +250,26 @@ def test_build_bodies_carries_each_finding_with_its_answer(estate: Estate) -> No
     assert bodies["T2"]["findings"] == []
 
 
+def test_build_bodies_carries_each_check_and_note_in_order(estate: Estate) -> None:
+    estate.add("T1")
+    estate.add("T2")
+    estate.node_repo.add_check(Check(node_id="T1", deleted="a.py:g", result=CheckResult.GREEN))
+    estate.node_repo.add_check(
+        Check(node_id="T1", deleted="a.py:g", result=CheckResult.RED, test="test_g")
+    )
+    for text in ("first", "second"):
+        estate.node_repo.add_note(Note(node_id="T1", text=text))
+
+    bodies = build_bodies(estate.view(), ["T1", "T2"], repos=estate.repos())
+
+    assert bodies["T1"]["checks"] == [
+        {"number": 1, "deleted": "a.py:g", "result": "green", "test": None},
+        {"number": 2, "deleted": "a.py:g", "result": "red", "test": "test_g"},
+    ]
+    assert bodies["T1"]["notes"] == ["first", "second"]
+    assert (bodies["T2"]["checks"], bodies["T2"]["notes"]) == ([], [])
+
+
 def test_build_bodies_reads_a_conditions_cached_result(estate: Estate) -> None:
     estate.add("T1")
     estate.node_repo.add_condition(Condition(node_id="T1", needs="x", command="true"))
@@ -369,6 +399,8 @@ def test_body_items_with_no_prior_body_reports_every_section_and_part() -> None:
         "verifications",
         "conditions",
         "findings",
+        "checks",
+        "notes",
         "jobs",
         "lease",
     }

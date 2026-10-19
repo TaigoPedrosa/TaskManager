@@ -684,3 +684,46 @@ def test_next_leaves_out_a_task_whose_claim_condition_last_failed(tmp_path: Path
     assert get(tmp_path, "S1-P1-a")["state"] == "BLOCKED_BY_CONDITION"
     ranked = json.loads(tm(tmp_path, "next", "--json").stdout)
     assert "S1-P1-a" not in [t["task_id"] for t in ranked]
+
+
+def test_an_implement_records_checks_and_notes_and_completes_once_none_stands_green(
+    tmp_path: Path,
+) -> None:
+    estate(tmp_path)
+    start(tmp_path, "S1-P1-a")
+    deleted = ("--deleted", "core/a.py:guard")
+    for flags in ((), ("--red", "test_guard", "--green")):
+        res = tm(tmp_path, "check", "add", "S1-P1-a", *deleted, *flags)
+        assert res.exit_code == 2 and "exactly one of --red <test> or --green" in res.output
+    green = tm(tmp_path, "check", "add", "S1-P1-a", *deleted, "--green")
+    assert (green.exit_code, green.stdout.strip()) == (0, "1")
+    note = tm(tmp_path, "note", "add", "S1-P1-a", "verify row 1 red: the gate needs docker")
+    assert (note.exit_code, note.stdout.strip()) == (0, "1")
+
+    refused = tm(tmp_path, "task", "complete", "S1-P1-a")
+    assert refused.exit_code == 1 and "left every test passing: core/a.py:guard" in refused.output
+    red = tm(tmp_path, "check", "add", "S1-P1-a", *deleted, "--red", "test_guard")
+    assert (red.exit_code, red.stdout.strip()) == (0, "2")
+    assert tm(tmp_path, "task", "complete", "S1-P1-a").exit_code == 0
+
+    doc = get(tmp_path, "S1-P1-a")
+    assert doc["checks"] == [
+        {"number": 1, "deleted": "core/a.py:guard", "result": "green", "test": None},
+        {"number": 2, "deleted": "core/a.py:guard", "result": "red", "test": "test_guard"},
+    ]
+    assert doc["notes"] == ["verify row 1 red: the gate needs docker"]
+    listed = json.loads(tm(tmp_path, "check", "list", "S1-P1-a", "--json").stdout)
+    assert listed == doc["checks"]
+    table = tm(tmp_path, "check", "list", "S1-P1-a")
+    assert table.exit_code == 0 and "test_guard" in table.stdout
+    notes = tm(tmp_path, "note", "list", "S1-P1-a")
+    assert notes.stdout == "1. verify row 1 red: the gate needs docker\n"
+    for group in ("check", "note"):
+        missing = tm(tmp_path, group, "list", "S1-P1-z")
+        assert missing.exit_code == 1 and "S1-P1-z" in missing.output
+    events = json.loads(tm(tmp_path, "audit", "list", "--json").stdout)
+    assert [e["command"] for e in events if e["command"].split()[0] in ("check", "note")] == [
+        "check add",
+        "note add",
+        "check add",
+    ]

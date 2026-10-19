@@ -1,13 +1,20 @@
 from enum import StrEnum
 
-from taskmanager.core.status import DecisionStatus, FindingSource, FindingState, Severity, Status
+from taskmanager.core.status import (
+    CheckResult,
+    DecisionStatus,
+    FindingSource,
+    FindingState,
+    Severity,
+    Status,
+)
 
 # audit.db and cache.db: neither has moved past its first shape yet.
 SCHEMA_VERSION = 1
 
 # state.db: bumped and migrated separately, since it changes far more often than the ledger
 # or the cache.
-STATE_SCHEMA_VERSION = 6
+STATE_SCHEMA_VERSION = 7
 
 # Built from the enums so the vocabulary SQLite enforces and the one the code writes cannot drift.
 _CYCLE_STATUSES = ", ".join(f"'{s.value}'" for s in Status)
@@ -92,6 +99,61 @@ END;
 
 CREATE TRIGGER IF NOT EXISTS trg_node_findings_rev_del
 AFTER DELETE ON node_findings
+BEGIN
+    UPDATE nodes SET rev = rev + 1 WHERE id = OLD.node_id;
+END;
+"""
+
+# An implement or fix step's report as records: each deletion its red-check ran, and one-line
+# notes. A red check names the test that failed; a green one names none.
+_REPORT_SQL = f"""CREATE TABLE IF NOT EXISTS node_checks (
+    node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    number INTEGER NOT NULL CHECK (number > 0),
+    deleted TEXT NOT NULL CHECK (trim(deleted) <> ''),
+    result TEXT NOT NULL CHECK (result IN ({_values(CheckResult)})),
+    test TEXT CHECK ((result = 'red') = (test IS NOT NULL AND trim(test) <> '')),
+    PRIMARY KEY (node_id, number)
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_node_checks_rev_ins
+AFTER INSERT ON node_checks
+BEGIN
+    UPDATE nodes SET rev = rev + 1 WHERE id = NEW.node_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_node_checks_rev_upd
+AFTER UPDATE ON node_checks
+BEGIN
+    UPDATE nodes SET rev = rev + 1 WHERE id IN (OLD.node_id, NEW.node_id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_node_checks_rev_del
+AFTER DELETE ON node_checks
+BEGIN
+    UPDATE nodes SET rev = rev + 1 WHERE id = OLD.node_id;
+END;
+
+CREATE TABLE IF NOT EXISTS node_notes (
+    node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    number INTEGER NOT NULL CHECK (number > 0),
+    text TEXT NOT NULL CHECK (trim(text) <> ''),
+    PRIMARY KEY (node_id, number)
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_node_notes_rev_ins
+AFTER INSERT ON node_notes
+BEGIN
+    UPDATE nodes SET rev = rev + 1 WHERE id = NEW.node_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_node_notes_rev_upd
+AFTER UPDATE ON node_notes
+BEGIN
+    UPDATE nodes SET rev = rev + 1 WHERE id IN (OLD.node_id, NEW.node_id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_node_notes_rev_del
+AFTER DELETE ON node_notes
 BEGIN
     UPDATE nodes SET rev = rev + 1 WHERE id = OLD.node_id;
 END;
@@ -221,6 +283,8 @@ CREATE TABLE IF NOT EXISTS branch_locks (
 """
     + "\n"
     + _FINDINGS_SQL
+    + "\n"
+    + _REPORT_SQL
 )
 
 # One node's `rev` moves on any change to the node itself or to a section, verification,
@@ -366,6 +430,7 @@ STATE_MIGRATIONS: dict[int, str] = {
     + "AND EXISTS (SELECT 1 FROM jobs WHERE jobs.node_id = nodes.id "
     + "AND jobs.kind = 'land' AND jobs.state = 'succeeded'));\n",
     6: _FINDINGS_SQL,
+    7: _REPORT_SQL,
 }
 
 # Derived results only: dropping this database loses time, never state.
