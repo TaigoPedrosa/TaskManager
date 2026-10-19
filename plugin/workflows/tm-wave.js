@@ -298,6 +298,7 @@ Model: ${model}
 The tm-wave workflow claimed this ${c.action} step for you: never run tm task start, and never claim or release any other node. Read tm guide ${role} and follow it from the step after its claim. Close the step with ${close(n, c)}${blocked}.
 Brief: tm render ${n.id} --view subagent${codegraph}${rules}${gate}${needs}
 Sections: before any tm section set, tm section get the same key. Append an entry to :merge; rewrite any other section whole, in the present tense, with every sentence it overrides gone.
+Waiting: never end your turn while a command you started in the background still runs; wait for it in the foreground, or with Monitor past 10 minutes, read its result, then close the step.
 Scratch files: write every script, log and temporary file under ${scratch} in your scratchpad directory (your temp directory if you have none), never at its top level; other agents share it, so never read, overwrite or delete anything outside that folder.`
 }
 
@@ -357,10 +358,18 @@ async function work(n, c, s, trail) {
       : where
     body += `\nReport: record each red-check deletion with ${TM} check add ${n.id} ${owner(n, c.token)} --deleted "<file>:<symbol>" --red <test>, or --green when every test still passed, and anything else as one line with ${TM} note add ${n.id} ${owner(n, c.token)} "<line>".`
   }
-  const r = await agent(`${head(n, c, model, c.action)}\n${body}`,
-    { label: `${c.action}:${n.id}`, phase: WORK_PHASE[c.action], model, agentType: pickType(type, n.requires) })
+  const opts = { label: `${c.action}:${n.id}`, phase: WORK_PHASE[c.action], model, agentType: pickType(type, n.requires) }
+  const r = await agent(`${head(n, c, model, c.action)}\n${body}`, opts)
   trail.push(`${c.action} on ${model}: ${r === null ? 'the agent died' : clip(r)}`)
-  const after = await read(n)
+  let after = await read(n)
+  // An agent that returns while its own background runs still go loses them, and the step with
+  // them: one more agent on the same claim finishes the work instead of releasing it.
+  if (r !== null && after && after.status === CLAIMED[c.action]) {
+    const more = await agent(`${head(n, c, model, c.action)}\n${body}\nContinue: an agent on this claim returned with the step open, saying: ${clip(r)}\nWhatever it left running in the background ended with it. Read what it recorded with ${TM} task get ${n.id} --yaml, rerun in the foreground what it was waiting on, and close the step.`,
+      { ...opts, label: `${c.action}-continue:${n.id}` })
+    trail.push(`${c.action} continued on ${model}: ${more === null ? 'the agent died' : clip(more)}`)
+    after = await read(n)
+  }
   if (!after || after.status === CLAIMED[c.action]) await release(n, trail, `the ${c.action} step was left open`, c.token)
   return after
 }

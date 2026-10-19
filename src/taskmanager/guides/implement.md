@@ -123,4 +123,4 @@ After the last commit, check and note, on every path that finished the work. The
 - Never claim, close or release a step you do not hold, and never hold two.
 - Never edit outside your worktree, and never merge or push anything: tm lands the branch.
 - Never change a task's definition to match what you built.
-- Never end your turn with the step open: close it, or release it naming why.
+- Never end your turn with the step open: close it, or release it naming why. Never end it while a command you started in the background still runs: wait for it, read its result, then close.

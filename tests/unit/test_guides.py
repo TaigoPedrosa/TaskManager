@@ -191,6 +191,26 @@ def test_overview_carries_the_cycle_and_the_cutover_runbook() -> None:
 _ID = {"implement": "task-id", "fix": "node-id"}
 
 
+@pytest.mark.parametrize("topic", ["implement", "review", "fix"])
+def test_every_step_guide_waits_on_its_background_runs_before_ending_its_turn(topic: str) -> None:
+    """An agent that ends its turn while a background run still goes loses the run and leaves
+    the step open; each step agent reads only its own guide, so each one carries the rule."""
+    text = _guide_text(topic)
+    wait = text.split("## Waiting on something that takes time", 1)[1].split("\n## ", 1)[0]
+    assert "| under 10 minutes | a single foreground call to completion:" in wait
+    assert "| 10–30 minutes | a Monitor with a filter matching every terminal state" in wait
+    assert (
+        "| over 30 minutes | it is a condition, not a wait: `tm task release <node-id>" in wait
+        or "| over 30 minutes | it is a condition, not a wait: release the step naming it" in wait
+    )
+    assert 'Never end your turn to wait on a background run "until notified."' in wait
+    never = text.split("## Never", 1)[1]
+    assert (
+        "while a command you started in the background still runs: wait for it, read its result,"
+        " then close." in never
+    )
+
+
 @pytest.mark.parametrize("topic", ["implement", "fix"])
 def test_implement_and_fix_guides_delete_each_guard_and_watch_a_test_turn_red(topic: str) -> None:
     """Neither agent reads the other's guide, so each carries the deletion runs before closing."""

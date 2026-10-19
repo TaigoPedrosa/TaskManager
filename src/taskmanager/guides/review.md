@@ -77,6 +77,18 @@ Every acceptance line about behaviour is proven by breaking it: in your detached
 
 A UI node's behaviour lines are checked by driving them in the running app: the write and its feedback, the focus after it, the keyboard route, a live update mid-edit, a reload. A screenshot beside the frame shows the look and proves none of them.
 
+## Waiting on something that takes time
+
+A gate, a build, an external state change — pick by duration, because duration is what you actually know:
+
+| The wait is | Do |
+|:--|:--|
+| under 10 minutes | a single foreground call to completion: the tool's own blocking `wait` where one exists, else `timeout 540 bash -c 'until <cond>; do sleep 15; done'; echo $?` |
+| 10–30 minutes | a Monitor with a filter matching every terminal state, not only success |
+| over 30 minutes | it is a condition, not a wait: `tm task release <node-id> --agent <name> --token <token> --blocked --needs "<what must hold>" --command "<a command that exits 0 once it holds>"` |
+
+Never end your turn to wait on a background run "until notified." A background command's completion notification reaches you only while you are still working — ending your turn is what loses it, and nothing resumes you afterward.
+
 ## 5. Record the findings
 
 Record each defect on the node, one per command, before you close the step:
@@ -122,5 +134,6 @@ The verdict, the findings' numbers and severities, the `tm verify run` exit code
 - Never approve with a blocking finding open, never mark a defect minor to approve over it, and never merge or push anything.
 - Never widen a re-review past the findings still open.
 - Never close the step without recording its findings first, or `--clean` when there are none.
+- Never end your turn with the step open, or while a command you started in the background still runs: wait for it, read its result, then close.
 - Never leave a worktree you cut behind you.
 - Never file a finding you have not read in the branch's own content.

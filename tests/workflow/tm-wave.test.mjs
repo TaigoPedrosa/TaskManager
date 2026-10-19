@@ -279,9 +279,70 @@ test('a step the agent leaves open is released as a counted failure', async () =
     nodes: { T1: node('READY', 'implement') },
     start: { T1: [() => (tm.set('T1', { status: 'IMPLEMENTING', next_action: null }), claim('implement', { worktree: '/wt/core-T1' }))] },
   })
-  const { ops, result } = await runWave({ args: ARGS, tm, agents: () => 'I stopped before committing' })
+  const { ops, work, result } = await runWave({ args: ARGS, tm, agents: () => 'I stopped before committing' })
+  assert.deepEqual(work.map(w => w.opts.label), ['implement:T1', 'implement-continue:T1'])
   assert.deepEqual(releases(ops), [releaseOf('k1')])
+  assert.ok(result.results[0].trail.includes('implement continued on claude-sonnet-5-5: I stopped before committing'))
   assert.ok(result.results[0].trail.includes('released, the implement step was left open'))
+})
+
+for (const [action, { before, during, after }] of Object.entries(STEPS)) {
+  test(`a ${action} agent that returns with its step open is continued on the same claim, and a continuation that closes it is not released`, async () => {
+    const tm = makeTm({
+      chosen: [{ ...T1, action }],
+      nodes: { T1: before },
+      start: { T1: [() => (tm.set('T1', { status: during, next_action: null }), claim(action, { worktree: '/wt/core-T1' }))] },
+    })
+    let calls = 0
+    const agents = () => (++calls === 1 ? 'waiting on the background test run' : (tm.set('T1', { status: after, next_action: null }), 'done'))
+    const { ops, work, result } = await runWave({ args: ARGS, tm, agents })
+    assert.deepEqual(work.map(w => w.opts.label), [`${action}:T1`, `${action}-continue:T1`])
+    assert.equal(work[1].opts.model, work[0].opts.model)
+    assert.ok(work[1].prompt.startsWith(work[0].prompt), work[1].prompt)
+    assert.ok(work[1].prompt.includes('Continue: an agent on this claim returned with the step open, saying: waiting on the background test run'), work[1].prompt)
+    assert.ok(work[1].prompt.includes(`task get T1 --yaml`), work[1].prompt)
+    assert.deepEqual(releases(ops), [])
+    assert.ok(result.results[0].trail.includes(`${action} continued on claude-sonnet-5-5: done`))
+  })
+
+  test(`the ${action} brief tells the agent never to end its turn while its background runs still go`, async () => {
+    const tm = makeTm({
+      chosen: [{ ...T1, action }],
+      nodes: { T1: before },
+      start: { T1: [() => (tm.set('T1', { status: during, next_action: null }), claim(action, { worktree: '/wt/core-T1' }))] },
+    })
+    const agents = () => (tm.set('T1', { status: after, next_action: null }), 'done')
+    const { work } = await runWave({ args: ARGS, tm, agents })
+    assert.ok(work[0].prompt.includes('Waiting: never end your turn while a command you started in the background still runs; wait for it in the foreground, or with Monitor past 10 minutes, read its result, then close the step.'), work[0].prompt)
+  })
+}
+
+test('a continuation agent that dies leaves the step released, with its death on the trail', async () => {
+  const tm = makeTm({
+    chosen: [T1],
+    nodes: { T1: node('READY', 'implement') },
+    start: { T1: [() => (tm.set('T1', { status: 'IMPLEMENTING', next_action: null }), claim('implement', { worktree: '/wt/core-T1' }))] },
+  })
+  let calls = 0
+  const { ops, work, result } = await runWave({ args: ARGS, tm, agents: () => (++calls === 1 ? 'waiting on the gate' : null) })
+  assert.equal(work.length, 2)
+  assert.deepEqual(releases(ops), [releaseOf('k1')])
+  assert.ok(result.results[0].trail.includes('implement continued on claude-sonnet-5-5: the agent died'))
+})
+
+test('a step whose status cannot be read after its agent returns is released without a continuation', async () => {
+  let returned = false
+  const tm = makeTm({
+    chosen: [T1],
+    nodes: { T1: node('READY', 'implement') },
+    start: { T1: [() => (tm.set('T1', { status: 'IMPLEMENTING', next_action: null }), claim('implement', { worktree: '/wt/core-T1' }))] },
+    corrupt: inner => returned && / task get /.test(inner),
+  })
+  const { ops, work, errors, result } = await runWave({ args: ARGS, tm, agents: () => ((returned = true), 'done') })
+  assert.deepEqual(errors, [])
+  assert.equal(work.length, 1)
+  assert.deepEqual(releases(ops), [releaseOf('k1')])
+  assert.ok(result.results[0].trail.includes('released, the implement step was left open'), result.results[0].trail)
 })
 
 test("a dead agent's step is released", async () => {
@@ -290,7 +351,8 @@ test("a dead agent's step is released", async () => {
     nodes: { T1: node('READY', 'implement') },
     start: { T1: [() => (tm.set('T1', { status: 'IMPLEMENTING', next_action: null }), claim('implement', { worktree: '/wt/core-T1' }))] },
   })
-  const { ops, result } = await runWave({ args: ARGS, tm, agents: () => null })
+  const { ops, work, result } = await runWave({ args: ARGS, tm, agents: () => null })
+  assert.equal(work.length, 1)
   assert.deepEqual(releases(ops), [releaseOf('k1')])
   assert.ok(result.results[0].trail.includes('implement on claude-sonnet-5-5: the agent died'))
 })
@@ -302,7 +364,8 @@ test('a step the agent closed is never released by the script', async () => {
     start: { T1: [() => (tm.set('T1', { status: 'IMPLEMENTING', next_action: null }), claim('implement', { worktree: '/wt/core-T1' }))] },
   })
   const agents = () => (tm.set('T1', { status: 'READY', next_action: null }), 'released --blocked on T2')
-  const { ops } = await runWave({ args: ARGS, tm, agents })
+  const { ops, work } = await runWave({ args: ARGS, tm, agents })
+  assert.equal(work.length, 1)
   assert.deepEqual(releases(ops), [])
 })
 

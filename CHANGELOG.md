@@ -5,6 +5,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+
+- A tm-wave agent that returned while a command it started in the background still ran left its
+  step open, and the step was released as a failure with the run's result lost. A step left open
+  now gets one more agent on the same claim, told what the first one said, to rerun what it was
+  waiting on and close the step; the step is released only if that agent leaves it open too.
+- The implement, review and fix guides, and every tm-wave brief, tell the agent never to end its
+  turn while its background runs still go: wait in the foreground, or with Monitor past 10
+  minutes, and release with `--needs` past 30.
+
 ## [0.3.16] - 2026-10-19
 
 ### Added

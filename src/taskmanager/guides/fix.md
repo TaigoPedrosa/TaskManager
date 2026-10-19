@@ -50,6 +50,18 @@ Exit 1 names the failing rows. `No verifications to run.` exits 2 and is no evid
 
 Before closing, read `tm verify list <node-id>` against the fix, and for a plan or spec the list of each task under it, since its landing runs them all. A row that checks what the fix replaced (an identifier, a file, a pattern) is updated in the same step, with `tm verify remove` and `tm verify add`, and named in a note.
 
+## Waiting on something that takes time
+
+A gate, a build, an external state change — pick by duration, because duration is what you actually know:
+
+| The wait is | Do |
+|:--|:--|
+| under 10 minutes | a single foreground call to completion: the tool's own blocking `wait` where one exists, else `timeout 540 bash -c 'until <cond>; do sleep 15; done'; echo $?` |
+| 10–30 minutes | a Monitor with a filter matching every terminal state, not only success |
+| over 30 minutes | it is a condition, not a wait: `tm task release <node-id> --agent <name> --token <token> --blocked --needs "<what must hold>" --command "<a command that exits 0 once it holds>"` |
+
+Never end your turn to wait on a background run "until notified." A background command's completion notification reaches you only while you are still working — ending your turn is what loses it, and nothing resumes you afterward.
+
 ## 4. Report
 
 Every finding is answered by `tm finding close` or `tm finding dispute`, and every deletion by `tm check add`. What neither carries is one line each:
@@ -75,4 +87,4 @@ On every path that finished the round, including one where a finding was dispute
 - Never force-push, rebase or squash the node's branch.
 - Never change a test so a finding stops firing; close the finding the test names.
 - Never close a finding with a branch that nothing fails on when that branch alone is reverted.
-- Never end your turn with the step open: close it, or release it naming why.
+- Never end your turn with the step open: close it, or release it naming why. Never end it while a command you started in the background still runs: wait for it, read its result, then close.
