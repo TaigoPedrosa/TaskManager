@@ -76,7 +76,7 @@ def test_web_api_endpoints_and_ui(tmp_path: Path) -> None:
     # 1. Index HTML
     res_index = client.get("/")
     assert res_index.status_code == 200
-    assert "TaskManager — Interactive Visualizer" in res_index.text
+    assert f"<title>{tmp_path.name} · TaskManager</title>" in res_index.text
 
     # 2. /api/statuses
     res_statuses = client.get("/api/statuses")
@@ -516,3 +516,13 @@ def test_static_export_embeds_every_status_and_the_filter_ui(
         assert f'id="{element_id}"' in html
     assert html.count('id="search-box"') == 1
     assert '<aside id="sidebar-pane" class="hidden' in html
+
+
+def test_index_names_the_project_from_config(tmp_path: Path) -> None:
+    (tmp_path / ".taskmanager").mkdir()
+    (tmp_path / ".taskmanager" / "config.yaml").write_text("name: Billing\n", encoding="utf-8")
+
+    res = TestClient(create_app(tmp_path)).get("/")
+
+    assert "<title>Billing · TaskManager</title>" in res.text
+    assert '<span id="project-name"' in res.text and ">Billing</span>" in res.text

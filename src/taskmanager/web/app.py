@@ -48,7 +48,7 @@ from taskmanager.di.container import TaskManagerProvider
 from taskmanager.engine.archive import Archive, archived_specs
 from taskmanager.engine.assets import ASSET_NAME_RE
 from taskmanager.engine.claims import Claims
-from taskmanager.engine.config import ConfigStore, DispatchConfig
+from taskmanager.engine.config import ConfigStore, DispatchConfig, project_name
 from taskmanager.engine.decisions import read_decision
 from taskmanager.engine.landing import Landing
 from taskmanager.engine.operations import OperationError, Operations
@@ -1183,6 +1183,6 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     async def page(view: str = "document", node_id: str | None = None) -> str:
         if view not in PAGE_VIEWS:
             raise HTTPException(404, "Not Found")
-        return get_web_html()
+        return get_web_html(project_name(project_root))
 
     return app

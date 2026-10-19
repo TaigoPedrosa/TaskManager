@@ -257,6 +257,18 @@ for (const [action, { before, during, after }] of Object.entries(STEPS)) {
     assert.ok(!plain.some(l => l.includes('codegraph')))
     assert.deepEqual(carried, [...plain.slice(0, at + 1), ...lines.map(l => `codegraph: ${l}`), ...plain.slice(at + 1)])
   })
+
+  test(`the ${action} brief keeps the agent's scratch files in a folder named for its node, step and claim`, async () => {
+    const tm = makeTm({
+      chosen: [{ ...T1, action }],
+      nodes: { T1: before },
+      start: { T1: [() => (tm.set('T1', { status: during, next_action: null }), claim(action, { worktree: '/wt/core-T1' }))] },
+    })
+    const agents = () => (tm.set('T1', { status: after, next_action: null }), 'done')
+    const { work } = await runWave({ args: ARGS, tm, agents })
+    assert.ok(work[0].prompt.includes(`Scratch files: write every script, log and temporary file under T1-${action}-k1/ in your scratchpad directory`), work[0].prompt)
+    assert.ok(work[0].prompt.includes('never at its top level'))
+  })
 }
 
 test('a step the agent leaves open is released as a counted failure', async () => {
@@ -592,6 +604,7 @@ test('a sync stopped for an agent is handed over by a later claim, on the family
   assert.deepEqual(handoverTick.errors, [])
   assert.deepEqual(handoverTick.work.map(w => [w.opts.label, w.opts.model]), [['sync-agent:T1', 'claude-sonnet-5-5']])
   assert.ok(handoverTick.work[0].prompt.includes('tm job resume S1 --agent wf-s1-T1 --token k1'))
+  assert.ok(handoverTick.work[0].prompt.includes('under T1-sync-k1/ in your scratchpad directory'))
 
   const implementTick = await runWave({ args: ARGS, tm, agents })
   assert.deepEqual(implementTick.work.map(w => w.opts.label), ['implement:T1'])

@@ -283,11 +283,13 @@ class Landing:
         else:
             # A node's own verification is red on its target by construction, so it has no
             # baseline: red is an own defect.
-            passed, report = self.claims.verify(
+            passed, report, timed_out = self.claims.verify(
                 job.node_id, gitops.rev_parse(worktree, "HEAD"), job.repo
             )
             job.result["own_verify"] = report
             if not passed and not self._advisory(job.node_id):
+                if timed_out:
+                    return self._needs_agent(job, "verify timeout", report=report)
                 return self._own_defect(job, f"own verifications red at the merge:\n{report}")
             gate = self._gate_config(job.repo, "parent")
             if gate is None:
@@ -391,8 +393,10 @@ class Landing:
         return "gate"
 
     def _verify(self, job: Job) -> JobState:
-        passed, report = self.claims.verify(job.node_id, self._target_ref(job), job.repo)
+        passed, report, timed_out = self.claims.verify(job.node_id, self._target_ref(job), job.repo)
         if not passed and not self._advisory(job.node_id):
+            if timed_out:
+                return self._needs_agent(job, "verify timeout", report=report)
             # The code is on the target but the node's assertion does not hold there.
             return self._own_defect(
                 job, f"verifications red on {job.target} after landing:\n{report}"

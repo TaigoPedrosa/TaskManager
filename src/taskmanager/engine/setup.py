@@ -23,6 +23,7 @@ class Flags:
     repos: list[str] = field(default_factory=list)
     gates: dict[str, str] = field(default_factory=dict)
     worktree_dir: str | None = None
+    name: str | None = None
     track_estate: bool | None = None
 
 
@@ -107,6 +108,13 @@ def _default_branches(root: Path, store: ConfigStore, repos: list[str], ask: Ask
             store.set(f"repos.{repo}.default_branch", branch)
 
 
+def _name(root: Path, store: ConfigStore, flags: Flags, ask: Ask | None) -> None:
+    if flags.name is not None:
+        store.set("name", flags.name)
+    elif ask is not None and "name" not in store.read():
+        store.set("name", ask("project name", root.name))
+
+
 def _worktree_dir(root: Path, store: ConfigStore, flags: Flags, ask: Ask | None) -> None:
     if flags.worktree_dir is not None:
         store.set("worktree_dir", flags.worktree_dir)
@@ -163,6 +171,8 @@ def _estate(root: Path, flags: Flags, ask: Ask | None) -> None:
     .git/info/exclude line `tm init` writes."""
     if flags.track_estate is not None:
         choice = TRACK if flags.track_estate else IGNORE
+        if choice == estate_choice(root):
+            return
     elif ask is None or estate_choice(root) is not None or not _in_work_tree(root):
         return
     else:
@@ -179,6 +189,7 @@ def _estate(root: Path, flags: Flags, ask: Ask | None) -> None:
 def configure(root: Path, store: ConfigStore, flags: Flags, ask: Ask | None) -> None:
     """Flags always apply. With `ask`, every step not already set asks; without it, nothing is
     asked and only flags change the configuration."""
+    _name(root, store, flags, ask)
     repos = _repo_order(root, store, flags, ask)
     if ask is not None:
         _default_branches(root, store, repos, ask)

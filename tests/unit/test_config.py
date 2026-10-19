@@ -137,6 +137,8 @@ def test_get_prints_the_effective_value(root: Path) -> None:
         ("set", "max_step_failures", "0"),
         ("set", "condition_ttl", "-5"),
         ("set", "condition_timeout", "0"),
+        ("set", "verify_timeout", "0"),
+        ("set", "name", ""),
         ("set", "red_target_decision_after", "0"),
         ("set", "repo_order", "core"),
         ("set", "repos", "{core: {gates: {staging: {command: make}}}}"),

@@ -62,6 +62,9 @@ MIGRATIONS: Final = (
 SENSITIVE_AREAS: Final = ("tenant", "rls", "crypto", "migration")
 # The ids a step runs on when a node lists none, and what a merge or sync runs on.
 DEFAULT_MODEL: Final = "claude-sonnet-5-5"
+# Seconds a test_command verification may run. The clock starts with the command, so a wait
+# for a shared runner's slot inside it counts too.
+VERIFY_TIMEOUT: Final = 600
 # The ids `--max-strong` counts.
 STRONG_MODELS: Final = ("claude-opus-5-5", "claude-fable-5-1")
 
@@ -79,7 +82,9 @@ KEYS: Final = (
     "max_step_failures",
     "condition_ttl",
     "condition_timeout",
+    "verify_timeout",
     "red_target_decision_after",
+    "name",
     "repo_order",
     "repos",
     "dispatch.tick_min",
@@ -287,6 +292,7 @@ class ModelsConfig(BaseModel):
 
 
 class ProjectConfig(BaseModel):
+    name: str | None = Field(default=None, min_length=1)
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
     worktree_dir: str = Field(default=".worktrees", min_length=1)
     lease_ttl: dict[str, int] | int = Field(default_factory=lambda: dict(LEASE_TTL_DEFAULTS))
@@ -295,6 +301,7 @@ class ProjectConfig(BaseModel):
     max_step_failures: int = Field(default=3, ge=1)
     condition_ttl: int = Field(default=300, ge=0)
     condition_timeout: int = Field(default=60, gt=0)
+    verify_timeout: int = Field(default=VERIFY_TIMEOUT, gt=0)
     red_target_decision_after: int = Field(default=3600, gt=0)
     repo_order: list[str] = Field(default_factory=list)
     repos: dict[str, RepoConfig] = Field(default_factory=dict)
@@ -646,3 +653,8 @@ class ConfigStore:
         _check_all_bounds(flat)
         with self._locked():
             self._write(flat)
+
+
+def project_name(root: Path) -> str:
+    """What the web view and its browser tab call this estate, so two open side by side differ."""
+    return ConfigStore(root).project().name or root.resolve().name

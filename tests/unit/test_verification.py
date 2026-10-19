@@ -313,7 +313,6 @@ def test_a_retired_type_fails_naming_the_test_command_idiom(
 def test_test_command_that_outlives_its_timeout_fails_and_leaves_no_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("taskmanager.engine.verification.TEST_COMMAND_TIMEOUT", 1)
     pidfile = tmp_path / "child.pid"
     ver = NodeVerification(
         node_id="AUTH-T01",
@@ -322,9 +321,9 @@ def test_test_command_that_outlives_its_timeout_fails_and_leaves_no_child(
         expected_pattern=f"sleep 60 & echo $! > {pidfile}; wait",
     )
 
-    res = VerificationEngine(tmp_path).verify_assertion(ver)
+    res = VerificationEngine(tmp_path).verify_assertion(ver, timeout=1)
 
-    assert res.passed is False
+    assert (res.passed, res.timed_out) == (False, True)
     assert res.message == "Test command timed out after 1s"
     stat = Path(f"/proc/{pidfile.read_text().strip()}/stat")
     # A killed child not yet reaped by init still has a stat file, in state Z.

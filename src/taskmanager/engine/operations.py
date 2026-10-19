@@ -1015,7 +1015,13 @@ class Operations:
             if ref is not None
             else {n: self.landing_branch(n, repo_for_node[n]) for n in {v.node_id for v in vers}}
         )
-        results = self.verification_engine.verify_all(vers, repo_for_node, ref, branch_for_node)
+        results = self.verification_engine.verify_all(
+            vers,
+            repo_for_node,
+            ref,
+            branch_for_node,
+            timeout=ConfigStore(self._project_root()).project().verify_timeout,
+        )
         all_passed = all(r.passed for r in results)
         self._ledger(
             LedgerCommand.VERIFICATION_RUN,

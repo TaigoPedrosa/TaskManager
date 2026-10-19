@@ -91,8 +91,10 @@ def gate(root: Path, repo: str) -> object:
 
 @pytest.mark.usefixtures("terminal")
 def test_init_at_a_terminal_walks_each_step_with_found_values(root: Path) -> None:
-    res = init(root, stdin="\n\n\n\nmake gate\n\n")
+    res = init(root, stdin="\n\n\n\n\nmake gate\n\n")
 
+    assert config(root)["name"] == "proj"
+    assert "project name [proj]:" in res.stdout
     assert config(root)["repo_order"] == ["api", "web"]
     assert config(root)["repos"]["api"]["default_branch"] == "trunk"
     assert config(root)["repos"]["web"]["default_branch"] == "develop"
@@ -109,7 +111,7 @@ def test_init_at_a_terminal_walks_each_step_with_found_values(root: Path) -> Non
 
 @pytest.mark.usefixtures("terminal")
 def test_init_a_second_time_with_no_input_changes_nothing(root: Path) -> None:
-    init(root, stdin="\n\n\n\napi gate\nweb gate\n")
+    init(root, stdin="\n\n\n\n\napi gate\nweb gate\n")
     before = (root / ".taskmanager" / "config.yaml").read_text(encoding="utf-8")
 
     res = init(root, stdin="")
@@ -124,8 +126,10 @@ def test_init_yes_takes_every_found_value_and_asks_nothing(root: Path) -> None:
     res = init(root, "--yes")
 
     assert not any(
-        q in res.stdout for q in ("repos [", "default branch (", "main gate (", "estate (")
+        q in res.stdout
+        for q in ("project name [", "repos [", "default branch (", "main gate (", "estate (")
     )
+    assert config(root)["name"] == "proj"
     assert config(root)["repo_order"] == ["api", "web"]
     assert config(root)["repos"]["api"]["default_branch"] == "trunk"
     assert config(root)["worktree_dir"] == "../.worktrees/proj"
@@ -197,7 +201,7 @@ def ignored(root: Path) -> bool:
 
 @pytest.mark.usefixtures("terminal")
 def test_init_tracks_the_estate_over_the_local_exclude(repo_root: Path) -> None:
-    init(repo_root, stdin="\n\n\nmake\ntrack\n")
+    init(repo_root, stdin="\n\n\n\nmake\ntrack\n")
 
     assert (repo_root / ".gitignore").read_text(encoding="utf-8") == "!/.taskmanager/\n"
     assert not ignored(repo_root)
@@ -210,7 +214,7 @@ def test_init_tracks_the_estate_over_the_local_exclude(repo_root: Path) -> None:
 def test_init_ignores_the_estate_by_default(repo_root: Path) -> None:
     (repo_root / ".gitignore").write_text("dist/\n", encoding="utf-8")
 
-    init(repo_root, stdin="\n\n\n\n\n")
+    init(repo_root, stdin="\n\n\n\n\n\n")
 
     assert (repo_root / ".gitignore").read_text(encoding="utf-8") == "dist/\n/.taskmanager/\n"
 
@@ -226,9 +230,23 @@ def test_init_estate_flag_replaces_the_earlier_choice(repo_root: Path) -> None:
     assert ignored(repo_root)
 
 
+def test_init_name_flag_sets_the_name_the_web_view_shows(root: Path) -> None:
+    init(root, "--yes", "--name", "Billing rewrite")
+
+    assert config(root)["name"] == "Billing rewrite"
+
+
+def test_init_estate_flag_leaves_a_gitignore_that_already_says_so(repo_root: Path) -> None:
+    (repo_root / ".gitignore").write_text(".taskmanager/\ndist/\n", encoding="utf-8")
+
+    init(repo_root, "--ignore-estate")
+
+    assert (repo_root / ".gitignore").read_text(encoding="utf-8") == ".taskmanager/\ndist/\n"
+
+
 @pytest.mark.usefixtures("terminal")
 def test_init_skips_the_estate_step_outside_a_git_work_tree(root: Path) -> None:
-    res = init(root, stdin="\n\n\n\n\n\n")
+    res = init(root, stdin="\n\n\n\n\n\n\n")
 
     assert "estate (" not in res.stdout
     assert not (root / ".gitignore").exists()
@@ -243,7 +261,7 @@ def test_init_refuses_a_gate_for_a_repo_that_is_not_a_git_repository(root: Path)
 
 @pytest.mark.usefixtures("terminal")
 def test_init_refuses_an_estate_answer_that_is_neither_choice(repo_root: Path) -> None:
-    res = runner.invoke(app, ["init", "-C", str(repo_root)], input="\n\n\n\nshare\n")
+    res = runner.invoke(app, ["init", "-C", str(repo_root)], input="\n\n\n\n\nshare\n")
 
     assert res.exit_code == 1
     assert "neither ignore nor track" in res.stderr
@@ -284,7 +302,7 @@ def test_init_excludes_the_estate_locally_when_setup_refuses(repo_root: Path) ->
 def test_init_skips_a_ci_file_that_is_not_utf8(root: Path) -> None:
     (root / "api" / ".github" / "workflows" / "bad.yml").write_bytes(b"run: \xff\xfe\n")
 
-    res = init(root, stdin="\n\n\n\nmake gate\n\n")
+    res = init(root, stdin="\n\n\n\n\nmake gate\n\n")
 
     assert "api CI runs:\nuv run pytest\n" in res.stdout
 
@@ -293,7 +311,7 @@ def test_init_skips_a_ci_file_that_is_not_utf8(root: Path) -> None:
 def test_init_shows_a_gitlab_script_written_as_one_string(root: Path) -> None:
     (root / "api" / ".gitlab-ci.yml").write_text("test:\n  script: make test\n", "utf-8")
 
-    res = init(root, stdin="\n\n\n\nmake gate\n\n")
+    res = init(root, stdin="\n\n\n\n\nmake gate\n\n")
 
     assert "npm test\nmake test\nmain gate (api):" in res.stdout
 

@@ -1121,7 +1121,7 @@ def test_a_container_lands_locks_and_verifies_only_the_descendants_it_still_coun
     claims.landing = FakeLanding()
 
     assert claims.repos_of("P") == ["api"]
-    passed, report = claims.verify("P", "origin/main")
+    passed, report, _ = claims.verify("P", "origin/main")
     assert passed, report
     assert claims.start("P", "fixer", "s1").action == Action.FIX
     assert {lock.file_path for lock in claims.runtime.list_locks()} == {

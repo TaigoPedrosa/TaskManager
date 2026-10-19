@@ -4,6 +4,7 @@ The static files are plain HTML/CSS/JS (no template braces to double), inlined i
 order so the served page and the static export both stay a single self-contained document.
 """
 
+import html as html_lib
 import json
 from importlib.resources import files
 from typing import Any
@@ -32,7 +33,9 @@ def _read_static(*parts: str) -> str:
     return resource.read_text(encoding="utf-8")
 
 
-def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
+def get_web_html(
+    project_name: str = "TaskManager", initial_data: dict[str, Any] | None = None
+) -> str:
     embedded_script = ""
     if initial_data is not None:
         # A section's own content is user-writable (`PUT /api/nodes/{id}/sections/{key}`) and
@@ -68,6 +71,7 @@ def get_web_html(initial_data: dict[str, Any] | None = None) -> str:
     html = html.replace("<!--slot:runtime-data-->", runtime_data)
     html = html.replace("<!--slot:static-data-->", embedded_script)
     html = html.replace("<!--slot:icon-sprite-->", AppIcon.generate_svg_sprite())
+    html = html.replace("<!--slot:project-name-->", html_lib.escape(project_name))
     for name in _JS_FILES:
         slot = f"<!--slot:js-{name.removesuffix('.js')}-->"
         html = html.replace(slot, _read_static("js", name))

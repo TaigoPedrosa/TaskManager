@@ -16,7 +16,7 @@ from pathlib import Path
 from taskmanager.core.enums import VerificationType
 from taskmanager.core.models import NodeVerification
 from taskmanager.engine import git as gitops
-from taskmanager.engine.config import DEFAULT_BRANCH, ConfigStore
+from taskmanager.engine.config import DEFAULT_BRANCH, VERIFY_TIMEOUT, ConfigStore
 from taskmanager.engine.doctor import CODEGRAPH_INSTALL, codegraph_index
 
 
@@ -27,6 +27,8 @@ class VerificationResult:
     verification_type: VerificationType
     passed: bool
     message: str
+    # Ran out of time, which says nothing about the code under test.
+    timed_out: bool = False
 
 
 # Types that parsed Python only. No write accepts them; a stored one, read from an older estate
@@ -40,9 +42,6 @@ def retired_verification(verification_type: VerificationType) -> str:
         "test_command: git -C <repo> grep -qE '<regex>' \"${TM_VERIFY_REF:-origin/main}\" -- <path>"
     )
 
-
-# Seconds a test_command may run; a verification has no timeout field of its own.
-TEST_COMMAND_TIMEOUT = 600
 
 _PATH_VERIFICATION_TYPES = frozenset({VerificationType.FILE_EXISTS, VerificationType.FILE_ABSENT})
 
@@ -207,6 +206,7 @@ class VerificationEngine:
         target_repo: str | None = None,
         ref: str | None = None,
         branch: str | None = None,
+        timeout: int = VERIFY_TIMEOUT,
     ) -> VerificationResult:
         """With no `ref`, a path check or a codegraph query reads `<remote>/<branch>` (the default
         branch when none is named; the local branch with no remote), and a test command is
@@ -233,7 +233,7 @@ class VerificationEngine:
                 branch = default
                 gitops.fetch(repo_root, remote, branch)
             ref = gitops.tracking(remote, branch)
-        return self._verify_in_tree(ver, ref)
+        return self._verify_in_tree(ver, ref, timeout)
 
     def _remote(self, target_repo: str | None) -> str | None:
         return ConfigStore(self.root).branches().remote(target_repo)
@@ -376,7 +376,9 @@ class VerificationEngine:
             f"/{regex.pattern}/{mode_suffix}",
         )
 
-    def _verify_in_tree(self, ver: NodeVerification, ref: str | None = None) -> VerificationResult:
+    def _verify_in_tree(
+        self, ver: NodeVerification, ref: str | None = None, timeout: int = VERIFY_TIMEOUT
+    ) -> VerificationResult:
         full_path = self.root / ver.target_path
 
         if ver.verification_type == VerificationType.FILE_EXISTS:
@@ -439,7 +441,7 @@ class VerificationEngine:
                 start_new_session=True,
             )
             try:
-                stdout, stderr = proc.communicate(timeout=TEST_COMMAND_TIMEOUT)
+                stdout, stderr = proc.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.communicate()
@@ -448,7 +450,8 @@ class VerificationEngine:
                     target_path=ver.target_path,
                     verification_type=ver.verification_type,
                     passed=False,
-                    message=f"Test command timed out after {TEST_COMMAND_TIMEOUT}s",
+                    message=f"Test command timed out after {timeout}s",
+                    timed_out=True,
                 )
             passed = proc.returncode == 0
             msg = (
@@ -482,11 +485,16 @@ class VerificationEngine:
         repo_for_node: Mapping[str, str | None] | None = None,
         ref: str | None = None,
         branch_for_node: Mapping[str, str] | None = None,
+        timeout: int = VERIFY_TIMEOUT,
     ) -> list[VerificationResult]:
         repos, branches = repo_for_node or {}, branch_for_node or {}
         return [
             self.verify_assertion(
-                v, target_repo=repos.get(v.node_id), ref=ref, branch=branches.get(v.node_id)
+                v,
+                target_repo=repos.get(v.node_id),
+                ref=ref,
+                branch=branches.get(v.node_id),
+                timeout=timeout,
             )
             for v in verifications
         ]

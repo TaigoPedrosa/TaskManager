@@ -444,6 +444,12 @@ def init(
     worktree_dir: Annotated[
         str | None, typer.Option("--worktree-dir", metavar="<dir>", help="Set worktree_dir")
     ] = None,
+    name: Annotated[
+        str | None,
+        typer.Option(
+            "--name", metavar="<name>", help="The name tm web shows; the folder's unless set"
+        ),
+    ] = None,
     track_estate: Annotated[
         bool | None,
         typer.Option(
@@ -462,6 +468,7 @@ def init(
         repos=repos or [],
         gates=dict(_gate_flag(g) for g in gates or []),
         worktree_dir=worktree_dir,
+        name=name,
         track_estate=track_estate,
     )
     if archive:

@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from subprocess import CalledProcessError
-from typing import Any, Final, Protocol, cast
+from typing import Any, Final, NamedTuple, Protocol, cast
 from urllib.parse import quote
 
 from taskmanager.core import lifecycle
@@ -315,6 +315,12 @@ class ClaimResult:
     codegraph: list[str] = field(default_factory=list)
 
 
+class Verified(NamedTuple):
+    passed: bool
+    report: str
+    timed_out: bool = False
+
+
 class LandingJobs(Protocol):
     def start_land(self, node_id: str) -> str: ...
 
@@ -458,7 +464,7 @@ class Claims:
         """The action a claim would take now, and the model it would name."""
         return selection.next_step(node, snap, self.config.models)
 
-    def verify(self, node_id: str, ref: str, repo: str | None = None) -> tuple[bool, str]:
+    def verify(self, node_id: str, ref: str, repo: str | None = None) -> Verified:
         """The node's verifications at `ref` (a container's: every descendant task's), limited to
         `repo` when given. An empty set passes and says so."""
         node = self.node(node_id)
@@ -475,13 +481,15 @@ class Claims:
             for v in self.nodes.get_verifications(i)
         ]
         if not checks:
-            return True, f"no verifications to run at {ref}: an empty set passes"
-        results = self.ops.verification_engine.verify_all(checks, repo_for, ref)
+            return Verified(True, f"no verifications to run at {ref}: an empty set passes")
+        results = self.ops.verification_engine.verify_all(
+            checks, repo_for, ref, timeout=self.config.verify_timeout
+        )
         report = "\n".join(
             f"{'PASS' if r.passed else 'FAIL'} {r.verification_type} {r.target_path}: {r.message}"
             for r in results
         )
-        return all(r.passed for r in results), report
+        return Verified(all(r.passed for r in results), report, any(r.timed_out for r in results))
 
     def start(
         self,
@@ -1377,7 +1385,7 @@ class Claims:
             elif not container:
                 raise OperationError(f"{branch} does not exist in {repo}", 409)
             # Each repository's checks read the target that repository's code landed on.
-            passed, report = self.verify(node_id, ref, repo)
+            passed, report, _ = self.verify(node_id, ref, repo)
             if not passed:
                 raise OperationError(f"verifications red on {target} in {repo}:\n{report}", 409)
 

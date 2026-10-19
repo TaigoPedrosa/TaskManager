@@ -5,6 +5,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- `tm init` asks for the project's `name`, the folder's name unless changed, or takes `--name`;
+  `tm web` and its export show it in the header and the browser tab, so open estates differ.
+
+### Fixed
+
+- `tm init --ignore-estate` or `--track-estate` leaves a `.gitignore` that already says so as it
+  is.
+- A verification `test_command` runs for at most `verify_timeout` seconds, 600 unless set, and
+  one that runs out stops its landing at `needs_agent` as `verify timeout` instead of failing the
+  node's landing as its own defect.
+- tm-wave names each agent its own scratch folder, `<node>-<step>-<token>/`, so agents running at
+  once no longer overwrite each other's scripts.
+
 ## [0.3.15] - 2026-10-19
 
 ### Changed

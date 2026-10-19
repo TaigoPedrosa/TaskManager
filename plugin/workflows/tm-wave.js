@@ -290,11 +290,15 @@ const head = (n, c, model, role) => {
   const blocked = c.action in CLAIMED
     ? `, or, when something outside this step must happen first, with ${TM} task release ${n.id} ${owner(n, c.token)} --blocked naming the edge, decision or condition it waits on`
     : ''
+  // Every agent of a session shares one scratchpad; a script one writes at its top level is
+  // overwritten by the next agent that picks the same name.
+  const scratch = `${n.id}-${c.action}${c.token ? `-${c.token}` : ''}/`
   return `${preamble ? preamble + '\n' : ''}tm-task: ${n.id}
 Model: ${model}
 The tm-wave workflow claimed this ${c.action} step for you: never run tm task start, and never claim or release any other node. Read tm guide ${role} and follow it from the step after its claim. Close the step with ${close(n, c)}${blocked}.
 Brief: tm render ${n.id} --view subagent${codegraph}${rules}${gate}${needs}
-Sections: before any tm section set, tm section get the same key. Append an entry to :report or :merge; rewrite any other section whole, in the present tense, with every sentence it overrides gone.`
+Sections: before any tm section set, tm section get the same key. Append an entry to :report or :merge; rewrite any other section whole, in the present tense, with every sentence it overrides gone.
+Scratch files: write every script, log and temporary file under ${scratch} in your scratchpad directory (your temp directory if you have none), never at its top level; other agents share it, so never read, overwrite or delete anything outside that folder.`
 }
 
 async function work(n, c, s, trail) {

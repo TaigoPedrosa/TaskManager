@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TaskManager — Interactive Visualizer</title>
+  <title><!--slot:project-name--> · TaskManager</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2334d399' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolygon points='12 2 2 7 12 12 22 7 12 2'/%3E%3Cpolyline points='2 17 12 22 22 17'/%3E%3Cpolyline points='2 12 12 17 22 12'/%3E%3C/svg%3E">
   <style>
 <!--slot:tailwind-css-->
@@ -29,7 +29,7 @@
     <div class="flex items-center gap-2 sm:gap-3 flex-wrap lg:flex-nowrap">
       <div class="flex items-center gap-2 flex-shrink-0">
         <svg id="brand-icon" class="w-5 h-5 text-emerald-400 transition-colors" fill="none" stroke="currentColor"><title id="brand-icon-title">Synced</title><use href="#icon-layers"/></svg>
-        <span class="text-sm font-semibold tracking-wide text-zinc-100 hidden sm:inline">TaskManager</span>
+        <span id="project-name" title="<!--slot:project-name-->" class="text-sm font-semibold tracking-wide text-zinc-100 hidden sm:inline sm:truncate sm:max-w-64"><!--slot:project-name--></span>
       </div>
 
       <div class="h-8 bg-zinc-900 p-0.5 rounded-lg border border-zinc-800 flex text-xs flex-shrink-0">

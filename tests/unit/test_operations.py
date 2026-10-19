@@ -326,6 +326,21 @@ def test_run_verifications_reports_results_and_records_ledger(
     assert _last_event_actor(ledger_repo) == "tester"
 
 
+def test_run_verifications_stops_a_test_command_at_the_configured_timeout(
+    ops_setup: tuple, tmp_path: Path
+) -> None:
+    _node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    _spec_id, _plan_id, task_id = _seed_task(ops)
+    (tmp_path / ".taskmanager").mkdir(exist_ok=True)
+    (tmp_path / ".taskmanager" / "config.yaml").write_text("verify_timeout: 1\n", encoding="utf-8")
+    ops.add_verification(task_id, VerificationType.TEST_COMMAND, "sleep 5")
+
+    all_passed, results = ops.run_verifications(task_id)
+
+    assert all_passed is False
+    assert results[0].message == "Test command timed out after 1s"
+
+
 def test_run_verifications_empty_set_refuses(ops_setup: tuple) -> None:
     _node_repo, _runtime_repo, ledger_repo, ops = ops_setup
     _spec_id, _plan_id, task_id = _seed_task(ops)

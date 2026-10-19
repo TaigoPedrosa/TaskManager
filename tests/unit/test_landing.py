@@ -24,7 +24,7 @@ from lifecycle_estate import (
 from taskmanager.core.enums import NodeKind, VerificationType
 from taskmanager.core.models import Condition, Job, NodeVerification
 from taskmanager.core.status import Action, ConditionStage, JobState, Merge, Outcome, Status
-from taskmanager.engine.claims import Claims
+from taskmanager.engine.claims import Claims, Verified
 from taskmanager.engine.config import Gate, ProjectConfig, RepoConfig
 from taskmanager.engine.landing import Landing
 from taskmanager.engine.operations import OperationError
@@ -334,6 +334,44 @@ def test_a_verification_red_after_landing_is_an_own_defect(tmp_path: Path) -> No
     assert "FAIL" in section(claims, "T1", "merge")
 
 
+def slow_until(claims: Claims, flag: Path) -> None:
+    """A check that outlives a 1 second timeout until `flag` exists, as one queued behind a
+    shared runner would."""
+    claims.nodes.add_verification(
+        NodeVerification(
+            node_id="T1",
+            verification_type=VerificationType.TEST_COMMAND,
+            target_path="waits for a runner",
+            expected_pattern=f"test -f {flag} || sleep 5",
+        )
+    )
+
+
+def test_a_verification_that_times_out_after_landing_waits_for_an_agent_and_resumes_at_verify(
+    tmp_path: Path,
+) -> None:
+    logged = Gate(command=f"echo gate >> {tmp_path / 'gate.log'}", junit=None, timeout=60)
+    claims, landing = estate_with(tmp_path, logged, verify_timeout=1)
+    api = claims.root / "api"
+    reviewed_task(claims)
+    slow_until(claims, tmp_path / "free")
+
+    job_id, state = land(claims, landing)
+
+    assert state == JobState.NEEDS_AGENT
+    job = claims.jobs.get(job_id)
+    assert job is not None
+    assert job.result["reason"] == "verify timeout"
+    assert "timed out after 1s" in job.result["report"]
+    assert stored(claims, "T1").outcome != Outcome.MERGE_FAILED
+    (tmp_path / "free").touch()
+    assert claims.start("T1", "agent", "s2").action == Action.MERGE
+    assert landing.resume(job_id) == JobState.SUCCEEDED
+    assert stored(claims, "T1").status == Status.COMPLETED
+    assert merges_of(api, "T1") == 1
+    assert gate_runs(tmp_path) == ["gate"]
+
+
 def test_a_landing_killed_after_its_push_is_swept_back_and_the_next_completes_without_a_second_merge(
     tmp_path: Path,
 ) -> None:
@@ -430,7 +468,7 @@ def test_succeed_writes_nothing_when_the_job_moved_before_it_ends(
     reviewed_task(claims)
     verify = claims.verify
 
-    def expiring(node_id: str, ref: str, repo: str | None) -> tuple[bool, str]:
+    def expiring(node_id: str, ref: str, repo: str | None) -> Verified:
         for job in claims.jobs.for_node(node_id):
             claims.jobs.set_state(job.model_copy(update={"state": JobState.EXPIRED}))
         return verify(node_id, ref, repo)
@@ -566,6 +604,23 @@ def test_own_verifications_stop_a_parent_landing_unless_nobody_below_fixes_a_rej
 
     assert land(claims, landing)[1] == state
     assert "FAIL" in section(claims, "T1", "merge")
+
+
+def test_own_verifications_that_time_out_at_the_merge_wait_for_an_agent(tmp_path: Path) -> None:
+    claims, landing = estate_with(tmp_path, TRUE, verify_timeout=1)
+    api = parent_landing(claims)
+    slow_until(claims, tmp_path / "free")
+
+    job_id, state = land(claims, landing)
+
+    assert state == JobState.NEEDS_AGENT
+    job = claims.jobs.get(job_id)
+    assert job is not None
+    assert job.result["reason"] == "verify timeout"
+    (tmp_path / "free").touch()
+    assert claims.start("T1", "agent", "s2").action == Action.MERGE
+    assert landing.resume(job_id) == JobState.SUCCEEDED
+    assert git(api, "show", "tm/P:feature.py") == "x = 1"
 
 
 def test_a_parent_branch_that_moves_before_the_swap_is_merged_in_and_gated_again(

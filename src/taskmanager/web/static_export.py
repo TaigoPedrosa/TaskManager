@@ -20,7 +20,7 @@ from taskmanager.db.node_repo import NodeRepository
 from taskmanager.di.container import create_container
 from taskmanager.engine.archive import archived_specs
 from taskmanager.engine.assets import ASSET_NAME_RE
-from taskmanager.engine.config import ConfigStore
+from taskmanager.engine.config import ConfigStore, project_name
 from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder
 from taskmanager.web.app import VENDOR_DIR, _decision_item
 from taskmanager.web.bodies import BodyRepos, build_bodies
@@ -142,7 +142,7 @@ def export_static_html(project_root: Path, output_file: Path) -> Path:
     }
 
     html_content = _VENDOR_SCRIPT_RE.sub(
-        _embed_vendor_script, get_web_html(initial_data=initial_data)
+        _embed_vendor_script, get_web_html(project_name(project_root), initial_data=initial_data)
     )
     output_file.parent.mkdir(parents=True, exist_ok=True)
     output_file.write_text(html_content, encoding="utf-8")

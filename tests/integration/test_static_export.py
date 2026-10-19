@@ -46,3 +46,19 @@ def test_web_export_embeds_a_decisions_body_with_context_and_options(tmp_path: P
     assert any(s["content"] == "some context" for s in body["sections"])
     options = body["node"]["frontmatter"]["decision"]["options"]
     assert options[0]["label"] == "Do X"
+
+
+def test_web_export_names_the_project_in_its_title_and_header_escaped(tmp_path: Path) -> None:
+    assert (
+        runner.invoke(app, ["init", "--yes", "--name", "A & <b>", "-C", str(tmp_path)]).exit_code
+        == 0
+    )
+
+    res = runner.invoke(
+        app, ["web", "export", "-o", str(tmp_path / "export.html"), "-C", str(tmp_path)]
+    )
+    assert res.exit_code == 0, res.output
+
+    html = (tmp_path / "export.html").read_text(encoding="utf-8")
+    assert "<title>A &amp; &lt;b&gt; · TaskManager</title>" in html
+    assert re.search(r'<span id="project-name"[^>]*>A &amp; &lt;b&gt;</span>', html)
