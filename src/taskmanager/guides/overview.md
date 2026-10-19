@@ -84,7 +84,7 @@ Children with `merge: parent` land on the container's branch, `tm/<container-id>
 | `WAITING_MERGE_AGENT` | `MERGING` with a landing job stopped for an agent |
 | `STALE` | an `-ING` status whose lease expired or is gone; `tm run sweep` returns it |
 | `AWAITING_DECISION` | an edge to an open decision |
-| `BLOCKED_BY_TASK` | an unsatisfied edge |
+| `BLOCKED_BY_TASK` | an unsatisfied edge, or work that must land first: its migration chain's holder, or a started node declaring one of its files |
 | `BLOCKED_BY_CONDITION` | an unmet condition for its next step |
 | `BLOCKED_BY_SYNC` | a sync its claim needs is running or waiting |
 | `BLOCKED_BY_LEASE` | its next step's files are locked by another lease |

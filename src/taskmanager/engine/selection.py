@@ -29,7 +29,7 @@ from taskmanager.db.runtime_repo import lease_alive
 from taskmanager.engine.chains import satisfied
 from taskmanager.engine.config import STRONG_MODELS, ModelsConfig, ProjectConfig
 from taskmanager.engine.routing import model_for
-from taskmanager.engine.snapshot import SnapshotBuilder, apply_cycle, cycle_in
+from taskmanager.engine.snapshot import SnapshotBuilder, apply_cycle, cycle_in, file_holders
 from taskmanager.engine.stepgraph import Snapshot, migration_holders
 
 # Later steps first, so a wave drains work already under way before it starts more.
@@ -169,6 +169,9 @@ def blocked_reason_after_condition(
     conflicts = _conflicts(_locked_files(node.id, action, snap), snap)
     if conflicts:
         return f"declared files locked: {', '.join(sorted(conflicts))}"
+    holders = file_holders(snap, node)
+    if holders:
+        return f"declared files wait on {', '.join(holders)} to land"
     return None
 
 

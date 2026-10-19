@@ -250,8 +250,11 @@ def test_simulate_later_wave_reads_the_configured_unlocked_files(tmp_path: Path)
 
     waves = simulate(claims.snapshots.build(), 2, 3, 10, None)
 
-    assert [[e.id for e in w.entries if not e.in_flight] for w in waves] == [["T1"], ["T1", "T2"]]
-    assert waves[1].held == ["T3: declared_files overlap a node chosen this wave"]
+    assert [[e.id for e in w.entries if not e.in_flight] for w in waves] == [["T1"], ["T1"]]
+    assert waves[1].held == [
+        "T2: declared files wait on T1 to land",
+        "T3: declared files wait on T1 to land",
+    ]
 
 
 def configured(tmp_path: Path) -> Claims:

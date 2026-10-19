@@ -262,8 +262,9 @@ def every_display_project(tmp_path: Path) -> Path:
     add_task("T-BLOCKED", Status.READY)
     add_task(
         "T-BLOCKED-BY-LEASE",
-        Status.READY,
+        Status.REVIEWED,
         repo="web",
+        outcome=Outcome.REJECT,
         frontmatter={"declared_files": [shared_path]},
     )
     node_repo.save_node(

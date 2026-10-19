@@ -51,9 +51,14 @@ def test_select_with_the_excluded_node_ordered_last_still_holds_the_other(
 def test_select_with_an_excluded_review_reserves_no_files(tmp_path: Path) -> None:
     estate = Estate(tmp_path)
     estate.add("A", status=Status.IMPLEMENTED, frontmatter={"declared_files": ["api/shared.py"]})
-    estate.add("B", frontmatter={"declared_files": ["api/shared.py"]})
+    estate.add(
+        "B",
+        status=Status.REVIEWED,
+        outcome=Outcome.REJECT,
+        frontmatter={"declared_files": ["api/shared.py"]},
+    )
     w = wave(estate, exclude=("A",))
-    assert chosen(w) == [("B", "implement")]
+    assert chosen(w) == [("B", "fix")]
     assert w.held == ["A: excluded by args"]
 
 

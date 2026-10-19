@@ -26,7 +26,7 @@ from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine import selection
 from taskmanager.engine.selection import Candidate, Selection
-from taskmanager.engine.snapshot import SnapshotBuilder
+from taskmanager.engine.snapshot import SnapshotBuilder, waits_on
 from taskmanager.engine.stepgraph import Snapshot
 
 MIGRATION = ["api/migrations/versions/001_add.py"]
@@ -210,6 +210,89 @@ def test_blocked_reason_sees_declared_files_another_lease_locks(estate: Estate) 
     estate.lease("OTHER", files=("api:api/app.py",))
     reason = selection.blocked_reason(node, estate.snap(), Action.IMPLEMENT)
     assert reason is not None and "declared files locked" in reason
+
+
+APP = {"declared_files": ["api/app.py"]}
+
+
+@pytest.mark.parametrize(
+    "holder",
+    [
+        pytest.param({"status": Status.IMPLEMENTED}, id="implemented"),
+        pytest.param({"status": Status.REVIEWED, "outcome": Outcome.APPROVE}, id="approved"),
+        pytest.param({"status": Status.FIXED, "fix_for": Outcome.REJECT}, id="fixed"),
+        pytest.param(
+            {"status": Status.MERGING, "claimed_from": Status.REVIEWED, "outcome": Outcome.APPROVE},
+            id="landing",
+        ),
+        pytest.param({"status": Status.FAILED}, id="failed"),
+    ],
+)
+def test_an_implement_waits_until_a_started_node_declaring_its_file_lands(
+    estate: Estate, holder: dict[str, object]
+) -> None:
+    estate.add("A", frontmatter=APP, **holder)
+    node = estate.add("B", frontmatter=APP)
+    snap = estate.snap()
+    assert selection.blocked_reason(node, snap, Action.IMPLEMENT) == (
+        "declared files wait on A to land"
+    )
+    assert waits_on(snap, node) == (["A"], [])
+
+
+@pytest.mark.parametrize(
+    ("holder", "waiter"),
+    [
+        pytest.param({"status": Status.COMPLETED}, APP, id="holder-landed"),
+        pytest.param({"status": Status.LANDED}, APP, id="holder-landed-review-owed"),
+        pytest.param({"status": Status.READY}, APP, id="holder-not-started"),
+        pytest.param({"status": Status.ABANDONED}, APP, id="holder-set-aside"),
+        pytest.param({"status": Status.IMPLEMENTED, "target_repo": "web"}, APP, id="other-repo"),
+        pytest.param(
+            {"status": Status.IMPLEMENTED},
+            {"declared_files": ["api/other.py"]},
+            id="disjoint-files",
+        ),
+        pytest.param({"status": Status.IMPLEMENTED}, {}, id="waiter-declares-nothing"),
+    ],
+)
+def test_an_implement_does_not_wait_on_a_file_holder_whose_change_cannot_be_missed(
+    estate: Estate, holder: dict[str, object], waiter: dict[str, object]
+) -> None:
+    estate.add("A", frontmatter=APP, **holder)
+    node = estate.add("B", frontmatter=waiter)
+    snap = estate.snap()
+    assert selection.blocked_reason(node, snap, Action.IMPLEMENT) is None
+    assert waits_on(snap, node) == ([], [])
+
+
+def test_a_started_node_waits_on_no_file_holder_for_its_later_steps(estate: Estate) -> None:
+    estate.add("A", status=Status.IMPLEMENTED, frontmatter=APP)
+    node = estate.add("B", status=Status.IMPLEMENTED, frontmatter=APP)
+    snap = estate.snap()
+    assert selection.blocked_reason(node, snap, Action.REVIEW) is None
+    assert waits_on(snap, node) == ([], [])
+
+
+def test_a_file_holders_plan_is_not_a_holder_of_its_own(estate: Estate) -> None:
+    estate.add("P", kind=NodeKind.PLAN, status=Status.IMPLEMENTED)
+    estate.add("A", parent="P", status=Status.IMPLEMENTED, frontmatter=APP)
+    node = estate.add("B", frontmatter=APP)
+    assert waits_on(estate.snap(), node) == (["A"], [])
+
+
+def test_a_file_holder_the_implement_also_depends_on_is_named_once(estate: Estate) -> None:
+    estate.add("A", status=Status.IMPLEMENTED, frontmatter=APP)
+    node = estate.add("B", depends=("A",), frontmatter=APP)
+    assert waits_on(estate.snap(), node) == (["A"], [])
+
+
+def test_a_wave_holds_the_implement_and_offers_the_file_holders_review(estate: Estate) -> None:
+    estate.add("A", status=Status.IMPLEMENTED, frontmatter=APP)
+    estate.add("B", frontmatter=APP)
+    w = wave(estate)
+    assert chosen(w) == [("A", "review")]
+    assert "B: declared files wait on A to land" in w.held
 
 
 # -- _condition_reason_cached: the cached check a simulated wave stands in for a live one --------

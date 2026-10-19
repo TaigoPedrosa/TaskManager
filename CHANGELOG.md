@@ -5,6 +5,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+
+- An implement is not claimed while another started node that declares one of its files has code
+  that has not reached a branch it builds on. A lease locks files only while its step runs, so a
+  waiter claimed during the holder's review or landing was cut without the holder's change.
+
 ## [0.3.13] - 2026-10-16
 
 ### Fixed

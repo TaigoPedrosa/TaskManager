@@ -60,7 +60,7 @@ Every node of every kind whose next step can be claimed now, with that step and 
 
 A reviewed plan or spec lands before its review: once its code is on its target it reads `LANDED`, and its one review is claimable. Nodes that depend on it may start meanwhile, since an edge is satisfied once the code has landed. A `FIXED` node's next step is its landing, unless the node is sensitive (`tm guide plan`, §2): then it is one re-review, scoped to the open findings. A dispatcher never re-dispatches a review of a fix that is not sensitive: not by hand, not through a `tm task reset`, not as a `rereview` agent sent anyway.
 
-Within a batch no two nodes declare the same file. Across a repository, a node writing a migration holds every other migration writer back until it has landed on its spec's target, except siblings building on its own container branch. Two nodes touching one schema, one generated file or one shared table are not disjoint whatever their file lists say: give them an edge.
+Within a batch no two nodes declare the same file. A node is not cut while another node that declares one of its files has started and its code has not reached a branch the node builds on: discovery holds it with `declared files wait on <node> to land`, so its branch carries that change. Across a repository, a node writing a migration holds every other migration writer back until it has landed on its spec's target, except siblings building on its own container branch. Two nodes touching one schema, one generated file or one shared table are not disjoint whatever their file lists say: give them an edge.
 
 ## 3. Models are tm's
 

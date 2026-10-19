@@ -73,7 +73,7 @@ def test_two_same_repo_tasks_on_the_same_path_collide_in_discovery_heuristics_an
     assert result.action == Action.BLOCKED
     assert "declared files locked" in (result.reason or "")
     view = DisplayView(claims.snapshots)
-    assert view.display(stored(claims, "W2")) == DisplayStatus.BLOCKED_BY_LEASE.value
+    assert view.display(stored(claims, "W2")) == DisplayStatus.BLOCKED_BY_TASK.value
 
 
 def test_a_container_spanning_two_repositories_locks_each_descendants_files_under_its_own_repo(

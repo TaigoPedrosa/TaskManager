@@ -30,7 +30,7 @@ from taskmanager.db.node_repo import (
     locked_key,
 )
 from taskmanager.db.runtime_repo import RuntimeRepository, lease_alive
-from taskmanager.engine.chains import satisfied
+from taskmanager.engine.chains import landing_chain, satisfied
 from taskmanager.engine.config import ConfigStore, ProjectConfig
 from taskmanager.engine.stepgraph import SnapNode, Snapshot, migration_holders
 
@@ -492,6 +492,26 @@ def chain_holder(snapshot: Snapshot, node: Node) -> str | None:
     return migration_holders(snapshot, node.target_repo or "").get(node.id)
 
 
+def file_holders(snapshot: Snapshot, node: Node) -> list[str]:
+    """The started nodes an implement of `node` waits behind because they declare one of its
+    files: a branch cut before their code reaches one `node` builds on misses their change to it.
+    A lease locks the files only while its step runs, so this holds through review and landing."""
+    if next_action(cycle_in(snapshot, node)) != Action.IMPLEMENT:
+        return []
+    mine = set(SnapshotBuilder.lock_set(node.id, snapshot))
+    return sorted(
+        other.id
+        for other in snapshot.nodes.values()
+        # A container's lock set is its children's files, so its children answer for them.
+        if other.kind not in CONTAINERS
+        and other.status != Status.READY
+        and mine.intersection(SnapshotBuilder.lock_set(other.id, snapshot))
+        # Code parked on a branch that was set aside never reaches a target, so it holds nothing.
+        and not any(snapshot.status(x) in EXITS for x in landing_chain(snapshot, other.id))
+        and not satisfied(snapshot, node.id, other.id)
+    )
+
+
 def waits_on(snapshot: Snapshot, node: Node) -> tuple[list[str], list[str]]:
     """The work `node` waits to see landed and the open decisions it waits on, its containers'
     edges and its migration chain included: every reason its display blocks on, by name."""
@@ -503,6 +523,7 @@ def waits_on(snapshot: Snapshot, node: Node) -> tuple[list[str], list[str]]:
     holder = chain_holder(snapshot, node)
     if holder is not None and holder not in work:
         work.append(holder)
+    work += [h for h in file_holders(snapshot, node) if h not in work]
     return work, [d for d in decisions if snapshot.status(d) == DecisionStatus.OPEN]
 
 
