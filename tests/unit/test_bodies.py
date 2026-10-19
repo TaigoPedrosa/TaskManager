@@ -7,8 +7,16 @@ from typing import Any
 import pytest
 
 from taskmanager.core.enums import NodeKind, RelationType
-from taskmanager.core.models import Condition, Job, Lease, Node, NodeRelation, NodeSection
-from taskmanager.core.status import Action, JobKind, JobState, Status
+from taskmanager.core.models import (
+    Condition,
+    Finding,
+    Job,
+    Lease,
+    Node,
+    NodeRelation,
+    NodeSection,
+)
+from taskmanager.core.status import Action, FindingState, JobKind, JobState, Severity, Status
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
@@ -196,6 +204,42 @@ def test_build_bodies_reads_every_job_state_not_only_the_live_ones(estate: Estat
     assert [j["state"] for j in body["jobs"]] == ["succeeded"]
 
 
+def test_build_bodies_carries_each_finding_with_its_answer(estate: Estate) -> None:
+    estate.add("T1")
+    estate.add("T2")
+    for severity in (Severity.BLOCKING, Severity.MINOR):
+        estate.node_repo.add_finding(
+            Finding(node_id="T1", severity=severity, at="a.py:f", breaks=severity.value)
+        )
+    estate.node_repo.answer_finding("T1", 2, FindingState.DISPUTED, "why")
+
+    bodies = build_bodies(estate.view(), ["T1", "T2"], repos=estate.repos())
+
+    assert bodies["T1"]["findings"] == [
+        {
+            "number": 1,
+            "source": "review",
+            "severity": "blocking",
+            "at": "a.py:f",
+            "breaks": "blocking",
+            "rule": None,
+            "state": "open",
+            "answer": None,
+        },
+        {
+            "number": 2,
+            "source": "review",
+            "severity": "minor",
+            "at": "a.py:f",
+            "breaks": "minor",
+            "rule": None,
+            "state": "disputed",
+            "answer": "why",
+        },
+    ]
+    assert bodies["T2"]["findings"] == []
+
+
 def test_build_bodies_reads_a_conditions_cached_result(estate: Estate) -> None:
     estate.add("T1")
     estate.node_repo.add_condition(Condition(node_id="T1", needs="x", command="true"))
@@ -289,6 +333,7 @@ def _body(sections: list[dict[str, Any]], **parts: Any) -> dict[str, Any]:
         "dependent_details": [],
         "verifications": [],
         "conditions": [],
+        "findings": [],
         "jobs": [],
         "lease": None,
         "sections": sections,
@@ -323,6 +368,7 @@ def test_body_items_with_no_prior_body_reports_every_section_and_part() -> None:
         "dependent_details",
         "verifications",
         "conditions",
+        "findings",
         "jobs",
         "lease",
     }

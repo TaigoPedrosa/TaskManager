@@ -1,15 +1,23 @@
-from taskmanager.core.status import DecisionStatus, Status
+from enum import StrEnum
+
+from taskmanager.core.status import DecisionStatus, FindingSource, FindingState, Severity, Status
 
 # audit.db and cache.db: neither has moved past its first shape yet.
 SCHEMA_VERSION = 1
 
 # state.db: bumped and migrated separately, since it changes far more often than the ledger
 # or the cache.
-STATE_SCHEMA_VERSION = 5
+STATE_SCHEMA_VERSION = 6
 
 # Built from the enums so the vocabulary SQLite enforces and the one the code writes cannot drift.
 _CYCLE_STATUSES = ", ".join(f"'{s.value}'" for s in Status)
 _DECISION_STATUSES = ", ".join(f"'{s.value}'" for s in DecisionStatus)
+
+
+def _values(enum: type[StrEnum]) -> str:
+    return ", ".join(f"'{member.value}'" for member in enum)
+
+
 NODE_STATUS_CHECK = (
     f"CHECK ((kind = 'decision' AND status IN ({_DECISION_STATUSES})) "
     f"OR (kind <> 'decision' AND status IN ({_CYCLE_STATUSES})))"
@@ -54,6 +62,40 @@ _NODES_BODY_SQL = (
     + NODE_STATUS_CHECK
     + "\n)"
 )
+
+# Shared by the fresh schema and the migration that adds it, so both store the same text. Its
+# `rev` triggers live here, not with the others: those are replayed by migrations older than it.
+_FINDINGS_SQL = f"""CREATE TABLE IF NOT EXISTS node_findings (
+    node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    number INTEGER NOT NULL CHECK (number > 0),
+    source TEXT NOT NULL CHECK (source IN ({_values(FindingSource)})),
+    severity TEXT NOT NULL CHECK (severity IN ({_values(Severity)})),
+    at TEXT NOT NULL CHECK (trim(at) <> ''),
+    breaks TEXT NOT NULL CHECK (trim(breaks) <> ''),
+    rule TEXT,
+    state TEXT NOT NULL DEFAULT 'open' CHECK (state IN ({_values(FindingState)})),
+    answer TEXT,
+    PRIMARY KEY (node_id, number)
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_node_findings_rev_ins
+AFTER INSERT ON node_findings
+BEGIN
+    UPDATE nodes SET rev = rev + 1 WHERE id = NEW.node_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_node_findings_rev_upd
+AFTER UPDATE ON node_findings
+BEGIN
+    UPDATE nodes SET rev = rev + 1 WHERE id IN (OLD.node_id, NEW.node_id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_node_findings_rev_del
+AFTER DELETE ON node_findings
+BEGIN
+    UPDATE nodes SET rev = rev + 1 WHERE id = OLD.node_id;
+END;
+"""
 
 # Quoted because `ALTER TABLE ... RENAME TO nodes` writes the new name quoted, so a fresh estate
 # and one the migration below rebuilt store byte-identical `sqlite_master.sql` for `nodes`.
@@ -177,6 +219,8 @@ CREATE TABLE IF NOT EXISTS branch_locks (
     PRIMARY KEY (repo, branch)
 );
 """
+    + "\n"
+    + _FINDINGS_SQL
 )
 
 # One node's `rev` moves on any change to the node itself or to a section, verification,
@@ -321,6 +365,7 @@ STATE_MIGRATIONS: dict[int, str] = {
     + "AND claimed_from IS NOT 'IMPLEMENTED' "
     + "AND EXISTS (SELECT 1 FROM jobs WHERE jobs.node_id = nodes.id "
     + "AND jobs.kind = 'land' AND jobs.state = 'succeeded'));\n",
+    6: _FINDINGS_SQL,
 }
 
 # Derived results only: dropping this database loses time, never state.

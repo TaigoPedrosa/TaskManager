@@ -1,4 +1,5 @@
 import itertools
+from dataclasses import replace
 
 import pytest
 
@@ -288,17 +289,17 @@ def test_a_claim_with_no_next_action_is_refused(cycle: Cycle) -> None:
         (
             Cycle(S.MERGING, outcome=REJECT, claimed_from=S.REVIEWED, **NO_FIX),
             E.LANDED,
-            Cycle(S.COMPLETED, outcome=REJECT, **NO_FIX),
+            Cycle(S.COMPLETED, outcome=REJECT, on_target=True, **NO_FIX),
         ),
         (
             Cycle(S.MERGING, container=True, claimed_from=S.IMPLEMENTED),
             E.LANDED,
-            Cycle(S.LANDED, container=True),
+            Cycle(S.LANDED, container=True, on_target=True),
         ),
         (
             Cycle(S.MERGING, container=True, claimed_from=S.IMPLEMENTED, review_cycles=2),
             E.LANDED,
-            Cycle(S.LANDED, container=True, review_cycles=2),
+            Cycle(S.LANDED, container=True, review_cycles=2, on_target=True),
         ),
         (
             Cycle(
@@ -316,6 +317,7 @@ def test_a_claim_with_no_next_action_is_refused(cycle: Cycle) -> None:
                 outcome=MERGE_FAILED,
                 fix_for=MERGE_FAILED,
                 merge_attempts=1,
+                on_target=True,
             ),
         ),
         (
@@ -328,12 +330,19 @@ def test_a_claim_with_no_next_action_is_refused(cycle: Cycle) -> None:
                 review_cycles=1,
             ),
             E.LANDED,
-            Cycle(S.COMPLETED, container=True, outcome=REJECT, fix_for=REJECT, review_cycles=1),
+            Cycle(
+                S.COMPLETED,
+                container=True,
+                outcome=REJECT,
+                fix_for=REJECT,
+                review_cycles=1,
+                on_target=True,
+            ),
         ),
         (
             Cycle(S.MERGING, container=True, claimed_from=S.IMPLEMENTED, **UNREVIEWED),
             E.LANDED,
-            Cycle(S.COMPLETED, container=True, **UNREVIEWED),
+            Cycle(S.COMPLETED, container=True, on_target=True, **UNREVIEWED),
         ),
         (
             Cycle(S.MERGING, outcome=APPROVE, claimed_from=S.REVIEWED),
@@ -514,6 +523,43 @@ def test_a_rejected_landed_container_lands_its_fix_and_completes_without_a_secon
 def test_a_container_whose_landing_was_fixed_still_owes_its_one_review() -> None:
     fixed = _walk(Cycle(S.IMPLEMENTED, container=True), None, E.OWN_DEFECT, None, E.COMPLETE)
     assert _walk(fixed, None, E.LANDED).status == S.LANDED
+
+
+def _minors_closed(c: Cycle) -> Cycle:
+    return replace(c, minors=False)
+
+
+def test_a_task_approved_with_minor_findings_lands_then_fixes_them_without_a_review() -> None:
+    approved = _walk(Cycle(S.READY, minors=True), None, E.COMPLETE, None, E.APPROVE)
+    assert (approved.status, next_action(approved)) == (S.REVIEWED, Action.MERGE)
+    landed = _walk(approved, None, E.LANDED)
+    assert (landed.status, landed.outcome, next_action(landed)) == (S.REVIEWED, APPROVE, Action.FIX)
+    fixed = _minors_closed(_walk(landed, None, E.COMPLETE))
+    assert (fixed.status, fixed.fix_for, next_action(fixed)) == (S.FIXED, APPROVE, Action.MERGE)
+    assert _walk(fixed, None, E.LANDED).status == S.COMPLETED
+
+
+def test_a_sensitive_fix_of_minor_findings_lands_without_a_review() -> None:
+    landed = _walk(Cycle(S.READY, minors=True, **SENSITIVE), None, E.COMPLETE, None, E.APPROVE)
+    fixed = _walk(landed, None, E.LANDED, None, E.COMPLETE)
+    assert (fixed.status, next_action(fixed)) == (S.FIXED, Action.MERGE)
+
+
+def test_a_landed_container_approved_with_minor_findings_fixes_them_before_completing() -> None:
+    landed = _walk(Cycle(S.IMPLEMENTED, container=True, minors=True), None, E.LANDED)
+    approved = _walk(landed, None, E.APPROVE)
+    assert (approved.status, next_action(approved)) == (S.REVIEWED, Action.FIX)
+    fixed = _minors_closed(_walk(approved, None, E.COMPLETE))
+    assert (fixed.status, next_action(fixed)) == (S.FIXED, Action.MERGE)
+    assert _walk(fixed, None, E.LANDED).status == S.COMPLETED
+
+
+def test_minor_findings_with_fix_off_complete_the_node_and_stay_open() -> None:
+    approved = _walk(Cycle(S.READY, minors=True, **NO_FIX), None, E.COMPLETE, None, E.APPROVE)
+    landed = _walk(approved, None, E.LANDED)
+    assert (landed.status, landed.minors) == (S.COMPLETED, True)
+    container = _walk(Cycle(S.IMPLEMENTED, container=True, minors=True, **NO_FIX), None, E.LANDED)
+    assert _walk(container, None, E.APPROVE).status == S.COMPLETED
 
 
 def test_a_review_of_a_landing_fix_uses_no_fix_round() -> None:

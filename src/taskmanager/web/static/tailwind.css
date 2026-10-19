@@ -1033,6 +1033,10 @@ video {
   max-width: 56rem;
 }
 
+.max-w-\[40\%\] {
+  max-width: 40%;
+}
+
 .max-w-\[calc\(100vw-1rem\)\] {
   max-width: calc(100vw - 1rem);
 }

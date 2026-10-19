@@ -20,7 +20,7 @@ function body(node, parts = {}) {
       requires: [], land_order: [], base_chain: ['MAIN'], frontmatter: {}, ...node,
     },
     display: node.display, phase: node.phase,
-    sections: [], dependency_details: [], dependent_details: [], verifications: [], conditions: [], jobs: [], lease: null,
+    sections: [], dependency_details: [], dependent_details: [], verifications: [], conditions: [], jobs: [], findings: [], lease: null,
     ...parts,
   };
 }
@@ -42,6 +42,7 @@ const BODIES = {
   P: body({ ...PLAN, review: true, fix: true }, {
     sections: [{ key: 'context', header: null, content: 'Why.', ordinal: 1 }],
     verifications: [{ id: 7, verification_type: 'file_exists', target_path: 'src/app.py', expected_pattern: null }],
+    findings: [{ number: 1, source: 'review', severity: 'minor', at: 'a.py:f', breaks: 'dead code', rule: null, state: 'closed', answer: 'abc1234' }],
   }),
   T: body({ ...TASK, fix: true, merge_attempts: 2, requires: ['figma'], land_order: ['A', 'B'], base_chain: ['P', 'main'],
     frontmatter: { attachments: [{ asset: 'a1.png', name: 'shot.png', mime: 'image/png', size_bytes: 2048, source: { state: 'fresh' } }] } }, {
@@ -60,6 +61,10 @@ const BODIES = {
     ],
     conditions: [{ idx: 0, needs: 'The CLI is on PATH', command: 'command -v "tailwindcss" && echo <ok>', stage: 'claim', last_result: null }],
     jobs: [{ id: 'j1', kind: 'land', node_id: 'T', repo: '.', target: 'main', state: 'succeeded', step: null, heartbeat: BEAT }],
+    findings: [
+      { number: 1, source: 'review', severity: 'blocking', at: 'api/x.py:read', breaks: 'reads <b>every</b> tenant', rule: null, state: 'open', answer: null },
+      { number: 2, source: 'landing', severity: 'minor', at: 'landing', breaks: 'gate red', rule: null, state: 'disputed', answer: 'the gate was flaky' },
+    ],
   }),
   U: body({ ...LEASED, step_failures: 1, base_chain: ['P', 'main'] }, {
     lease: { agent_id: 'wf-u', action: 'implement', acquired_at: BEAT, last_heartbeat: BEAT },
@@ -148,6 +153,7 @@ const EXPECTED_GROUPS = {
     { group: 'verifications', header: 'Verifications 2', open: false },
     { group: 'dependencies', header: 'Dependencies 2', open: true },
     { group: 'dependents', header: 'Dependents 1', open: false },
+    { group: 'findings', header: 'Findings 2', open: true },
     { group: 'conditions', header: 'Conditions 1', open: false },
     { group: 'jobs', header: 'Jobs 1', open: false },
     { group: 'attachments', header: 'Attachments 1', open: false },
@@ -156,6 +162,7 @@ const EXPECTED_GROUPS = {
     { group: 'sections', header: 'Sections 1', open: true },
     { group: 'children', header: 'Tasks 2', open: false },
     { group: 'verifications', header: 'Verifications 1', open: false },
+    { group: 'findings', header: 'Findings 1', open: false },
   ],
   S: [
     { group: 'sections', header: 'Sections 1', open: true },
@@ -251,6 +258,18 @@ test('a node opened without its row reads display and phase from the body: a dec
   assert.equal(page.window.tmStore.rows.has('T'), false);
   assert.equal(page.$('#inspector-line [role="img"]').getAttribute('aria-label'), 'Awaiting Decision');
   assert.equal(page.$('#inspector-title').textContent, TASK.title);
+});
+
+test('a finding row reads its number, severity, where, what breaks escaped, state and answer', async () => {
+  const page = await openAt('/graph/T');
+  const rows = page.$$('#inspector-body [data-group="findings"] [data-finding]');
+  assert.deepEqual(rows.map((r) => r.getAttribute('data-finding')), ['1', '2']);
+  const cells = (r) => [...r.children].map((c) => text(c));
+  assert.deepEqual(cells(rows[0]), ['#1', 'blocking', 'api/x.py:read reads <b>every</b> tenant', 'open']);
+  assert.equal(rows[0].querySelector('b'), null);
+  assert.deepEqual(cells(rows[1]), ['#2', 'minor', 'landing gate red', 'disputed', 'the gate was flaky']);
+  const header = page.$('#inspector-body [data-group="findings"]').children[0];
+  assert.ok(text(header).endsWith('1 open'), text(header));
 });
 
 test('jobs show their time', async () => {

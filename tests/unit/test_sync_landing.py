@@ -17,7 +17,7 @@ from lifecycle_estate import (
 )
 
 from taskmanager.core.enums import NodeKind
-from taskmanager.core.status import Action, JobState, Merge, Outcome, Status
+from taskmanager.core.status import Action, FindingState, JobState, Merge, Outcome, Status
 from taskmanager.engine import git as gitops
 from taskmanager.engine.claims import Claims
 from taskmanager.engine.config import Gate, ProjectConfig, RepoConfig
@@ -193,7 +193,8 @@ def test_a_container_lands_each_repository_in_order_and_only_what_is_left_after_
         "api": str(Path(fix.worktree) / "api"),
         "web": str(Path(fix.worktree) / "web"),
     }
-    commit(Path(fix.worktrees["web"]), "failing.txt", None, "web: gate green again")
+    green = commit(Path(fix.worktrees["web"]), "failing.txt", None, "web: gate green again")
+    claims.answer_finding("P", 1, FindingState.CLOSED, green)
     assert claims.complete("P") == Status.FIXED
 
     again = claims.start("P", "merger", "s1")

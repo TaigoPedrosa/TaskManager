@@ -5,6 +5,7 @@ from taskmanager.core.enums import RelationType, VerificationType
 from taskmanager.core.models import (
     Condition,
     FileLock,
+    Finding,
     Job,
     Lease,
     Node,
@@ -14,7 +15,7 @@ from taskmanager.core.status import ConditionStage, JobState
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import _COLUMNS as _JOB_COLUMNS
 from taskmanager.db.job_repo import _row_to_job
-from taskmanager.db.node_repo import _NODE_COLUMNS, NodeRepository
+from taskmanager.db.node_repo import _NODE_COLUMNS, FINDING_COLUMNS, NodeRepository, row_to_finding
 from taskmanager.db.runtime_repo import _LEASE_COLUMNS, _row_to_lease
 
 _LIVE_JOB_STATES = (JobState.RUNNING.value, JobState.NEEDS_AGENT.value)
@@ -22,9 +23,9 @@ _LIVE_JOB_STATES = (JobState.RUNNING.value, JobState.NEEDS_AGENT.value)
 
 @dataclass(frozen=True)
 class GraphData:
-    """Every node, relation, verification, condition, lease, file lock and live job -- one read
-    of `state.db`, grouped the way every reader already asks for it, so `SnapshotBuilder` and
-    its callers need no query per node."""
+    """Every node, relation, verification, condition, lease, file lock, live job and finding: one
+    read of `state.db`, grouped the way every reader already asks for it, so `SnapshotBuilder`
+    and its callers need no query per node."""
 
     nodes: dict[str, Node]
     # SQLite's own count of changes to a node or to a section, verification, condition or
@@ -36,6 +37,7 @@ class GraphData:
     leases: dict[str, Lease]
     file_locks: list[FileLock]
     jobs: dict[str, list[Job]]
+    findings: dict[str, list[Finding]]
     # One instant for the whole snapshot: every lease's liveness is judged against it, not
     # against the time each reader happens to ask.
     built_at: datetime = field(default_factory=lambda: datetime.now(tz=UTC))
@@ -45,7 +47,7 @@ def read_graph(db: DatabaseManager) -> GraphData:
     built_at = datetime.now(tz=UTC)
     with db.get_state_connection() as conn:
         # A caller already inside a transaction (`validated_write`) shares its consistent view;
-        # otherwise this read opens its own, so the eight selects below see one snapshot.
+        # otherwise this read opens its own, so the selects below see one snapshot.
         opened = not db.in_transaction and not conn.in_transaction
         if opened:
             conn.execute("BEGIN")
@@ -119,6 +121,13 @@ def read_graph(db: DatabaseManager) -> GraphData:
             ).fetchall():
                 job = _row_to_job(r)
                 jobs.setdefault(job.node_id, []).append(job)
+
+            findings: dict[str, list[Finding]] = {}
+            for r in conn.execute(
+                f"SELECT {FINDING_COLUMNS} FROM node_findings ORDER BY node_id, number"
+            ).fetchall():
+                finding = row_to_finding(r)
+                findings.setdefault(finding.node_id, []).append(finding)
         finally:
             if opened:
                 conn.execute("COMMIT")
@@ -131,5 +140,6 @@ def read_graph(db: DatabaseManager) -> GraphData:
         leases=leases,
         file_locks=file_locks,
         jobs=jobs,
+        findings=findings,
         built_at=built_at,
     )

@@ -19,14 +19,18 @@ from taskmanager.core.status import (
     Action,
     ConditionStage,
     DecisionStatus,
+    FindingSource,
+    FindingState,
     JobKind,
     JobState,
     Merge,
     Outcome,
+    Severity,
     Status,
 )
 
-_FIX_ANSWERS = frozenset({Outcome.REJECT, Outcome.MERGE_FAILED})
+# An approve's fix answers the minor findings it left open, after the node landed.
+_FIX_ANSWERS = frozenset({Outcome.REJECT, Outcome.MERGE_FAILED, Outcome.APPROVE})
 
 # `blocked` exits `tm task start` with nothing written: a lease never holds it.
 LeaseAction = Literal[Action.IMPLEMENT, Action.REVIEW, Action.FIX, Action.MERGE, Action.SYNC]
@@ -99,7 +103,7 @@ class Node(BaseModel):
                 f"{self.id}: REVIEWED needs an outcome: approve, reject or merge_failed"
             )
         if self.status == Status.FIXED and self.fix_for not in _FIX_ANSWERS:
-            raise ValueError(f"{self.id}: FIXED needs fix_for reject or merge_failed")
+            raise ValueError(f"{self.id}: FIXED needs fix_for approve, reject or merge_failed")
         return self
 
     @model_validator(mode="after")
@@ -127,6 +131,21 @@ class Condition(BaseModel):
     needs: str
     command: str
     stage: ConditionStage = ConditionStage.CLAIM
+
+
+class Finding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str
+    number: int = 0
+    source: FindingSource = FindingSource.REVIEW
+    severity: Severity
+    at: str = Field(pattern=r"\S")
+    breaks: str = Field(pattern=r"\S")
+    rule: str | None = None
+    state: FindingState = FindingState.OPEN
+    # The commit that closed it, or the evidence that disputes it.
+    answer: str | None = None
 
 
 class NodeSection(BaseModel):

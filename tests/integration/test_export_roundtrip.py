@@ -7,8 +7,8 @@ from typer.testing import CliRunner
 from taskmanager.cli.main import app
 from taskmanager.core.enums import NodeKind, RelationType
 from taskmanager.core.lifecycle import claim, next_action
-from taskmanager.core.models import Lease
-from taskmanager.core.status import Outcome, Status
+from taskmanager.core.models import Finding, Lease
+from taskmanager.core.status import FindingState, Outcome, Severity, Status
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.di.container import create_container
@@ -34,7 +34,7 @@ def in_step(root: Path, node_id: str, claimed_from: Status) -> None:
     assert node is not None
     node = node.model_copy(update={"status": claimed_from})
     node_repo.save_node(node)
-    cycle = cycle_of(node, sensitive=False)
+    cycle = cycle_of(node, sensitive=False, findings=[])
     lease = Lease(
         task_id=node_id,
         agent_id="a",
@@ -58,6 +58,15 @@ def seeded(root: Path) -> None:
     ops.add_task("new", first, slug="new")
     ops.add_task("old", second, slug="old")
     ops.supersede("S-P2-old", "S-P1-new")
+    node_repo = repo(root)
+    for severity, breaks in (
+        (Severity.BLOCKING, "a null id reads every tenant"),
+        (Severity.MINOR, "y"),
+    ):
+        node_repo.add_finding(
+            Finding(node_id="S-P1-review", severity=severity, at="a.py:1", breaks=breaks)
+        )
+    node_repo.answer_finding("S-P1-review", 1, FindingState.DISPUTED, "the id is never null")
     in_step(root, "S-P1-build", Status.READY)
     in_step(root, "S-P1-review", Status.IMPLEMENTED)
     tm("config", "set", "worktree_dir", str(root / "worktrees"), "-C", str(root))
@@ -92,6 +101,11 @@ def test_export_restore_export_round_trips_steps_supersedes_ordinals_and_config(
         None,
         0,
     )
+    assert restored.get_findings("S-P1-review") == repo(source).get_findings("S-P1-review")
+    assert [f.state for f in restored.get_findings("S-P1-review")] == [
+        FindingState.DISPUTED,
+        FindingState.OPEN,
+    ]
     assert restored.relations(RelationType.SUPERSEDES) == [("S-P1-new", "S-P2-old")]
     ordinals = {
         n.id: n.ordinal for k in (NodeKind.SPEC, NodeKind.PLAN) for n in restored.list_nodes(kind=k)

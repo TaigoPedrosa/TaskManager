@@ -36,6 +36,7 @@ _BODY_PARTS = (
     "dependent_details",
     "verifications",
     "conditions",
+    "findings",
     "jobs",
     "lease",
 )
@@ -354,6 +355,10 @@ def build_bodies(
                     "last_result": _condition_result(cached_conditions, node_id, c),
                 }
                 for c in data.conditions.get(node_id, [])
+            ],
+            "findings": [
+                f.model_dump(mode="json", exclude={"node_id"})
+                for f in data.findings.get(node_id, [])
             ],
             "jobs": [j.model_dump(mode="json") for j in jobs.get(node_id, [])],
             "lease": lease_dict(data.leases.get(node_id)),

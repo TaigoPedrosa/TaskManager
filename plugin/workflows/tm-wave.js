@@ -269,7 +269,7 @@ async function job(n, id, wait) {
 const close = (n, c) => ({
   implement: `${TM} task complete ${n.id} ${owner(n, c.token)}`,
   fix: `${TM} task complete ${n.id} ${owner(n, c.token)}`,
-  review: `${TM} task review ${n.id} ${owner(n, c.token)} --approve or --reject (tm refuses either until your findings are in its :review section)`,
+  review: `${TM} task review ${n.id} ${owner(n, c.token)} --approve or --reject (tm refuses either until each finding is recorded with ${TM} finding add, or --clean when there is none)`,
   merge: `${TM} job resume ${c.job} ${owner(n, c.token)}`,
   sync: `${TM} job resume ${c.job} ${owner(n, c.token)}`,
 })[c.action]
@@ -294,7 +294,7 @@ const head = (n, c, model, role) => {
 Model: ${model}
 The tm-wave workflow claimed this ${c.action} step for you: never run tm task start, and never claim or release any other node. Read tm guide ${role} and follow it from the step after its claim. Close the step with ${close(n, c)}${blocked}.
 Brief: tm render ${n.id} --view subagent${codegraph}${rules}${gate}${needs}
-Sections: before any tm section set, tm section get the same key. Append an entry to :report, :review or :merge; rewrite any other section whole, in the present tense, with every sentence it overrides gone.`
+Sections: before any tm section set, tm section get the same key. Append an entry to :report or :merge; rewrite any other section whole, in the present tense, with every sentence it overrides gone.`
 }
 
 async function work(n, c, s, trail) {
@@ -332,10 +332,10 @@ async function work(n, c, s, trail) {
       : `diff ${q(refOf(r))}...${q(c.branch)}`
     const targets = [...new Set(repos.map(refOf))].join(' and ')
     body = again
-      ? `Scope: every finding in tm section ${n.id}:review not yet recorded as closed, against the fix commits on ${c.branch} and the fixer's latest :report entry, and, when the last landing failed, the failure its latest :merge entry names. Establish each closure by mutation.`
-      : `Scope: ${landed ? `what ${n.id} and every node under it landed on ${targets}` : `the whole diff of ${c.branch} from its base`}, in each repository it touched: ${repos.map(r => `git -C ${ROOT}/${r} ${diff(r)}`).join('; ')}.${landed ? ' A repository where that prints nothing had nothing land.' : ''}${container ? ' This is a container review: read what is true only between its children, and every child tm render lists as rejected by its own review.' : ''}`
-    if (!again) body += `\nReport: read tm section ${n.id}:report only after your findings are written, to judge the discrepancies it records; with review.blind on, the default, the brief leaves it out.`
-    body += `\nFindings: append numbered findings to tm section ${n.id}:review; write it even when nothing is open, saying so.`
+      ? `Scope: every finding ${TM} finding list ${n.id} shows with its answer, a failed landing's included, against the fix commits on ${c.branch} and the fixer's latest :report entry. Establish each closure by mutation, and open one that still holds again with ${TM} finding reopen ${n.id} <n> ${owner(n, c.token)}.`
+      : `Scope: ${landed ? `what ${n.id} and every node under it landed on ${targets}` : `the whole diff of ${c.branch} from its base`}, in each repository it touched: ${repos.map(r => `git -C ${ROOT}/${r} ${diff(r)}`).join('; ')}.${landed ? ' A repository where that prints nothing had nothing land.' : ''}${container ? ' This is a container review: read what is true only between its children, and every child tm render lists with open findings.' : ''}`
+    if (!again) body += `\nReport: read tm section ${n.id}:report only after your findings are recorded, to judge the discrepancies it records; with review.blind on, the default, the brief leaves it out.`
+    body += `\nFindings: record each one with ${TM} finding add ${n.id} ${owner(n, c.token)} --blocking or --minor --at "<file>:<symbol>" --breaks "<what breaks>"; with none, close with --clean.`
     // One scratch path per repository: a container review may execute code in several.
     const wtDir = WT || `<the directory ${TM} config get worktree_dir names>`
     // The claim's token keeps a worktree an earlier, dead reviewer left behind from taking the path.
@@ -349,7 +349,7 @@ async function work(n, c, s, trail) {
       ? `Worktrees, one per repository, each on branch ${c.branch}: ${trees.map(([r, p]) => `${r} at ${p}, based on ${refOf(r)}`).join('; ')}. Work only there, and never cd in a Bash command.`
       : `Worktree: ${c.worktree} — branch ${c.branch}, based on ${refOf(repos[0])}. Work only there, and never cd in a Bash command.`
     body = c.action === 'fix'
-      ? `${where}\nFindings: ${s.outcome === 'merge_failed' ? `the landing failure the latest entry of tm section get ${n.id}:merge records` : `every finding in tm section get ${n.id}:review not recorded as closed`}. Fix each one, commit on the branch, and answer each by number in an appended :report entry.`
+      ? `${where}\nFindings: every one ${TM} finding list ${n.id} --open shows, a failed landing's included. Fix each one, commit on the branch, and answer each with ${TM} finding close ${n.id} <n> ${owner(n, c.token)} --commit <sha>, or ${TM} finding dispute ${n.id} <n> ${owner(n, c.token)} --evidence "<what was read>".`
       : `${where}\nReport: append to tm section ${n.id}:report before your last commit.`
   }
   const r = await agent(`${head(n, c, model, c.action)}\n${body}`,

@@ -783,7 +783,7 @@ for (const [kind, id] of [['task', 'T1'], ['plan', 'P1']]) {
     assert.equal(work[0].opts.agentType, 'scoped-re-reviewer')
     assert.equal(
       scopeOf(work[0]),
-      `Scope: every finding in tm section ${id}:review not yet recorded as closed, against the fix commits on tm/${id} and the fixer's latest :report entry, and, when the last landing failed, the failure its latest :merge entry names. Establish each closure by mutation.`,
+      `Scope: every finding tm finding list ${id} shows with its answer, a failed landing's included, against the fix commits on tm/${id} and the fixer's latest :report entry. Establish each closure by mutation, and open one that still holds again with tm finding reopen ${id} <n> --agent wf-s1-${id} --token k1.`,
     )
     assert.ok(!work[0].prompt.includes('container review'))
     assert.ok(work[0].prompt.includes(`tm task review ${id} --agent wf-s1-${id} --token k1 --approve or --reject`))
@@ -808,8 +808,10 @@ test('a container fix across repositories names the worktree tm cut in each', as
   assert.ok(!work[0].prompt.includes('worktree add'))
 })
 
-for (const [outcome, pointer] of [['merge_failed', 'tm section get T1:merge'], ['reject', 'tm section get T1:review not recorded as closed']]) {
-  test(`a fix answering ${outcome} is pointed at ${pointer.split(' ')[3]}`, async () => {
+const OPEN_FINDINGS = 'Findings: every one tm finding list T1 --open shows, a failed landing\'s included. Fix each one, commit on the branch, and answer each with tm finding close T1 <n> --agent wf-s1-T1 --token k1 --commit <sha>, or tm finding dispute T1 <n> --agent wf-s1-T1 --token k1 --evidence "<what was read>".'
+for (const outcome of ['merge_failed', 'reject', 'approve']) {
+  const pointer = OPEN_FINDINGS
+  test(`a fix answering ${outcome} is pointed at the node's open findings`, async () => {
     const tm = makeTm({
       chosen: [{ ...T1, action: 'fix' }],
       nodes: { T1: node('REVIEWED', 'fix', { outcome }) },
@@ -988,13 +990,13 @@ test('a brief leaves comment, test-name and review-format rules to the project g
   for (let i = 0; i < 2; i++) briefs.push(...(await runWave({ args: ARGS, tm, agents })).work.map(w => w.prompt))
   assert.equal(briefs.length, 2)
   for (const brief of briefs) {
-    assert.match(brief, /^Sections: before any tm section set, tm section get the same key\. Append an entry to :report, :review or :merge; rewrite any other section whole, in the present tense, with every sentence it overrides gone\.$/m)
+    assert.match(brief, /^Sections: before any tm section set, tm section get the same key\. Append an entry to :report or :merge; rewrite any other section whole, in the present tense, with every sentence it overrides gone\.$/m)
     assert.ok(!brief.includes('never name a ruling'), brief)
   }
-  assert.match(briefs[1], /^Findings: append numbered findings to tm section T1:review; write it even when nothing is open, saying so\.$/m)
+  assert.match(briefs[1], /^Findings: record each one with tm finding add T1 --agent wf-s1-T1 --token k1 --blocking or --minor --at "<file>:<symbol>" --breaks "<what breaks>"; with none, close with --clean\.$/m)
 })
 
-const REPORT_AFTER_FINDINGS = /^Report: read tm section T1:report only after your findings are written, to judge the discrepancies it records; with review\.blind on, the default, the brief leaves it out\.$/m
+const REPORT_AFTER_FINDINGS = /^Report: read tm section T1:report only after your findings are recorded, to judge the discrepancies it records; with review\.blind on, the default, the brief leaves it out\.$/m
 
 for (const [from, first] of [['IMPLEMENTED', true], ['FIXED', false]]) {
   test(`a review claimed from ${from} ${first ? 'reads' : 'is not told to defer'} the report after its findings`, async () => {

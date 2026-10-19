@@ -102,7 +102,7 @@ A node that spends its fix rounds, its landing attempts or its failed steps, or 
 
 Re-running a failed step unchanged is not a fix. Before anyone answers `investigate`, change what made it fail: correct the brief with `tm section set`, widen `acceptable_models`, or split the node. A rejection whose findings are rulings — "the brief doesn't say", "which of these is correct" — is answered by a decision, not another fix round: the reviewer raises it instead of rejecting on it.
 
-- A rejection whose findings are only about the record's wording or accuracy, on work whose ruling is already made, does not buy another fix round: the findings go in the node's `report` section and the node closes as the ruling stands.
+- A finding only about the record's wording or accuracy, on work whose ruling is already made, is minor: it never holds the landing, and the fix after the landing answers it.
 
 ## 7. When the plan changes
 
@@ -125,7 +125,7 @@ tm section set <plan-id>:context --file <path>
 
 A plan's `context` reaches every task's brief. Anything a `tm` command can answer — what is claimed, what is ready, who holds a file — is not written down at all.
 
-A ruling that changes what a section states rewrites it: `tm section get` it, edit it, and set the whole back in the present tense. The overridden sentence goes, and the decision keeps the history. Only `:report`, `:review` and `:merge` are appended to, because each entry records a round.
+A ruling that changes what a section states rewrites it: `tm section get` it, edit it, and set the whole back in the present tense. The overridden sentence goes, and the decision keeps the history. Only `:report` and `:merge` are appended to, because each entry records a round; findings are records, written with `tm finding`.
 
 When findings under one rule reach review on two nodes, the rule is missing from the guide. Raise it, and on a yes add the line to the project's addendum:
 

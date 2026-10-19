@@ -7,6 +7,7 @@ import pytest
 from lifecycle_estate import (
     add,
     branch_at,
+    commit,
     gated,
     git,
     make_estate,
@@ -21,10 +22,13 @@ from taskmanager.core.models import Condition, Job, Node, NodeRelation, NodeVeri
 from taskmanager.core.status import (
     Action,
     ConditionStage,
+    FindingSource,
+    FindingState,
     JobKind,
     JobState,
     Merge,
     Outcome,
+    Severity,
     Status,
 )
 from taskmanager.engine.claims import Blocker, ClaimResult, Claims
@@ -126,7 +130,7 @@ def test_an_implement_claim_resumes_an_existing_branch_and_a_fix_reuses_its_work
     assert git(api, "rev-parse", "tm/T1") == earlier
     claims.complete("T1")
     claims.start("T1", "reviewer", "s1")
-    claims.ops.set_section("T1", "review", "a.py needs a docstring")
+    claims.add_finding("T1", Severity.BLOCKING, "a.py:1", "a.py needs a docstring")
     claims.review("T1", approve=False)
     fix = claims.start("T1", "fixer", "s1")
     assert (fix.action, fix.worktree) == (Action.FIX, first.worktree)
@@ -168,12 +172,11 @@ def test_closing_a_step_with_an_agent_is_refused_unless_that_agent_holds_the_lea
     add(claims, "T2", status=Status.IMPLEMENTED)
     claims.start("T1", "implementer", "s1")
     claims.start("T2", "reviewer", "s1")
-    claims.ops.set_section("T2", "review", "fine")
 
     for close in (
         lambda: claims.complete("T1", agent="intruder"),
         lambda: claims.release("T1", agent="intruder"),
-        lambda: claims.review("T2", approve=True, agent="intruder"),
+        lambda: claims.review("T2", approve=True, clean=True, agent="intruder"),
     ):
         with pytest.raises(OperationError, match="holds no live lease") as refused:
             close()
@@ -182,7 +185,7 @@ def test_closing_a_step_with_an_agent_is_refused_unless_that_agent_holds_the_lea
     assert stored(claims, "T1").status == Status.IMPLEMENTING
     assert stored(claims, "T2").status == Status.REVIEWING
     assert claims.complete("T1", agent="implementer") == Status.IMPLEMENTED
-    assert claims.review("T2", approve=True, agent="reviewer") == Status.REVIEWED
+    assert claims.review("T2", approve=True, clean=True, agent="reviewer") == Status.REVIEWED
 
 
 def test_a_child_landing_on_its_parent_is_cut_from_the_parent_branch(tmp_path: Path) -> None:
@@ -355,7 +358,9 @@ def test_complete_refuses_a_node_that_is_not_mid_implement_or_fix(tmp_path: Path
     assert refused.value.status_code == 409
 
 
-def test_a_review_verdict_is_refused_until_the_review_section_changes(tmp_path: Path) -> None:
+def test_a_review_closes_only_after_recording_a_finding_or_declaring_itself_clean(
+    tmp_path: Path,
+) -> None:
     claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1", status=Status.IMPLEMENTED)
 
@@ -365,13 +370,261 @@ def test_a_review_verdict_is_refused_until_the_review_section_changes(tmp_path: 
         "claude-sonnet-5-5",
         None,
     )
-    with pytest.raises(OperationError, match="unchanged since the claim"):
+    with pytest.raises(OperationError, match="no finding on T1 was recorded") as refused:
+        claims.review("T1", approve=True)
+    assert refused.value.status_code == 409
+
+    assert claims.review("T1", approve=True, clean=True) == Status.REVIEWED
+    node = stored(claims, "T1")
+    assert (node.outcome, node.verdict, node.review_cycles) == (Outcome.APPROVE, "nothing open", 1)
+
+
+def test_a_clean_review_is_refused_once_a_finding_was_recorded(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    add(claims, "T1", status=Status.IMPLEMENTED)
+    claims.start("T1", "reviewer", "s1")
+    claims.add_finding("T1", Severity.MINOR, "a.py:3", "the name hides the unit")
+
+    with pytest.raises(OperationError, match="drop --clean") as refused:
+        claims.review("T1", approve=True, clean=True)
+    assert refused.value.status_code == 409
+    assert stored(claims, "T1").status == Status.REVIEWING
+
+
+def test_an_approve_with_an_open_blocking_finding_is_refused(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    add(claims, "T1", status=Status.IMPLEMENTED)
+    claims.start("T1", "reviewer", "s1")
+    claims.add_finding("T1", Severity.MINOR, "a.py:3", "the name hides the unit")
+    claims.add_finding("T1", Severity.BLOCKING, "a.py:9", "a null id reads every tenant")
+
+    with pytest.raises(OperationError, match="open blocking findings #2: reject it"):
         claims.review("T1", approve=True)
 
-    claims.ops.set_section("T1", "review", "looks right")
-    assert claims.review("T1", approve=True, verdict="ship it") == Status.REVIEWED
+    assert claims.review("T1", approve=False) == Status.REVIEWED
     node = stored(claims, "T1")
-    assert (node.outcome, node.verdict, node.review_cycles) == (Outcome.APPROVE, "ship it", 1)
+    assert (node.outcome, node.verdict) == (Outcome.REJECT, "1 blocking, 1 minor open")
+
+
+def test_a_reject_with_only_minor_findings_is_refused_and_the_approve_lands(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    add(claims, "T1", status=Status.IMPLEMENTED)
+    claims.start("T1", "reviewer", "s1")
+    claims.add_finding("T1", Severity.MINOR, "a.py:3", "the name hides the unit")
+
+    with pytest.raises(OperationError, match="no open blocking finding: approve it"):
+        claims.review("T1", approve=False)
+
+    assert claims.review("T1", approve=True) == Status.REVIEWED
+    node = stored(claims, "T1")
+    assert (node.outcome, node.verdict) == (Outcome.APPROVE, "1 minor open")
+    claims.landing = FakeLanding()
+    assert claims.start("T1", "lander", "s1").action == Action.MERGE
+
+
+def test_a_finding_is_recorded_only_under_the_review_lease_with_where_and_what(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    add(claims, "T1")
+    add(claims, "T2", status=Status.IMPLEMENTED)
+    claims.start("T1", "implementer", "s1")
+    claims.start("T2", "reviewer", "s1")
+
+    with pytest.raises(OperationError, match="IMPLEMENTING"):
+        claims.add_finding("T1", Severity.BLOCKING, "a.py:1", "x")
+    with pytest.raises(OperationError, match="holds no live lease"):
+        claims.add_finding("T2", Severity.BLOCKING, "a.py:1", "x", agent="intruder")
+    for at, breaks in (("", "x"), (" ", "x"), ("a.py:1", ""), ("a.py:1", " ")):
+        with pytest.raises(OperationError, match="--at"):
+            claims.add_finding("T2", Severity.BLOCKING, at, breaks)
+
+    found = claims.add_finding("T2", Severity.BLOCKING, "a.py:1", "x", rule="scope by tenant")
+    assert (found.number, found.state, found.rule) == (1, FindingState.OPEN, "scope by tenant")
+    assert claims.add_finding("T2", Severity.MINOR, "a.py:2", "y").number == 2
+
+
+def _rejected_and_fixing(claims: Claims) -> Path:
+    """The fix worktree of T1, rejected on one blocking and one minor finding."""
+    add(claims, "T1", status=Status.IMPLEMENTED)
+    claims.start("T1", "reviewer", "s1")
+    claims.add_finding("T1", Severity.BLOCKING, "a.py:1", "a null id reads every tenant")
+    claims.add_finding("T1", Severity.MINOR, "a.py:2", "the name hides the unit")
+    claims.review("T1", approve=False)
+    fix = claims.start("T1", "fixer", "s1")
+    assert fix.action == Action.FIX and fix.worktree is not None
+    return Path(fix.worktree)
+
+
+def test_a_fix_completes_only_once_every_finding_is_closed_or_disputed(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    fixed = commit(_rejected_and_fixing(claims), "a.py", "a = 2\n", "scope the id")
+
+    with pytest.raises(OperationError, match="unanswered findings #1, #2") as refused:
+        claims.complete("T1")
+    assert refused.value.status_code == 409
+
+    claims.answer_finding("T1", 1, FindingState.CLOSED, fixed[:8])
+    with pytest.raises(OperationError, match="unanswered findings #2"):
+        claims.complete("T1")
+    claims.answer_finding("T1", 2, FindingState.DISPUTED, "the unit is in the type")
+    assert claims.complete("T1") == Status.FIXED
+    assert [(f.state, f.answer) for f in claims.nodes.get_findings("T1")] == [
+        (FindingState.CLOSED, fixed),
+        (FindingState.DISPUTED, "the unit is in the type"),
+    ]
+
+
+@pytest.mark.parametrize("ref", ["", "  ", "no-such-ref", "elsewhere", "origin/main"])
+def test_a_finding_closes_only_with_a_commit_its_branch_adds(tmp_path: Path, ref: str) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    commit(_rejected_and_fixing(claims), "a.py", "a = 2\n", "scope the id")
+    on_branch(claims.root / "api", "elsewhere", "b.py", "b = 1\n")
+
+    with pytest.raises(OperationError, match="names no commit on tm/T1 that its target lacks"):
+        claims.answer_finding("T1", 1, FindingState.CLOSED, ref)
+    assert claims.nodes.get_findings("T1")[0].state == FindingState.OPEN
+
+
+def test_a_dispute_needs_evidence_and_an_unknown_number_is_not_found(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    _rejected_and_fixing(claims)
+
+    for evidence in ("", " "):
+        with pytest.raises(OperationError, match="carries the evidence"):
+            claims.answer_finding("T1", 1, FindingState.DISPUTED, evidence)
+    with pytest.raises(OperationError, match="T1 has no finding 9") as refused:
+        claims.answer_finding("T1", 9, FindingState.DISPUTED, "why")
+    assert refused.value.status_code == 404
+
+
+def test_a_finding_is_answered_only_under_the_implement_or_fix_lease(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    _rejected_and_fixing(claims)
+
+    with pytest.raises(OperationError, match="holds no live lease"):
+        claims.answer_finding("T1", 1, FindingState.DISPUTED, "why", agent="intruder")
+    with pytest.raises(OperationError, match="FIXING"):
+        claims.reopen_finding("T1", 1)
+
+
+def _sensitive_re_review(claims: Claims) -> None:
+    """T1 sensitive, rejected on two blocking findings its fix disputed, under its re-review."""
+    add(claims, "T1", status=Status.IMPLEMENTED)
+    sensitive = {"sensitive": "tenant"}
+    claims.nodes.save_node(stored(claims, "T1").model_copy(update={"frontmatter": sensitive}))
+    claims.start("T1", "reviewer", "s1")
+    claims.add_finding("T1", Severity.BLOCKING, "a.py:1", "a null id reads every tenant")
+    claims.add_finding("T1", Severity.BLOCKING, "a.py:5", "the cache is never evicted")
+    claims.review("T1", approve=False)
+    claims.start("T1", "fixer", "s1")
+    claims.answer_finding("T1", 1, FindingState.DISPUTED, "the id is never null")
+    claims.answer_finding("T1", 2, FindingState.DISPUTED, "nothing caches it")
+    claims.complete("T1")
+    assert claims.start("T1", "reviewer", "s1").action == Action.REVIEW
+
+
+def test_a_re_review_that_reopens_a_finding_has_recorded_one(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    _sensitive_re_review(claims)
+
+    with pytest.raises(OperationError, match="REVIEWING"):
+        claims.answer_finding("T1", 1, FindingState.DISPUTED, "why")
+    with pytest.raises(OperationError, match="holds no live lease"):
+        claims.reopen_finding("T1", 1, agent="intruder")
+    claims.reopen_finding("T1", 1)
+    with pytest.raises(OperationError, match="drop --clean"):
+        claims.review("T1", approve=False, clean=True)
+    assert claims.review("T1", approve=False) == Status.FAILED
+    assert stored(claims, "T1").verdict == "1 blocking open"
+    assert claims.nodes.get_findings("T1")[0].state == FindingState.OPEN
+
+
+@pytest.mark.parametrize("write", ["add", "close", "dispute", "reopen"])
+def test_a_finding_write_is_refused_when_the_lease_lapses_before_the_write_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write: str
+) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    if write == "add":
+        add(claims, "T1", status=Status.IMPLEMENTED)
+        claims.start("T1", "reviewer", "s1")
+    elif write == "reopen":
+        _sensitive_re_review(claims)
+    else:
+        fixed = commit(_rejected_and_fixing(claims), "a.py", "a = 2\n", "scope the id")
+    lease = claims.runtime.get_lease("T1")
+    assert lease is not None
+    before = claims.nodes.get_findings("T1")
+    checks: list[bool] = []
+
+    def lapses_after_the_first_check(_lease: object) -> bool:
+        checks.append(True)
+        return len(checks) == 1
+
+    monkeypatch.setattr(Claims, "live", staticmethod(lapses_after_the_first_check))
+
+    with pytest.raises(OperationError, match="holds no live lease"):
+        if write == "add":
+            claims.add_finding("T1", Severity.MINOR, "a.py:1", "x", token=lease.token)
+        elif write == "close":
+            claims.answer_finding("T1", 1, FindingState.CLOSED, fixed, token=lease.token)
+        elif write == "dispute":
+            claims.answer_finding("T1", 1, FindingState.DISPUTED, "why", token=lease.token)
+        else:
+            claims.reopen_finding("T1", 1, token=lease.token)
+    assert claims.nodes.get_findings("T1") == before
+
+
+def test_an_approve_with_minor_findings_lands_then_fixes_them_and_completes(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    claims.landing = FakeLanding()
+    add(claims, "T1", status=Status.IMPLEMENTED)
+    claims.start("T1", "reviewer", "s1")
+    claims.add_finding("T1", Severity.MINOR, "a.py:2", "the name hides the unit")
+    claims.review("T1", approve=True)
+    assert claims.start("T1", "lander", "s1").action == Action.MERGE
+
+    assert claims.landed("T1", "landed") == Status.REVIEWED
+    fix = claims.start("T1", "fixer", "s1")
+    assert fix.action == Action.FIX and fix.worktree is not None
+    fixed = commit(Path(fix.worktree), "a.py", "seconds = 1\n", "name the unit")
+    claims.answer_finding("T1", 1, FindingState.CLOSED, fixed)
+    assert claims.complete("T1") == Status.FIXED
+    assert claims.start("T1", "lander", "s1").action == Action.MERGE
+    assert claims.landed("T1", "landed") == Status.COMPLETED
+
+
+def test_a_landed_plan_approved_with_minor_findings_fixes_them_before_completing(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    add(claims, "P", NodeKind.PLAN, review=True, fix=True, status=Status.LANDED)
+    claims.start("P", "reviewer", "s1")
+    claims.add_finding("P", Severity.MINOR, "a.py:2", "the name hides the unit")
+
+    assert claims.review("P", approve=True) == Status.REVIEWED
+    assert claims.start("P", "fixer", "s1").action == Action.FIX
+
+
+def test_a_failed_landing_records_a_blocking_landing_finding(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    add(claims, "T1", status=Status.REVIEWED, outcome=Outcome.APPROVE)
+    claims.landing = FakeLanding()
+    claims.start("T1", "lander", "s1")
+
+    assert claims.landing_failed("T1", "the gate fails on a.py") == Status.REVIEWED
+    [finding] = claims.nodes.get_findings("T1")
+    assert (finding.source, finding.severity, finding.at, finding.breaks, finding.state) == (
+        FindingSource.LANDING,
+        Severity.BLOCKING,
+        "landing",
+        "the gate fails on a.py",
+        FindingState.OPEN,
+    )
 
 
 @pytest.mark.parametrize(
@@ -494,7 +747,7 @@ def test_a_landed_plan_rejected_with_fix_off_fails_and_opens_a_decision(tmp_path
     add(claims, "P", NodeKind.PLAN, review=True, fix=False, status=Status.LANDED)
 
     assert claims.start("P", "reviewer", "s1").action == Action.REVIEW
-    claims.ops.set_section("P", "review", "the landed target breaks the gate")
+    claims.add_finding("P", Severity.BLOCKING, "gate", "the landed target breaks the gate")
 
     assert claims.review("P", approve=False) == Status.FAILED
     assert len(decisions_blocking(claims, "P")) == 1
@@ -883,7 +1136,6 @@ def test_a_step_closes_only_under_the_token_its_claim_returned(tmp_path: Path) -
     add(claims, "T2", status=Status.IMPLEMENTED)
     first = claims.start("T1", "worker", "s1")
     review = claims.start("T2", "worker", "s1")
-    claims.ops.set_section("T2", "review", "fine")
     assert first.token and review.token and first.token != review.token
     lease = claims.runtime.get_lease("T1")
     assert lease is not None and lease.token == first.token
@@ -891,14 +1143,14 @@ def test_a_step_closes_only_under_the_token_its_claim_returned(tmp_path: Path) -
     for close in (
         lambda: claims.complete("T1", agent="worker", token=review.token),
         lambda: claims.release("T1", agent="worker", token=review.token),
-        lambda: claims.review("T2", approve=True, agent="worker", token=first.token),
+        lambda: claims.review("T2", approve=True, clean=True, agent="worker", token=first.token),
     ):
         with pytest.raises(OperationError, match="another claim") as refused:
             close()
         assert refused.value.status_code == 409
 
     assert claims.complete("T1", agent="worker", token=first.token) == Status.IMPLEMENTED
-    assert claims.review("T2", approve=True, token=review.token) == Status.REVIEWED
+    assert claims.review("T2", approve=True, clean=True, token=review.token) == Status.REVIEWED
 
 
 def test_a_handed_over_job_gets_a_new_token_and_the_parked_one_closes_nothing(

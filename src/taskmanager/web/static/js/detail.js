@@ -214,6 +214,19 @@ function renderConditions(node, conditions, editable) {
   return detailGroupHtml(node.id, 'conditions', 'Conditions', rows.length, true, relationTableHtml(rows));
 }
 
+// A finding reads as its number, severity, where it is and what breaks, then its state and the
+// answer that closed or disputed it. The group opens while any finding is still open.
+function renderFindings(node, findings) {
+  const list = findings || [];
+  const rows = list.map((f) => {
+    const tone = f.state !== 'open' ? 'text-zinc-400' : f.severity === 'blocking' ? 'text-red-400' : 'text-amber-400';
+    const answer = f.answer ? `<span class="flex-shrink-0 max-w-[40%] truncate font-mono text-zinc-400" title="${esc(f.answer)}">${esc(f.answer)}</span>` : '';
+    return `<div class="${RELATION_ROW} text-[11px] leading-4" data-finding="${esc(f.number)}"><span class="flex-shrink-0 font-mono text-zinc-200">#${esc(f.number)}</span><span class="flex-shrink-0 ${tone}">${esc(f.severity)}</span><span class="flex-1 min-w-0 truncate text-zinc-300" title="${esc(`${f.at}: ${f.breaks}`)}"><span class="font-mono">${esc(f.at)}</span> ${esc(f.breaks)}</span><span class="flex-shrink-0 ${tone}">${esc(f.state)}</span>${answer}</div>`;
+  });
+  const open = list.filter(f => f.state === 'open').length;
+  return detailGroupHtml(node.id, 'findings', 'Findings', rows.length, !open, relationTableHtml(rows), open ? relationMetaHtml(`${open} open`) : '');
+}
+
 // A job names what it lands where, its state and step, and how long ago it last beat.
 function renderJobs(node, jobs) {
   const rows = (jobs || []).map((j) => {
@@ -245,6 +258,7 @@ function nodeDetailHtml(node, body, row, { surface, byParent } = {}) {
     renderVerifications(node, body.verifications, editable),
     renderDependencies(node, body.dependency_details, status, editable),
     renderDependents(node, body.dependent_details),
+    renderFindings(node, body.findings),
     renderConditions(node, body.conditions, editable),
     renderJobs(node, body.jobs),
     renderAttachmentsGroup(node, editable),

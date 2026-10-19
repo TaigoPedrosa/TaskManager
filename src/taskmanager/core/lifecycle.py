@@ -16,6 +16,9 @@ class Cycle:
     review_cycles: int = 0
     merge_attempts: int = 0
     step_failures: int = 0
+    # Read from the node's findings, never stored on it.
+    minors: bool = False
+    on_target: bool = False
 
 
 @dataclass(frozen=True)
@@ -66,8 +69,9 @@ def next_action(c: Cycle) -> Action | None:
         case Status.REVIEWED:
             return _after_review(c)
         case Status.FIXED:
-            # Only a sensitive fix is re-reviewed; every other fix lands as it is.
-            return Action.REVIEW if c.sensitive else Action.MERGE
+            # Only a sensitive fix is re-reviewed; every other fix, and any fix of minor
+            # findings, lands as it is.
+            return Action.REVIEW if c.sensitive and c.fix_for != Outcome.APPROVE else Action.MERGE
         case Status.LANDED:
             # A landing completes a node with review off; nothing reviews one stored at LANDED.
             return Action.REVIEW if c.review else None
@@ -80,8 +84,16 @@ def _after_review(c: Cycle) -> Action:
         return Action.FIX
     if c.outcome is None:
         raise LifecycleError("REVIEWED with no outcome: reset the node with --outcome")
+    if c.outcome == Outcome.APPROVE and _minor_fix_owed(c):
+        return Action.FIX
     # A rejection nobody below fixes still lands, on a parent whose own review will see it.
     return Action.MERGE
+
+
+def _minor_fix_owed(c: Cycle) -> bool:
+    # Minor findings an approve left open are fixed once the node's code is on its target, so
+    # they never hold its landing. With fix off they stay open for the parent's review.
+    return c.minors and c.fix and c.on_target
 
 
 def _counted(c: Cycle) -> bool:
@@ -177,12 +189,17 @@ def advance(c: Cycle, event: Event, caps: Caps) -> Cycle:
         case (Status.FIXING, Event.COMPLETE):
             return _progress(c, Status.FIXED)
         case (Status.REVIEWING, Event.APPROVE):
-            approved = Status.COMPLETED if c.claimed_from == Status.LANDED else Status.REVIEWED
-            return _progress(c, approved, Outcome.APPROVE)
+            done = c.claimed_from == Status.LANDED and not _minor_fix_owed(c)
+            return _progress(c, Status.COMPLETED if done else Status.REVIEWED, Outcome.APPROVE)
         case (Status.REVIEWING, Event.REJECT):
             return _rejected(c, caps)
         case (Status.MERGING, Event.LANDED):
-            return _progress(c, Status.LANDED if _review_owed(c) else Status.COMPLETED)
+            landed = replace(c, on_target=True)
+            if _review_owed(c):
+                return _progress(landed, Status.LANDED)
+            if _minor_fix_owed(landed):
+                return _progress(landed, Status.REVIEWED, Outcome.APPROVE)
+            return _progress(landed, Status.COMPLETED)
         case (Status.MERGING, Event.OWN_DEFECT):
             return _landing_failed(c, caps)
         case (status, Event.RELEASE | Event.EXPIRED) if status in IN_STEP:
@@ -198,7 +215,7 @@ def advance(c: Cycle, event: Event, caps: Caps) -> Cycle:
 
 def fix_round(c: Cycle) -> int:
     """The 1-based review round the fix `c` is in, or would start, answers; 0 for a fix
-    answering a landing failure, which is not a review round."""
+    answering a landing failure or an approve's minor findings, neither a review round."""
     answers = c.fix_for if c.status == Status.FIXING else c.outcome
     return c.review_cycles if answers == Outcome.REJECT else 0
 

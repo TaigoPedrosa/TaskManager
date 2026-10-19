@@ -11,8 +11,17 @@ from typer.testing import CliRunner
 from taskmanager.cli.main import app as cli_app
 from taskmanager.core.enums import NodeKind, RenderView, VerificationType
 from taskmanager.core.lifecycle import next_action
-from taskmanager.core.models import Lease, Node
-from taskmanager.core.status import Action, ConditionStage, DecisionStatus, Merge, Outcome, Status
+from taskmanager.core.models import Finding, Lease, Node
+from taskmanager.core.status import (
+    Action,
+    ConditionStage,
+    DecisionStatus,
+    FindingState,
+    Merge,
+    Outcome,
+    Severity,
+    Status,
+)
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
@@ -392,23 +401,38 @@ def test_decisions_are_stored_in_their_own_vocabulary(env: Env) -> None:
     assert get(node_repo, decision).status == DecisionStatus.WITHDRAWN
 
 
-def test_a_plans_brief_lists_the_children_whose_review_rejected(env: Env) -> None:
+def test_a_plans_brief_lists_the_completed_children_that_left_findings_open(env: Env) -> None:
     node_repo, _runtime, _ledger, ops = env
     _spec, plan, rejected = tree(ops, review=True, fix=True)
     approved = ops.add_task("Approved", plan, slug="T2")
+    fixing = ops.add_task("Fixing", plan, slug="T3")
     ops.update_node(rejected, review=True, merge=Merge.PARENT, fix=False)
-    for node_id, outcome in ((rejected, Outcome.REJECT), (approved, Outcome.APPROVE)):
+    for node_id, status, outcome in (
+        (rejected, Status.COMPLETED, Outcome.REJECT),
+        (approved, Status.COMPLETED, Outcome.APPROVE),
+        (fixing, Status.REVIEWED, Outcome.APPROVE),
+    ):
         node = get(node_repo, node_id)
-        node.status, node.outcome = Status.COMPLETED, outcome
+        node.status, node.outcome = status, outcome
         node_repo.save_node(node)
+    for node_id, severity in (
+        (rejected, Severity.MINOR),
+        (rejected, Severity.BLOCKING),
+        (approved, Severity.MINOR),
+        (fixing, Severity.MINOR),
+    ):
+        node_repo.add_finding(Finding(node_id=node_id, severity=severity, at="a.py:1", breaks="x"))
+    node_repo.answer_finding(rejected, 1, FindingState.CLOSED, "abc")
+    node_repo.answer_finding(approved, 1, FindingState.DISPUTED, "why")
     renderer = MarkdownRenderer(node_repo)
 
     brief = renderer.render(plan, RenderView.SUBAGENT)
-    assert "### Children whose review rejected" in brief
-    assert f"- `{rejected}` (T): `tm section get {rejected}:review`" in brief
+    assert "### Children with open findings" in brief
+    assert f"- `{rejected}` (T): #2 in `tm finding list {rejected} --open`\n" in brief
     assert f"`{approved}`" not in brief
-    assert "Children whose review rejected" not in renderer.render(rejected, RenderView.SUBAGENT)
-    assert "Children whose review rejected" not in renderer.render(plan, RenderView.FULL)
+    assert f"`{fixing}`" not in brief
+    assert "Children with open findings" not in renderer.render(rejected, RenderView.SUBAGENT)
+    assert "Children with open findings" not in renderer.render(plan, RenderView.FULL)
 
 
 def test_a_move_that_leaves_a_plan_only_deferred_children_strands_its_dependents(

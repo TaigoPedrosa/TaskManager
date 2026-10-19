@@ -7,13 +7,36 @@ import pytest
 from taskmanager.core.display import Facts
 from taskmanager.core.enums import NodeKind, RelationType, VerificationType
 from taskmanager.core.lifecycle import Cycle
-from taskmanager.core.models import FileLock, Job, Lease, Node, NodeRelation, NodeVerification
-from taskmanager.core.status import DecisionStatus, JobKind, JobState, Merge, Outcome, Status
+from taskmanager.core.models import (
+    FileLock,
+    Finding,
+    Job,
+    Lease,
+    Node,
+    NodeRelation,
+    NodeVerification,
+)
+from taskmanager.core.status import (
+    DecisionStatus,
+    FindingState,
+    JobKind,
+    JobState,
+    Merge,
+    Outcome,
+    Severity,
+    Status,
+)
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
-from taskmanager.engine.snapshot import SnapshotBuilder, apply_cycle, cycle_of, waits_on
+from taskmanager.engine.snapshot import (
+    SnapshotBuilder,
+    apply_cycle,
+    cycle_in,
+    cycle_of,
+    waits_on,
+)
 
 
 class Estate:
@@ -230,7 +253,7 @@ def test_a_cycle_carries_the_stored_lifecycle_fields() -> None:
         merge_attempts=1,
         step_failures=1,
     )
-    assert cycle_of(node, False) == Cycle(
+    assert cycle_of(node, False, []) == Cycle(
         status=Status.REVIEWED,
         container=True,
         review=True,
@@ -243,6 +266,37 @@ def test_a_cycle_carries_the_stored_lifecycle_fields() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("severity", "state", "minors"),
+    [
+        (Severity.MINOR, FindingState.OPEN, True),
+        (Severity.MINOR, FindingState.CLOSED, False),
+        (Severity.MINOR, FindingState.DISPUTED, False),
+        (Severity.BLOCKING, FindingState.OPEN, False),
+    ],
+)
+def test_a_cycle_owes_a_minor_fix_only_for_an_open_minor_finding(
+    estate: Estate, severity: Severity, state: FindingState, minors: bool
+) -> None:
+    estate.add("T", status=Status.READY)
+    node = estate.nodes.get_node("T")
+    assert node is not None
+    finding = Finding(node_id="T", severity=severity, at="a.py:1", breaks="x", state=state)
+    assert cycle_of(node, False, [finding]).minors is minors
+
+
+def test_the_bulk_snapshot_and_the_per_node_builder_read_the_same_findings(estate: Estate) -> None:
+    estate.add("T", status=Status.READY)
+    estate.add("U", status=Status.READY)
+    estate.nodes.add_finding(Finding(node_id="T", severity=Severity.MINOR, at="a.py:1", breaks="x"))
+    snap = estate.builder.build()
+    for node_id, minors in (("T", True), ("U", False)):
+        node = estate.nodes.get_node(node_id)
+        assert node is not None
+        assert cycle_in(snap, node).minors is minors
+        assert estate.builder.cycle(node).minors is minors
+
+
 def test_applying_a_cycle_round_trips_through_storage(estate: Estate) -> None:
     estate.add("T", status=Status.READY)
     node = estate.nodes.get_node("T")
@@ -250,7 +304,7 @@ def test_applying_a_cycle_round_trips_through_storage(estate: Estate) -> None:
     moved = Cycle(status=Status.IMPLEMENTING, claimed_from=Status.READY, step_failures=2)
     estate.nodes.save_node(apply_cycle(node, moved))
     stored = estate.nodes.get_node("T")
-    assert stored is not None and cycle_of(stored, False) == moved
+    assert stored is not None and cycle_of(stored, False, []) == moved
 
 
 def test_facts_of_an_idle_ready_task_are_all_clear(estate: Estate) -> None:

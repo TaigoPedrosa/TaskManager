@@ -142,3 +142,20 @@ class DecisionEffect(StrEnum):
     DEFER = "defer"
     REOPEN = "reopen"
     DROP_EDGE = "drop_edge"
+
+
+class Severity(StrEnum):
+    # A blocking finding holds the landing; a minor one is fixed after it.
+    BLOCKING = "blocking"
+    MINOR = "minor"
+
+
+class FindingSource(StrEnum):
+    REVIEW = "review"
+    LANDING = "landing"
+
+
+class FindingState(StrEnum):
+    OPEN = "open"
+    CLOSED = "closed"
+    DISPUTED = "disputed"

@@ -261,12 +261,13 @@ def test_built_in_guide_leaves_house_style_to_the_project_addendum(
     assert [phrase for phrase in HOUSE_STYLE if phrase in text] == []
 
 
-def test_review_guide_numbers_findings_for_the_fix_and_writes_one_when_none_is_open(
+def test_review_guide_records_numbered_findings_and_closes_clean_when_there_are_none(
     rendered: Callable[[str], str],
 ) -> None:
     text = rendered("review")
-    assert "Number the findings, because the fix answers them by number" in text
-    assert "With nothing open, write that" in text
+    assert "Each prints the finding's number, which the fix answers it by." in text
+    assert "unless `--clean` says nothing was found; it refuses `--clean` when one was." in text
+    assert "--approve --clean\n" in text
 
 
 def test_dispatch_guide_answers_a_ruling_rejection_with_a_decision() -> None:
@@ -312,11 +313,11 @@ def test_review_guide_counts_a_defect_the_diff_makes_reachable(
 def test_review_guide_findings_are_read_and_name_their_search_and_rule(
     rendered: Callable[[str], str],
 ) -> None:
-    findings = rendered("review").split("## 5. Write the findings", 1)[1].split("## 6.", 1)[0]
+    findings = rendered("review").split("## 5. Record the findings", 1)[1].split("## 6.", 1)[0]
     assert "a derived claim is not a finding until it is read" in findings
     assert "A claim that something is absent" in findings
-    assert "names the search that would have found it" in findings
-    assert "quotes that rule, or proposes the missing line" in findings
+    assert "names in `--breaks` the search that would have found it" in findings
+    assert "quotes that rule in `--rule`, or proposes the missing line" in findings
 
 
 def test_fix_guide_watches_a_finding_s_test_go_red_and_names_its_searches(
@@ -334,7 +335,8 @@ def test_dispatch_guide_rewrites_an_overridden_section_and_turns_a_repeat_findin
     rulings = rendered("dispatch").split("## 8. Write rulings down where the work is", 1)[1]
     rulings = rulings.split("## Never", 1)[0]
     assert "The overridden sentence goes, and the decision keeps the history" in rulings
-    assert "Only `:report`, `:review` and `:merge` are appended to" in rulings
+    assert "Only `:report` and `:merge` are appended to" in rulings
+    assert "findings are records, written with `tm finding`" in rulings
     assert "When findings under one rule reach review on two nodes" in rulings
     assert 'tm decision add "Add to guide:<topic>: <line>?"' in rulings
     assert "tm section set guide:<topic> --file <path>" in rulings
@@ -573,12 +575,10 @@ def test_review_guide_says_a_source_grep_is_no_evidence_for_behaviour() -> None:
     ) in _guide_text("review")
 
 
-def test_dispatch_guide_closes_a_wording_only_rejection_without_another_fix_round() -> None:
-    """A rejection that only disputes the record's wording, on a ruling already made, is not a defect to fix again."""
+def test_dispatch_guide_marks_a_wording_only_finding_minor() -> None:
     assert (
-        "A rejection whose findings are only about the record's wording or accuracy, on work whose "
-        "ruling is already made, does not buy another fix round: the findings go in the node's "
-        "`report` section and the node closes as the ruling stands."
+        "A finding only about the record's wording or accuracy, on work whose ruling is already "
+        "made, is minor: it never holds the landing, and the fix after the landing answers it."
     ) in _guide_text("dispatch")
 
 
@@ -877,7 +877,8 @@ def test_review_guide_scopes_a_re_review_to_the_open_findings_of_a_sensitive_fix
 ) -> None:
     text = rendered("review")
     steps, never = text.split("## Never", 1)
-    assert "**A re-review** is scoped to the open findings of a sensitive fix" in steps
+    assert "**A re-review** is scoped to the findings a sensitive fix answered" in steps
+    assert "`tm finding reopen <node-id> <n> --agent <name> --token <token>`" in steps
     assert "It never widens" in steps
     assert "Never widen a re-review past the findings still open." in never
 
@@ -972,7 +973,7 @@ def test_overview_lands_a_fix_without_a_re_review_unless_the_node_is_sensitive(
     rendered: Callable[[str], str],
 ) -> None:
     text = rendered("overview")
-    assert "FIXED ──claim, not sensitive──▶ MERGING" in text
+    assert "FIXED ──claim, not sensitive, or a fix of minor findings──▶ MERGING" in text
     assert "FIXED ──claim, sensitive──▶ REVIEWING" in text
     assert "FIXED ──claim──▶ REVIEWING" not in text
     assert "`FIXED` for a sensitive node" in text
@@ -1417,3 +1418,29 @@ def test_the_overview_states_where_an_embedding_key_may_go_and_when_a_test_comma
     assert "the server is `https`, or on `localhost`" in text
     assert "or the URL your own environment gives in `TASKMANAGER_OPENAI_BASE_URL`" in text
     assert "A `test_command` still running after 600 seconds is killed" in text
+
+
+def test_review_guide_gives_every_finding_a_severity_and_gates_the_verdict_on_it(
+    rendered: Callable[[str], str],
+) -> None:
+    text = rendered("review")
+    findings = text.split("## 5. Record the findings", 1)[1].split("## 6.", 1)[0]
+    assert "- `--blocking`: the node must not land as it is." in findings
+    assert "- `--minor`: landing as it is breaks nothing." in findings
+    assert "- When in doubt, it is blocking." in findings
+    assert "opened again with `tm finding reopen`, never recorded a second time" in findings
+    assert (
+        "It refuses `--approve` while a blocking finding is open, and `--reject` while none is"
+    ) in text
+    assert "the node lands first and then gets one fix for them, which is never re-reviewed" in text
+
+
+def test_fix_guide_answers_each_finding_by_closing_or_disputing_it(
+    rendered: Callable[[str], str],
+) -> None:
+    text = rendered("fix")
+    assert "tm finding list <node-id> --open" in text
+    assert "`tm finding close <node-id> <n> --agent <name> --token <token> --commit <sha>`" in text
+    assert "`tm finding dispute <node-id> <n> --agent <name> --token <token> --evidence" in text
+    assert "tm refuses it while any finding on the node is still open." in text
+    assert "the fix is cut from the target, on top of what landed" in text

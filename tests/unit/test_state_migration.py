@@ -15,6 +15,7 @@ from taskmanager.cli.main import app, main
 from taskmanager.core.enums import NodeKind, RelationType, VerificationType
 from taskmanager.core.models import (
     Condition,
+    Finding,
     Job,
     Lease,
     Node,
@@ -22,7 +23,7 @@ from taskmanager.core.models import (
     NodeSection,
     NodeVerification,
 )
-from taskmanager.core.status import DecisionStatus, JobKind, Status
+from taskmanager.core.status import DecisionStatus, FindingState, JobKind, Severity, Status
 from taskmanager.db.connection import DatabaseManager, StateSchemaTooNew, StateSchemaTooOld
 from taskmanager.db.graph_reader import read_graph
 from taskmanager.db.job_repo import JobRepository
@@ -65,7 +66,7 @@ def _sqlite_master_rows(db: DatabaseManager) -> list[tuple[str, str, str, str]]:
     with db.get_state_connection() as conn:
         return conn.execute(
             "SELECT type, name, tbl_name, sql FROM sqlite_master "
-            "WHERE name = 'nodes' OR name LIKE 'trg_%rev%' ORDER BY name"
+            "WHERE name IN ('nodes', 'node_findings') OR name LIKE 'trg_%rev%' ORDER BY name"
         ).fetchall()
 
 
@@ -82,7 +83,7 @@ def test_migrated_v1_estate_matches_a_fresh_init(tmp_path: Path) -> None:
     migrated = DatabaseManager(old)
     assert migrated.migrate_state() == 1
     with migrated.get_state_connection() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 5
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 6
         assert conn.execute("SELECT merge FROM nodes").fetchall() == [("spec",)]
 
     fresh = DatabaseManager(tmp_path / "fresh")
@@ -327,9 +328,10 @@ def _dump(state_db: Path) -> list[str]:
         conn.close()
 
 
-def _dump_as_schema_5(state_db: Path, scratch: Path) -> list[str]:
+def _dump_as_schema_6(state_db: Path, scratch: Path) -> list[str]:
     """`state_db`'s dump with every `main` merge value, and the column's CHECK, read as schema
-    4 holds them, then schema 5's `on_target` added; every other line as it is."""
+    4 holds them, then schema 5's `on_target` and schema 6's findings added; every other line
+    as it is."""
     shutil.copyfile(state_db, scratch)
     conn = sqlite3.connect(scratch)
     try:
@@ -343,6 +345,7 @@ def _dump_as_schema_5(state_db: Path, scratch: Path) -> list[str]:
         conn.execute(trigger)
         conn.commit()
         conn.executescript(STATE_MIGRATIONS[5])
+        conn.executescript(STATE_MIGRATIONS[6])
     finally:
         conn.close()
     return sorted(line.replace(_MERGE_COLUMN_V3, _MERGE_COLUMN_V4) for line in _dump(scratch))
@@ -359,7 +362,7 @@ def test_migrate_schema_3_estate_rewrites_main_to_spec_and_changes_nothing_else(
     on_main = sorted(row[1] for row in before["nodes"] if row[_MERGE_AT] == "main")
     assert {"M1", "D-OPEN"} <= set(on_main)
     assert any(row[_MERGE_AT] == "parent" for row in before["nodes"])
-    expected = _dump_as_schema_5(state_db, tmp_path / "expected.db")
+    expected = _dump_as_schema_6(state_db, tmp_path / "expected.db")
     assert expected != before_dump
 
     db = DatabaseManager(old)
@@ -368,7 +371,7 @@ def test_migrate_schema_3_estate_rewrites_main_to_spec_and_changes_nothing_else(
 
     conn = sqlite3.connect(state_db)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 5
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 6
         merges = dict(conn.execute("SELECT id, merge FROM nodes").fetchall())
     finally:
         conn.close()
@@ -459,7 +462,7 @@ def test_open_current_schema_estate_leaves_the_file_bytes_untouched(tmp_path: Pa
 
     again = DatabaseManager(estate)
     with again.get_state_connection() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 5
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 6
     again.close()
 
     assert (estate / "state.db").read_bytes() == before
@@ -635,6 +638,7 @@ _ESTATE_COMMANDS: dict[str, list[str]] = {
     "web": ["web", "--no-open"],
     "web export": ["web", "export", "-o", "out.html"],
     "decision": ["decision", "list"],
+    "finding": ["finding", "list", "S1"],
     "job": ["job", "status", "J1"],
     "land": ["land", "start", "S1"],
     "next": ["next"],
@@ -760,6 +764,23 @@ def test_rev_increases_on_add_and_remove_verification(tmp_path: Path) -> None:
 
     assert repo.remove_verification("T1", ver.id)
     assert _rev(repo, "T1") > rev1
+
+
+def test_rev_increases_on_adding_answering_and_replacing_findings(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    repo.save_node(Node(id="T1", kind=NodeKind.TASK, title="T", status=Status.READY))
+    rev0 = _rev(repo, "T1")
+
+    repo.add_finding(Finding(node_id="T1", severity=Severity.MINOR, at="a.py:1", breaks="x"))
+    rev1 = _rev(repo, "T1")
+    assert rev1 > rev0
+
+    assert repo.answer_finding("T1", 1, FindingState.DISPUTED, "why")
+    rev2 = _rev(repo, "T1")
+    assert rev2 > rev1
+
+    repo.replace_findings("T1", [])
+    assert _rev(repo, "T1") > rev2
 
 
 def test_rev_increases_on_add_and_remove_condition(tmp_path: Path) -> None:

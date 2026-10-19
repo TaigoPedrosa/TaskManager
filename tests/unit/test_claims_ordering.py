@@ -5,7 +5,7 @@ import pytest
 from lifecycle_estate import add, gated, git, make_estate, on_branch, stored
 
 from taskmanager.core.enums import NodeKind
-from taskmanager.core.models import Job
+from taskmanager.core.models import Finding, Job
 from taskmanager.core.status import JobKind, JobState, Outcome, Status
 from taskmanager.engine import claims as claims_module
 from taskmanager.engine import git as gitops
@@ -95,20 +95,19 @@ def test_review_after_the_lease_was_taken_by_another_claim_changes_nothing(
     claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1", status=Status.IMPLEMENTED)
     first = claims.start("T1", "first", "s1")
-    claims.ops.set_section("T1", "review", "fine")
-    original = Claims._section_text
+    original = claims.nodes.get_findings
     fired: list[bool] = []
 
-    def lapse(self: Claims, node_id: str, key: str) -> str:
+    def lapse(node_id: str) -> list[Finding]:
         if not fired:
             fired.append(True)
             lapse_then_reclaim(claims, "T1")
-        return original(self, node_id, key)
+        return original(node_id)
 
-    monkeypatch.setattr(Claims, "_section_text", lapse)
+    monkeypatch.setattr(claims.nodes, "get_findings", lapse)
 
     with pytest.raises(OperationError, match="claimed again"):
-        claims.review("T1", approve=True, agent="first", token=first.token)
+        claims.review("T1", approve=True, clean=True, agent="first", token=first.token)
 
     lease = claims.runtime.get_lease("T1")
     assert lease is not None and lease.agent_id == "second"

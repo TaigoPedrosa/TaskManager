@@ -43,10 +43,12 @@ from taskmanager.core.status import (
     DecisionStatus,
     DisplayStatus,
     Event,
+    FindingState,
     JobKind,
     JobState,
     Merge,
     Outcome,
+    Severity,
     Status,
 )
 from taskmanager.db.connection import (
@@ -101,6 +103,7 @@ verify_app = typer.Typer(name="verify", help="Machine checks of a task's deliver
 audit_app = typer.Typer(name="audit", help="Audit ledger event logs")
 web_app = typer.Typer(name="web", help="Interactive web visualizer and exporter")
 config_app = typer.Typer(name="config", help="Project configuration (.taskmanager/config.yaml)")
+finding_app = typer.Typer(name="finding", help="A review's findings and the answers to them")
 decision_app = typer.Typer(name="decision", help="Raise and answer decisions")
 job_app = typer.Typer(name="job", help="Landing and sync jobs")
 land_app = typer.Typer(name="land", help="Start a node's landing")
@@ -120,6 +123,7 @@ app.add_typer(verify_app)
 app.add_typer(audit_app)
 app.add_typer(web_app)
 app.add_typer(config_app)
+app.add_typer(finding_app)
 app.add_typer(decision_app)
 app.add_typer(job_app)
 app.add_typer(land_app)
@@ -1208,9 +1212,9 @@ def task_review(
     node_id: str,
     approve: Annotated[bool, typer.Option("--approve")] = False,
     reject: Annotated[bool, typer.Option("--reject")] = False,
-    verdict: Annotated[
-        str | None, typer.Option("--verdict", help="Free text; it never routes")
-    ] = None,
+    clean: Annotated[
+        bool, typer.Option("--clean", help="Nothing was found: no finding was recorded")
+    ] = False,
     agent: Annotated[
         str | None,
         typer.Option("--agent", help="Refused unless the node's live lease is this agent's"),
@@ -1221,14 +1225,139 @@ def task_review(
     ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
-    """Close a review step; the node's :review section must have changed since the claim."""
+    """Close a review step over the findings recorded since the claim, or --clean."""
     if approve == reject:
         raise typer.BadParameter("give exactly one of --approve or --reject")
     with _refusing():
         status = _claims(_get_root(path), agent).review(
-            node_id, approve, verdict, agent=agent, token=token
+            node_id, approve, clean, agent=agent, token=token
         )
     print(f"[green]{node_id} is {status.value}[/green]")
+
+
+_AgentOption = Annotated[
+    str | None, typer.Option("--agent", help="Refused unless the node's live lease is this agent's")
+]
+_TokenOption = Annotated[
+    str | None, typer.Option("--token", help="Refused unless the node's live lease is this claim's")
+]
+
+
+@finding_app.command("add")
+def finding_add(
+    node_id: str,
+    at: Annotated[str, typer.Option("--at", help="Where it is: <file>:<symbol>")],
+    breaks: Annotated[str, typer.Option("--breaks", help="What breaks, in one line")],
+    blocking: Annotated[
+        bool, typer.Option("--blocking", help="The node must not land as it is")
+    ] = False,
+    minor: Annotated[
+        bool, typer.Option("--minor", help="Landing as it is breaks nothing; fixed after")
+    ] = False,
+    rule: Annotated[
+        str | None, typer.Option("--rule", help="The written rule that would have prevented it")
+    ] = None,
+    agent: _AgentOption = None,
+    token: _TokenOption = None,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Record one finding of the review step holding the node; prints its number."""
+    if blocking == minor:
+        raise typer.BadParameter("give exactly one of --blocking or --minor")
+    severity = Severity.BLOCKING if blocking else Severity.MINOR
+    with _refusing():
+        found = _claims(_get_root(path), agent).add_finding(
+            node_id, severity, at, breaks, rule, agent=agent, token=token
+        )
+    print(found.number)
+
+
+@finding_app.command("close")
+def finding_close(
+    node_id: str,
+    number: int,
+    commit: Annotated[str, typer.Option("--commit", help="The commit on the branch that fixed it")],
+    agent: _AgentOption = None,
+    token: _TokenOption = None,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Answer a finding with the commit that fixed it."""
+    with _refusing():
+        _claims(_get_root(path), agent).answer_finding(
+            node_id, number, FindingState.CLOSED, commit, agent=agent, token=token
+        )
+    print(f"[green]{node_id} #{number} is closed[/green]")
+
+
+@finding_app.command("dispute")
+def finding_dispute(
+    node_id: str,
+    number: int,
+    evidence: Annotated[
+        str, typer.Option("--evidence", help="What was read that refutes it, and the search")
+    ],
+    agent: _AgentOption = None,
+    token: _TokenOption = None,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Answer a finding judged wrong with the evidence that refutes it; the code stays."""
+    with _refusing():
+        _claims(_get_root(path), agent).answer_finding(
+            node_id, number, FindingState.DISPUTED, evidence, agent=agent, token=token
+        )
+    print(f"[green]{node_id} #{number} is disputed[/green]")
+
+
+@finding_app.command("reopen")
+def finding_reopen(
+    node_id: str,
+    number: int,
+    agent: _AgentOption = None,
+    token: _TokenOption = None,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Open an answered finding again, when the review finds it still holds."""
+    with _refusing():
+        _claims(_get_root(path), agent).reopen_finding(node_id, number, agent=agent, token=token)
+    print(f"[green]{node_id} #{number} is open[/green]")
+
+
+@finding_app.command("list")
+def finding_list(
+    node_id: str,
+    open_only: Annotated[bool, typer.Option("--open", help="Only those still open")] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+    yaml_output: Annotated[
+        bool, typer.Option("--yaml", help="Output as YAML (fewer tokens than JSON)")
+    ] = False,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """A node's findings, with the number each answer names."""
+    node_repo = _get_container(_get_root(path)).get(NodeRepository)
+    if node_repo.get_node(node_id) is None:
+        _stderr.print(f"[red]Node '{node_id}' not found[/red]")
+        raise typer.Exit(code=1)
+    rows = [
+        f.model_dump(mode="json", exclude={"node_id"})
+        for f in node_repo.get_findings(node_id)
+        if not open_only or f.state == FindingState.OPEN
+    ]
+    if json_output or yaml_output:
+        _emit(rows, yaml_output)
+        return
+    table = Table(title=f"Findings of {escape(node_id)}")
+    for column in ("#", "Severity", "State", "At", "Breaks", "Answer"):
+        table.add_column(column)
+    for r in rows:
+        table.add_row(
+            str(r["number"]),
+            str(r["severity"]),
+            str(r["state"]),
+            escape(str(r["at"])),
+            escape(str(r["breaks"])),
+            escape(str(r["answer"] or "")),
+        )
+    print(table)
 
 
 @task_app.command("release")
@@ -2449,6 +2578,9 @@ def _export_node(node_repo: NodeRepository, node: Node, supersedes: list[str]) -
             }
             for v in node_repo.get_verifications(node.id)
         ],
+        "findings": [
+            f.model_dump(mode="json", exclude={"node_id"}) for f in node_repo.get_findings(node.id)
+        ],
     }
 
 
@@ -2489,9 +2621,11 @@ def export_cmd(
     def entry(node: Node) -> dict[str, Any]:
         if node.status in IN_STEP:
             # An export holds only stable states and a lease never leaves its machine, so the
-            # node is written as a blocked release would leave it; sensitivity only picks a
-            # next step, never where a release returns.
-            released = advance(cycle_of(node, sensitive=False), Event.RELEASE_BLOCKED, caps)
+            # node is written as a blocked release would leave it; sensitivity and findings only
+            # pick a next step, never where a release returns.
+            released = advance(
+                cycle_of(node, sensitive=False, findings=[]), Event.RELEASE_BLOCKED, caps
+            )
             node = apply_cycle(node, released)
         doc = _export_node(node_repo, node, sorted(superseded.get(node.id, [])))
         if node.id in completed_at:

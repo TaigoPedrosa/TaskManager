@@ -14,9 +14,10 @@ task: it names what each command refuses and the verb that closes your step.
   `tm verify run <task-id> --ref tm/<task-id>`
 - `complete <task-id>`: close an implement or fix step, refused unless the lease is `<name>`'s and this claim's:
   `tm task complete <task-id> --agent <name> --token <token>`
-- `review <task-id>`: close a review step once its findings are in the `:review` section, approving or rejecting:
+- `review <task-id>`: close a review step once its findings are recorded with `tm finding add`, approving or rejecting:
   `tm task review <task-id> --agent <name> --token <token> --approve`
-  `tm task review <task-id> --agent <name> --token <token> --reject --verdict "<one line>"`
+  `tm task review <task-id> --agent <name> --token <token> --reject`
+  `tm task review <task-id> --agent <name> --token <token> --approve --clean` when nothing was found
 - `resume <job>`: finish a landing or sync tm stopped for an agent, once a merge claim has handed you its job; refused unless the lease is `<name>`'s and this claim's:
   `tm job resume <job> --agent <name> --token <token>`
 - `release <task-id>`: hand the step back naming what it waits on:

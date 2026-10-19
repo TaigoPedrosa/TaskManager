@@ -36,12 +36,12 @@ READY ──claim──▶ IMPLEMENTING ──complete──▶ IMPLEMENTED
 IMPLEMENTED ──claim, a task with review on──▶ REVIEWING ──review──▶ REVIEWED
 IMPLEMENTED ──claim, review off──▶ MERGING
 IMPLEMENTED ──claim, a plan or spec with review on──▶ MERGING ──landed and verified──▶ LANDED ──claim──▶ REVIEWING
-REVIEWING ──approved, claimed from LANDED──▶ COMPLETED
+REVIEWING ──approved, claimed from LANDED──▶ COMPLETED, or REVIEWED with minor findings open and fix on
 REVIEWED ──claim: approved, or rejected with fix off──▶ MERGING
-REVIEWED ──claim: rejected with fix on, or a failed landing──▶ FIXING ──complete──▶ FIXED
-FIXED ──claim, not sensitive──▶ MERGING
+REVIEWED ──claim: rejected with fix on, a failed landing, or minor findings open on landed code──▶ FIXING ──complete──▶ FIXED
+FIXED ──claim, not sensitive, or a fix of minor findings──▶ MERGING
 FIXED ──claim, sensitive──▶ REVIEWING
-MERGING ──landed and verified──▶ COMPLETED
+MERGING ──landed and verified──▶ COMPLETED, or REVIEWED with minor findings open and fix on
 MERGING ──own defect, attempts left, fix on──▶ REVIEWED, outcome merge_failed
 a cap reached, a rejected re-review, or a rejection at LANDED with fix off ──▶ FAILED ──the owner answers investigate──▶ reopened
 set by a verb, from any stable status but COMPLETED: DEFERRED, ABANDONED, SUPERSEDED
@@ -52,7 +52,7 @@ set by a verb, from any stable status but COMPLETED: DEFERRED, ABANDONED, SUPERS
 | `action` | Claimed from | Locks the declared files | Closed with |
 |:--|:--|:--|:--|
 | `implement` | `READY` | yes | `tm task complete <id> --agent <name> --token <token>` |
-| `review` | `IMPLEMENTED` for a task, `LANDED` for a plan or spec, `FIXED` for a sensitive node | no | `tm task review <id> --agent <name> --token <token> --approve`, or `--reject` |
+| `review` | `IMPLEMENTED` for a task, `LANDED` for a plan or spec, `FIXED` for a sensitive node | no | `tm task review <id> --agent <name> --token <token> --approve`, or `--reject`, over the findings `tm finding add` recorded, or `--clean` |
 | `fix` | `REVIEWED` | yes | `tm task complete <id> --agent <name> --token <token>` |
 | `merge` | `IMPLEMENTED`, `REVIEWED`, `FIXED` | no | nothing: tm lands it as a job, and hands the job to an agent only when it stops |
 | `sync` | a container branch behind its base | no | nothing: tm merges it as a job, and hands the job to an agent only when it stops |
@@ -91,7 +91,7 @@ Children with `merge: parent` land on the container's branch, `tm/<container-id>
 | `IMPLEMENTING` | a container at `READY` with a child already past `READY` |
 | `LANDED` | `LANDED`: its code on its target, its one review owed |
 | `WAITING_REVIEW` | a task at `IMPLEMENTED` with `review` on, or a sensitive node at `FIXED` |
-| `WAITING_FIX` | `REVIEWED` after a rejection it fixes, or after a failed landing |
+| `WAITING_FIX` | `REVIEWED` after a rejection it fixes, after a failed landing, or landed with minor findings open |
 | `WAITING_MERGE` | a task at `IMPLEMENTED` with `review` off, a plan or spec at `IMPLEMENTED`, `FIXED` on a node that is not sensitive, or `REVIEWED` to be landed |
 | `READY` | `READY` |
 
@@ -103,7 +103,7 @@ Nothing loops. Three counters end every repeated failure at `FAILED`:
 - **Own-defect landing failures**, `max_merge_attempts` (3): a red on the node's own verifications, failures the merged tip adds, a red verification after landing, or a defect an agent recorded. A conflict, a race or a red target never counts here.
 - **Failed steps**, `max_step_failures` (3): a plain release, an expired lease, a landing job an agent left unresolved.
 
-Entering `FAILED` opens a decision on the node, "abandon, or investigate?", carrying the reason and the relevant `:review` or `:merge` excerpt. `investigate` reopens the node with the answer as its note. When a node that others depend on is deferred, abandoned or failed, one decision asks what to do with those dependents: drop the edge, defer them, or abandon them.
+Entering `FAILED` opens a decision on the node, "abandon, or investigate?", carrying the reason and the open findings or the `:merge` excerpt. `investigate` reopens the node with the answer as its note. When a node that others depend on is deferred, abandoned or failed, one decision asks what to do with those dependents: drop the edge, defer them, or abandon them.
 
 ## Repairs
 

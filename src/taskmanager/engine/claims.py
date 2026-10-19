@@ -32,6 +32,7 @@ from taskmanager.core.lifecycle import Caps, Cycle, LifecycleError
 from taskmanager.core.models import (
     Condition,
     FileLock,
+    Finding,
     Job,
     Lease,
     LeaseAction,
@@ -46,9 +47,12 @@ from taskmanager.core.status import (
     ConditionStage,
     DecisionStatus,
     Event,
+    FindingSource,
+    FindingState,
     JobKind,
     JobState,
     Outcome,
+    Severity,
     Status,
 )
 from taskmanager.db.cache_repo import CacheRepository
@@ -74,6 +78,7 @@ from taskmanager.engine.operations import OperationError, Operations
 from taskmanager.engine.routing import model_for
 from taskmanager.engine.snapshot import (
     SnapshotBuilder,
+    apply_cycle,
     roll_up_ancestors,
     stored_status,
     writes_migration,
@@ -559,7 +564,7 @@ class Claims:
         snap: Snapshot,
     ) -> ClaimResult:
         claimed = lifecycle.claim(cycle)
-        after = self._with_cycle(node, claimed)
+        after = apply_cycle(node, claimed)
         model = model_for(action, after, lifecycle.fix_round(claimed), self.config.models)
         lease = Lease(
             task_id=node.id,
@@ -568,7 +573,7 @@ class Claims:
             branch_name=self._step_branch(after, action),
             ttl_seconds=ttl or self.ttl_for(action),
             action=cast(LeaseAction, action),
-            review_hash=self._review_hash(node.id) if action == Action.REVIEW else None,
+            review_hash=self._findings_hash(node.id) if action == Action.REVIEW else None,
             model=model,
         )
         locks = [
@@ -644,7 +649,7 @@ class Claims:
         work in every repository its code landed in, whether its own branch is there or not."""
         if action == Action.REVIEW:
             return node.claimed_from == Status.LANDED
-        return action == Action.FIX and node.fix_for == Outcome.REJECT
+        return action == Action.FIX and node.fix_for in (Outcome.REJECT, Outcome.APPROVE)
 
     def _begin(
         self, node: Node, action: Action, model: str, worktree_dir: Path | None
@@ -814,6 +819,15 @@ class Claims:
 
     def complete(self, node_id: str, agent: str | None = None, token: str | None = None) -> Status:
         node, lease = self._held(node_id, (Status.IMPLEMENTING, Status.FIXING), agent, token)
+        unanswered = [
+            f.number for f in self.nodes.get_findings(node_id) if f.state == FindingState.OPEN
+        ]
+        if unanswered:
+            raise OperationError(
+                f"{node_id} has unanswered findings {_numbers(unanswered)}: answer each with "
+                f"`tm finding close` or `tm finding dispute` first",
+                409,
+            )
         return self._advance(
             self._with_written_migrations(node),
             Event.COMPLETE,
@@ -848,26 +862,128 @@ class Claims:
         self,
         node_id: str,
         approve: bool,
-        verdict: str | None = None,
+        clean: bool = False,
         agent: str | None = None,
         token: str | None = None,
     ) -> Status:
         node, lease = self._held(node_id, (Status.REVIEWING,), agent, token)
-        if self._review_hash(node_id) == lease.review_hash:
+        findings = self.nodes.get_findings(node_id)
+        recorded = _hash_of(findings) != lease.review_hash
+        if clean and recorded:
             raise OperationError(
-                f"{node_id}:review is unchanged since the claim: write the findings with "
-                f"`tm section set {node_id}:review` first",
+                f"--clean says nothing was found, but {node_id}'s findings changed since the "
+                "claim: drop --clean",
+                409,
+            )
+        if not clean and not recorded:
+            raise OperationError(
+                f"no finding on {node_id} was recorded or reopened since the claim: record each "
+                "with `tm finding add`, or pass --clean when nothing is found",
+                409,
+            )
+        open_ = [f for f in findings if f.state == FindingState.OPEN]
+        blocking = [f.number for f in open_ if f.severity == Severity.BLOCKING]
+        if approve and blocking:
+            raise OperationError(
+                f"{node_id} has open blocking findings {_numbers(blocking)}: reject it, since "
+                "a blocking finding holds the landing",
+                409,
+            )
+        if not approve and not blocking:
+            raise OperationError(
+                f"{node_id} has no open blocking finding: approve it, since minor findings are "
+                "fixed after it lands",
                 409,
             )
         event = Event.APPROVE if approve else Event.REJECT
-        evidence = self._section_text(node_id, "review")
         return self._advance(
             node,
             event,
             "task review",
-            verdict=verdict,
-            evidence=evidence,
+            verdict=_verdict(open_),
+            evidence="\n".join(_line(f) for f in open_),
             holding=(lease, agent, token),
+        )
+
+    def add_finding(
+        self,
+        node_id: str,
+        severity: Severity,
+        at: str,
+        breaks: str,
+        rule: str | None = None,
+        agent: str | None = None,
+        token: str | None = None,
+    ) -> Finding:
+        if not at.strip() or not breaks.strip():
+            raise OperationError("a finding names where it is (--at) and what breaks (--breaks)")
+        _, lease = self._held(node_id, (Status.REVIEWING,), agent, token)
+        with self.nodes.transaction():
+            self._still_held(node_id, lease, agent, token)
+            found = self.nodes.add_finding(
+                Finding(node_id=node_id, severity=severity, at=at, breaks=breaks, rule=rule)
+            )
+        self._ledger("finding add", node_id, {"number": found.number, "severity": severity.value})
+        return found
+
+    def answer_finding(
+        self,
+        node_id: str,
+        number: int,
+        state: FindingState,
+        answer: str,
+        agent: str | None = None,
+        token: str | None = None,
+    ) -> None:
+        """Closes finding `number` with the commit that fixed it, or disputes it with the evidence
+        that refutes it: the implement or fix step holding `node_id` answers its findings."""
+        _, lease = self._held(node_id, (Status.IMPLEMENTING, Status.FIXING), agent, token)
+        if state == FindingState.CLOSED:
+            answer = self._closing_commit(node_id, answer)
+        elif not answer.strip():
+            raise OperationError("a dispute carries the evidence that refutes the finding")
+        self._set_finding(node_id, number, state, answer, lease, agent, token)
+
+    def reopen_finding(
+        self, node_id: str, number: int, agent: str | None = None, token: str | None = None
+    ) -> None:
+        """A review that finds an answered finding still holds opens it again."""
+        _, lease = self._held(node_id, (Status.REVIEWING,), agent, token)
+        self._set_finding(node_id, number, FindingState.OPEN, None, lease, agent, token)
+
+    def _set_finding(
+        self,
+        node_id: str,
+        number: int,
+        state: FindingState,
+        answer: str | None,
+        lease: Lease,
+        agent: str | None,
+        token: str | None,
+    ) -> None:
+        with self.nodes.transaction():
+            self._still_held(node_id, lease, agent, token)
+            if not self.nodes.answer_finding(node_id, number, state, answer):
+                raise OperationError(f"{node_id} has no finding {number}", 404)
+        self._ledger("finding " + state.value, node_id, {"number": number, "answer": answer})
+
+    def _closing_commit(self, node_id: str, ref: str) -> str:
+        """The commit `ref` names, when it is on `node_id`'s branch and not yet on its target: a
+        commit the target already holds predates the finding, so it cannot have fixed it."""
+        branch = self.branch_of(node_id)
+        for repo in self.repos_of(node_id):
+            repo_dir = self.root / repo
+            sha = gitops.rev_parse(repo_dir, ref)
+            target = self.target_ref(node_id, repo)
+            if (
+                sha
+                and gitops.is_ancestor(repo_dir, sha, branch)
+                and not gitops.is_ancestor(repo_dir, sha, target)
+            ):
+                return sha
+        raise OperationError(
+            f"{ref!r} names no commit on {branch} that its target lacks: close with the fixing "
+            "commit"
         )
 
     def release(
@@ -936,13 +1052,23 @@ class Claims:
         return self._advance(self.node(node_id), Event.LANDED, "job land", note=("merge", report))
 
     def landing_failed(self, node_id: str, finding: str) -> Status:
-        return self._advance(
-            self.node(node_id),
-            Event.OWN_DEFECT,
-            "job land",
-            note=("merge", finding),
-            evidence=finding,
+        # Recorded as a blocking finding, so its fix answers it like any other.
+        landing = Finding(
+            node_id=node_id,
+            source=FindingSource.LANDING,
+            severity=Severity.BLOCKING,
+            at="landing",
+            breaks=finding,
         )
+        with self.nodes.transaction():
+            self.nodes.add_finding(landing)
+            return self._advance(
+                self.node(node_id),
+                Event.OWN_DEFECT,
+                "job land",
+                note=("merge", finding),
+                evidence=finding,
+            )
 
     def landing_blocked(self, node_id: str, why: str) -> Status:
         """The node goes back to where its merge was claimed from; a condition is not a failure."""
@@ -1060,7 +1186,7 @@ class Claims:
             nxt = lifecycle.advance(self.snapshots.cycle(node), event, self.caps)
         except LifecycleError as exc:
             raise OperationError(str(exc), 409) from exc
-        after = self._with_cycle(node, nxt)
+        after = apply_cycle(node, nxt)
         if verdict is not None:
             after = after.model_copy(update={"verdict": verdict})
         with self.nodes.transaction():
@@ -1173,13 +1299,13 @@ class Claims:
         self._idle(node_id)
         if to in (Status.LANDED, Status.COMPLETED):
             self._prove_landed(node_id)
-        try:
-            nxt = lifecycle.reset(self.snapshots.cycle(node), to, outcome)
-        except LifecycleError as exc:
-            raise OperationError(str(exc), 400) from exc
         # A reset says where the node is, and only LANDED or COMPLETED, proven above, says its
         # code is on its target: a reset to REVIEWED or FIXED leaves it off.
         unlanded = node.model_copy(update={"on_target": False})
+        try:
+            nxt = lifecycle.reset(self.snapshots.cycle(unlanded), to, outcome)
+        except LifecycleError as exc:
+            raise OperationError(str(exc), 400) from exc
         return self._rewrite(unlanded, nxt, ("reset", note), "task reset")
 
     def defer(self, node_id: str, note: str) -> Status:
@@ -1213,7 +1339,7 @@ class Claims:
         *,
         clear_verdict: bool = False,
     ) -> Status:
-        after = self._with_cycle(node, nxt)
+        after = apply_cycle(node, nxt)
         if clear_verdict:
             after = after.model_copy(update={"verdict": None})
         with self.nodes.transaction():
@@ -1319,21 +1445,6 @@ class Claims:
             if (kid := self.nodes.get_node(kid_id)) is not None and kid.kind != NodeKind.DECISION
         ]
 
-    @staticmethod
-    def _with_cycle(node: Node, cycle: Cycle) -> Node:
-        return node.model_copy(
-            update={
-                "status": cycle.status,
-                "claimed_from": cycle.claimed_from,
-                "outcome": cycle.outcome,
-                "fix_for": cycle.fix_for,
-                "review_cycles": cycle.review_cycles,
-                "merge_attempts": cycle.merge_attempts,
-                "step_failures": cycle.step_failures,
-                "updated_at": datetime.now(tz=UTC),
-            }
-        )
-
     def known_repos(self) -> list[str]:
         """Every repository the estate names that is cloned under the root."""
         names = [
@@ -1410,12 +1521,8 @@ class Claims:
         self.runtime.release_lease(node_id)
         self._ledger("job sync", node_id, {"state": JobState.SUCCEEDED.value})
 
-    def _section_text(self, node_id: str, key: str) -> str:
-        found = self.nodes.get_section(node_id, key)
-        return found.content if found else ""
-
-    def _review_hash(self, node_id: str) -> str:
-        return hashlib.sha256(self._section_text(node_id, "review").encode()).hexdigest()
+    def _findings_hash(self, node_id: str) -> str:
+        return _hash_of(self.nodes.get_findings(node_id))
 
     def note(self, node_id: str, key: str, text: str) -> None:
         """Appends a timestamped entry to `node_id:key`, keeping what earlier entries said."""
@@ -1436,3 +1543,26 @@ class Claims:
                 actor_id=self.ops.actor, command=command, target_id=node_id, payload=payload
             )
         )
+
+
+def _hash_of(findings: list[Finding]) -> str:
+    rows = [f.model_dump(mode="json") for f in findings]
+    return hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
+
+
+def _numbers(numbers: list[int]) -> str:
+    return ", ".join(f"#{n}" for n in numbers)
+
+
+def _line(f: Finding) -> str:
+    return f"#{f.number} {f.severity.value} {f.at}: {f.breaks}"
+
+
+def _verdict(open_: list[Finding]) -> str:
+    """The line shown beside the status, counted from the findings left open."""
+    counts = [
+        f"{n} {severity.value}"
+        for severity in Severity
+        if (n := sum(f.severity == severity for f in open_))
+    ]
+    return ", ".join(counts) + " open" if counts else "nothing open"

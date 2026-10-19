@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from taskmanager.core.enums import NodeKind, RelationType, VerificationType
 from taskmanager.core.models import (
     Condition,
+    Finding,
     Node,
     NodeRelation,
     NodeSection,
@@ -86,6 +87,7 @@ class BulkImporter:
             "merge",
             "requires",
             "conditions",
+            "findings",
             "land_order",
             "branch",
             "outcome",
@@ -162,6 +164,7 @@ class BulkImporter:
         relations: list[NodeRelation] = []
         verifications: dict[str, list[NodeVerification]] = {}
         conditions: dict[str, list[Condition]] = {}
+        findings: dict[str, list[Finding]] = {}
         imported = Imported()
         config = self.ops.rules()
 
@@ -209,6 +212,8 @@ class BulkImporter:
                 verifications[node.id] = stated
             if "conditions" in raw:
                 conditions[node.id] = [self._parse_condition(node.id, c) for c in raw["conditions"]]
+            if "findings" in raw:
+                findings[node.id] = [self._parse_finding(node.id, f) for f in raw["findings"]]
             return node
 
         spec_data = data.get("spec")
@@ -282,6 +287,8 @@ class BulkImporter:
                     self.node_repo.remove_condition(node_id, old.idx)
                 for cond in conds:
                     self.node_repo.add_condition(cond)
+            for node_id, found in findings.items():
+                self.node_repo.replace_findings(node_id, found)
             for node in nodes:
                 roll_up_ancestors(self.ops, node.id, arrived=node.id in arrived)
         return imported
@@ -331,6 +338,16 @@ class BulkImporter:
             command=command,
             stage=ConditionStage(raw.get("stage", ConditionStage.CLAIM.value)),
         )
+
+    @staticmethod
+    def _parse_finding(node_id: str, raw: dict[str, Any]) -> Finding:
+        # The fix and its commits answer a finding by its number, so a restore never renumbers.
+        if not isinstance(raw.get("number"), int) or raw["number"] < 1:
+            raise ValueError(f"{REFUSED}finding on {node_id!r} needs its number, 1 or more")
+        try:
+            return Finding.model_validate({**raw, "node_id": node_id})
+        except ValidationError as exc:
+            raise ValueError(f"{REFUSED}finding on {node_id!r}: {exc}") from None
 
     @staticmethod
     def _parse_status(node_id: str, kind: NodeKind, value: Any) -> Status | DecisionStatus:

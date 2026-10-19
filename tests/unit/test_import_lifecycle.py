@@ -13,7 +13,15 @@ from taskmanager.cli.main import EXPORT_FORMAT, _parse_import
 from taskmanager.cli.main import app as cli_app
 from taskmanager.core.enums import ImportFormat
 from taskmanager.core.lifecycle import next_action
-from taskmanager.core.status import Action, ConditionStage, DecisionStatus, Merge, Status
+from taskmanager.core.status import (
+    Action,
+    ConditionStage,
+    DecisionStatus,
+    FindingState,
+    Merge,
+    Severity,
+    Status,
+)
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.renderers.importers import BulkImporter
@@ -68,6 +76,8 @@ def test_import_stores_flags_merge_requires_land_order_and_conditions(
         ("staging up", CHECK, ConditionStage.LANDING)
     ]
 
+
+FINDING: dict[str, Any] = {"number": 2, "severity": "minor", "at": "a.py:1", "breaks": "x"}
 
 REFUSED = [
     pytest.param(doc({"id": "S-P-a", "title": "a", "review": False}), "fix", id="fix-no-review"),
@@ -125,7 +135,58 @@ REFUSED = [
         "decision",
         id="prose-condition",
     ),
+    pytest.param(
+        doc({"id": "S-P-a", "title": "a", "findings": [{**FINDING, "why": "x"}]}),
+        "why",
+        id="finding-unknown-key",
+    ),
+    pytest.param(
+        doc({"id": "S-P-a", "title": "a", "findings": [{**FINDING, "severity": "nit"}]}),
+        "finding on 'S-P-a'",
+        id="finding-unknown-severity",
+    ),
+    pytest.param(
+        doc({"id": "S-P-a", "title": "a", "findings": [{**FINDING, "breaks": " "}]}),
+        "finding on 'S-P-a'",
+        id="finding-empty-breaks",
+    ),
+    pytest.param(
+        doc({"id": "S-P-a", "title": "a", "findings": [{**FINDING, "at": ""}]}),
+        "finding on 'S-P-a'",
+        id="finding-empty-at",
+    ),
+    pytest.param(
+        doc({"id": "S-P-a", "title": "a", "findings": [{**FINDING, "number": 0}]}),
+        "needs its number",
+        id="finding-number-zero",
+    ),
+    pytest.param(
+        doc(
+            {
+                "id": "S-P-a",
+                "title": "a",
+                "findings": [{k: v for k, v in FINDING.items() if k != "number"}],
+            }
+        ),
+        "needs its number",
+        id="finding-without-number",
+    ),
 ]
+
+
+def test_an_imported_node_keeps_each_finding_with_its_number_and_answer(
+    repo: NodeRepository,
+) -> None:
+    closed = {**FINDING, "number": 4, "state": "closed", "answer": "abc123", "rule": "r"}
+    BulkImporter(repo).import_dict(
+        doc({"id": "S-P-a", "title": "a", "findings": [FINDING, closed]})
+    )
+    assert [
+        (f.number, f.severity, f.state, f.answer, f.rule) for f in repo.get_findings("S-P-a")
+    ] == [
+        (2, Severity.MINOR, FindingState.OPEN, None, None),
+        (4, Severity.MINOR, FindingState.CLOSED, "abc123", "r"),
+    ]
 
 
 @pytest.mark.parametrize(("document", "words"), REFUSED)

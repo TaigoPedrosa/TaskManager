@@ -254,11 +254,6 @@ UNREADABLE_CYCLES = [
     pytest.param(
         {"status": Status.FIXED, "outcome": Outcome.REJECT}, "fix_for", id="fixed-without-fix-for"
     ),
-    pytest.param(
-        {"status": Status.FIXED, "outcome": Outcome.APPROVE, "fix_for": Outcome.APPROVE},
-        "fix_for",
-        id="fixed-answering-approve",
-    ),
 ]
 
 
@@ -271,6 +266,14 @@ def test_a_node_refuses_a_cycle_the_lifecycle_cannot_read(
 
 
 def test_every_readable_cycle_shape_is_accepted() -> None:
+    Node(
+        id="T",
+        kind=NodeKind.TASK,
+        title="T",
+        status=Status.FIXED,
+        outcome=Outcome.APPROVE,
+        fix_for=Outcome.APPROVE,
+    )
     Node(id="T", kind=NodeKind.TASK, title="T", status=Status.REVIEWING, claimed_from=Status.FIXED)
     Node(id="T", kind=NodeKind.TASK, title="T", status=Status.REVIEWED, outcome=Outcome.REJECT)
     Node(

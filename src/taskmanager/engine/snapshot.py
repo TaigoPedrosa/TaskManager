@@ -1,5 +1,5 @@
 import re
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
@@ -9,15 +9,17 @@ from typing import TYPE_CHECKING, Final, Literal
 from taskmanager.core.display import Facts, display_status, phase
 from taskmanager.core.enums import CONTAINERS, NodeKind, RelationType, VerificationType
 from taskmanager.core.lifecycle import Cycle, next_action
-from taskmanager.core.models import LedgerEvent, Node
+from taskmanager.core.models import Finding, LedgerEvent, Node
 from taskmanager.core.rollup import rollup
 from taskmanager.core.status import (
     EXITS,
     Action,
     ConditionStage,
     DecisionStatus,
+    FindingState,
     JobKind,
     JobState,
+    Severity,
     Status,
 )
 from taskmanager.db.cache_repo import CacheRepository, _command_hash
@@ -84,10 +86,10 @@ def is_sensitive(node: Node, files: list[str], config: ProjectConfig) -> bool:
     return bool(sensitive_areas(node)) or writes_migration(files, migrations)
 
 
-def cycle_of(node: Node, sensitive: bool) -> Cycle:
+def cycle_of(node: Node, sensitive: bool, findings: Sequence[Finding]) -> Cycle:
     """`node`'s cycle. `sensitive` holds when `node` or any node under it is: a container's
     landing brings every descendant's code, a superseded one's included, so its fix may touch
-    any of it."""
+    any of it. `findings` are `node`'s own."""
     if not isinstance(node.status, Status):
         raise ValueError(f"decision {node.id!r} has no cycle")  # noqa: TRY004
     return Cycle(
@@ -102,6 +104,8 @@ def cycle_of(node: Node, sensitive: bool) -> Cycle:
         review_cycles=node.review_cycles,
         merge_attempts=node.merge_attempts,
         step_failures=node.step_failures,
+        minors=any(f.severity == Severity.MINOR and f.state == FindingState.OPEN for f in findings),
+        on_target=node.on_target,
     )
 
 
@@ -113,6 +117,7 @@ def cycle_in(snapshot: Snapshot, node: Node) -> Cycle:
         node,
         is_sensitive(node, files, snapshot.config)
         or any(n.sensitive or n.writes_migration for n in under),
+        snapshot.graph_data().findings.get(node.id, []),
     )
 
 
@@ -127,6 +132,7 @@ def apply_cycle(node: Node, c: Cycle) -> Node:
             "review_cycles": c.review_cycles,
             "merge_attempts": c.merge_attempts,
             "step_failures": c.step_failures,
+            "on_target": c.on_target,
             "updated_at": datetime.now(tz=UTC),
         }
     )
@@ -267,7 +273,7 @@ class SnapshotBuilder:
         return ConfigStore(self.node_repo.db.taskmanager_dir.parent).rules()
 
     def cycle(self, node: Node) -> Cycle:
-        return cycle_of(node, self._sensitive(node))
+        return cycle_of(node, self._sensitive(node), self.node_repo.get_findings(node.id))
 
     def _sensitive(self, node: Node) -> bool:
         """`cycle_in`'s rule, read node by node down `node`'s own subtree, never the whole graph.

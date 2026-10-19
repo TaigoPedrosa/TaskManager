@@ -11,12 +11,20 @@ from taskmanager.core.enums import (
 )
 from taskmanager.core.models import (
     Condition,
+    Finding,
     Node,
     NodeRelation,
     NodeSection,
     NodeVerification,
 )
-from taskmanager.core.status import ConditionStage, DecisionStatus, Status
+from taskmanager.core.status import (
+    ConditionStage,
+    DecisionStatus,
+    FindingSource,
+    FindingState,
+    Severity,
+    Status,
+)
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.utils import parse_db_datetime, to_db_timestamp
 
@@ -644,6 +652,42 @@ class NodeRepository:
             self.db.spec_commit(conn)
             return cursor.rowcount > 0
 
+    def get_findings(self, node_id: str) -> list[Finding]:
+        with self.db.get_state_connection() as conn:
+            rows = conn.execute(
+                f"SELECT {FINDING_COLUMNS} FROM node_findings WHERE node_id = ? ORDER BY number",
+                (node_id,),
+            ).fetchall()
+        return [row_to_finding(r) for r in rows]
+
+    def add_finding(self, finding: Finding) -> Finding:
+        with self.db.spec_transaction() as conn:
+            (number,) = conn.execute(
+                "SELECT COALESCE(MAX(number), 0) + 1 FROM node_findings WHERE node_id = ?",
+                (finding.node_id,),
+            ).fetchone()
+            numbered = finding.model_copy(update={"number": number})
+            _insert_finding(conn, numbered)
+        return numbered
+
+    def replace_findings(self, node_id: str, findings: list[Finding]) -> None:
+        """`node_id`'s findings become `findings`, each keeping its number."""
+        with self.db.spec_transaction() as conn:
+            conn.execute("DELETE FROM node_findings WHERE node_id = ?", (node_id,))
+            for finding in findings:
+                _insert_finding(conn, finding)
+
+    def answer_finding(
+        self, node_id: str, number: int, state: FindingState, answer: str | None
+    ) -> bool:
+        with self.db.get_state_connection() as conn:
+            cursor = conn.execute(
+                "UPDATE node_findings SET state = ?, answer = ? WHERE node_id = ? AND number = ?",
+                (state.value, answer, node_id, number),
+            )
+            self.db.spec_commit(conn)
+            return cursor.rowcount > 0
+
     def update_ordinal(self, node_id: str, ordinal: int) -> None:
         with self.db.get_state_connection() as conn:
             conn.execute(
@@ -651,3 +695,37 @@ class NodeRepository:
                 (ordinal, node_id),
             )
             self.db.spec_commit(conn)
+
+
+FINDING_COLUMNS = "node_id, number, source, severity, at, breaks, rule, state, answer"
+
+
+def _insert_finding(conn: Any, f: Finding) -> None:
+    conn.execute(
+        f"INSERT INTO node_findings ({FINDING_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            f.node_id,
+            f.number,
+            f.source.value,
+            f.severity.value,
+            f.at,
+            f.breaks,
+            f.rule,
+            f.state.value,
+            f.answer,
+        ),
+    )
+
+
+def row_to_finding(row: Any) -> Finding:
+    return Finding(
+        node_id=row[0],
+        number=row[1],
+        source=FindingSource(row[2]),
+        severity=Severity(row[3]),
+        at=row[4],
+        breaks=row[5],
+        rule=row[6],
+        state=FindingState(row[7]),
+        answer=row[8],
+    )

@@ -102,8 +102,7 @@ def implement(claims: Claims, node_id: str, path: str) -> None:
 def review(claims: Claims, node_id: str) -> tuple[str | None, str | None]:
     result = claims.start(node_id, "reviewer", "s1")
     assert result.action == Action.REVIEW, result
-    claims.ops.set_section(node_id, "review", "Nothing to fix.")
-    claims.review(node_id, approve=True)
+    claims.review(node_id, approve=True, clean=True)
     return result.branch, result.base
 
 

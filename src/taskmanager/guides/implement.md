@@ -37,7 +37,7 @@ That is the whole assignment: the task's frontmatter, its parent's context, its 
 - `tm task get <task-id> --yaml` — status, `next_action`, flags, `target_repo`, `depends_on`, `declared_files`, verifications, conditions, lease.
 - `tm section get <task-id>:<key>` — one section; `tm section get <task-id>` prints them all. Content only goes to stdout, the header to stderr, so `tm section get id:key > f` then `tm section set id:key -f f` round-trips without folding the header back into the content.
 
-A task that was reopened carries a `:reopen` note and the earlier `:review`, and its branch still holds the earlier work: read both, and decide what to keep.
+A task that was reopened carries a `:reopen` note and its earlier findings, and its branch still holds the earlier work: read `tm finding list <task-id> --open` and the note, and decide what to keep. tm refuses `tm task complete` while a finding is open: answer each as `tm guide fix` §2 does, with `tm finding close` or `tm finding dispute`.
 
 An instruction about a third-party artifact's structure (which layers a style holds, the order an API returns) is checked against the artifact itself before you follow it. When the artifact contradicts the brief, release blocked on a decision (below) instead of following the brief.
 

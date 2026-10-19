@@ -112,15 +112,12 @@ def test_start_claims_implement_then_complete_and_a_review_that_approves(tmp_pat
 
     code, step = start(tmp_path, "S1-P1-a")
     assert (code, step["action"]) == (0, "review")
-    tm(tmp_path, "section", "set", "S1-P1-a:review", "no findings")
-    assert (
-        tm(tmp_path, "task", "review", "S1-P1-a", "--approve", "--verdict", "clean").exit_code == 0
-    )
+    assert tm(tmp_path, "task", "review", "S1-P1-a", "--approve", "--clean").exit_code == 0
     doc = get(tmp_path, "S1-P1-a")
     assert (doc["status"], doc["outcome"], doc["verdict"], doc["state"]) == (
         "REVIEWED",
         "approve",
-        "clean",
+        "nothing open",
         "WAITING_MERGE",
     )
 
@@ -144,6 +141,91 @@ def test_review_needs_exactly_one_of_approve_and_reject(tmp_path: Path) -> None:
     for flags in ([], ["--approve", "--reject"]):
         res = tm(tmp_path, "task", "review", "S1-P1-a", *flags)
         assert res.exit_code == 2 and "--approve or --reject" in res.output
+
+
+def test_a_review_records_numbered_findings_and_its_fix_answers_each(tmp_path: Path) -> None:
+    estate(tmp_path)
+    start(tmp_path, "S1-P1-a")
+    assert tm(tmp_path, "task", "complete", "S1-P1-a").exit_code == 0
+    start(tmp_path, "S1-P1-a")
+    at = ("--at", "core/a.py:read")
+    for flags in ([], ["--blocking", "--minor"]):
+        res = tm(tmp_path, "finding", "add", "S1-P1-a", *at, "--breaks", "x", *flags)
+        assert res.exit_code == 2 and "--blocking or --minor" in res.output
+    blocking = tm(
+        tmp_path, "finding", "add", "S1-P1-a", *at, "--breaks", "reads every tenant", "--blocking"
+    )
+    minor = tm(
+        tmp_path,
+        "finding",
+        "add",
+        "S1-P1-a",
+        "--at",
+        "core/a.py:n",
+        "--breaks",
+        "n hides its unit",
+        "--minor",
+        "--rule",
+        "a quantity names its unit",
+    )
+    assert (blocking.stdout, minor.stdout) == ("1\n", "2\n")
+    refused = tm(tmp_path, "task", "review", "S1-P1-a", "--approve")
+    assert refused.exit_code == 1 and "#1: reject it" in refused.output
+    assert tm(tmp_path, "task", "review", "S1-P1-a", "--reject").exit_code == 0
+    assert get(tmp_path, "S1-P1-a")["verdict"] == "1 blocking, 1 minor open"
+
+    code, step = start(tmp_path, "S1-P1-a")
+    assert (code, step["action"]) == (0, "fix")
+    worktree = Path(step["worktree"])
+    (worktree / "a.py").write_text("scoped = True\n")
+    git(worktree, "add", "a.py")
+    git(worktree, "commit", "-q", "-m", "scope the read")
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=worktree, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    unanswered = tm(tmp_path, "task", "complete", "S1-P1-a")
+    assert unanswered.exit_code == 1 and "unanswered findings #1, #2" in unanswered.output
+    assert tm(tmp_path, "finding", "close", "S1-P1-a", "1", "--commit", sha).exit_code == 0
+    evidence = ("--evidence", "the unit is in the type: grep -n 'n:' core/a.py")
+    assert tm(tmp_path, "finding", "dispute", "S1-P1-a", "2", *evidence).exit_code == 0
+    assert tm(tmp_path, "finding", "list", "S1-P1-a", "--open", "--json").stdout.strip() == "[]"
+    assert tm(tmp_path, "task", "complete", "S1-P1-a").exit_code == 0
+
+    listed = json.loads(tm(tmp_path, "finding", "list", "S1-P1-a", "--json").stdout)
+    assert [(f["number"], f["severity"], f["state"], f["answer"], f["rule"]) for f in listed] == [
+        (1, "blocking", "closed", sha, None),
+        (2, "minor", "disputed", evidence[1], "a quantity names its unit"),
+    ]
+    table = tm(tmp_path, "finding", "list", "S1-P1-a")
+    assert table.exit_code == 0 and "reads every tenant" in table.stdout
+    missing = tm(tmp_path, "finding", "list", "S1-P1-z")
+    assert missing.exit_code == 1 and "S1-P1-z" in missing.output
+    events = json.loads(tm(tmp_path, "audit", "list", "--json").stdout)
+    assert [e["command"] for e in events if e["command"].startswith("finding")] == [
+        "finding disputed",
+        "finding closed",
+        "finding add",
+        "finding add",
+    ]
+
+
+def test_finding_reopen_opens_an_answered_finding_under_a_re_review(tmp_path: Path) -> None:
+    estate(tmp_path)
+    ops = create_container(tmp_path).get(Operations)
+    ops.update_node("S1-P1-a", frontmatter_set={"sensitive": "tenant"})
+    start(tmp_path, "S1-P1-a")
+    tm(tmp_path, "task", "complete", "S1-P1-a")
+    start(tmp_path, "S1-P1-a")
+    tm(tmp_path, "finding", "add", "S1-P1-a", "--at", "a", "--breaks", "b", "--blocking")
+    tm(tmp_path, "task", "review", "S1-P1-a", "--reject")
+    start(tmp_path, "S1-P1-a")
+    tm(tmp_path, "finding", "dispute", "S1-P1-a", "1", "--evidence", "read it")
+    assert tm(tmp_path, "task", "complete", "S1-P1-a").exit_code == 0
+    assert start(tmp_path, "S1-P1-a")[1]["action"] == "review"
+
+    assert tm(tmp_path, "finding", "reopen", "S1-P1-a", "1").exit_code == 0
+    listed = json.loads(tm(tmp_path, "finding", "list", "S1-P1-a", "--open", "--json").stdout)
+    assert [f["number"] for f in listed] == [1]
 
 
 def test_release_blocked_writes_what_the_node_waits_on_and_returns_it(tmp_path: Path) -> None:
@@ -385,8 +467,7 @@ def test_closing_or_releasing_a_step_in_another_agents_name_is_refused(tmp_path:
     assert tm(tmp_path, "task", "complete", "S1-P1-a", "--agent", "agent-a").exit_code == 0
 
     assert start(tmp_path, "S1-P1-a")[1]["action"] == "review"
-    tm(tmp_path, "section", "set", "S1-P1-a:review", "no findings")
-    wrong = tm(tmp_path, "task", "review", "S1-P1-a", "--approve", "--agent", "agent-b")
+    wrong = tm(tmp_path, "task", "review", "S1-P1-a", "--approve", "--clean", "--agent", "agent-b")
     assert wrong.exit_code == 1, wrong.output
     assert get(tmp_path, "S1-P1-a")["status"] == "REVIEWING"
     assert tm(tmp_path, "task", "release", "S1-P1-a", "--agent", "agent-a").exit_code == 0
@@ -443,8 +524,7 @@ def approved(root: Path, node_id: str) -> None:
     assert start(root, node_id)[0] == 0
     assert tm(root, "task", "complete", node_id).exit_code == 0
     assert start(root, node_id)[1]["action"] == "review"
-    tm(root, "section", "set", f"{node_id}:review", "no findings")
-    assert tm(root, "task", "review", node_id, "--approve").exit_code == 0
+    assert tm(root, "task", "review", node_id, "--approve", "--clean").exit_code == 0
 
 
 def test_a_step_closes_or_releases_only_under_the_token_its_claim_printed(tmp_path: Path) -> None:
@@ -458,8 +538,7 @@ def test_a_step_closes_or_releases_only_under_the_token_its_claim_printed(tmp_pa
     first = step["token"]
     code, step = start(tmp_path, "S1-P1-a")
     assert (code, step["action"]) == (0, "review") and step["token"] != first
-    tm(tmp_path, "section", "set", "S1-P1-a:review", "no findings")
-    stale = tm(tmp_path, "task", "review", "S1-P1-a", "--approve", "--token", first)
+    stale = tm(tmp_path, "task", "review", "S1-P1-a", "--approve", "--clean", "--token", first)
     assert stale.exit_code == 1, stale.output
     assert tm(tmp_path, "task", "release", "S1-P1-a", "--token", first).exit_code == 1
     assert get(tmp_path, "S1-P1-a")["status"] == "REVIEWING"
@@ -467,8 +546,7 @@ def test_a_step_closes_or_releases_only_under_the_token_its_claim_printed(tmp_pa
     assert get(tmp_path, "S1-P1-a")["status"] == "IMPLEMENTED"
 
     code, step = start(tmp_path, "S1-P1-a")
-    tm(tmp_path, "section", "set", "S1-P1-a:review", "still no findings")
-    ok = tm(tmp_path, "task", "review", "S1-P1-a", "--approve", "--token", step["token"])
+    ok = tm(tmp_path, "task", "review", "S1-P1-a", "--approve", "--clean", "--token", step["token"])
     assert ok.exit_code == 0, ok.output
 
 

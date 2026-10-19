@@ -277,8 +277,9 @@ def test_audit_names_the_agent_that_closed_a_step_as_its_actor(tmp_path: Path) -
     token = claim("S1-P1-a", "builder")
     run("task", "complete", "S1-P1-a", "--agent", "builder", "--token", token)
     token = claim("S1-P1-a", "reviewer")
-    run("section", "set", "S1-P1-a:review", "nothing open")
-    run("task", "review", "S1-P1-a", "--approve", "--agent", "reviewer", "--token", token)
+    run(
+        "task", "review", "S1-P1-a", "--approve", "--clean", "--agent", "reviewer", "--token", token
+    )
     token = claim("S1-P1-b", "leaver")
     run("task", "release", "S1-P1-b", "--agent", "leaver", "--token", token)
 

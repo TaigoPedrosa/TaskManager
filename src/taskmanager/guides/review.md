@@ -1,6 +1,6 @@
 # Reviewing a node
 
-For the agent that reads a node's work after `tm task start` claimed its `review`, writes the findings on the node, and approves or rejects it.
+For the agent that reads a node's work after `tm task start` claimed its `review`, records its findings on the node, and approves or rejects it.
 
 ## 1. The claim
 
@@ -24,7 +24,7 @@ What this review covers follows from the status it was claimed from, which `tm t
 tm render <node-id> --view subagent
 ```
 
-That is the brief the implementer was given, and the only standard you review against. While the project's `review.blind` config key is on, its default, a review's brief leaves out the implementer's `:report`, so the review is a second opinion rather than a confirmation; `tm config set review.blind false` puts it back. Read `tm section get <node-id>:report` only after your findings are written, to judge the discrepancies it records; a re-review reads the fixer's latest entry as part of its scope. `tm task get <node-id> --yaml` names the node's `target_repo`, `declared_files` and flags. For a plan or spec the brief also lists every child whose own review rejected, with its `:review`: those children landed on this branch unfixed, and this review is where their findings get fixed.
+That is the brief the implementer was given, and the only standard you review against. While the project's `review.blind` config key is on, its default, a review's brief leaves out the implementer's `:report`, so the review is a second opinion rather than a confirmation; `tm config set review.blind false` puts it back. Read `tm section get <node-id>:report` only after your findings are recorded, to judge the discrepancies it records; a re-review reads the fixer's latest entry as part of its scope. `tm task get <node-id> --yaml` names the node's `target_repo`, `declared_files` and flags. For a plan or spec the brief also lists every child that landed with findings still open (`tm finding list <child-id> --open`): those children do not fix their own, so each one that still holds is recorded again here, as this node's finding, and this node's fix answers it.
 
 ## 3. Read the branch
 
@@ -55,7 +55,7 @@ Say in the review that you executed it, and where.
 
 - **A task's review** reads the whole diff against the brief.
 - **A plan's or spec's review** runs once, on its landed target. It reads the whole landing against the brief, and for what is true only between its children: a producer nobody calls, a column only ever written as null, two halves that do not join.
-- **A re-review** is scoped to the open findings of a sensitive fix: each finding in `:review` not yet recorded as closed, checked against the fix commits and the fixer's latest `:report` entry, and, when the last landing failed, the failure the latest `:merge` entry names. Establish each closure by making it fail. It never widens: no fresh read of the rest of the diff and no new finding outside those; anything else you notice goes in the report.
+- **A re-review** is scoped to the findings a sensitive fix answered: each one in `tm finding list <node-id>` with its answer, the commit that closed it or the evidence that disputes it, a landing failure's included. Establish each closure by making it fail; `tm finding reopen <node-id> <n> --agent <name> --token <token>` opens one that still holds. It never widens: no fresh read of the rest of the diff and no new finding outside those; anything else you notice goes in the report.
 
 A diff that edits a file missing from `declared_files`, a UI test that reaches a control another file owns by its implementation rather than by what it shows the user, and anything the diff left without a reader (a file, symbol, field, or a computation or load whose only consumer it removed) are each a finding. So is a defect in code the diff leaves unchanged but makes reachable; mark it as reached through the diff.
 
@@ -77,29 +77,36 @@ Every acceptance line about behaviour is proven by breaking it: in your detached
 
 A UI node's behaviour lines are checked by driving them in the running app: the write and its feedback, the focus after it, the keyboard route, a live update mid-edit, a reload. A screenshot beside the frame shows the look and proves none of them.
 
-## 5. Write the findings
+## 5. Record the findings
 
-Append them to the node before you close the step:
+Record each defect on the node, one per command, before you close the step:
 
 ```
-tm section get <node-id>:review > <path>
-tm section set <node-id>:review --file <path> --header "## Review"
+tm finding add <node-id> --agent <name> --token <token> --blocking --at "<file>:<symbol>" --breaks "<what breaks>"
+tm finding add <node-id> --agent <name> --token <token> --minor --at "<file>:<symbol>" --breaks "<what breaks>" --rule "<the rule that would have prevented it>"
 ```
 
-`tm section get` writes the header to stderr and the content alone to stdout, so `> <path>` captures content only and the round trip above never folds the header back in.
+Each prints the finding's number, which the fix answers it by. `--at` names where it is, a symbol rather than a line number wherever you can; `--breaks` says what breaks, in one line. A finding states what was read; a derived claim is not a finding until it is read. A claim that something is absent (no caller, no other reader, no test) names in `--breaks` the search that would have found it: the command, the path and pattern, and the range it covered. A finding a written rule would have prevented quotes that rule in `--rule`, or proposes the missing line and the guide it belongs in.
 
-Number the findings, because the fix answers them by number, and record each earlier finding as closed or still open. Each one names where it is and what breaks; cite a symbol rather than a line number wherever you can. A finding states what was read; a derived claim is not a finding until it is read. A claim that something is absent (no caller, no other reader, no test) names the search that would have found it: the command, the path and pattern, and the range it covered. A finding a written rule would have prevented quotes that rule, or proposes the missing line and the guide it belongs in. With nothing open, write that: tm refuses a verdict over an unchanged `:review`.
+Every finding carries a severity, and every defect is recorded, however small: the severity decides only whether it holds the landing.
+
+- `--blocking`: the node must not land as it is. An acceptance line not met, a check that fails or was not run, a behaviour defect, a tenant, security or data-loss risk, a rule the brief marks as blocking.
+- `--minor`: landing as it is breaks nothing. Dead code, naming, a comment, test tidiness. A minor finding never holds the landing, and it is still fixed: after the node lands, its fix answers every minor finding left open.
+- When in doubt, it is blocking.
+
+`tm finding list <node-id>` shows earlier rounds' findings with their answers. A closed or disputed one that still holds is opened again with `tm finding reopen`, never recorded a second time.
 
 ## 6. Close the step
 
 ```
 tm task review <node-id> --agent <name> --token <token> --approve
-tm task review <node-id> --agent <name> --token <token> --reject --verdict "<one line>"
+tm task review <node-id> --agent <name> --token <token> --reject
+tm task review <node-id> --agent <name> --token <token> --approve --clean
 ```
 
-tm refuses either one while the `:review` section is unchanged since your claim: the findings are the record, and a verdict without them leaves a fixer nothing to fix. It refuses it too when the live lease is not `<name>`'s or not `<token>`'s: the step is no longer yours, so stop and report. `--verdict` is a free-text line shown beside the status; it never decides anything.
+tm refuses a verdict when no finding was recorded or reopened since your claim, unless `--clean` says nothing was found; it refuses `--clean` when one was. It refuses `--approve` while a blocking finding is open, and `--reject` while none is: minor findings alone never reject. It refuses either one too when the live lease is not `<name>`'s or not `<token>`'s: the step is no longer yours, so stop and report. tm writes the verdict line shown beside the status from the findings left open.
 
-- **Approved**: a task, or a re-reviewed fix, goes on to its landing; a plan or spec reviewed at `LANDED` is `COMPLETED`.
+- **Approved**: a task, or a re-reviewed fix, goes on to its landing; a plan or spec reviewed at `LANDED` is `COMPLETED`. With minor findings open and fix on, the node lands first and then gets one fix for them, which is never re-reviewed.
 - **Rejected, and the node fixes its own rejections**: it gets one fix, which lands without another review unless the node is sensitive. A rejected re-review makes the node `FAILED` with a decision for the owner, never a second fix.
 - **Rejected, and the node does not fix** (`fix` off): a task lands its branch on its parent unfixed, and the parent's review is where the findings are fixed. A plan or spec at `LANDED` is already on its target, so a rejection it does not fix makes it `FAILED`, and the owner decides.
 
@@ -107,13 +114,13 @@ A judgement call the brief itself cannot settle — not a defect, a genuine open
 
 ## 7. Report
 
-The verdict, the numbered findings, the `tm verify run` exit code with the rows that failed, and what you did not cover.
+The verdict, the findings' numbers and severities, the `tm verify run` exit code with the rows that failed, and what you did not cover.
 
 ## Never
 
 - Never edit code, tests, fixtures or configuration — not even a one-line fix you can see. A break made in your detached worktree to prove an acceptance line is restored, never committed, and goes when the worktree does.
-- Never approve with a finding still open, and never merge or push anything.
+- Never approve with a blocking finding open, never mark a defect minor to approve over it, and never merge or push anything.
 - Never widen a re-review past the findings still open.
-- Never close the step without writing `:review` first.
+- Never close the step without recording its findings first, or `--clean` when there are none.
 - Never leave a worktree you cut behind you.
 - Never file a finding you have not read in the branch's own content.

@@ -20,7 +20,7 @@ from typer.testing import CliRunner
 
 from taskmanager.cli.main import app as cli_app
 from taskmanager.core.models import Node
-from taskmanager.core.status import Action, JobState, Merge, Status
+from taskmanager.core.status import Action, FindingState, JobState, Merge, Severity, Status
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.engine.claims import ClaimResult, Claims
@@ -159,10 +159,12 @@ def start(claims: Claims, node_id: str, action: Action) -> ClaimResult:
     return result
 
 
-def review(claims: Claims, node_id: str, findings: str, *, approve: bool) -> Status:
+def review(claims: Claims, node_id: str, *blocking: str) -> Status:
+    """`node_id`'s review, rejected over each of `blocking`, or approved clean with none."""
     start(claims, node_id, Action.REVIEW)
-    claims.ops.set_section(node_id, "review", findings)
-    return claims.review(node_id, approve=approve)
+    for breaks in blocking:
+        claims.add_finding(node_id, Severity.BLOCKING, MIGRATION, breaks)
+    return claims.review(node_id, approve=not blocking, clean=not blocking)
 
 
 def land(claims: Claims, landing: Landing, node_id: str) -> Status:
@@ -182,20 +184,20 @@ def test_a_landed_plan_with_a_migration_under_it_has_its_fix_re_reviewed_once_be
     assert built.worktree is not None
     commit(Path(built.worktree), MIGRATION, "create table keys();\n", "S-P-M: keys")
     assert claims.complete("S-P-M") == Status.IMPLEMENTED
-    assert review(claims, "S-P-M", "Nothing to fix.", approve=True) == Status.REVIEWED
+    assert review(claims, "S-P-M") == Status.REVIEWED
     assert land(claims, landing, "S-P-M") == Status.COMPLETED
     assert land(claims, landing, "S-P") == Status.LANDED
-    findings = "1. keys has no primary key."
-    assert review(claims, "S-P", findings, approve=False) == Status.REVIEWED
+    assert review(claims, "S-P", "keys has no primary key") == Status.REVIEWED
     fix = start(claims, "S-P", Action.FIX)
-    commit(Path(fix.worktrees["api"]), MIGRATION, "create table keys(id int primary key);\n", "fix")
+    keyed = "create table keys(id int primary key);\n"
+    fixed = commit(Path(fix.worktrees["api"]), MIGRATION, keyed, "fix")
+    claims.answer_finding("S-P", 1, FindingState.CLOSED, fixed)
     assert claims.complete("S-P") == Status.FIXED
 
     assert claims.next_step(stored(claims, "S-P"), claims.snapshots.build())[0] == Action.REVIEW
     rereview = start(claims, "S-P", Action.REVIEW)
     assert (rereview.branch, stored(claims, "S-P").status) == ("tm/S-P", Status.REVIEWING)
-    claims.ops.set_section("S-P", "review", f"{findings}\n\nClosed: keys.id is its primary key.")
-    assert claims.review("S-P", approve=True) == Status.REVIEWED
+    assert claims.review("S-P", approve=True, clean=True) == Status.REVIEWED
     assert land(claims, landing, "S-P") == Status.COMPLETED
 
 

@@ -15,7 +15,14 @@ from typer.testing import CliRunner
 
 from taskmanager.cli.main import app as cli_app
 from taskmanager.core.enums import NodeKind
-from taskmanager.core.status import Action, DecisionStatus, JobState, Status
+from taskmanager.core.status import (
+    Action,
+    DecisionStatus,
+    FindingState,
+    JobState,
+    Severity,
+    Status,
+)
 from taskmanager.engine.claims import ClaimResult, Claims
 from taskmanager.engine.config import Gate, ProjectConfig, RepoConfig
 from taskmanager.engine.landing import Landing
@@ -83,13 +90,14 @@ def land(estate: Estate, node_id: str) -> Status:
     return Status(stored(claims, node_id).status)
 
 
-def review(
-    claims: Claims, node_id: str, findings: str, *, approve: bool
-) -> tuple[ClaimResult, Status]:
+def review(claims: Claims, node_id: str, *blocking: str) -> tuple[ClaimResult, Status]:
+    """Claims `node_id`'s review and records each of `blocking`: rejected over them, or approved
+    clean when there are none."""
     result = claims.start(node_id, "reviewer", "s1")
     assert result.action == Action.REVIEW, result
-    claims.ops.set_section(node_id, "review", findings)
-    return result, claims.review(node_id, approve=approve)
+    for breaks in blocking:
+        claims.add_finding(node_id, Severity.BLOCKING, "a.py", breaks)
+    return result, claims.review(node_id, approve=not blocking, clean=not blocking)
 
 
 def landed_plan(estate: Estate) -> None:
@@ -116,7 +124,7 @@ def test_a_reviewed_plan_lands_first_and_its_one_review_on_main_completes_it(
     landed_plan(estate)
     assert git(api, "show", "origin/main:a.py") == "S-P-A"
 
-    claim, status = review(claims, "S-P", "Nothing to fix.", approve=True)
+    claim, status = review(claims, "S-P")
 
     assert (claim.branch, claim.base, claim.repos) == ("origin/main", "main", ["api"])
     assert status == Status.COMPLETED
@@ -129,13 +137,14 @@ def test_a_rejected_landed_plan_is_fixed_from_main_and_completes_on_landing_with
     claims, _landing = estate
     api = claims.root / "api"
     landed_plan(estate)
-    assert review(claims, "S-P", "1. a.py: wrong greeting.", approve=False)[1] == Status.REVIEWED
+    assert review(claims, "S-P", "wrong greeting")[1] == Status.REVIEWED
 
     fix = claims.start("S-P", "fixer", "s1")
     assert fix.action == Action.FIX
     worktree = Path(fix.worktrees["api"])
     assert git(worktree, "rev-parse", "HEAD") == git(api, "rev-parse", "origin/main")
-    commit(worktree, "a.py", "fixed\n", "S-P: fix a.py")
+    fixed = commit(worktree, "a.py", "fixed\n", "S-P: fix a.py")
+    claims.answer_finding("S-P", 1, FindingState.CLOSED, fixed)
     assert claims.complete("S-P") == Status.FIXED
 
     assert land(estate, "S-P") == Status.COMPLETED
@@ -147,11 +156,11 @@ def test_a_rejected_landed_plan_is_fixed_from_main_and_completes_on_landing_with
 def sensitive_fix(claims: Claims) -> None:
     """S-MIG writes a migration: reviewed, rejected, and fixed once."""
     implement(claims, "S-MIG", MIGRATION, "create table tenants();\n")
-    findings = "1. The tenants table has no key."
-    assert review(claims, "S-MIG", findings, approve=False)[1] == Status.REVIEWED
+    assert review(claims, "S-MIG", "the tenants table has no key")[1] == Status.REVIEWED
     fix = claims.start("S-MIG", "fixer", "s1")
     assert fix.action == Action.FIX and fix.worktree is not None
-    commit(Path(fix.worktree), MIGRATION, "create table tenants(id int);\n", "S-MIG: fix")
+    fixed = commit(Path(fix.worktree), MIGRATION, "create table tenants(id int);\n", "S-MIG: fix")
+    claims.answer_finding("S-MIG", 1, FindingState.CLOSED, fixed)
     assert claims.complete("S-MIG") == Status.FIXED
 
 
@@ -161,9 +170,9 @@ def test_a_sensitive_fix_takes_one_review_and_its_rejection_fails_it_to_a_decisi
     claims, _landing = estate
     sensitive_fix(claims)
 
-    claim, status = review(
-        claims, "S-MIG", "1. Still open: the key is not a primary key.", approve=False
-    )
+    claim = claims.start("S-MIG", "reviewer", "s1")
+    claims.reopen_finding("S-MIG", 1)
+    status = claims.review("S-MIG", approve=False)
 
     assert claim.branch == "tm/S-MIG"
     assert status == Status.FAILED

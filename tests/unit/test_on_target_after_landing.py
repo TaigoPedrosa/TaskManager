@@ -8,7 +8,7 @@ import pytest
 from lifecycle_estate import add, gated, make_estate, stored
 
 from taskmanager.core.enums import NodeKind
-from taskmanager.core.status import Action, Merge, Outcome, Status
+from taskmanager.core.status import Action, FindingState, Merge, Outcome, Severity, Status
 from taskmanager.engine.claims import Claims
 from taskmanager.engine.stepgraph import migration_writers
 from taskmanager.renderers.importers import BulkImporter
@@ -45,7 +45,7 @@ def landed_plan(tmp_path: Path) -> Claims:
 def rejected(claims: Claims) -> None:
     """P's review, claimed on its landed target, rejects it."""
     claims.start("P", "reviewer", "s1")
-    claims.ops.set_section("P", "review", "1. open: a finding")
+    claims.add_finding("P", Severity.BLOCKING, "api/a.py:f", "a finding")
     assert claims.review("P", approve=False) == Status.REVIEWED
 
 
@@ -67,11 +67,12 @@ def test_the_landed_plan_stays_on_its_target_through_its_review_and_fix(tmp_path
     seen = [state(claims)]
     claims.start("P", "reviewer", "s1")
     seen.append(state(claims))
-    claims.ops.set_section("P", "review", "1. open: a finding")
+    claims.add_finding("P", Severity.BLOCKING, "api/a.py:f", "a finding")
     claims.review("P", approve=False)
     seen.append(state(claims))
     claims.start("P", "fixer", "s1")
     seen.append(state(claims))
+    claims.answer_finding("P", 1, FindingState.DISPUTED, "read api/a.py:f")
     claims.complete("P")
     seen.append(state(claims))
     # W makes P sensitive, so its fix is reviewed once more before it lands.
@@ -88,6 +89,27 @@ def test_the_landed_plan_stays_on_its_target_through_its_review_and_fix(tmp_path
     ]
 
 
+def test_the_landed_plan_stays_on_its_target_through_the_fix_of_its_minor_findings(
+    tmp_path: Path,
+) -> None:
+    claims = landed_plan(tmp_path)
+    claims.start("P", "reviewer", "s1")
+    claims.add_finding("P", Severity.MINOR, "api/a.py:f", "a minor finding")
+    claims.review("P", approve=True)
+    seen = [state(claims)]
+    claims.start("P", "fixer", "s1")
+    seen.append(state(claims))
+    claims.answer_finding("P", 1, FindingState.DISPUTED, "read api/a.py:f")
+    claims.complete("P")
+    seen.append(state(claims))
+
+    assert seen == [
+        (Status.REVIEWED, None, []),
+        (Status.FIXING, None, []),
+        (Status.FIXED, None, []),
+    ]
+
+
 def test_a_plan_whose_landing_failed_is_off_its_target_through_its_fix_and_review(
     tmp_path: Path,
 ) -> None:
@@ -96,6 +118,7 @@ def test_a_plan_whose_landing_failed_is_off_its_target_through_its_fix_and_revie
     seen = [state(claims)]
     claims.start("P", "fixer", "s1")
     seen.append(state(claims))
+    claims.answer_finding("P", 1, FindingState.DISPUTED, "the gate was flaky")
     claims.complete("P")
     seen.append(state(claims))
     claims.start("P", "reviewer", "s1")

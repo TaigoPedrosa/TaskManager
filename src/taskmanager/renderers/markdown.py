@@ -1,9 +1,9 @@
 import json
 from typing import Any
 
-from taskmanager.core.enums import CONTAINERS, NodeKind, RelationType, RenderView
+from taskmanager.core.enums import NodeKind, RelationType, RenderView
 from taskmanager.core.models import Node
-from taskmanager.core.status import DecisionStatus, Outcome, Status
+from taskmanager.core.status import DecisionStatus, FindingState, Status
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.engine.decisions import read_decision
 from taskmanager.engine.snapshot import display_view, stored_status
@@ -94,17 +94,17 @@ class MarkdownRenderer:
                     v_lines.append(f"- {ver.verification_type.value}: `{ver.target_path}`{pat_str}")
                 out.append("\n".join(v_lines))
 
-            rejected = self._rejected_children(node)
-            if rejected:
+            unfixed = self._children_with_open_findings(node)
+            if unfixed:
                 out.append(
                     "\n".join(
                         [
-                            "### Children whose review rejected",
+                            "### Children with open findings",
                             (
-                                "Each landed on this branch with its findings unfixed; they "
+                                "Each landed on this branch with these findings unfixed; they "
                                 "are this container's to fix:"
                             ),
-                            *rejected,
+                            *unfixed,
                         ]
                     )
                 )
@@ -147,15 +147,23 @@ class MarkdownRenderer:
         by = display_view(self.node_repo).superseded_by(node.id)
         return [f"Superseded by {by['id']} ({by['status']})"] if by else []
 
-    def _rejected_children(self, node: Any) -> list[str]:
-        # Read from each child's stored outcome on every render, never copied into a section.
-        if node.kind not in CONTAINERS:
-            return []
+    def _children_with_open_findings(self, node: Any) -> list[str]:
+        # Read from each child's findings on every render, never copied into a section. A child
+        # with fix off completes with them open, and its parent's review is where they are fixed;
+        # one still short of COMPLETED has its own fix round coming.
         lines: list[str] = []
         for child_id in self.node_repo.get_children(node.id):
             child = self.node_repo.get_node(child_id)
-            if child is not None and child.outcome == Outcome.REJECT:
-                lines.append(f"- `{child.id}` ({child.title}): `tm section get {child.id}:review`")
+            open_ = [
+                f.number
+                for f in self.node_repo.get_findings(child_id)
+                if f.state == FindingState.OPEN
+            ]
+            if child is not None and child.status == Status.COMPLETED and open_:
+                numbers = ", ".join(f"#{n}" for n in open_)
+                lines.append(
+                    f"- `{child.id}` ({child.title}): {numbers} in `tm finding list {child.id} --open`"
+                )
         return lines
 
     def _render_decision(self, node: Any, sections: list[Any]) -> str:
