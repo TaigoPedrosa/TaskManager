@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.17] - 2026-10-19
+
 ### Fixed
 
 - A tm-wave agent that returned while a command it started in the background still ran left its
@@ -641,7 +643,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - A web visualizer with a live socket, and a static exporter.
 - The taskmanager and dispatcher skills, packaged as a Claude Code plugin.
 
-[Unreleased]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.16...HEAD
+[Unreleased]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.17...HEAD
+[0.3.17]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.16...v0.3.17
 [0.3.16]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.15...v0.3.16
 [0.3.15]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.14...v0.3.15
 [0.3.14]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.13...v0.3.14
