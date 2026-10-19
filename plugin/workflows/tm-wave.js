@@ -298,7 +298,7 @@ Model: ${model}
 The tm-wave workflow claimed this ${c.action} step for you: never run tm task start, and never claim or release any other node. Read tm guide ${role} and follow it from the step after its claim. Close the step with ${close(n, c)}${blocked}.
 Brief: tm render ${n.id} --view subagent${codegraph}${rules}${gate}${needs}
 Sections: before any tm section set, tm section get the same key. Append an entry to :merge; rewrite any other section whole, in the present tense, with every sentence it overrides gone.
-Waiting: never end your turn while a command you started in the background still runs; wait for it in the foreground, or with Monitor past 10 minutes, read its result, then close the step.
+Waiting: never end your turn while a command you started in the background still runs; wait for it in the foreground, or with Monitor past 10 minutes, read its result, then close the step. Run a build, gate or test that may run or queue for minutes as ${TM} task heartbeat ${n.id} -- <command>: it keeps the lease alive until the command exits, and exits with its code.
 Scratch files: write every script, log and temporary file under ${scratch} in your scratchpad directory (your temp directory if you have none), never at its top level; other agents share it, so never read, overwrite or delete anything outside that folder.`
 }
 

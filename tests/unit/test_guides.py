@@ -131,6 +131,9 @@ def _assert_command_exists(where: str, command: str) -> None:
     name, cmd, rest = _resolve(tokens)
     accepted = _accepted_flags(cmd)
     for token in rest:
+        if token == "--":
+            # What follows is the wrapped command's own arguments, not this command's flags.
+            break
         if not token.startswith("-"):
             continue
         flag = token.split("=", 1)[0]
@@ -191,6 +194,18 @@ def test_overview_carries_the_cycle_and_the_cutover_runbook() -> None:
 _ID = {"implement": "task-id", "fix": "node-id"}
 
 
+@pytest.mark.parametrize("topic", ["implement", "fix"])
+def test_implement_and_fix_guides_run_long_commands_under_a_heartbeat(topic: str) -> None:
+    """A lease that lapses while a build queues is swept, and the finished step cannot close."""
+    text = _guide_text(topic)
+    assert f"tm task heartbeat <{_ID[topic]}> -- <command>\n" in text
+    assert (
+        "every build, gate or test that may run or queue for more than a few minutes as the"
+        " command of the second form: it heartbeats every minute until the command exits, exits"
+        " with its code, and stops the command when the lease is gone." in text
+    )
+
+
 @pytest.mark.parametrize("topic", ["implement", "review", "fix"])
 def test_every_step_guide_waits_on_its_background_runs_before_ending_its_turn(topic: str) -> None:
     """An agent that ends its turn while a background run still goes loses the run and leaves
@@ -204,6 +219,11 @@ def test_every_step_guide_waits_on_its_background_runs_before_ending_its_turn(to
         or "| over 30 minutes | it is a condition, not a wait: release the step naming it" in wait
     )
     assert 'Never end your turn to wait on a background run "until notified."' in wait
+    assert (
+        "A command that waits inside itself (a build queued on a slot, a long test run) runs as"
+        f" `tm task heartbeat <{_ID.get(topic, 'node-id')}> -- <command>`, so the lease outlives"
+        " the wait." in wait
+    )
     never = text.split("## Never", 1)[1]
     assert (
         "while a command you started in the background still runs: wait for it, read its result,"

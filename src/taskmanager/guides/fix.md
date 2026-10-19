@@ -43,8 +43,11 @@ One commit per finding, or one commit naming them all — either way on the node
 
 ```
 tm task heartbeat <node-id>
+tm task heartbeat <node-id> -- <command>
 tm verify run <node-id> --ref tm/<node-id>
 ```
+
+A fix lease lasts `lease_ttl.fix` seconds (two hours by default), and only a heartbeat extends it. Run every build, gate or test that may run or queue for more than a few minutes as the command of the second form: it heartbeats every minute until the command exits, exits with its code, and stops the command when the lease is gone.
 
 Exit 1 names the failing rows. `No verifications to run.` exits 2 and is no evidence at all.
 
@@ -61,6 +64,8 @@ A gate, a build, an external state change — pick by duration, because duration
 | over 30 minutes | it is a condition, not a wait: `tm task release <node-id> --agent <name> --token <token> --blocked --needs "<what must hold>" --command "<a command that exits 0 once it holds>"` |
 
 Never end your turn to wait on a background run "until notified." A background command's completion notification reaches you only while you are still working — ending your turn is what loses it, and nothing resumes you afterward.
+
+A command that waits inside itself (a build queued on a slot, a long test run) runs as `tm task heartbeat <node-id> -- <command>`, so the lease outlives the wait.
 
 ## 4. Report
 

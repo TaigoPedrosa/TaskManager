@@ -5,6 +5,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+
+- A lease that lapsed while its agent's build queued for a slot was swept, and the finished step
+  could not close. `tm task heartbeat <node> -- <command>` runs the command, renews the lease
+  every minute until it exits and exits with its code; it stops the command when the claim it
+  started under no longer holds the lease. The implement, review and fix guides and every
+  tm-wave brief run a long build, gate or test that way.
+
 ## [0.3.17] - 2026-10-19
 
 ### Fixed

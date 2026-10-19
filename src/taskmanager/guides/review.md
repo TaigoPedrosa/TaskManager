@@ -89,6 +89,8 @@ A gate, a build, an external state change — pick by duration, because duration
 
 Never end your turn to wait on a background run "until notified." A background command's completion notification reaches you only while you are still working — ending your turn is what loses it, and nothing resumes you afterward.
 
+A command that waits inside itself (a build queued on a slot, a long test run) runs as `tm task heartbeat <node-id> -- <command>`, so the lease outlives the wait.
+
 ## 5. Record the findings
 
 Record each defect on the node, one per command, before you close the step:

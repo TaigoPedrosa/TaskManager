@@ -313,7 +313,7 @@ for (const [action, { before, during, after }] of Object.entries(STEPS)) {
     })
     const agents = () => (tm.set('T1', { status: after, next_action: null }), 'done')
     const { work } = await runWave({ args: ARGS, tm, agents })
-    assert.ok(work[0].prompt.includes('Waiting: never end your turn while a command you started in the background still runs; wait for it in the foreground, or with Monitor past 10 minutes, read its result, then close the step.'), work[0].prompt)
+    assert.ok(work[0].prompt.includes('Waiting: never end your turn while a command you started in the background still runs; wait for it in the foreground, or with Monitor past 10 minutes, read its result, then close the step. Run a build, gate or test that may run or queue for minutes as tm task heartbeat T1 -- <command>: it keeps the lease alive until the command exits, and exits with its code.'), work[0].prompt)
   })
 }
 

@@ -1536,10 +1536,20 @@ def task_release(
     print(f"[green]{node_id} is {status.value}[/green]")
 
 
+# Far inside any lease's TTL, so a command wrapped in `tm task heartbeat` never outlives its lease.
+_BEAT_SECONDS = 60
+
+
 @task_app.command("heartbeat")
 def task_heartbeat(
     node_id: Annotated[
         str | None, typer.Argument(help="Node ID (optional inside its worktree)")
+    ] = None,
+    command: Annotated[
+        list[str] | None,
+        typer.Argument(
+            help="After `--`, a command to run while the lease is kept alive; exits with its code"
+        ),
     ] = None,
     agent: Annotated[
         str | None,
@@ -1551,7 +1561,8 @@ def task_heartbeat(
     ] = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
-    """Extend the live lease on a node, inside its worktree with no id."""
+    """Extend the live lease on a node, inside its worktree with no id; with a command after
+    `--`, keep extending it until the command exits."""
     root = _get_root(path)
     runtime = _get_container(root).get(RuntimeRepository)
     tid = _resolve_task_id(runtime, node_id)
@@ -1561,10 +1572,32 @@ def task_heartbeat(
         if lease is not None:
             claims.own(tid, lease, agent, token)
         alive = claims.heartbeat(tid)
-    if not alive:
+    if not alive or lease is None:
         _stderr.print(f"[red]No live lease on {escape(tid)}[/red]")
         raise typer.Exit(code=1)
-    print(f"[green]Heartbeat recorded for {tid}[/green]")
+    if not command:
+        print(f"[green]Heartbeat recorded for {tid}[/green]")
+        return
+    proc = subprocess.Popen(command)
+    while True:
+        try:
+            raise typer.Exit(code=proc.wait(timeout=_BEAT_SECONDS))
+        except subprocess.TimeoutExpired:
+            pass
+        current = runtime.get_lease(tid)
+        try:
+            # Pinned to the claim it started under: a successor's lease is never extended.
+            if current is not None:
+                claims.own(tid, current, agent, lease.token)
+            if claims.heartbeat(tid):
+                continue
+            why = f"No live lease on {tid}"
+        except OperationError as exc:
+            why = str(exc)
+        proc.terminate()
+        proc.wait()
+        _stderr.print(f"[red]{escape(why)}: the command was stopped[/red]")
+        raise typer.Exit(code=1)
 
 
 @task_app.command("reopen")

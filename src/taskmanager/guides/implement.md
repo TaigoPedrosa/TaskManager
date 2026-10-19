@@ -51,9 +51,10 @@ Create, modify or delete nothing outside `declared_files`. Before touching anoth
 
 ```
 tm task heartbeat <task-id>
+tm task heartbeat <task-id> -- <command>
 ```
 
-An implement lease lasts `lease_ttl.implement` seconds (three hours by default). A refused heartbeat means the lease is gone and the step was swept back to `READY`: stop editing and report.
+An implement lease lasts `lease_ttl.implement` seconds (three hours by default), and only a heartbeat extends it: a lease that lapses while you work is swept, and the finished step can no longer close. Heartbeat between steps of the work, and run every build, gate or test that may run or queue for more than a few minutes as the command of the second form: it heartbeats every minute until the command exits, exits with its code, and stops the command when the lease is gone. A refused heartbeat means the lease is gone and the step was swept back to `READY`: stop editing and report.
 
 ## 5. Verify
 
@@ -86,6 +87,8 @@ A gate, a build, an external state change — pick by duration, because duration
 | over 30 minutes | it is a condition, not a wait: release the step naming it (below) |
 
 Never end your turn to wait on a background run "until notified." A background command's completion notification reaches you only while you are still working — ending your turn is what loses it, and nothing resumes you afterward.
+
+A command that waits inside itself (a build queued on a slot, a long test run) runs as `tm task heartbeat <task-id> -- <command>`, so the lease outlives the wait.
 
 ## Something outside this step must happen first
 

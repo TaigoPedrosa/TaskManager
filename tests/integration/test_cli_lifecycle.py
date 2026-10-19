@@ -5,6 +5,7 @@ import json
 import re
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -727,3 +728,78 @@ def test_an_implement_records_checks_and_notes_and_completes_once_none_stands_gr
         "note add",
         "check add",
     ]
+
+
+def _wrapped(root: Path, *args: str, script: str) -> Result:
+    """`tm task heartbeat <args> -- python -c <script>`, the script run with the estate's state.db
+    as its first argument."""
+    db = str(root / ".taskmanager" / "state.db")
+    cmd = [sys.executable, "-c", script, db]
+    return runner.invoke(app, ["task", "heartbeat", *args, "-C", str(root), "--", *cmd])
+
+
+# Reads the lease's heartbeat once the wrapped command starts, then exits 7 when a later
+# heartbeat moves it, or 3 when its 30-second hang guard runs out first.
+_SEES_A_HEARTBEAT = """
+import sqlite3, sys, time
+db = sqlite3.connect(sys.argv[1])
+hb = lambda: db.execute("SELECT last_heartbeat FROM leases WHERE task_id='S1-P1-a'").fetchone()[0]
+first = hb()
+end = time.monotonic() + 30
+while time.monotonic() < end:
+    if hb() != first:
+        sys.exit(7)
+    time.sleep(0.02)
+sys.exit(3)
+"""
+
+
+def test_heartbeat_keeps_the_lease_alive_while_its_command_runs_and_exits_with_its_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("taskmanager.cli.main._BEAT_SECONDS", 0.05)
+    estate(tmp_path)
+    code, step = start(tmp_path, "S1-P1-a")
+    assert code == 0
+    res = _wrapped(tmp_path, "S1-P1-a", "--token", step["token"], script=_SEES_A_HEARTBEAT)
+    assert res.exit_code == 7, res.output
+
+
+def test_heartbeat_runs_no_command_for_a_node_without_a_live_lease(tmp_path: Path) -> None:
+    estate(tmp_path)
+    ran = tmp_path / "ran"
+    res = _wrapped(tmp_path, "S1-P1-a", script=f"open({str(ran)!r}, 'w')")
+    assert res.exit_code == 1
+    assert "No live lease on S1-P1-a" in res.output
+    assert not ran.exists()
+
+
+@pytest.mark.parametrize(
+    ("change", "why"),
+    [
+        ("DELETE FROM leases WHERE task_id='S1-P1-a'", "No live lease on S1-P1-a"),
+        (
+            "UPDATE leases SET token='successor' WHERE task_id='S1-P1-a'",
+            "another claim holds it now",
+        ),
+    ],
+)
+def test_heartbeat_stops_its_command_once_the_lease_it_started_under_is_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str, why: str
+) -> None:
+    """Without `--token`, the wrapper still extends only the claim it started under."""
+    monkeypatch.setattr("taskmanager.cli.main._BEAT_SECONDS", 0.05)
+    estate(tmp_path)
+    assert start(tmp_path, "S1-P1-a")[0] == 0
+    script = (
+        "import sqlite3, sys, time\n"
+        "db = sqlite3.connect(sys.argv[1])\n"
+        f'db.execute("{change}")\n'
+        "db.commit()\n"
+        "time.sleep(10)\n"
+    )
+    began = time.monotonic()
+    res = _wrapped(tmp_path, "S1-P1-a", script=script)
+    assert res.exit_code == 1, res.output
+    assert why in res.output and "the command was stopped" in res.output
+    assert time.monotonic() - began < 10
