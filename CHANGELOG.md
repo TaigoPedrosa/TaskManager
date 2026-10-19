@@ -5,6 +5,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.15] - 2026-10-19
+
+### Changed
+
+- A review records each finding as a record with `tm finding add`, numbered and marked
+  `--blocking` or `--minor`, instead of writing the `review` section. `tm task review` takes
+  `--approve`, `--reject` or `--clean` and writes the verdict line from the findings left open; it
+  refuses a verdict with no finding recorded or reopened since the claim (unless `--clean`),
+  `--approve` while a blocking finding is open, and `--reject` while none is. `--verdict` is gone.
+- A fix answers each open finding with `tm finding close <n> --commit <sha>`, naming a commit its
+  branch adds, or `tm finding dispute <n> --evidence`, and `tm task complete` refuses while one is
+  open. A re-review opens one that still holds with `tm finding reopen`. A failed landing is
+  recorded as a blocking finding.
+- A review that approves with minor findings open lands the node first, then gives it one fix for
+  them, which lands without a review. With `fix` off they stay open, and the parent's brief lists
+  each completed child that left findings open.
+- `tm finding list` shows a node's findings; the web detail view, `tm export` and `tm restore`
+  carry them.
+
+### Upgrading
+
+- The state schema is 6: run `tm db migrate` once per estate.
+
 ## [0.3.14] - 2026-10-19
 
 ### Fixed
@@ -576,7 +599,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - A web visualizer with a live socket, and a static exporter.
 - The taskmanager and dispatcher skills, packaged as a Claude Code plugin.
 
-[Unreleased]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.14...HEAD
+[Unreleased]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.15...HEAD
+[0.3.15]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.14...v0.3.15
 [0.3.14]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.13...v0.3.14
 [0.3.13]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.12...v0.3.13
 [0.3.12]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.11...v0.3.12

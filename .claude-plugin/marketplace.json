@@ -9,7 +9,7 @@
     {
       "name": "taskmanager",
       "description": "Local agentic task tracker system powered by SQLite, DAG heuristics, worktrees and live visualizer",
-      "version": "0.3.14",
+      "version": "0.3.15",
       "source": "./plugin",
       "author": {
         "name": "Taígo Pedrosa"
