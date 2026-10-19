@@ -5,11 +5,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.14] - 2026-10-19
+
 ### Fixed
 
 - An implement is not claimed while another started node that declares one of its files has code
   that has not reached a branch it builds on. A lease locks files only while its step runs, so a
-  waiter claimed during the holder's review or landing was cut without the holder's change.
+  waiter claimed during the holder's review or landing was cut without the holder's change. Such
+  a waiter reads as `BLOCKED_BY_TASK`, naming the holder, until that code lands.
 
 ## [0.3.13] - 2026-10-16
 
@@ -573,7 +576,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - A web visualizer with a live socket, and a static exporter.
 - The taskmanager and dispatcher skills, packaged as a Claude Code plugin.
 
-[Unreleased]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.13...HEAD
+[Unreleased]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.14...HEAD
+[0.3.14]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.13...v0.3.14
 [0.3.13]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.12...v0.3.13
 [0.3.12]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.11...v0.3.12
 [0.3.11]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.10...v0.3.11
