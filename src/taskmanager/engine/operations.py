@@ -4,6 +4,7 @@ import re
 import subprocess
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
 from functools import cached_property
 from pathlib import Path
@@ -1009,19 +1010,28 @@ class Operations:
                 400,
             )
 
-        # With no ref asked for, each task is read where its chain lands at the top.
-        branch_for_node = (
-            None
-            if ref is not None
-            else {n: self.landing_branch(n, repo_for_node[n]) for n in {v.node_id for v in vers}}
-        )
-        results = self.verification_engine.verify_all(
-            vers,
-            repo_for_node,
-            ref,
-            branch_for_node,
-            timeout=ConfigStore(self._project_root()).project().verify_timeout,
-        )
+        # With no ref asked for, each task is read on its own branch until it lands, then where
+        # its chain lands at the top.
+        nodes = {v.node_id for v in vers}
+        branches = {n: self.landing_branch(n, repo_for_node[n]) for n in nodes}
+        refs = {n: ref if ref is not None else self._own_branch_ref(n, branches[n]) for n in nodes}
+        timeout = ConfigStore(self._project_root()).project().verify_timeout
+        results = [
+            self.verification_engine.verify_assertion(
+                v,
+                target_repo=repo_for_node[v.node_id],
+                ref=refs[v.node_id],
+                branch=branches[v.node_id],
+                timeout=timeout,
+            )
+            for v in vers
+        ]
+        for i, (v, r) in enumerate(zip(vers, results, strict=True)):
+            n = v.node_id
+            if r.passed or refs[n] is not None:
+                continue
+            if why := self._unread(n, repo_for_node[n], branches[n]):
+                results[i] = replace(r, message=f"{r.message}; {why}")
         all_passed = all(r.passed for r in results)
         self._ledger(
             LedgerCommand.VERIFICATION_RUN,
@@ -1029,6 +1039,26 @@ class Operations:
             payload={"passed": all_passed, "count": len(results)},
         )
         return all_passed, results
+
+    def _own_branch_ref(self, node_id: str, landing: str) -> str | None:
+        """`node_id`'s own branch, in its repository or a container's first; None while it does
+        not exist, or once `landing` (`<remote>/<landing>` with a remote) holds it."""
+        own = self._own_repo(node_id, None)
+        repo_dir = self._project_root() / (own or ".")
+        remote = ConfigStore(self._project_root()).branches().remote(own)
+        branch = self.branch_of(node_id)
+        landed = gitops.is_ancestor(repo_dir, branch, gitops.tracking(remote, landing))
+        return branch if gitops.rev_parse(repo_dir, branch) and not landed else None
+
+    def _unread(self, node_id: str, repo: str | None, landing: str) -> str | None:
+        """Why `node_id` has no ref to read, or None once its landing ref resolves."""
+        landed = self.verification_engine.landing_ref(repo, landing)
+        if gitops.rev_parse(self._project_root() / (repo or "."), landed):
+            return None
+        return (
+            f"no ref to read {node_id} at in {repo or '.'}: neither {self.branch_of(node_id)} "
+            f"nor {landed} resolves, so name one with --ref"
+        )
 
     def add_condition(
         self,

@@ -53,6 +53,12 @@ If the harness demands a permission for that mechanism which the session cannot 
 
 `tm wave discover --session <id> --slots <n> --max-strong <n>` offers what is claimable; `acceptable_models` and `review_models` route each step, and tm prints the model id with every claim, which the workflow runs the agent on; the brief is `tm render <task-id> --view subagent`, with nothing added to it. `tm run list --yaml` is what is in flight. `tm task defer`, `tm task supersede` and `tm task reopen` are how a plan changes shape.
 
+## Before a review is claimed
+
+- Before claiming a review, compare the step's `tm check list` with the guards in its diff. A missing row sends the step back to its implementer; a reviewer is never the first one to run a deletion.
+- A ruling the owner or the dispatcher makes on a task becomes an acceptance line and a verification row in that task before its next step is claimed. A ruling that exists only in `:context` does not bind a review.
+- When an implementer reports a contradiction in the brief, fix the brief before the review is claimed, and tell the blind reviewer which brief lines changed. A review never rejects for a contradiction the brief still holds.
+
 ## Shared outputs and contract decisions
 
 - When tasks share an output directory, the brief names each task's owned paths and forbids deleting anything else.

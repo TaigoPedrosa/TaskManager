@@ -145,6 +145,26 @@ def changed_files(repo: Path, base: str, branch: str) -> list[str]:
     return res.stdout.split("\0")[:-1] if res.returncode == 0 else []
 
 
+def unified_diff(repo: Path, base: str, branch: str) -> str:
+    """`branch`'s changes against its merge base with `base`, with no context lines; empty on a
+    git error, as `changed_files` reads one."""
+    return _git(
+        repo,
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "-U0",
+        "--no-color",
+        "--no-ext-diff",
+        f"{base}...{branch}",
+    ).stdout
+
+
+def show(repo: Path, ref: str, path: str) -> str:
+    """`path`'s content at `ref`, or "" when `ref` holds no such file (a submodule's path)."""
+    return _git(repo, "show", f"{ref}:{path}").stdout
+
+
 def tracking(remote: str | None, branch: str) -> str:
     """Where `branch` is read: its remote-tracking ref, or with no remote the local branch."""
     return f"{remote}/{branch}" if remote else branch

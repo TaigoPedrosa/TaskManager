@@ -18,3 +18,8 @@ def parse_db_datetime(val: str | datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=UTC)
     return dt.astimezone(UTC)
+
+
+def lease_alive(ttl: int | None, last_heartbeat: datetime, now: datetime) -> bool:
+    # A null TTL is a landing job stopped for an agent: its lease holds until the agent resumes.
+    return ttl is None or (now - last_heartbeat).total_seconds() <= ttl

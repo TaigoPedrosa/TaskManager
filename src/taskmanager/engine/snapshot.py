@@ -31,7 +31,8 @@ from taskmanager.db.node_repo import (
     is_locked_path,
     locked_key,
 )
-from taskmanager.db.runtime_repo import RuntimeRepository, lease_alive
+from taskmanager.db.runtime_repo import RuntimeRepository
+from taskmanager.db.utils import lease_alive
 from taskmanager.engine.chains import landing_chain, satisfied
 from taskmanager.engine.config import ConfigStore, ProjectConfig
 from taskmanager.engine.stepgraph import SnapNode, Snapshot, migration_holders

@@ -156,10 +156,12 @@ class FindingSource(StrEnum):
 
 
 class CheckResult(StrEnum):
-    """What the suite did with one deletion in place: `red` names the test that failed."""
+    """What the suite did with one deletion in place: `red` names the test that failed;
+    `waived` is a diff line read as a guard that is none, and names why no test can fail."""
 
     RED = "red"
     GREEN = "green"
+    WAIVED = "waived"
 
 
 class FindingState(StrEnum):

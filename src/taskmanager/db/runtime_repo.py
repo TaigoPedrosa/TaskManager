@@ -6,7 +6,7 @@ from taskmanager.core.enums import LockType
 from taskmanager.core.models import FileLock, Lease, LeaseAction, Node
 from taskmanager.core.status import Action, Status
 from taskmanager.db.connection import DatabaseManager
-from taskmanager.db.utils import parse_db_datetime, to_db_timestamp
+from taskmanager.db.utils import lease_alive, parse_db_datetime, to_db_timestamp
 
 _LEASE_COLUMNS = (
     "task_id, agent_id, session_id, account_id, worktree_path, branch_name, acquired_at, "
@@ -15,11 +15,6 @@ _LEASE_COLUMNS = (
 _INSERT_LEASE = (
     f"INSERT INTO leases ({_LEASE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
-
-
-def lease_alive(ttl: int | None, last_heartbeat: datetime, now: datetime) -> bool:
-    # A null TTL is a landing job stopped for an agent: its lease holds until the agent resumes.
-    return ttl is None or (now - last_heartbeat).total_seconds() <= ttl
 
 
 def _lease_row(lease: Lease) -> tuple[object, ...]:

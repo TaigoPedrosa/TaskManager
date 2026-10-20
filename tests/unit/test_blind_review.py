@@ -41,11 +41,17 @@ def root(tmp_path: Path) -> Path:
         Check(node_id=TASK, deleted="a.py:guard", result=CheckResult.RED, test="test_guard")
     )
     ops.node_repo.add_check(Check(node_id=TASK, deleted="a.py:escape", result=CheckResult.GREEN))
+    ops.node_repo.add_check(
+        Check(node_id=TASK, deleted="a.py:7", result=CheckResult.WAIVED, test="a log line")
+    )
     ops.node_repo.add_note(Note(node_id=TASK, text="the implementer's note"))
     return tmp_path
 
 
-CHECKS = "### Checks\n- #1 `a.py:guard`: red, `test_guard` failed\n- #2 `a.py:escape`: green\n\n"
+CHECKS = (
+    "### Checks\n- #1 `a.py:guard`: red, `test_guard` failed\n- #2 `a.py:escape`: green\n"
+    "- #3 `a.py:7`: waived: a log line\n\n"
+)
 NOTES = "### Notes\n- the implementer's note\n"
 
 

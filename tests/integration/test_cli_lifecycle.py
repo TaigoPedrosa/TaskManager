@@ -695,9 +695,15 @@ def test_an_implement_records_checks_and_notes_and_completes_once_none_stands_gr
     estate(tmp_path)
     start(tmp_path, "S1-P1-a")
     deleted = ("--deleted", "core/a.py:guard")
-    for flags in ((), ("--red", "test_guard", "--green")):
+    for flags in (
+        (),
+        ("--red", "test_guard", "--green"),
+        ("--green", "--waive", "no guard"),
+        ("--red", "test_guard", "--waive", "no guard"),
+    ):
         res = tm(tmp_path, "check", "add", "S1-P1-a", *deleted, *flags)
-        assert res.exit_code == 2 and "exactly one of --red <test> or --green" in res.output
+        assert res.exit_code == 2, res.output
+        assert "exactly one of --red <test>, --green or --waive <why>" in res.output
     green = tm(tmp_path, "check", "add", "S1-P1-a", *deleted, "--green")
     assert (green.exit_code, green.stdout.strip()) == (0, "1")
     note = tm(tmp_path, "note", "add", "S1-P1-a", "verify row 1 red: the gate needs docker")
@@ -707,12 +713,15 @@ def test_an_implement_records_checks_and_notes_and_completes_once_none_stands_gr
     assert refused.exit_code == 1 and "left every test passing: core/a.py:guard" in refused.output
     red = tm(tmp_path, "check", "add", "S1-P1-a", *deleted, "--red", "test_guard")
     assert (red.exit_code, red.stdout.strip()) == (0, "2")
+    waived = tm(tmp_path, "check", "add", "S1-P1-a", "--deleted", "core/b.py:3", "--waive", "a log")
+    assert (waived.exit_code, waived.stdout.strip()) == (0, "3")
     assert tm(tmp_path, "task", "complete", "S1-P1-a").exit_code == 0
 
     doc = get(tmp_path, "S1-P1-a")
     assert doc["checks"] == [
         {"number": 1, "deleted": "core/a.py:guard", "result": "green", "test": None},
         {"number": 2, "deleted": "core/a.py:guard", "result": "red", "test": "test_guard"},
+        {"number": 3, "deleted": "core/b.py:3", "result": "waived", "test": "a log"},
     ]
     assert doc["notes"] == ["verify row 1 red: the gate needs docker"]
     listed = json.loads(tm(tmp_path, "check", "list", "S1-P1-a", "--json").stdout)
@@ -726,6 +735,7 @@ def test_an_implement_records_checks_and_notes_and_completes_once_none_stands_gr
         assert missing.exit_code == 1 and "S1-P1-z" in missing.output
     events = json.loads(tm(tmp_path, "audit", "list", "--json").stdout)
     assert [e["command"] for e in events if e["command"].split()[0] in ("check", "note")] == [
+        "check add",
         "check add",
         "note add",
         "check add",

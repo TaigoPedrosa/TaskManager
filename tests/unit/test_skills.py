@@ -67,3 +67,26 @@ def test_dispatcher_skill_runs_waves_through_tm_wave() -> None:
         "disjoint",
     ):
         assert needle in content, needle
+
+
+def test_dispatcher_skill_settles_the_brief_and_the_checks_before_a_review_is_claimed() -> None:
+    content = (REPO / "plugin/skills/dispatcher/SKILL.md").read_text(encoding="utf-8")
+    section = content.split("## Before a review is claimed\n", 1)[1].split("\n## ", 1)[0]
+    for line in (
+        (
+            "- Before claiming a review, compare the step's `tm check list` with the guards in its"
+            " diff. A missing row sends the step back to its implementer; a reviewer is never the"
+            " first one to run a deletion."
+        ),
+        (
+            "- A ruling the owner or the dispatcher makes on a task becomes an acceptance line and"
+            " a verification row in that task before its next step is claimed. A ruling that"
+            " exists only in `:context` does not bind a review."
+        ),
+        (
+            "- When an implementer reports a contradiction in the brief, fix the brief before the"
+            " review is claimed, and tell the blind reviewer which brief lines changed. A review"
+            " never rejects for a contradiction the brief still holds."
+        ),
+    ):
+        assert line in section, line

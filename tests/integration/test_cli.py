@@ -417,8 +417,9 @@ def test_cli_verify_run_reads_a_branch_ref_before_merge(tmp_path: Path) -> None:
     )
 
     unmerged = runner.invoke(app, ["verify", "run", "SPR-PLR-TR", "--path", str(tmp_path)])
-    assert unmerged.exit_code == 1
-    assert "FAILED" in unmerged.stdout
+    assert unmerged.exit_code == 0, unmerged.output
+    assert "PASSED" in unmerged.stdout
+    assert "git ref tm/SPR-PLR-TR in myrepo" in unmerged.stdout
 
     on_branch = runner.invoke(
         app,

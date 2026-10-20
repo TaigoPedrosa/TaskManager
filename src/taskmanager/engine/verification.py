@@ -224,16 +224,20 @@ class VerificationEngine:
         if target_repo and ver.verification_type in _PATH_VERIFICATION_TYPES:
             return self._verify_at_ref(ver, target_repo, ref, branch or DEFAULT_BRANCH)
         if ref is None and branch is not None:
-            repo_root = self.root / (target_repo or ".")
-            remote, default = self._remote(target_repo), self._default(target_repo)
-            # Fetched like the path checks read it, so a branch that exists only on the remote is
-            # not taken for one nothing has created.
-            gitops.fetch(repo_root, remote, branch)
-            if _unborn(repo_root, remote, branch, default):
-                branch = default
-                gitops.fetch(repo_root, remote, branch)
-            ref = gitops.tracking(remote, branch)
+            ref = self.landing_ref(target_repo, branch)
         return self._verify_in_tree(ver, ref, timeout)
+
+    def landing_ref(self, target_repo: str | None, branch: str) -> str:
+        """`<remote>/<branch>`, or the default branch's while `branch` does not exist yet."""
+        repo_root = self.root / (target_repo or ".")
+        remote, default = self._remote(target_repo), self._default(target_repo)
+        # Fetched like the path checks read it, so a branch that exists only on the remote is
+        # not taken for one nothing has created.
+        gitops.fetch(repo_root, remote, branch)
+        if _unborn(repo_root, remote, branch, default):
+            branch = default
+            gitops.fetch(repo_root, remote, branch)
+        return gitops.tracking(remote, branch)
 
     def _remote(self, target_repo: str | None) -> str | None:
         return ConfigStore(self.root).branches().remote(target_repo)

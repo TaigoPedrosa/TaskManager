@@ -5,6 +5,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Changed
+
+- `tm task complete` on an implement or fix step refuses while a guard its diff adds or changes
+  outside test files (a condition and each `&&`/`||` operand, an early return, a `catch`, a field
+  assignment, a list element, in Java, Kotlin, TypeScript, JavaScript and Python) has no
+  `tm check add` record naming its `<file>:<line>`, and lists each such site. A line read as a
+  guard that is none is recorded with `tm check add --deleted <file>:<line> --waive <why>`.
+- `state.db` moves to schema 8, whose checks accept the `waived` result. Run `tm db migrate`
+  once in each existing project.
+- `tm db migrate` refuses while any lease is live, naming each node and agent holding one.
+- `tm finding add` refuses a finding the node already holds at the same `--at` with the same
+  `--breaks`, naming its number, and sends one already answered to `tm finding reopen`.
+- `tm verify run` with no `--ref` reads a node at its own branch until that branch lands, then
+  where its chain lands, and exports that ref as `TM_VERIFY_REF`. A row that fails where neither
+  resolves names both refs.
+- The review guide runs the parent plan's verification rows that name a file in the task's diff,
+  runs a test class that waits on a broker, a socket or a container three times, and files as
+  blocking only a gap against the brief, the stack's skill or the profile CLAUDE.md. The
+  dispatcher skill checks a step's red-check records and settles rulings and brief
+  contradictions before a review is claimed.
+
 ## [0.3.19] - 2026-10-19
 
 ### Fixed

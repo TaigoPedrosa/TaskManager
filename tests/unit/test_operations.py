@@ -338,7 +338,10 @@ def test_run_verifications_stops_a_test_command_at_the_configured_timeout(
     all_passed, results = ops.run_verifications(task_id)
 
     assert all_passed is False
-    assert results[0].message == "Test command timed out after 1s"
+    assert results[0].message == (
+        "Test command timed out after 1s; no ref to read S1-P1-T1 at in .: neither tm/S1-P1-T1 "
+        "nor origin/main resolves, so name one with --ref"
+    )
 
 
 def test_run_verifications_empty_set_refuses(ops_setup: tuple) -> None:

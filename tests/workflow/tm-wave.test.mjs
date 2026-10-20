@@ -886,7 +886,7 @@ test('a container fix across repositories names the worktree tm cut in each', as
   assert.ok(!work[0].prompt.includes('worktree add'))
 })
 
-const REPORT_RECORDS = 'Report: record each red-check deletion with tm check add T1 --agent wf-s1-T1 --token k1 --deleted "<file>:<symbol>" --red <test>, or --green when every test still passed, and anything else as one line with tm note add T1 --agent wf-s1-T1 --token k1 "<line>".'
+const REPORT_RECORDS = 'Report: record each red-check deletion with tm check add T1 --agent wf-s1-T1 --token k1 --deleted "<file>:<line>" --red <test>, once per && or || operand, --green when every test still passed, or --waive "<why>" for a line that is no guard, and anything else as one line with tm note add T1 --agent wf-s1-T1 --token k1 "<line>".'
 
 const OPEN_FINDINGS = 'Findings: every one tm finding list T1 --open shows, a failed landing\'s included. Fix each one, commit on the branch, and answer each with tm finding close T1 <n> --agent wf-s1-T1 --token k1 --commit <sha>, or tm finding dispute T1 <n> --agent wf-s1-T1 --token k1 --evidence "<what was read>".'
 for (const outcome of ['merge_failed', 'reject', 'approve']) {

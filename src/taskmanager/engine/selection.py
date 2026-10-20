@@ -25,7 +25,7 @@ from taskmanager.core.status import (
     Status,
 )
 from taskmanager.db.cache_repo import _command_hash
-from taskmanager.db.runtime_repo import lease_alive
+from taskmanager.db.utils import lease_alive
 from taskmanager.engine.chains import satisfied
 from taskmanager.engine.config import STRONG_MODELS, ModelsConfig, ProjectConfig
 from taskmanager.engine.routing import model_for

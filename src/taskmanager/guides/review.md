@@ -73,6 +73,8 @@ A test that fails on the branch rejects the node, whichever task declared the te
 
 Run every check the acceptance lists. A check you could not run is named in the findings as not run, and the node is not approved over it. A test that only searches source text is not evidence for an acceptance line about behaviour; name it in the findings.
 
+A task review also runs every verification row of the parent plan that names a file in the task's diff. A test class that waits on a broker, a socket or a container runs three times; a single red run is a blocking finding. A re-review runs only the rows its findings name.
+
 Every acceptance line about behaviour is proven by breaking it: in your detached worktree, change the production line that makes it true, run its test, watch it go red, then restore the line. Choose what to break from the acceptance, never from the tests. A limit is broken from both sides; two paths the acceptance names separately are broken one at a time, and each break turns only its own test red. An acceptance line no break turns red is a finding. Name each break and the test it turned red in the review.
 
 A UI node's behaviour lines are checked by driving them in the running app: the write and its feedback, the focus after it, the keyboard route, a live update mid-edit, a reload. A screenshot beside the frame shows the look and proves none of them.
@@ -104,9 +106,11 @@ Each prints the finding's number, which the fix answers it by. `--at` names wher
 
 Every finding carries a severity, and every defect is recorded, however small: the severity decides only whether it holds the landing.
 
-- `--blocking`: the node must not land as it is. An acceptance line not met, a check that fails or was not run, a behaviour defect, a tenant, security or data-loss risk, a rule the brief marks as blocking.
+A reviewer files as blocking only a gap against the brief, the stack's skill or the profile CLAUDE.md, and cites the line. Any other gap is filed minor with the rule it proposes. A question the brief does not answer is a decision, not a finding. A re-review files neither kind outside the findings it re-reads (§3).
+
+- `--blocking`: the node must not land as it is, and `--breaks` cites the line of the brief, the skill or the profile CLAUDE.md it breaks. An acceptance line not met, a check that fails or was not run, a behaviour defect, a tenant, security or data-loss risk one of them names, a rule the brief marks as blocking.
 - `--minor`: landing as it is breaks nothing. Dead code, naming, a comment, test tidiness. A minor finding never holds the landing, and it is still fixed: after the node lands, its fix answers every minor finding left open.
-- When in doubt, it is blocking.
+- When in doubt whether a gap against one of those holds the landing, it is blocking.
 
 `tm finding list <node-id>` shows earlier rounds' findings with their answers. A closed or disputed one that still holds is opened again with `tm finding reopen`, never recorded a second time.
 

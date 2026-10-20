@@ -18,6 +18,7 @@ from taskmanager.db.schema import (
     STATE_SCHEMA_VERSION,
     vec_nodes_sql,
 )
+from taskmanager.db.utils import lease_alive, parse_db_datetime
 
 _SQLITE_HEADER = b"SQLite format 3\x00"
 # The database files a pre-lifecycle tm kept; an archive moves each with its WAL and shared memory.
@@ -51,6 +52,15 @@ class StateNotInitialized(Exception):
         super().__init__(f"{state_db} holds no estate: run `tm init` first")
 
 
+class LeasesHeld(Exception):
+    def __init__(self, leases: list[str]) -> None:
+        super().__init__(
+            f"state.db was not migrated: {', '.join(leases)} still hold a lease, and a step in "
+            "flight would lose its next tm command to the new schema. Migrate once each closes, "
+            "is released, or lapses past its TTL"
+        )
+
+
 class StateSchemaTooOld(Exception):
     def __init__(self, found: int, backup: Path) -> None:
         super().__init__(
@@ -72,6 +82,18 @@ def _statements(script: str) -> list[str]:
             buf = ""
     assert not buf.strip(), f"incomplete statement left over: {buf!r}"
     return statements
+
+
+def _live_leases(conn: sqlite3.Connection) -> list[str]:
+    """Each lease still live, as `<node> (<agent>)`: a lapsed one holds nothing."""
+    now = datetime.now(tz=UTC)
+    return [
+        f"{task_id} ({agent})"
+        for task_id, agent, ttl, beat in conn.execute(
+            "SELECT task_id, agent_id, ttl_seconds, last_heartbeat FROM leases ORDER BY task_id"
+        )
+        if lease_alive(ttl, parse_db_datetime(beat), now)
+    ]
 
 
 def _is_sqlite(path: Path) -> bool:
@@ -188,6 +210,9 @@ class DatabaseManager:
             if version > STATE_SCHEMA_VERSION:
                 raise StateSchemaTooNew(version)
             if version < STATE_SCHEMA_VERSION:
+                held = _live_leases(conn)
+                if held:
+                    raise LeasesHeld(held)
                 self._back_up_state(version)
             for target in range(version + 1, STATE_SCHEMA_VERSION + 1):
                 # Not `executescript`: it commits whatever transaction is already open before

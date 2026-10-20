@@ -156,12 +156,16 @@ class Check(BaseModel):
     number: int = 0
     deleted: str = Field(pattern=r"\S")
     result: CheckResult
+    # The test that failed, for a red check; why no test can, for a waived one.
     test: str | None = None
 
     @model_validator(mode="after")
     def _red_names_its_test(self) -> Self:
-        if (self.result == CheckResult.RED) != bool(self.test and self.test.strip()):
-            raise ValueError("a red check names the test that failed; a green one names none")
+        if (self.result == CheckResult.GREEN) == bool(self.test and self.test.strip()):
+            raise ValueError(
+                "a red check names the test that failed and a waived one why; a green one "
+                "names none"
+            )
         return self
 
 

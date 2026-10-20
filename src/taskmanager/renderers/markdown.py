@@ -2,8 +2,8 @@ import json
 from typing import Any
 
 from taskmanager.core.enums import NodeKind, RelationType, RenderView
-from taskmanager.core.models import Node
-from taskmanager.core.status import DecisionStatus, FindingState, Status
+from taskmanager.core.models import Check, Node
+from taskmanager.core.status import CheckResult, DecisionStatus, FindingState, Status
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.engine.decisions import read_decision
 from taskmanager.engine.snapshot import display_view, stored_status
@@ -151,11 +151,7 @@ class MarkdownRenderer:
                 "\n".join(
                     [
                         "### Checks",
-                        *(
-                            f"- #{c.number} `{c.deleted}`: "
-                            + (f"red, `{c.test}` failed" if c.test else "green")
-                            for c in checks
-                        ),
+                        *(f"- #{c.number} `{c.deleted}`: " + _check_result(c) for c in checks),
                     ]
                 )
             )
@@ -230,3 +226,11 @@ class MarkdownRenderer:
                 (node_id, RelationType.CONTAINS.value),
             ).fetchall()
             return [r[0] for r in rows]
+
+
+def _check_result(c: Check) -> str:
+    if c.result == CheckResult.RED:
+        return f"red, `{c.test}` failed"
+    if c.result == CheckResult.WAIVED:
+        return f"waived: {c.test}"
+    return "green"

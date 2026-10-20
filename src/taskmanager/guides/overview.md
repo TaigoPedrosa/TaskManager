@@ -51,7 +51,7 @@ set by a verb, from any stable status but COMPLETED: DEFERRED, ABANDONED, SUPERS
 
 | `action` | Claimed from | Locks the declared files | Closed with |
 |:--|:--|:--|:--|
-| `implement` | `READY` | yes | `tm task complete <id> --agent <name> --token <token>`, over the deletions `tm check add` recorded and the lines `tm note add` left; refused while a deletion's latest check is green |
+| `implement` | `READY` | yes | `tm task complete <id> --agent <name> --token <token>`, over the deletions `tm check add` recorded and the lines `tm note add` left; refused while a deletion's latest check is green, or while a guard the step's diff adds outside test files has no check naming its `<file>:<line>` |
 | `review` | `IMPLEMENTED` for a task, `LANDED` for a plan or spec, `FIXED` for a sensitive node | no | `tm task review <id> --agent <name> --token <token> --approve`, or `--reject`, over the findings `tm finding add` recorded, or `--clean` |
 | `fix` | `REVIEWED` | yes | `tm task complete <id> --agent <name> --token <token>`, refused while a finding is open or a deletion's latest check is green |
 | `merge` | `IMPLEMENTED`, `REVIEWED`, `FIXED` | no | nothing: tm lands it as a job, and hands the job to an agent only when it stops |
@@ -132,7 +132,7 @@ None of these touches a node mid-step: wait for the step to end, or stop it.
 
 ## Verification
 
-`tm verify run` reads `file_exists` and `file_absent` from a ref of the node's `target_repo`, never a working tree, and runs every `test_command` from the project root with that ref exported as `TM_VERIFY_REF`. A `test_command` still running after 600 seconds is killed, with everything it started, and fails. With no `--ref`, it reads each task at `<remote>/<the branch its spec lands on>`, fetched first, or at the repository's default branch while that branch does not exist yet (a spec's `land_on` before its first landing creates it); `--ref tm/<id>` reads the node's own branch, with no fetch. A landing runs the node's verifications with `--ref` set to its target, so a `test_command` reads `"${TM_VERIFY_REF:-origin/main}"` rather than naming a branch; tm refuses a `test_command` that names `origin/main` itself on a node read anywhere else: one landing on its parent, or under a spec whose target is not `main`.
+`tm verify run` reads `file_exists` and `file_absent` from a ref of the node's `target_repo`, never a working tree, and runs every `test_command` from the project root with that ref exported as `TM_VERIFY_REF`. A `test_command` still running after 600 seconds is killed, with everything it started, and fails. With no `--ref`, it reads each task at its own branch `tm/<id>` until the node lands there, then at `<remote>/<the branch its spec lands on>`, fetched first, or at the repository's default branch while that branch does not exist yet (a spec's `land_on` before its first landing creates it), and a row that fails where neither resolves names both; `--ref tm/<id>` reads the node's own branch, with no fetch. A landing runs the node's verifications with `--ref` set to its target, so a `test_command` reads `"${TM_VERIFY_REF:-origin/main}"` rather than naming a branch; tm refuses a `test_command` that names `origin/main` itself on a node read anywhere else: one landing on its parent, or under a spec whose target is not `main`.
 
 `No verifications to run` exits 2: nothing was checked, and that is not a pass. A landing with nothing to verify lands and says so in `:merge`.
 

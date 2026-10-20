@@ -74,6 +74,7 @@ const BODIES = {
       { number: 1, deleted: 'a.py:<b>guard</b>', result: 'green', test: null },
       { number: 2, deleted: 'a.py:escape', result: 'green', test: null },
       { number: 3, deleted: 'a.py:<b>guard</b>', result: 'red', test: 'test_<b>guard</b>' },
+      { number: 4, deleted: 'a.py:12', result: 'waived', test: 'a <b>log</b> line, no guard' },
     ],
     notes: ['verify row 1 <b>red</b>'],
     steps: [
@@ -180,7 +181,7 @@ const EXPECTED_GROUPS = {
     { group: 'dependents', header: 'Dependents 1', open: false },
     { group: 'steps', header: 'Steps 4', open: true },
     { group: 'findings', header: 'Findings 2', open: true },
-    { group: 'checks', header: 'Checks 3', open: true },
+    { group: 'checks', header: 'Checks 4', open: true },
     { group: 'notes', header: 'Notes 1', open: false },
     { group: 'conditions', header: 'Conditions 1', open: false },
     { group: 'jobs', header: 'Jobs 1', open: false },
@@ -300,7 +301,7 @@ test('a finding row reads its number, severity, where, what breaks escaped, stat
   assert.ok(text(header).endsWith('1 open'), text(header));
 });
 
-test('a check row reads its number, deletion, result and test escaped, and the header counts the deletions still green', async () => {
+test('a check row reads its number, deletion, result and test or waiver escaped, and the header counts the deletions still green', async () => {
   const page = await openAt('/graph/T');
   const rows = page.$$('#inspector-body [data-group="checks"] [data-check]');
   const cells = (r) => [...r.children].map((c) => text(c));
@@ -308,6 +309,7 @@ test('a check row reads its number, deletion, result and test escaped, and the h
     ['#1', 'a.py:<b>guard</b>', 'green', ''],
     ['#2', 'a.py:escape', 'green', ''],
     ['#3', 'a.py:<b>guard</b>', 'red', 'test_<b>guard</b>'],
+    ['#4', 'a.py:12', 'waived', 'a <b>log</b> line, no guard'],
   ]);
   assert.equal(page.$('#inspector-body [data-group="checks"] b'), null);
   assert.ok(rows[1].children[2].className.includes('text-amber-400'), rows[1].children[2].className);

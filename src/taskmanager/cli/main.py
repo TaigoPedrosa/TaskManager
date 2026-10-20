@@ -53,6 +53,7 @@ from taskmanager.core.status import (
 )
 from taskmanager.db.connection import (
     DatabaseManager,
+    LeasesHeld,
     StateNotInitialized,
     StateSchemaTooNew,
     StateSchemaTooOld,
@@ -1263,7 +1264,10 @@ _TokenOption = Annotated[
 def check_add(
     node_id: str,
     deleted: Annotated[
-        str, typer.Option("--deleted", help="What was deleted: <file>:<symbol>, one branch")
+        str,
+        typer.Option(
+            "--deleted", help="What was deleted: <file>:<line> of the diff, one operand or branch"
+        ),
     ],
     red: Annotated[
         str | None, typer.Option("--red", help="The test that failed with it deleted")
@@ -1271,16 +1275,20 @@ def check_add(
     green: Annotated[
         bool, typer.Option("--green", help="Every test still passed with it deleted")
     ] = False,
+    waive: Annotated[
+        str | None,
+        typer.Option("--waive", help="The line is no guard: why no test can fail without it"),
+    ] = None,
     agent: _AgentOption = None,
     token: _TokenOption = None,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     """Record one red-check deletion of the implement or fix step holding the node."""
-    if (red is None) != green:
-        raise typer.BadParameter("give exactly one of --red <test> or --green")
+    if [red is not None, green, waive is not None].count(True) != 1:
+        raise typer.BadParameter("give exactly one of --red <test>, --green or --waive <why>")
     with _refusing():
         added = _claims(_get_root(path), agent).add_check(
-            node_id, deleted, red, agent=agent, token=token
+            node_id, deleted, red, agent=agent, token=token, waived=waive
         )
     print(added.number)
 
@@ -2141,8 +2149,9 @@ def verify_run(
             "--ref",
             help=(
                 "Git ref to check the task's path verifications against (e.g. tm/<task-id>), "
-                "read as-is with no fetch. Default: <remote>/<the branch the task's chain lands "
-                "on>, fetched first, or that local branch with no remote. Exported to a test_command as TM_VERIFY_REF either way."
+                "read as-is with no fetch. Default: the node's own branch tm/<task-id> until it "
+                "lands, then <remote>/<the branch the task's chain lands on>, fetched first, or "
+                "that local branch with no remote. Exported to a test_command as TM_VERIFY_REF either way."
             ),
         ),
     ] = None,
@@ -3335,6 +3344,9 @@ def db_migrate(
         _stderr.print(
             f"[red]Error:[/red] TaskManager is not initialized in {root}. Run 'tm init' first."
         )
+        raise typer.Exit(code=1) from None
+    except LeasesHeld as exc:
+        _stderr.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(code=1) from None
     if found is None:
         print(f"state.db is current at schema {STATE_SCHEMA_VERSION}: nothing to migrate")

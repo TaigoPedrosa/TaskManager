@@ -1,6 +1,7 @@
 import hashlib
 import sqlite3
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -149,3 +150,49 @@ def test_migrate_help_names_the_backup_path(
 
     assert code == 0
     assert ".taskmanager/state.db.schema<n>.bak" in out
+
+
+def _lease(state_db: Path, node_id: str, agent: str, ttl: int | None, beat: datetime) -> None:
+    conn = sqlite3.connect(state_db)
+    try:
+        conn.execute(
+            "INSERT INTO leases (task_id, agent_id, session_id, branch_name, last_heartbeat, "
+            "ttl_seconds, token) VALUES (?, ?, 's1', ?, ?, ?, ?)",
+            (node_id, agent, f"tm/{node_id}", beat.isoformat(), ttl, f"tok-{node_id}"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_migrate_refuses_while_a_lease_is_live_naming_each_and_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    v2_estate = _v2_estate(tmp_path)
+    state_db = v2_estate / ".taskmanager" / "state.db"
+    now = datetime.now(tz=UTC)
+    _lease(state_db, "T01", "implementer-1", 300, now)
+    _lease(state_db, "T02", "lander", None, now - timedelta(days=1))
+    _lease(state_db, "T03", "gone", 300, now - timedelta(hours=1))
+    before = _sha256(state_db.read_bytes())
+
+    code, out = _tm(["db", "migrate", "-C", str(v2_estate)], monkeypatch, capsys)
+
+    assert code == 1
+    assert out == (
+        "state.db was not migrated: T01 (implementer-1), T02 (lander) still hold a lease, and a "
+        "step in flight would lose its next tm command to the new schema. Migrate once each "
+        "closes, is released, or lapses past its TTL"
+    )
+    assert _user_version(state_db) == 2
+    assert _sha256(state_db.read_bytes()) == before
+    assert sorted(p.name for p in state_db.parent.iterdir()) == ["state.db"]
+
+    conn = sqlite3.connect(state_db)
+    try:
+        conn.execute("DELETE FROM leases WHERE task_id IN ('T01', 'T02')")
+        conn.commit()
+    finally:
+        conn.close()
+    assert _tm(["db", "migrate", "-C", str(v2_estate)], monkeypatch, capsys)[0] == 0
+    assert _user_version(state_db) == STATE_SCHEMA_VERSION

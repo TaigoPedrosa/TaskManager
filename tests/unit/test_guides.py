@@ -241,10 +241,14 @@ def test_implement_and_fix_guides_delete_each_guard_and_watch_a_test_turn_red(to
         " test turns red. A deletion that stays green gets a test before the step closes, and a"
         " filter a mock stands in for (a repository query, an HTTP route) gets a test through the"
         " real component. Record each deletion as it runs: `tm check add <ID> --agent <name>"
-        " --token <token> --deleted <file>:<symbol> --red <test>`, or `--green` in place of"
-        " `--red` when every test still passed. A green one is answered by the test you then add"
-        " and a `--red` record of the same `--deleted`: `tm task complete` refuses while a"
-        " deletion's latest record is green.\n".replace("<ID>", f"<{_ID[topic]}>")
+        " --token <token> --deleted <file>:<line> --red <test>`, once per `&&` or `||` operand,"
+        " or `--green` in place of `--red` when every test still passed. A green one is answered"
+        " by the test you then add and a `--red` record of the same `--deleted`: `tm task"
+        " complete` refuses while a deletion's latest record is green, and while a guard the diff"
+        " adds or changes outside test files (a condition and each of its operands, an early"
+        " return, a `catch`, a field assignment, a list element) has no record naming its"
+        " `<file>:<line>`. A line tm reads as a guard that is none takes `--waive <why>` in place"
+        " of `--red`, and the why is recorded with it.\n".replace("<ID>", f"<{_ID[topic]}>")
     ) in steps
 
 
@@ -892,24 +896,30 @@ VERIFY_DEFAULT_REF = [
     (
         "overview",
         (
-            "With no `--ref`, it reads each task at `<remote>/<the branch its spec lands on>`, "
-            "fetched first, or at the repository's default branch while that branch does not "
-            "exist yet"
+            "With no `--ref`, it reads each task at its own branch `tm/<id>` until the node lands "
+            "there, then at `<remote>/<the branch its spec lands on>`, fetched first, or at the "
+            "repository's default branch while that branch does not exist yet (a spec's `land_on` "
+            "before its first landing creates it), and a row that fails where neither resolves "
+            "names both;"
         ),
     ),
     (
         "plan",
         (
-            "with no `--ref`, `<remote>/<the branch its spec lands on>`, fetched first, or the "
-            "repository's default branch while that branch does not exist yet"
+            "with no `--ref`, the task's own branch until the task lands there, then "
+            "`<remote>/<the branch its spec lands on>`, fetched first, or the repository's default "
+            "branch while that branch does not exist yet (a spec's `land_on` before its first "
+            "landing creates it);"
         ),
     ),
     (
         "implement",
         (
+            "they read the task's own branch until the task lands, then `<remote>/<the branch the "
+            "task's spec lands on>`; a row that fails where neither resolves names both. "
             "A `test_command` reads the same ref from `TM_VERIFY_REF`, which every run exports: "
-            "the `--ref` given, that landing branch without one, and the landing target when tm "
-            "lands the task."
+            "the `--ref` given, the ref read without one, and the landing target when tm lands "
+            "the task."
         ),
     ),
 ]
@@ -1475,9 +1485,27 @@ def test_review_guide_gives_every_finding_a_severity_and_gates_the_verdict_on_it
 ) -> None:
     text = rendered("review")
     findings = text.split("## 5. Record the findings", 1)[1].split("## 6.", 1)[0]
-    assert "- `--blocking`: the node must not land as it is." in findings
+    assert (
+        "- `--blocking`: the node must not land as it is, and `--breaks` cites the line of the"
+        " brief, the skill or the profile CLAUDE.md it breaks."
+    ) in findings
     assert "- `--minor`: landing as it is breaks nothing." in findings
-    assert "- When in doubt, it is blocking." in findings
+    assert (
+        "- When in doubt whether a gap against one of those holds the landing, it is blocking."
+    ) in findings
+    assert (
+        "A reviewer files as blocking only a gap against the brief, the stack's skill or the"
+        " profile CLAUDE.md, and cites the line. Any other gap is filed minor with the rule it"
+        " proposes. A question the brief does not answer is a decision, not a finding. A"
+        " re-review files neither kind outside the findings it re-reads (§3)."
+    ) in findings
+    checks = text.split("## 4. Run the checks", 1)[1].split("## 5.", 1)[0]
+    assert (
+        "A task review also runs every verification row of the parent plan that names a file in"
+        " the task's diff. A test class that waits on a broker, a socket or a container runs three"
+        " times; a single red run is a blocking finding. A re-review runs only the rows its"
+        " findings name."
+    ) in checks
     assert "opened again with `tm finding reopen`, never recorded a second time" in findings
     assert (
         "It refuses `--approve` while a blocking finding is open, and `--reject` while none is"

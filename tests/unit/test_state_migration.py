@@ -66,7 +66,8 @@ def _sqlite_master_rows(db: DatabaseManager) -> list[tuple[str, str, str, str]]:
     with db.get_state_connection() as conn:
         return conn.execute(
             "SELECT type, name, tbl_name, sql FROM sqlite_master "
-            "WHERE name IN ('nodes', 'node_findings') OR name LIKE 'trg_%rev%' ORDER BY name"
+            "WHERE name IN ('nodes', 'node_findings', 'node_checks') OR name LIKE 'trg_%rev%' "
+            "ORDER BY name"
         ).fetchall()
 
 
@@ -83,7 +84,7 @@ def test_migrated_v1_estate_matches_a_fresh_init(tmp_path: Path) -> None:
     migrated = DatabaseManager(old)
     assert migrated.migrate_state() == 1
     with migrated.get_state_connection() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 7
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 8
         assert conn.execute("SELECT merge FROM nodes").fetchall() == [("spec",)]
 
     fresh = DatabaseManager(tmp_path / "fresh")
@@ -328,10 +329,10 @@ def _dump(state_db: Path) -> list[str]:
         conn.close()
 
 
-def _dump_as_schema_7(state_db: Path, scratch: Path) -> list[str]:
+def _dump_as_schema_8(state_db: Path, scratch: Path) -> list[str]:
     """`state_db`'s dump with every `main` merge value, and the column's CHECK, read as schema
-    4 holds them, then schema 5's `on_target`, schema 6's findings and schema 7's checks and notes added;
-    every other line as it is."""
+    4 holds them, then schema 5's `on_target`, schema 6's findings, schema 7's checks and notes
+    and schema 8's rebuilt checks added; every other line as it is."""
     shutil.copyfile(state_db, scratch)
     conn = sqlite3.connect(scratch)
     try:
@@ -347,6 +348,7 @@ def _dump_as_schema_7(state_db: Path, scratch: Path) -> list[str]:
         conn.executescript(STATE_MIGRATIONS[5])
         conn.executescript(STATE_MIGRATIONS[6])
         conn.executescript(STATE_MIGRATIONS[7])
+        conn.executescript(STATE_MIGRATIONS[8])
     finally:
         conn.close()
     return sorted(line.replace(_MERGE_COLUMN_V3, _MERGE_COLUMN_V4) for line in _dump(scratch))
@@ -363,7 +365,7 @@ def test_migrate_schema_3_estate_rewrites_main_to_spec_and_changes_nothing_else(
     on_main = sorted(row[1] for row in before["nodes"] if row[_MERGE_AT] == "main")
     assert {"M1", "D-OPEN"} <= set(on_main)
     assert any(row[_MERGE_AT] == "parent" for row in before["nodes"])
-    expected = _dump_as_schema_7(state_db, tmp_path / "expected.db")
+    expected = _dump_as_schema_8(state_db, tmp_path / "expected.db")
     assert expected != before_dump
 
     db = DatabaseManager(old)
@@ -372,7 +374,7 @@ def test_migrate_schema_3_estate_rewrites_main_to_spec_and_changes_nothing_else(
 
     conn = sqlite3.connect(state_db)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 7
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 8
         merges = dict(conn.execute("SELECT id, merge FROM nodes").fetchall())
     finally:
         conn.close()
@@ -454,6 +456,52 @@ def test_migrate_schema_4_estate_puts_on_target_only_what_has_surely_landed(
     assert on_target == {node_id: row[-1] for node_id, row in _V4_NODES.items()}
 
 
+def _build_v7_estate(taskmanager_dir: Path) -> None:
+    """A `state.db` at schema 7: its checks take `red` and `green` only."""
+    _build_v1_estate(taskmanager_dir)
+    conn = sqlite3.connect(taskmanager_dir / "state.db")
+    try:
+        for version in range(2, 8):
+            conn.executescript(STATE_MIGRATIONS[version])
+        conn.execute("INSERT INTO nodes (id, kind, title) VALUES ('T1', 'task', 't')")
+        conn.executemany(
+            "INSERT INTO node_checks (node_id, number, deleted, result, test) VALUES (?, ?, ?, ?, ?)",
+            [("T1", 1, "a.py:3", "green", None), ("T1", 2, "a.py:3", "red", "test_a")],
+        )
+        conn.execute("PRAGMA user_version = 7")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+_WAIVED = "INSERT INTO node_checks VALUES ('T1', 3, 'a.py:9', 'waived', 'a log line')"
+
+
+def test_migrate_schema_7_estate_keeps_every_check_and_then_takes_a_waived_one(
+    tmp_path: Path,
+) -> None:
+    old = tmp_path / "old"
+    _build_v7_estate(old)
+    conn = sqlite3.connect(old / "state.db")
+    try:
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+            conn.execute(_WAIVED)
+        before = conn.execute("SELECT * FROM node_checks ORDER BY number").fetchall()
+    finally:
+        conn.close()
+
+    db = DatabaseManager(old)
+    assert db.migrate_state() == 7
+    with db.get_state_connection() as conn:
+        assert conn.execute("SELECT * FROM node_checks ORDER BY number").fetchall() == before
+        rev = conn.execute("SELECT rev FROM nodes WHERE id = 'T1'").fetchone()[0]
+        conn.execute(_WAIVED)
+        assert conn.execute("SELECT rev FROM nodes WHERE id = 'T1'").fetchone()[0] == rev + 1
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+            conn.execute("INSERT INTO node_checks VALUES ('T1', 4, 'a.py:9', 'waived', ' ')")
+    db.close()
+
+
 def test_open_current_schema_estate_leaves_the_file_bytes_untouched(tmp_path: Path) -> None:
     estate = tmp_path / "estate"
     first = DatabaseManager(estate)
@@ -463,7 +511,7 @@ def test_open_current_schema_estate_leaves_the_file_bytes_untouched(tmp_path: Pa
 
     again = DatabaseManager(estate)
     with again.get_state_connection() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 7
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 8
     again.close()
 
     assert (estate / "state.db").read_bytes() == before

@@ -14,7 +14,7 @@ SCHEMA_VERSION = 1
 
 # state.db: bumped and migrated separately, since it changes far more often than the ledger
 # or the cache.
-STATE_SCHEMA_VERSION = 7
+STATE_SCHEMA_VERSION = 8
 
 # Built from the enums so the vocabulary SQLite enforces and the one the code writes cannot drift.
 _CYCLE_STATUSES = ", ".join(f"'{s.value}'" for s in Status)
@@ -105,16 +105,28 @@ END;
 """
 
 # An implement or fix step's report as records: each deletion its red-check ran, and one-line
-# notes. A red check names the test that failed; a green one names none.
-_REPORT_SQL = f"""CREATE TABLE IF NOT EXISTS node_checks (
+# notes. Schema 7 wrote the checks table below; schema 8 rebuilds it to take `waived`.
+_CHECKS_TABLE_SQL_V7 = """CREATE TABLE IF NOT EXISTS node_checks (
+    node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    number INTEGER NOT NULL CHECK (number > 0),
+    deleted TEXT NOT NULL CHECK (trim(deleted) <> ''),
+    result TEXT NOT NULL CHECK (result IN ('red', 'green')),
+    test TEXT CHECK ((result = 'red') = (test IS NOT NULL AND trim(test) <> '')),
+    PRIMARY KEY (node_id, number)
+);
+"""
+
+# A red check names the test that failed, a waived one why no test can; a green one names none.
+_CHECKS_BODY_SQL = f"""
     node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     number INTEGER NOT NULL CHECK (number > 0),
     deleted TEXT NOT NULL CHECK (trim(deleted) <> ''),
     result TEXT NOT NULL CHECK (result IN ({_values(CheckResult)})),
-    test TEXT CHECK ((result = 'red') = (test IS NOT NULL AND trim(test) <> '')),
+    test TEXT CHECK ((result = 'green') = (test IS NULL OR trim(test) = '')),
     PRIMARY KEY (node_id, number)
-);
+)"""
 
+_CHECKS_TRIGGERS_SQL = """
 CREATE TRIGGER IF NOT EXISTS trg_node_checks_rev_ins
 AFTER INSERT ON node_checks
 BEGIN
@@ -132,7 +144,9 @@ AFTER DELETE ON node_checks
 BEGIN
     UPDATE nodes SET rev = rev + 1 WHERE id = OLD.node_id;
 END;
+"""
 
+_NOTES_SQL = """
 CREATE TABLE IF NOT EXISTS node_notes (
     node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     number INTEGER NOT NULL CHECK (number > 0),
@@ -159,8 +173,9 @@ BEGIN
 END;
 """
 
-# Quoted because `ALTER TABLE ... RENAME TO nodes` writes the new name quoted, so a fresh estate
-# and one the migration below rebuilt store byte-identical `sqlite_master.sql` for `nodes`.
+# Quoted because `ALTER TABLE ... RENAME TO` writes the new name quoted, so a fresh estate and
+# one the migrations below rebuilt store byte-identical `sqlite_master.sql` for `nodes` and
+# `node_checks`.
 STATE_SCHEMA_SQL = (
     '\nCREATE TABLE IF NOT EXISTS "nodes" ('
     + _NODES_BODY_SQL
@@ -283,8 +298,11 @@ CREATE TABLE IF NOT EXISTS branch_locks (
 """
     + "\n"
     + _FINDINGS_SQL
-    + "\n"
-    + _REPORT_SQL
+    + '\nCREATE TABLE IF NOT EXISTS "node_checks" ('
+    + _CHECKS_BODY_SQL
+    + ";\n"
+    + _CHECKS_TRIGGERS_SQL
+    + _NOTES_SQL
 )
 
 # One node's `rev` moves on any change to the node itself or to a section, verification,
@@ -430,7 +448,14 @@ STATE_MIGRATIONS: dict[int, str] = {
     + "AND EXISTS (SELECT 1 FROM jobs WHERE jobs.node_id = nodes.id "
     + "AND jobs.kind = 'land' AND jobs.state = 'succeeded'));\n",
     6: _FINDINGS_SQL,
-    7: _REPORT_SQL,
+    7: _CHECKS_TABLE_SQL_V7 + _CHECKS_TRIGGERS_SQL + _NOTES_SQL,
+    # Rebuilt the way `nodes` is, so its CHECK takes `waived`; dropping the table drops its
+    # triggers, which the trigger script recreates.
+    8: f"CREATE TABLE node_checks_new ({_CHECKS_BODY_SQL};\n"
+    + "INSERT INTO node_checks_new SELECT node_id, number, deleted, result, test FROM node_checks;\n"
+    + "DROP TABLE node_checks;\n"
+    + "ALTER TABLE node_checks_new RENAME TO node_checks;\n"
+    + _CHECKS_TRIGGERS_SQL,
 }
 
 # Derived results only: dropping this database loses time, never state.

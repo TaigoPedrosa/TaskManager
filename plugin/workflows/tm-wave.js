@@ -356,7 +356,7 @@ async function work(n, c, s, trail) {
     body = c.action === 'fix'
       ? `${where}\nFindings: every one ${TM} finding list ${n.id} --open shows, a failed landing's included. Fix each one, commit on the branch, and answer each with ${TM} finding close ${n.id} <n> ${owner(n, c.token)} --commit <sha>, or ${TM} finding dispute ${n.id} <n> ${owner(n, c.token)} --evidence "<what was read>".`
       : where
-    body += `\nReport: record each red-check deletion with ${TM} check add ${n.id} ${owner(n, c.token)} --deleted "<file>:<symbol>" --red <test>, or --green when every test still passed, and anything else as one line with ${TM} note add ${n.id} ${owner(n, c.token)} "<line>".`
+    body += `\nReport: record each red-check deletion with ${TM} check add ${n.id} ${owner(n, c.token)} --deleted "<file>:<line>" --red <test>, once per && or || operand, --green when every test still passed, or --waive "<why>" for a line that is no guard, and anything else as one line with ${TM} note add ${n.id} ${owner(n, c.token)} "<line>".`
   }
   const opts = { label: `${c.action}:${n.id}`, phase: WORK_PHASE[c.action], model, agentType: pickType(type, n.requires) }
   const r = await agent(`${head(n, c, model, c.action)}\n${body}`, opts)

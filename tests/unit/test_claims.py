@@ -447,6 +447,34 @@ def test_a_finding_is_recorded_only_under_the_review_lease_with_where_and_what(
     assert claims.add_finding("T2", Severity.MINOR, "a.py:2", "y").number == 2
 
 
+def test_a_finding_already_filed_on_the_node_is_refused_naming_it(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    add(claims, "T1", status=Status.IMPLEMENTED)
+    claims.start("T1", "reviewer", "s1")
+    claims.add_finding("T1", Severity.BLOCKING, "a.py:1", "a null id reads every tenant")
+
+    with pytest.raises(OperationError) as refused:
+        claims.add_finding("T1", Severity.MINOR, " A.py:1 ", "a null  id reads EVERY tenant")
+    assert refused.value.status_code == 409
+    assert str(refused.value) == "T1 already holds this finding as #1 (open): it stands as filed"
+
+    assert claims.add_finding("T1", Severity.BLOCKING, "a.py:1", "the id is logged").number == 2
+    assert claims.add_finding("T1", Severity.BLOCKING, "b.py:1", "the id is logged").number == 3
+    assert len(claims.nodes.get_findings("T1")) == 3
+
+
+def test_a_re_review_refiling_an_answered_finding_is_sent_to_reopen_it(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    _sensitive_re_review(claims)
+
+    with pytest.raises(
+        OperationError,
+        match=r"^T1 already holds this finding as #1 \(disputed\): `tm finding reopen T1 1` when",
+    ):
+        claims.add_finding("T1", Severity.BLOCKING, "a.py:1", "a null id reads every tenant")
+    assert len(claims.nodes.get_findings("T1")) == 2
+
+
 def _rejected_and_fixing(claims: Claims) -> Path:
     """The fix worktree of T1, rejected on one blocking and one minor finding."""
     add(claims, "T1", status=Status.IMPLEMENTED)

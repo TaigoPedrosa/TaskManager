@@ -79,6 +79,7 @@ from taskmanager.engine.decisions import (
 from taskmanager.engine.doctor import CODEGRAPH_INSTALL, codegraph_index
 from taskmanager.engine.gates import RED_TARGET, clear_red_targets
 from taskmanager.engine.git import GitManager
+from taskmanager.engine.guards import GuardSite, guard_sites, uncovered
 from taskmanager.engine.operations import OperationError, Operations
 from taskmanager.engine.routing import model_for
 from taskmanager.engine.snapshot import (
@@ -849,12 +850,47 @@ class Claims:
                 "`tm check add --deleted <same> --red <test>`",
                 409,
             )
+        unchecked = self._unchecked_guards(node)
+        if unchecked:
+            sites = "; ".join(
+                f"{s.label} `{s.text}`" + (f" ({s.rows} operands)" if s.rows > 1 else "")
+                for s in unchecked
+            )
+            # Spelled out whole, so an agent copies the command rather than rebuilding it.
+            add = f"tm check add {node_id} --agent {lease.agent_id} --token <token> --deleted"
+            raise OperationError(
+                f"{node_id} adds or changes guards no check records: {sites}. Delete each, run "
+                f"the suite, and record it, once per operand: `{add} {unchecked[0].label} --red "
+                f"<test>`; a line that is no guard: `{add} {unchecked[0].label} --waive "
+                '"<why>"`. Pass --agent and --token as separate words, never through one '
+                "unsplit variable",
+                409,
+            )
         return self._advance(
             self._with_written_migrations(node),
             Event.COMPLETE,
             "task complete",
             holding=(lease, agent, token),
         )
+
+    def _step_diff_base(self, node: Node, repo: str) -> str:
+        base = self.target_ref(node.id, repo)
+        if not gitops.rev_parse(self.root / repo, base):
+            base = self.ops.top_ref(repo, self.ops.default_branch(repo))
+        return base
+
+    def _unchecked_guards(self, node: Node) -> list[GuardSite]:
+        """The guards the step's branch adds or changes in source files that its checks do not
+        cover; a container's branch carries its children's, which their own steps checked."""
+        if self.is_container(node):
+            return []
+        branch = self.branch_of(node.id)
+        sites = [
+            site
+            for repo in self.repos_of(node.id)
+            for site in guard_sites(self.root / repo, self._step_diff_base(node, repo), branch)
+        ]
+        return uncovered(sites, self.nodes.get_checks(node.id))
 
     def _with_written_migrations(self, node: Node) -> Node:
         """`node` declaring each file under its repository's `migrations` its branch changes: a
@@ -864,9 +900,7 @@ class Claims:
         if self.is_container(node) or repo is None:
             return node
         repo_dir = self.root / repo
-        base = self.target_ref(node.id, repo)
-        if not gitops.rev_parse(repo_dir, base):
-            base = self.ops.top_ref(repo, self.ops.default_branch(repo))
+        base = self._step_diff_base(node, repo)
         declared = declared_files_of(node, [])
         migrations = self.config.repo(repo).migrations
         written = [
@@ -941,6 +975,18 @@ class Claims:
         _, lease = self._held(node_id, (Status.REVIEWING,), agent, token)
         with self.nodes.transaction():
             self._still_held(node_id, lease, agent, token)
+            same = _same_claim(at, breaks)
+            for f in self.nodes.get_findings(node_id):
+                if _same_claim(f.at, f.breaks) == same:
+                    raise OperationError(
+                        f"{node_id} already holds this finding as #{f.number} ({f.state.value}): "
+                        + (
+                            "it stands as filed"
+                            if f.state == FindingState.OPEN
+                            else f"`tm finding reopen {node_id} {f.number}` when it still holds"
+                        ),
+                        409,
+                    )
             found = self.nodes.add_finding(
                 Finding(node_id=node_id, severity=severity, at=at, breaks=breaks, rule=rule)
             )
@@ -954,20 +1000,25 @@ class Claims:
         test: str | None,
         agent: str | None = None,
         token: str | None = None,
+        waived: str | None = None,
     ) -> Check:
         """Records one red-check deletion of the implement or fix step holding `node_id`: `test`
-        is the test that failed with it, or None when every test still passed."""
+        is the test that failed with it, or None when every test still passed. `waived` instead
+        records why a line read as a guard is none."""
+        result = CheckResult.GREEN if test is None else CheckResult.RED
+        if waived is not None:
+            result, test = CheckResult.WAIVED, waived
         try:
             check = Check(
                 node_id=node_id,
                 deleted=deleted.strip(),
-                result=CheckResult.GREEN if test is None else CheckResult.RED,
+                result=result,
                 test=test,
             )
         except ValidationError:
             raise OperationError(
-                "a check names what was deleted (--deleted <file>:<symbol>) and either the test "
-                "that failed (--red <test>) or --green"
+                "a check names what was deleted (--deleted <file>:<line>) and either the test "
+                "that failed (--red <test>), --green, or why it is no guard (--waive <why>)"
             ) from None
         _, lease = self._held(node_id, (Status.IMPLEMENTING, Status.FIXING), agent, token)
         with self.nodes.transaction():
@@ -1621,6 +1672,11 @@ def _left_green(checks: list[Check]) -> list[str]:
     deletion answers an earlier green one."""
     latest = {c.deleted: c.result for c in checks}
     return [deleted for deleted, result in latest.items() if result == CheckResult.GREEN]
+
+
+def _same_claim(at: str, breaks: str) -> tuple[str, str]:
+    """A finding's identity: where it is and what breaks, read past case and spacing."""
+    return " ".join(at.split()).casefold(), " ".join(breaks.split()).casefold()
 
 
 def _line(f: Finding) -> str:
