@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.20] - 2026-10-20
+
 ### Changed
 
 - `tm task complete` on an implement or fix step refuses while a guard its diff adds or changes
@@ -684,7 +686,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - A web visualizer with a live socket, and a static exporter.
 - The taskmanager and dispatcher skills, packaged as a Claude Code plugin.
 
-[Unreleased]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.19...HEAD
+[Unreleased]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.20...HEAD
+[0.3.20]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.19...v0.3.20
 [0.3.19]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.18...v0.3.19
 [0.3.18]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.17...v0.3.18
 [0.3.17]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.16...v0.3.17
