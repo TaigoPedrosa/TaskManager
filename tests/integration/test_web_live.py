@@ -16,11 +16,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 from taskmanager.core.enums import NodeKind, RelationType
-from taskmanager.core.models import FileLock, Lease, LeaseAction, Node, NodeRelation, NodeSection
+from taskmanager.core.models import (
+    FileLock,
+    Lease,
+    LeaseAction,
+    LedgerEvent,
+    Node,
+    NodeRelation,
+    NodeSection,
+)
 from taskmanager.core.status import Action, Merge, Status
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
+from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine.snapshot import SnapshotBuilder
@@ -420,6 +429,32 @@ async def test_watching_a_body_without_reset_sends_it_as_update_items(estate: Es
     assert message["type"] == "update"
     body_ops = {item["part"] for item in message["items"] if item["op"] == "body"}
     assert "node" in body_ops
+
+
+@run_async
+async def test_a_step_the_ledger_records_after_the_state_write_reaches_a_watched_body(
+    estate: Estate,
+) -> None:
+    estate.add("T1", NodeKind.TASK)
+    hub = estate.hub()
+    await hub.refresh()
+    session = hub.open_session(FakeSocket())
+    await subscribe(hub, session, 1, watch=["T1"], reset=True)
+
+    # The ledger writes after the state commit, so this entry moves no rev of its own.
+    LedgerRepository(estate.db)._insert(
+        LedgerEvent(
+            actor_id="r1",
+            command="task start",
+            target_id="T1",
+            payload={"action": "review", "agent": "r1", "from": "IMPLEMENTED"},
+        )
+    )
+    await hub.refresh()
+
+    message = _socket(session).sent[-1]
+    [item] = [i for i in message["items"] if i["op"] == "body"]
+    assert (item["part"], [s["agent"] for s in item["value"]]) == ("steps", ["r1"])
 
 
 # -- leases ---------------------------------------------------------------------------------

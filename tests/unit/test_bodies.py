@@ -13,6 +13,7 @@ from taskmanager.core.models import (
     Finding,
     Job,
     Lease,
+    LedgerEvent,
     Node,
     NodeRelation,
     NodeSection,
@@ -30,10 +31,17 @@ from taskmanager.core.status import (
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
+from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder
-from taskmanager.web.bodies import BodyRepos, body_items, build_bodies, refresh_relations
+from taskmanager.web.bodies import (
+    _BODY_PARTS,
+    BodyRepos,
+    body_items,
+    build_bodies,
+    refresh_relations,
+)
 from taskmanager.web.rows import build_rows
 
 
@@ -329,6 +337,7 @@ def test_build_bodies_issues_the_same_statement_count_for_200_ids_as_for_2(
     db_mgr = estate.node_repo.db
     real_state_conn = db_mgr.get_state_connection
     real_cache_conn = db_mgr.get_cache_connection
+    real_ledger_conn = db_mgr.get_ledger_connection
 
     @contextmanager
     def counting_state_conn() -> Any:
@@ -341,7 +350,14 @@ def test_build_bodies_issues_the_same_statement_count_for_200_ids_as_for_2(
             yield _CountingConnection(conn, calls)
 
     monkeypatch.setattr(db_mgr, "get_state_connection", counting_state_conn)
+
+    @contextmanager
+    def counting_ledger_conn() -> Any:
+        with real_ledger_conn() as conn:
+            yield _CountingConnection(conn, calls)
+
     monkeypatch.setattr(db_mgr, "get_cache_connection", counting_cache_conn)
+    monkeypatch.setattr(db_mgr, "get_ledger_connection", counting_ledger_conn)
 
     calls["n"] = 0
     build_bodies(view, ids[:2], repos=repos)
@@ -401,6 +417,7 @@ def test_body_items_with_no_prior_body_reports_every_section_and_part() -> None:
         "findings",
         "checks",
         "notes",
+        "steps",
         "jobs",
         "lease",
     }
@@ -438,3 +455,64 @@ def test_body_items_reports_one_item_for_a_changed_part() -> None:
     items = body_items("T1", old, new)
 
     assert items == [{"op": "body", "id": "T1", "part": "lease", "value": {"agent_id": "b"}}]
+
+
+def test_build_bodies_carries_each_nodes_own_steps_from_the_ledger(estate: Estate) -> None:
+    estate.add("T1")
+    estate.add("T2")
+    ledger = LedgerRepository(estate.node_repo.db)
+    for target, command, payload in (
+        ("T1", "task start", {"action": "review", "agent": "r1", "from": "IMPLEMENTED"}),
+        ("T2", "task start", {"action": "implement", "agent": "i2", "from": "READY"}),
+        ("T1", "finding add", {"number": 1, "severity": "blocking"}),
+        ("T1", "task review", {"event": "reject", "from": "REVIEWING", "to": "REVIEWED"}),
+    ):
+        ledger._insert(
+            LedgerEvent(actor_id=target, command=command, target_id=target, payload=payload)
+        )
+
+    bodies = build_bodies(estate.view(), ["T1", "T2"], repos=estate.repos())
+
+    [review] = bodies["T1"]["steps"]
+    assert (review["agent"], review["round"], review["to"]) == ("r1", 1, "REVIEWED")
+    assert review["items"] == [{"kind": "raised", "number": 1, "severity": "blocking"}]
+    assert [(s["agent"], s["ended"]) for s in bodies["T2"]["steps"]] == [("i2", None)]
+    assert ledger.events_of(["T1"]).keys() == {"T1"}
+
+
+# Every table that holds a node's records, and the body part the web draws them from. A table
+# added without a part here fails, so a record a step newly writes cannot go unseen.
+_PART_OF_TABLE = {
+    "nodes": "node",
+    "node_sections": "sections",
+    "node_relations": "dependency_details",
+    "node_verifications": "verifications",
+    "node_conditions": "conditions",
+    "condition_results": "conditions",
+    "node_findings": "findings",
+    "node_checks": "checks",
+    "node_notes": "notes",
+    "ledger_events": "steps",
+    "jobs": "jobs",
+    "leases": "lease",
+}
+# Search indexes over the records above, and the file locks a lease holds while its step runs.
+_NOT_RECORDS = {"nodes_fts", "vec_nodes", "index_state", "file_locks"}
+_NODE_KEYS = {"node_id", "task_id", "source_id", "target_id"}
+
+
+def test_every_table_holding_a_nodes_records_has_a_body_part(estate: Estate) -> None:
+    db = estate.node_repo.db
+    found = set()
+    for connect in (db.get_state_connection, db.get_cache_connection, db.get_ledger_connection):
+        with connect() as conn:
+            names = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+            for (name,) in names:
+                columns = {r[1] for r in conn.execute(f"PRAGMA table_info('{name}')")}
+                if name == "nodes" or columns & _NODE_KEYS:
+                    found.add(name)
+
+    assert found - _NOT_RECORDS == set(_PART_OF_TABLE)
+    assert set(_PART_OF_TABLE.values()) <= {*_BODY_PARTS, "sections"}

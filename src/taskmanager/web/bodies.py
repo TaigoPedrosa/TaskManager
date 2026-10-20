@@ -15,6 +15,7 @@ from taskmanager.db.cache_repo import CacheRepository, _command_hash
 from taskmanager.db.graph_reader import GraphData
 from taskmanager.db.job_repo import _COLUMNS as _JOB_COLUMNS
 from taskmanager.db.job_repo import JobRepository, _row_to_job
+from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.engine.assets import ASSET_NAME_RE
 from taskmanager.engine.chains import base_chain, landing_chain, satisfied
@@ -25,6 +26,7 @@ from taskmanager.engine.snapshot import (
     stored_status,
     waits_on,
 )
+from taskmanager.web.steps import steps_of
 
 # The body keys a session's `bodies` map replaces whole on change; `sections` diffs one key at a
 # time instead, so it is handled separately in `body_items`.
@@ -39,6 +41,7 @@ _BODY_PARTS = (
     "findings",
     "checks",
     "notes",
+    "steps",
     "jobs",
     "lease",
 )
@@ -222,6 +225,11 @@ def _bulk_sections(node_repo: NodeRepository, ids: Sequence[str]) -> dict[str, l
     return sections
 
 
+def bulk_steps(node_repo: NodeRepository, ids: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
+    events = LedgerRepository(node_repo.db).events_of(ids)
+    return {node_id: steps_of(found) for node_id, found in events.items()}
+
+
 def _bulk_jobs(job_repo: JobRepository, ids: Sequence[str]) -> dict[str, list[Job]]:
     # `GraphData.jobs` keeps only the live ones (what discovery needs); a body shows every job a
     # node ever ran, so this reads the table itself rather than the snapshot's bulk read.
@@ -305,6 +313,7 @@ def build_bodies(
     deps_by_source, blocked_by_target = dependency_maps(data)
     sections = _bulk_sections(repos.node_repo, wanted)
     jobs = _bulk_jobs(repos.job_repo, wanted)
+    steps = bulk_steps(repos.node_repo, wanted)
     cached_conditions = repos.cache.all_conditions(repos.condition_ttl)
 
     bodies: dict[str, dict[str, Any]] = {}
@@ -366,6 +375,7 @@ def build_bodies(
                 c.model_dump(mode="json", exclude={"node_id"}) for c in data.checks.get(node_id, [])
             ],
             "notes": [n.text for n in data.notes.get(node_id, [])],
+            "steps": steps.get(node_id, []),
             "jobs": [j.model_dump(mode="json") for j in jobs.get(node_id, [])],
             "lease": lease_dict(data.leases.get(node_id)),
         }

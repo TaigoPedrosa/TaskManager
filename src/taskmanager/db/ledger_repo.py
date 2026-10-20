@@ -3,6 +3,7 @@ import logging
 import sqlite3
 from collections.abc import Iterable
 from datetime import datetime
+from typing import Any
 
 from taskmanager.core.models import LedgerEvent
 from taskmanager.db.connection import DatabaseManager
@@ -70,18 +71,25 @@ class LedgerRepository:
                     """,
                     (limit,),
                 ).fetchall()
-            return [
-                LedgerEvent(
-                    id=r[0],
-                    timestamp=parse_db_datetime(r[1]),
-                    actor_id=r[2],
-                    command=r[3],
-                    target_id=r[4],
-                    payload=json.loads(r[5]),
-                    diff=json.loads(r[6]),
-                )
-                for r in rows
-            ]
+            return [_row_to_event(r) for r in rows]
+
+    def events_of(self, target_ids: Iterable[str]) -> dict[str, list[LedgerEvent]]:
+        """Each of `target_ids`' events, oldest first."""
+        ids = list(target_ids)
+        with self.db.get_ledger_connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, timestamp, actor_id, command, target_id, payload_json, diff_json
+                FROM ledger_events
+                WHERE target_id IN ({",".join("?" for _ in ids)})
+                ORDER BY id
+                """,
+                ids,
+            ).fetchall()
+        events: dict[str, list[LedgerEvent]] = {}
+        for r in rows:
+            events.setdefault(r[4], []).append(_row_to_event(r))
+        return events
 
     def completed_at(self, target_ids: Iterable[str]) -> dict[str, datetime]:
         """When the ledger last recorded each of `target_ids` moving to COMPLETED."""
@@ -102,3 +110,15 @@ class LedgerRepository:
                 ids,
             ).fetchall()
         return {r[0]: parse_db_datetime(r[1]) for r in rows}
+
+
+def _row_to_event(r: Any) -> LedgerEvent:
+    return LedgerEvent(
+        id=r[0],
+        timestamp=parse_db_datetime(r[1]),
+        actor_id=r[2],
+        command=r[3],
+        target_id=r[4],
+        payload=json.loads(r[5]),
+        diff=json.loads(r[6]),
+    )

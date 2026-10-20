@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 import yaml
 from click.testing import Result
+from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import app
@@ -26,6 +27,7 @@ from taskmanager.db.node_repo import NodeRepository
 from taskmanager.di.container import create_container
 from taskmanager.engine.discovery import djb2
 from taskmanager.engine.operations import Operations
+from taskmanager.web.app import create_app
 
 runner = CliRunner()
 
@@ -803,3 +805,62 @@ def test_heartbeat_stops_its_command_once_the_lease_it_started_under_is_gone(
     assert res.exit_code == 1, res.output
     assert why in res.output and "the command was stopped" in res.output
     assert time.monotonic() - began < 10
+
+
+def test_the_web_body_shows_each_step_who_ran_it_how_it_ended_and_what_it_recorded(
+    tmp_path: Path,
+) -> None:
+    estate(tmp_path)
+    ops = create_container(tmp_path).get(Operations)
+    # Sensitive, so the fix is reviewed again and a second round runs.
+    ops.update_node("S1-P1-a", frontmatter_set={"sensitive": "tenant"})
+
+    def claim(agent: str) -> dict[str, Any]:
+        res = tm(tmp_path, "task", "start", "S1-P1-a", "--agent", agent, "--session", "s")
+        assert res.exit_code == 0, res.output
+        step: dict[str, Any] = yaml.safe_load(res.stdout)
+        return step
+
+    claim("impl-1")
+    tm(tmp_path, "check", "add", "S1-P1-a", "--deleted", "core/a.py:guard", "--red", "test_guard")
+    tm(tmp_path, "note", "add", "S1-P1-a", "gate needs docker")
+    assert tm(tmp_path, "task", "complete", "S1-P1-a").exit_code == 0
+    claim("rev-1")
+    for severity, at in (("--blocking", "core/a.py:read"), ("--minor", "core/a.py:n")):
+        tm(tmp_path, "finding", "add", "S1-P1-a", "--at", at, "--breaks", "b", severity)
+    assert tm(tmp_path, "task", "review", "S1-P1-a", "--reject").exit_code == 0
+    worktree = Path(claim("fix-1")["worktree"])
+    (worktree / "a.py").write_text("scoped = True\n")
+    git(worktree, "add", "a.py")
+    git(worktree, "commit", "-q", "-m", "scope the read")
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=worktree, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    tm(tmp_path, "finding", "close", "S1-P1-a", "1", "--commit", sha)
+    tm(tmp_path, "finding", "dispute", "S1-P1-a", "2", "--evidence", "the unit is in the type")
+    assert tm(tmp_path, "task", "complete", "S1-P1-a").exit_code == 0
+    claim("rev-2")
+    tm(tmp_path, "finding", "reopen", "S1-P1-a", "1")
+    assert tm(tmp_path, "task", "review", "S1-P1-a", "--reject").exit_code == 0
+
+    steps = TestClient(create_app(tmp_path)).get("/api/nodes/S1-P1-a").json()["steps"]
+
+    assert [(s["action"], s["agent"], s["outcome"], s["to"], s["round"]) for s in steps] == [
+        ("implement", "impl-1", "complete", "IMPLEMENTED", None),
+        ("review", "rev-1", "reject", "REVIEWED", 1),
+        ("fix", "fix-1", "complete", "FIXED", None),
+        ("review", "rev-2", "reject", "FAILED", 2),
+    ]
+    assert [s["items"] for s in steps] == [
+        [{"kind": "check", "number": 1, "result": "red"}, {"kind": "note", "number": 1}],
+        [
+            {"kind": "raised", "number": 1, "severity": "blocking"},
+            {"kind": "raised", "number": 2, "severity": "minor"},
+        ],
+        [
+            {"kind": "closed", "number": 1, "answer": sha},
+            {"kind": "disputed", "number": 2, "answer": "the unit is in the type"},
+        ],
+        [{"kind": "reopened", "number": 1, "answer": None}],
+    ]
+    assert all(s["started"] <= s["ended"] for s in steps)

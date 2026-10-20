@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { loadPage, jsonResponse, key } from './dom.mjs';
+
+const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 const BEAT = new Date(Date.now() - 8000).toISOString();
 const LONG_COMMAND = `d=$(mktemp -d) && trap 'rm -rf "$d"' EXIT && echo "<b>not markup</b>" && ${'x'.repeat(240)}`;
@@ -71,6 +76,20 @@ const BODIES = {
       { number: 3, deleted: 'a.py:<b>guard</b>', result: 'red', test: 'test_<b>guard</b>' },
     ],
     notes: ['verify row 1 <b>red</b>'],
+    steps: [
+      { action: 'implement', agent: 'impl-1', started: BEAT, ended: BEAT, outcome: 'complete', to: 'IMPLEMENTED', round: null, items: [] },
+      { action: 'review', agent: 'rev-<b>1</b>', started: BEAT, ended: BEAT, outcome: 'reject', to: 'REVIEWED', round: 1, items: [
+        { kind: 'raised', number: 1, severity: 'blocking' },
+        { kind: 'verification_run', passed: false, count: 3 },
+      ] },
+      { action: 'fix', agent: 'fix-1', started: BEAT, ended: BEAT, outcome: 'complete', to: 'FIXED', round: null, items: [
+        { kind: 'disputed', number: 2, answer: 'the gate was <b>flaky</b>' },
+        { kind: 'check', number: 3, result: 'red' },
+        { kind: 'note', number: 1 },
+        { kind: 'job handover', job: 'j1' },
+      ] },
+      { action: 'review', agent: 'rev-2', started: BEAT, ended: null, outcome: null, to: null, round: null, items: [{ kind: 'reopened', number: 1, answer: null }] },
+    ],
   }),
   U: body({ ...LEASED, step_failures: 1, base_chain: ['P', 'main'] }, {
     lease: { agent_id: 'wf-u', action: 'implement', acquired_at: BEAT, last_heartbeat: BEAT },
@@ -159,6 +178,7 @@ const EXPECTED_GROUPS = {
     { group: 'verifications', header: 'Verifications 2', open: false },
     { group: 'dependencies', header: 'Dependencies 2', open: true },
     { group: 'dependents', header: 'Dependents 1', open: false },
+    { group: 'steps', header: 'Steps 4', open: true },
     { group: 'findings', header: 'Findings 2', open: true },
     { group: 'checks', header: 'Checks 3', open: true },
     { group: 'notes', header: 'Notes 1', open: false },
@@ -303,6 +323,50 @@ test('a note reads as its text, escaped', async () => {
   const rows = page.$$('#inspector-body [data-group="notes"] [data-note]');
   assert.deepEqual(rows.map((r) => text(r)), ['verify row 1 <b>red</b>']);
   assert.equal(page.$('#inspector-body [data-group="notes"] b'), null);
+});
+
+test('a step reads its review round, agent, outcome and time, then each record it wrote, escaped', async () => {
+  const page = await openAt('/graph/T');
+  const steps = page.$$('#inspector-body [data-group="steps"] [data-step]');
+  const head = (s) => [...s.children[0].children].map((c) => text(c));
+  assert.deepEqual(steps.map((s) => head(s).slice(0, 3)), [
+    ['implement', 'impl-1', 'done → IMPLEMENTED'],
+    ['review round 1', 'rev-<b>1</b>', 'rejected → REVIEWED'],
+    ['fix', 'fix-1', 'done → FIXED'],
+    ['review', 'rev-2', 'running'],
+  ]);
+  assert.match(head(steps[0])[3], /^\d+s$/);
+  assert.equal(steps[0].querySelector('time').getAttribute('datetime'), BEAT);
+  const items = (s) => [...s.querySelectorAll('[data-step-item]')].map((i) => text(i));
+  assert.deepEqual(steps.map(items), [
+    [],
+    ['#1 raised blocking api/x.py:read: reads <b>every</b> tenant', 'verifications failed (3)'],
+    ['#2 disputed the gate was <b>flaky</b>', 'check #3 red', 'note #1', 'job handover {"job":"j1"}'],
+    ['#1 reopened'],
+  ]);
+  assert.equal(page.$('#inspector-body [data-group="steps"] b'), null);
+  const header = page.$('#inspector-body [data-group="steps"]').children[0];
+  assert.ok(text(header).endsWith('1 review round'), text(header));
+});
+
+// Each part of a node's body the server sends, and the group that draws it. A part the server
+// adds fails here until the detail draws it, so a record a step writes cannot go unseen.
+const GROUP_OF_PART = {
+  dependency_details: 'dependencies', dependent_details: 'dependents', verifications: 'verifications',
+  conditions: 'conditions', findings: 'findings', checks: 'checks', notes: 'notes', steps: 'steps', jobs: 'jobs',
+};
+// Drawn outside the groups: the facts strip and header read the node, its status and its lease.
+const OUTSIDE_GROUPS = ['node', 'display', 'phase', 'lease'];
+
+test('every body part the server sends is drawn in the detail', async () => {
+  const parts = JSON.parse(execFileSync('uv', ['run', '--project', REPO_ROOT, '--quiet', 'python', '-c',
+    'import json; from taskmanager.web.bodies import _BODY_PARTS; print(json.dumps(_BODY_PARTS))'], { encoding: 'utf8' }));
+  assert.deepEqual(parts.filter((p) => !(p in GROUP_OF_PART) && !OUTSIDE_GROUPS.includes(p)), [], 'a part with no group drawing it');
+  const page = await openAt('/graph/T');
+  const drawn = groupsIn(page, '#inspector-body', 'T').map((g) => g.group);
+  for (const part of parts.filter((p) => p in GROUP_OF_PART)) {
+    assert.ok(drawn.includes(GROUP_OF_PART[part]), `${part} is drawn as ${GROUP_OF_PART[part]}`);
+  }
 });
 
 test('jobs show their time', async () => {

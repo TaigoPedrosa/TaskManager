@@ -5,6 +5,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+
+- Review rounds were invisible in the web once findings left the `:review` section: a finding
+  keeps only its latest state, and a reopen clears the fix's answer. A node's detail now has a
+  Steps group, read from the audit ledger. It lists each claimed step: who ran it, when, how it
+  ended, the review round it counts as, and what it recorded (findings raised or reopened, the
+  fix's answers, checks, notes and verification runs).
+
 ## [0.3.18] - 2026-10-19
 
 ### Fixed

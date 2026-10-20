@@ -227,6 +227,45 @@ function renderFindings(node, findings) {
   return detailGroupHtml(node.id, 'findings', 'Findings', rows.length, !open, relationTableHtml(rows), open ? relationMetaHtml(`${open} open`) : '');
 }
 
+const STEP_OUTCOME = {
+  complete: 'done', approve: 'approved', reject: 'rejected', landed: 'landed', own_defect: 'landing failed',
+  release: 'released', release_blocked: 'blocked', expired: 'lease lapsed',
+};
+
+function stepItemHtml(item, findings) {
+  const finding = findings.get(item.number);
+  let what;
+  if (item.kind === 'check') what = `check #${item.number} ${item.result}`;
+  else if (item.kind === 'note') what = `note #${item.number}`;
+  else if (item.kind === 'verification_run') what = `verifications ${item.passed ? 'passed' : 'failed'} (${item.count})`;
+  else if (['raised', 'reopened', 'closed', 'disputed'].includes(item.kind)) {
+    const detail = item.kind === 'raised' ? `${item.severity} ${finding ? `${finding.at}: ${finding.breaks}` : ''}` : (item.answer || '');
+    what = `#${item.number} ${item.kind} ${detail}`;
+  } else {
+    // A record with no reading of its own shows its command and what it carried.
+    const { kind, ...rest } = item;
+    what = `${kind} ${Object.keys(rest).length ? JSON.stringify(rest) : ''}`;
+  }
+  return `<div class="pl-5 truncate font-mono text-[11px] leading-4 text-zinc-400" data-step-item="${esc(item.kind)}" title="${esc(what)}">${esc(what)}</div>`;
+}
+
+// Each claimed step in the order it ran, with who ran it, how it ended and what it recorded:
+// the findings a review round raised or reopened, and the answers, checks and notes of a fix.
+function renderSteps(node, steps, findings) {
+  const list = steps || [];
+  const byNumber = new Map((findings || []).map(f => [f.number, f]));
+  const rows = list.map((s) => {
+    const name = s.round ? `review round ${s.round}` : s.action;
+    const outcome = s.ended ? `${STEP_OUTCOME[s.outcome] || s.outcome} → ${s.to}` : 'running';
+    const tone = s.outcome === 'reject' || s.outcome === 'own_defect' ? 'text-red-400' : s.ended ? 'text-zinc-300' : 'text-amber-400';
+    const age = heartbeatAge(s.started);
+    const head = `<div class="flex items-center gap-2 min-w-0"><span class="flex-shrink-0 text-zinc-200">${esc(name)}</span><span class="flex-1 min-w-0 truncate font-mono text-zinc-400" title="${esc(s.agent || '')}">${esc(s.agent || '')}</span><span class="flex-shrink-0 ${tone}">${esc(outcome)}</span>${age ? `<time class="flex-shrink-0 font-mono text-zinc-400" datetime="${esc(s.started)}" title="${esc(s.started)}">${esc(age)}</time>` : ''}</div>`;
+    return `<div class="px-2 py-1.5 bg-zinc-950/60 text-[11px] leading-4 space-y-0.5" data-step="${esc(s.action)}">${head}${s.items.map(i => stepItemHtml(i, byNumber)).join('')}</div>`;
+  });
+  const rounds = list.filter(s => s.round).length;
+  return detailGroupHtml(node.id, 'steps', 'Steps', rows.length, false, relationTableHtml(rows), rounds ? relationMetaHtml(`${rounds} review round${rounds === 1 ? '' : 's'}`) : '');
+}
+
 // A check reads as the deletion an implement or fix ran and the test that failed with it; a
 // deletion whose latest check stayed green is what `tm task complete` refuses on.
 function renderChecks(node, checks) {
@@ -276,6 +315,7 @@ function nodeDetailHtml(node, body, row, { surface, byParent } = {}) {
     renderVerifications(node, body.verifications, editable),
     renderDependencies(node, body.dependency_details, status, editable),
     renderDependents(node, body.dependent_details),
+    renderSteps(node, body.steps, body.findings),
     renderFindings(node, body.findings),
     renderChecks(node, body.checks),
     renderNotes(node, body.notes),

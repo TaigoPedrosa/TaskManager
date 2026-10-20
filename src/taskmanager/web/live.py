@@ -31,6 +31,7 @@ from taskmanager.web.bodies import (
     _condition_result,
     body_items,
     build_bodies,
+    bulk_steps,
     lease_dict,
     refresh_relations,
 )
@@ -69,16 +70,19 @@ def _bulk_jobs(job_repo: JobRepository, ids: Sequence[str]) -> dict[str, list[Jo
 def _runtime_parts(
     repos: BodyRepos, data: GraphData, ids: Sequence[str]
 ) -> dict[str, dict[str, Any]]:
-    """Lease, jobs and conditions' cached results for `ids` -- the body parts a rev bump does
-    not cover, since none of them live in the node's own row or in a table a rev trigger
-    watches. One bulk query each, regardless of how many ids are asked for."""
+    """Lease, jobs, steps and conditions' cached results for `ids` -- the body parts a rev bump
+    does not cover, since none of them live in the node's own row or in a table a rev trigger
+    watches: the ledger records a step's end after the state write that bumped the rev. One
+    bulk query each, regardless of how many ids are asked for."""
     jobs = _bulk_jobs(repos.job_repo, ids)
+    steps = bulk_steps(repos.node_repo, ids)
     cached_conditions = repos.cache.all_conditions(repos.condition_ttl)
     parts: dict[str, dict[str, Any]] = {}
     for node_id in ids:
         parts[node_id] = {
             "lease": lease_dict(data.leases.get(node_id)),
             "jobs": [j.model_dump(mode="json") for j in jobs.get(node_id, [])],
+            "steps": steps.get(node_id, []),
             "conditions": [
                 {
                     "idx": c.idx,
