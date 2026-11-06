@@ -37,7 +37,7 @@ def repo(tmp_path: Path) -> NodeRepository:
 
 def doc(*tasks: dict[str, Any], plan: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
-        "spec": {"id": "S", "title": "S"},
+        "spec": {"id": "S", "title": "S", "review": False, "fix": False},
         "plans": [{"id": "S-P", "title": "P", **(plan or {}), "tasks": list(tasks)}],
     }
 

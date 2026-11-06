@@ -10,7 +10,7 @@ from taskmanager.core import models
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.engine import gates
-from taskmanager.engine.config import Gate
+from taskmanager.engine.config import ConfigStore, Gate
 from taskmanager.engine.gates import GateRun
 
 JUNIT = (
@@ -96,6 +96,7 @@ def red(tmp_path: Path) -> tuple[CacheRepository, Path, str]:
     root = tmp_path / "estate"
     root.mkdir()
     api = make_repo(root, "api")
+    ConfigStore(root).set("repos.api.push", "true")
     db = DatabaseManager(root / ".taskmanager")
     db.init_all()
     return CacheRepository(db), api, git(api, "rev-parse", "origin/main")

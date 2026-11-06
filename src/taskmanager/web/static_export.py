@@ -8,23 +8,21 @@ read path the live view and `/ws` share -- rather than driving the HTTP app thro
 import base64
 import mimetypes
 import re
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from taskmanager.core.enums import NodeKind
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.job_repo import JobRepository
-from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.di.container import create_container
-from taskmanager.engine.archive import archived_specs
 from taskmanager.engine.assets import ASSET_NAME_RE
 from taskmanager.engine.config import ConfigStore, project_name
 from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder
 from taskmanager.web.app import VENDOR_DIR, _decision_item
+from taskmanager.web.archived import archive_stores, rows_with_archive
 from taskmanager.web.bodies import BodyRepos, build_bodies
-from taskmanager.web.rows import build_rows, rows_in, statuses, statuses_hash
+from taskmanager.web.rows import rows_in, statuses, statuses_hash
 from taskmanager.web.ui import get_web_html
 
 # Above this, an attachment ships as a name-only link in the static export rather than
@@ -103,13 +101,8 @@ def export_static_html(project_root: Path, output_file: Path) -> Path:
     condition_ttl = config.condition_ttl
 
     view = DisplayView(snapshots, cache, condition_ttl)
-    archive = archived_specs(
-        view.snapshot,
-        container.get(LedgerRepository),
-        datetime.now(tz=UTC),
-        config.web.archive_after_days,
-    )
-    rows = build_rows(view, archive.nodes)
+    cold_view, cold_repos = archive_stores(project_root, cache, condition_ttl, assets_dir)
+    rows = rows_with_archive(view, cold_view)
     entries = statuses(rows_in(rows, "exclude"))
     edges = [[source, target, "depends_on"] for source, target in view.snapshot.edges]
 
@@ -124,6 +117,7 @@ def export_static_html(project_root: Path, output_file: Path) -> Path:
     # `rows` excludes decisions (rows.py skips them), but the Decisions view opens one by id
     # through the same `bodies` map every other node detail comes from.
     bodies = build_bodies(view, [*rows.keys(), *(d.id for d in decision_nodes)], repos=repos)
+    bodies |= build_bodies(cold_view, list(rows), repos=cold_repos)
     decisions = [_decision_item(d, node_repo, assets_dir) for d in decision_nodes]
 
     _embed_attachments(bodies, project_root)

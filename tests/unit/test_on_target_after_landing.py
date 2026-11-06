@@ -5,9 +5,10 @@ leave the chain, through every review and fix status in between."""
 from pathlib import Path
 
 import pytest
-from lifecycle_estate import add, gated, make_estate, stored
+from lifecycle_estate import add, gated, make_estate, on_branch, stored
 
-from taskmanager.core.enums import NodeKind
+from taskmanager.core.enums import NodeKind, VerificationType
+from taskmanager.core.models import NodeVerification
 from taskmanager.core.status import Action, FindingState, Merge, Outcome, Severity, Status
 from taskmanager.engine.claims import Claims
 from taskmanager.engine.stepgraph import migration_writers
@@ -352,3 +353,24 @@ def test_a_plan_imported_with_its_children_keeps_the_on_target_it_states(tmp_pat
     )
 
     assert stored(claims, "P2").on_target
+
+
+def test_verify_reads_a_squashed_container_at_its_landing(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    add(claims, "S", NodeKind.SPEC)
+    add(claims, "P", NodeKind.PLAN, parent="S", review=True, status=Status.LANDED)
+    # Verifications read a node's own repository, which a container only has when it names one.
+    claims.nodes.save_node(stored(claims, "P").model_copy(update={"target_repo": "api"}))
+    on_branch(claims.root / "api", "tm/P", "a.py", "a\n")
+    claims.nodes.add_verification(
+        NodeVerification(
+            node_id="P",
+            verification_type=VerificationType.TEST_COMMAND,
+            target_path="ref",
+            expected_pattern='test "$TM_VERIFY_REF" = origin/main',
+        )
+    )
+
+    passed, results = claims.ops.run_verifications("P")
+
+    assert passed, [r.message for r in results]

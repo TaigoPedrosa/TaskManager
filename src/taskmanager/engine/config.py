@@ -2,7 +2,7 @@ import copy
 import fcntl
 import os
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Final, Literal, NamedTuple
@@ -68,6 +68,18 @@ VERIFY_TIMEOUT: Final = 600
 # The ids `--max-strong` counts.
 STRONG_MODELS: Final = ("claude-opus-5-5", "claude-fable-5-1")
 
+ARCHIVE_HOURS_KEY: Final = "archive.automatically_after_hours"
+REPLACED_KEYS: Final = {
+    "web.archive_after_days": (
+        "web.archive_after_days is replaced by archive.automatically_after_hours (hours): "
+        f"run tm config set {ARCHIVE_HOURS_KEY} <hours>, or tm config unset web.archive_after_days"
+    ),
+    "review.blind": "review.blind is removed: a reviewer reads code only, never the brief or notes",
+}
+
+# Keys a config.yaml may still hold that change nothing: a stored value is skipped on read.
+INERT_KEYS: Final = frozenset({"review.blind"})
+
 KEYS: Final = (
     "embeddings.provider",
     "embeddings.model",
@@ -92,8 +104,7 @@ KEYS: Final = (
     "dispatch.wave_size",
     "dispatch.tick_budget",
     "codegraph.cache_commits",
-    "web.archive_after_days",
-    "review.blind",
+    "archive.automatically_after_hours",
     "sensitive_areas",
     "models.default",
     "models.merge",
@@ -138,11 +149,12 @@ _REPO_MAPPINGS: Final = (
     "migrations",
     # YAML, so `null` reads as a repository with no remote.
     "remote",
+    "push",
 )
 _VALID: Final = ", ".join(
     (
         *KEYS,
-        "repos.<repo>[.default_branch|.gates[.<main|parent>[.command|.junit|.tests_ran|.failing_pattern|.timeout]]|.after_land|.unlocked_files|.migrations|.remote]",
+        "repos.<repo>[.default_branch|.gates[.<main|parent>[.command|.junit|.tests_ran|.failing_pattern|.timeout]]|.after_land|.unlocked_files|.migrations|.remote|.push]",
     )
 )
 
@@ -224,6 +236,8 @@ class RepoConfig(BaseModel):
     # None: the repository has no remote, so claims cut from and landings move its local
     # branches, and nothing fetches or pushes.
     remote: str | None = DEFAULT_REMOTE
+    # False: landings move the local target and never push; `remote` is then only fetched from.
+    push: bool = False
     # A command run in the landing worktree after a container's push to its spec's target, with
     # {target}, {branch}, {node} and {repo} filled in; its exit never undoes the landing.
     # Left out of the stored file while unset, so no repository carries an empty hook.
@@ -269,18 +283,11 @@ class CodegraphConfig(BaseModel):
     cache_commits: int = Field(default=3, ge=1)
 
 
-class WebConfig(BaseModel):
+class ArchiveConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    # 0 keeps every completed spec out of the archive.
-    archive_after_days: int = Field(default=3, ge=0)
-
-
-class ReviewConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    # A review brief leaves out the implementer's report, so the review is a second opinion.
-    blind: bool = True
+    # 0 never archives on its own; `tm spec archive` still moves a spec by hand.
+    automatically_after_hours: int = Field(default=72, ge=0)
 
 
 class ModelsConfig(BaseModel):
@@ -307,8 +314,7 @@ class ProjectConfig(BaseModel):
     repos: dict[str, RepoConfig] = Field(default_factory=dict)
     dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
     codegraph: CodegraphConfig = Field(default_factory=CodegraphConfig)
-    web: WebConfig = Field(default_factory=WebConfig)
-    review: ReviewConfig = Field(default_factory=ReviewConfig)
+    archive: ArchiveConfig = Field(default_factory=ArchiveConfig)
     sensitive_areas: list[str] = Field(default_factory=lambda: list(SENSITIVE_AREAS))
     models: ModelsConfig = Field(default_factory=ModelsConfig)
 
@@ -340,6 +346,12 @@ class ProjectConfig(BaseModel):
         return self.repo(repo).default_branch
 
     def remote(self, repo: str | None) -> str | None:
+        """Where landings push and tops are read; None unless `repo` pushes, which makes the
+        remote-less path (local branches, a push into the repository itself) serve."""
+        found = self.repo(repo)
+        return found.remote if found.push else None
+
+    def fetch_remote(self, repo: str | None) -> str | None:
         return self.repo(repo).remote
 
 
@@ -378,6 +390,7 @@ def _repo_key(key: str) -> RepoKey | None:
         "unlocked_files",
         "migrations",
         "remote",
+        "push",
     } & set(repo.split(".")):
         return None
     return RepoKey(repo, tuple(below.split(".")) if below else ())
@@ -437,6 +450,8 @@ def _lookup(dumped: dict[str, Any], key: str) -> Any:
 
 
 def _require_key(key: str) -> None:
+    if key in REPLACED_KEYS:
+        raise ConfigError(REPLACED_KEYS[key])
     if key not in KEYS:
         raise ConfigError(f"unknown key '{key}' (valid keys: {_VALID})")
 
@@ -519,7 +534,22 @@ class ConfigStore:
             raise ConfigError(f"{self.path} is not valid YAML") from exc
         if not isinstance(loaded, dict):
             raise ConfigError(f"{self.path} is not a mapping")
-        return {key: _typed(key, value) for key, value in _flatten(loaded)}
+        return {key: _typed(key, value) for key, value in _flatten(loaded) if key not in INERT_KEYS}
+
+    def _drop_removed(self, keys: Iterable[str]) -> None:
+        """Removes each of `keys` from the stored file without reading its values, so a key no
+        read accepts can still be cleared."""
+        if not self.path.exists():
+            return
+        loaded = yaml.safe_load(self.path.read_text(encoding="utf-8")) or {}
+        flat = dict(_flatten(loaded)) if isinstance(loaded, dict) else {}
+        kept = {key: value for key, value in flat.items() if key not in set(keys)}
+        if len(kept) == len(flat):
+            return
+        if kept:
+            self.path.write_text(yaml.safe_dump(_nest(kept), sort_keys=True), encoding="utf-8")
+        else:
+            self.path.unlink()
 
     def _check_branches(self, flat: dict[str, Any]) -> None:
         if self.guard is None:
@@ -558,6 +588,8 @@ class ConfigStore:
             self._unset(key)
 
     def _set(self, key: str, raw: str) -> None:
+        if key == ARCHIVE_HOURS_KEY:
+            self._drop_removed(REPLACED_KEYS)
         flat = self.read()
         stored = flat.get("repos", {})
         found = _repo_key(key)
@@ -572,6 +604,9 @@ class ConfigStore:
         self._write(flat)
 
     def _unset(self, key: str) -> None:
+        if key in REPLACED_KEYS:
+            self._drop_removed([key])
+            return
         found = _repo_key(key)
         if found is None:
             _require_key(key)
@@ -649,7 +684,9 @@ class ConfigStore:
         return _nest(self.read()) if self.path.exists() else None
 
     def replace(self, document: dict[str, Any]) -> None:
-        flat = {key: _typed(key, value) for key, value in _flatten(document)}
+        flat = {
+            key: _typed(key, value) for key, value in _flatten(document) if key not in INERT_KEYS
+        }
         _check_all_bounds(flat)
         with self._locked():
             self._write(flat)

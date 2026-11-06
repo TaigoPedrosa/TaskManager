@@ -5,11 +5,13 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, NoReturn, cast
 from urllib.parse import quote
@@ -34,7 +36,7 @@ from taskmanager.core.enums import (
     VerificationType,
 )
 from taskmanager.core.lifecycle import advance, next_action
-from taskmanager.core.models import Condition, Job, LedgerEvent, Node
+from taskmanager.core.models import Condition, Job, LedgerEvent, Node, backup_of
 from taskmanager.core.naming import QualifiedPath
 from taskmanager.core.status import (
     IN_STEP,
@@ -66,7 +68,17 @@ from taskmanager.db.schema import STATE_SCHEMA_VERSION
 from taskmanager.db.utils import parse_db_datetime, to_db_timestamp
 from taskmanager.di.container import TaskManagerProvider
 from taskmanager.engine import doctor, setup
-from taskmanager.engine.archive import completion_times
+from taskmanager.engine.archive import (
+    ARCHIVE_FILE,
+    archive_due,
+    archive_path,
+    archive_spec,
+    archived_repo,
+    completion_times,
+    merge_archive,
+    refuse_clashing_archive,
+    unarchive_spec,
+)
 from taskmanager.engine.chains import landing_chain
 from taskmanager.engine.claims import LIVE_JOBS, Blocker, Claims, DecisionSpec
 from taskmanager.engine.config import ConfigError, ConfigStore
@@ -105,7 +117,9 @@ audit_app = typer.Typer(name="audit", help="Audit ledger event logs")
 web_app = typer.Typer(name="web", help="Interactive web visualizer and exporter")
 config_app = typer.Typer(name="config", help="Project configuration (.taskmanager/config.yaml)")
 finding_app = typer.Typer(name="finding", help="A review's findings and the answers to them")
-check_app = typer.Typer(name="check", help="The deletions an implement or fix red-checked")
+check_app = typer.Typer(
+    name="check", help="The deletions an implement or fix ran, an optional record"
+)
 note_app = typer.Typer(name="note", help="One-line notes an implement or fix leaves")
 decision_app = typer.Typer(name="decision", help="Raise and answer decisions")
 job_app = typer.Typer(name="job", help="Landing and sync jobs")
@@ -244,12 +258,12 @@ def _list_rows(
     kind: NodeKind,
     status: Status | None,
     state: DisplayStatus | None = None,
+    node_repo: NodeRepository | None = None,
 ) -> list[dict[str, Any]]:
-    view = _view(container)
+    node_repo = node_repo or container.get(NodeRepository)
+    view = display_view(node_repo)
     nodes = [
-        n
-        for n in container.get(NodeRepository).list_nodes(kind=kind)
-        if status is None or stored_status(n) == status
+        n for n in node_repo.list_nodes(kind=kind) if status is None or stored_status(n) == status
     ]
     rows = [_node_row(n, view.display(n)) for n in nodes]
     return [r for r in rows if state is None or r["state"] == state]
@@ -587,10 +601,10 @@ def spec_add(
     order: Annotated[int, typer.Option("--order", "-o", help="Display order")] = 0,
     review: Annotated[
         bool, typer.Option("--review/--no-review", help="A review step follows the children")
-    ] = False,
+    ] = True,
     fix: Annotated[
         bool, typer.Option("--fix/--no-fix", help="A rejection is fixed on this node")
-    ] = False,
+    ] = True,
     land_on: Annotated[
         str | None,
         typer.Option(
@@ -628,6 +642,9 @@ def spec_list(
         Status | None, typer.Option("--status", help="Filter by stored status")
     ] = None,
     state: Annotated[DisplayStatus | None, _STATE_OPTION] = None,
+    archived: Annotated[
+        bool, typer.Option("--archived", help="List the archived specs instead")
+    ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
     yaml_output: Annotated[
         bool, typer.Option("--yaml", help="Output as YAML (fewer tokens than JSON)")
@@ -635,11 +652,44 @@ def spec_list(
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     """List specs with their derived state."""
-    rows = _list_rows(_get_container(_get_root(path)), NodeKind.SPEC, status, state)
+    root = _get_root(path)
+    rows = _list_rows(
+        _get_container(root),
+        NodeKind.SPEC,
+        status,
+        state,
+        archived_repo(root) if archived else None,
+    )
     if json_output or yaml_output:
         _emit(rows, yaml_output)
         return
     _print_rows("Specifications", rows)
+
+
+@spec_app.command("archive")
+def spec_archive(
+    spec_id: str,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Move a finished spec and its whole subtree and history out of the hot databases."""
+    root = _get_root(path)
+    _get_container(root)
+    with _refusing():
+        archive_spec(root, spec_id)
+    print(f"[green]Archived spec {escape(spec_id)}[/green]")
+
+
+@spec_app.command("unarchive")
+def spec_unarchive(
+    spec_id: str,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Move an archived spec back into the hot databases."""
+    root = _get_root(path)
+    _get_container(root)
+    with _refusing():
+        unarchive_spec(root, spec_id)
+    print(f"[green]Unarchived spec {escape(spec_id)}[/green]")
 
 
 _JSON_OPTION = typer.Option("--json", help="Output as JSON")
@@ -1088,6 +1138,7 @@ def task_get(
     verifications = node_repo.get_verifications(task_id)
     if json_output or yaml_output:
         lease = container.get(RuntimeRepository).get_lease(task_id)
+        merge = node_repo.get_section(task_id, "merge")
         is_decision = task.kind == NodeKind.DECISION
         waiting, awaiting = waits_on(snapshot, task)
         doc = _node_row(task, state)
@@ -1105,6 +1156,7 @@ def task_get(
                 "merge_attempts": task.merge_attempts,
                 "step_failures": task.step_failures,
                 "branch": task.branch or f"tm/{task_id}",
+                "backup": backup_of(task, merge.content if merge else ""),
                 "requires": task.requires,
                 "land_order": task.land_order,
                 "landing_chain": [] if is_decision else landing_chain(snapshot, task_id),
@@ -1193,6 +1245,7 @@ def task_start(
             "base": result.base,
             "bases": result.bases,
             "remotes": result.remotes,
+            "squashes": result.squashes,
             "worktree": result.worktree,
             "worktrees": result.worktrees,
             "token": result.token,
@@ -1983,12 +2036,22 @@ def _print_jobs(title: str, jobs: list[Job]) -> None:
     print(table)
 
 
+def _archive_due(root: Path) -> None:
+    def warn(spec_id: str, exc: Exception) -> None:
+        sys.stderr.write(f"warning: spec {spec_id} was not archived: {type(exc).__name__}\n")
+
+    archive_due(root, datetime.now(tz=UTC), warn)
+
+
 @run_app.command("sweep")
 def run_sweep(
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     """Return every step whose lease expired to the status it was claimed from."""
-    swept = _claims(_get_root(path)).sweep()
+    root = _get_root(path)
+    _get_container(root)
+    _archive_due(root)
+    swept = _claims(root).sweep()
     if swept:
         print(f"[yellow]Swept {len(swept)} expired lease(s): {', '.join(swept)}[/yellow]")
     else:
@@ -2478,6 +2541,7 @@ def next_tasks(
     not this command: an open decision blocks its task out of `next` until it is answered."""
     root = _get_root(path)
     container = _get_container(root)
+    _archive_due(root)
     heuristics = container.get(RecommendationEngine)
 
     ranked = heuristics.get_next_tasks(
@@ -2536,12 +2600,17 @@ def render(
             help="Also render every child, depth-first (a spec's plans and their tasks)",
         ),
     ] = False,
+    archived: Annotated[
+        bool, typer.Option("--archived", help="Render from the archived specs")
+    ] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
 ) -> None:
     """Print nodes as markdown: full, summary, or the subagent brief."""
     root = _get_root(path)
     container = _get_container(root)
-    renderer = container.get(MarkdownRenderer)
+    renderer = (
+        MarkdownRenderer(archived_repo(root)) if archived else container.get(MarkdownRenderer)
+    )
     outputs = []
     for qualified_id in qualified_ids:
         qp = QualifiedPath.parse(qualified_id)
@@ -2834,6 +2903,13 @@ def export_cmd(
         for f in sorted(assets_src.iterdir()):
             if f.is_file():
                 (assets_dst / f.name).write_bytes(f.read_bytes())
+    archive_copy = directory / ARCHIVE_FILE
+    archive_copy.unlink(missing_ok=True)
+    if archive_path(root).exists():
+        # The WAL holds recent writes the file copy would otherwise miss.
+        with closing(sqlite3.connect(archive_path(root))) as conn:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        shutil.copyfile(archive_path(root), archive_copy)
     print(f"[green]Exported {len(plans)} plans and {len(specs)} specs to {directory}[/green]")
 
 
@@ -2857,6 +2933,9 @@ def restore_cmd(
         raise typer.Exit(code=1)
     container = _get_container(root)
     container.get(DatabaseManager).init_all()
+    if (directory / ARCHIVE_FILE).is_file():
+        with _refusing():
+            refuse_clashing_archive(root, directory / ARCHIVE_FILE)
     importer = _RefusingImporter(container.get(BulkImporter), str(directory))
 
     files = [
@@ -2869,7 +2948,7 @@ def restore_cmd(
     decisions_doc = (
         json.loads(decisions_file.read_text(encoding="utf-8")) if decisions_file.exists() else None
     )
-    if not docs and decisions_doc is None:
+    if not docs and decisions_doc is None and not (directory / ARCHIVE_FILE).is_file():
         _stderr.print(f"[red]No export files in {directory}[/red]")
         raise typer.Exit(code=1)
 
@@ -2931,6 +3010,8 @@ def restore_cmd(
                 timestamp=parse_db_datetime(at),
             )
         )
+    if (directory / ARCHIVE_FILE).is_file():
+        merge_archive(root, directory / ARCHIVE_FILE)
     settings_file = directory / "_config.json"
     if settings_file.exists():
         exported = json.loads(settings_file.read_text(encoding="utf-8"))

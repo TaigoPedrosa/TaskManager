@@ -48,12 +48,15 @@ doc="$(mktemp -d)/plan.yaml"
 
 The document opens with `spec:` holding only `id: <spec-id>`: a key the document omits keeps the spec's current value, and a document with no `spec` has its plans refused unless they already sit under a spec.
 
-- A **plan** is a slice that ships on its own: once its tasks land, something the design promised works. Pick its landing shape from `tm guide plan` §4: each task reviewed and landed alone, or one review for the whole plan.
+- A **plan** is a slice that ships on its own: once its tasks land, something the design promised works. Leave `review`, `fix` and `merge` at their defaults (`tm guide plan` §4): the spec's one review covers everything under it, and every child lands on its parent's branch. Mark a critical task `sensitive:` so it keeps its own review and a re-review of its fix; set a plan's `review: true` only when the design asks for a review of that slice alone.
 - A **task** is one agent's unit, sized by `tm guide plan` §7: an objective of one sentence, a handful of acceptance lines, a `declared_files` list no sibling wants.
 - Every task traces to a line of the `design` or an answered decision. One that traces to neither is out (YAGNI); one the design names for later is its own node with `depends_on` naming the node it waits for, never a sentence in a section (`tm guide plan` §2).
 - Waits are ids in `depends_on`, decisions, or conditions with a command (`tm guide plan` §5), never prose.
+- The spec frontmatter `commit:` holds the squash subject for each repository, as a map from repository to `<type>(<spec-id>): <goal in this repo>`; write it with the spec's other frontmatter (`tm guide plan` §2), one entry per repository in the landing order.
+- The design's **Test plan** becomes one more plan in the spec, `<SPEC>-TESTS`: a task for each seam test, boot test and end-to-end flow it lists, each with `depends_on` naming the implementation it covers. Implementation tasks carry one small verification each, the check that their deliverable exists and behaves, and no coverage obligations of their own. A verification that counts tests says at least N ran, none failed or skipped, read from the class's own report (`tm guide plan` §6).
+- Each shared contract the design lists under **Seams and contracts** is either the first task, which every task that touches it depends on, or a block copied verbatim into each of those tasks' briefs; never a paraphrase.
 - Section keys and their order, and what goes on the plan rather than the task, follow `tm guide plan` §2. A contract one task writes and another reads, and a ruling several tasks share, go in the plan's `overview`, since only the parent's `context` and `overview` reach a task's brief.
-- Acceptance follows `tm guide plan` §8: one check a reviewer can run per line.
+- Acceptance follows `tm guide plan` §8: one line per fact that must hold, each proved by a verification or by the test plan; a reviewer reads code only and never runs them.
 - Verifications follow `tm guide plan` §6, with `${TM_VERIFY_REF:-origin/main}` in every `test_command` rather than a branch name.
 
 ## 4. Check the document
@@ -76,7 +79,7 @@ Every task's verifications must fail before its change. For each task, run its c
 tm verify run <task-id>
 ```
 
-With no `--ref`, this reads the branch `tm task get <task-id> --yaml` prints as `lands_on`, on the repository's remote after a fetch, or the local branch where `repos.<repo>.remote` is null. A `lands_on` branch tm has not created yet (it creates it on the first landing) reads as the repository's default branch, so a check fails for its missing deliverable and not for a missing ref; `--ref <ref>` reads any other ref.
+With no `--ref`, this reads the branch `tm task get <task-id> --yaml` prints as `lands_on`: the local branch, or `<remote>/<branch>` after a fetch where `repos.<repo>.push` is on. A `lands_on` branch tm has not created yet (it creates it on the first landing) reads as the repository's default branch, so a check fails for its missing deliverable and not for a missing ref; `--ref <ref>` reads any other ref.
 
 Each run must exit 1 with at least one of the task's checks `FAILED`, and none failing for a reason other than the missing deliverable (a typo in a path, a command that cannot run). A verification that passes on the target proves nothing: rewrite it so it checks this task's own deliverable, put it back with `tm verify remove` and `tm verify add` (or fix the document and re-import while nothing is claimed), and run it again. `No verifications to run.` is a miss from step 4: add one. Do the same for each plan's joined verification.
 

@@ -79,7 +79,6 @@ from taskmanager.engine.decisions import (
 from taskmanager.engine.doctor import CODEGRAPH_INSTALL, codegraph_index
 from taskmanager.engine.gates import RED_TARGET, clear_red_targets
 from taskmanager.engine.git import GitManager
-from taskmanager.engine.guards import GuardSite, guard_sites, uncovered
 from taskmanager.engine.operations import OperationError, Operations
 from taskmanager.engine.routing import model_for
 from taskmanager.engine.snapshot import (
@@ -319,6 +318,10 @@ class ClaimResult:
     # `codegraph_lines` for each worktree the claim cut, or for a review the index of each commit
     # under review: advice only, the claim stands either way.
     codegraph: list[str] = field(default_factory=list)
+    # Repository name to the commit the node's latest landing there squashed to: what a review
+    # claimed from LANDED reads, since the target moves on under later landings. A repository
+    # whose landing left no squash is absent.
+    squashes: dict[str, str] = field(default_factory=dict)
 
 
 class Verified(NamedTuple):
@@ -416,6 +419,15 @@ class Claims:
 
     def repos_of(self, node_id: str) -> list[str]:
         return self.ops.repos_of(self.node(node_id).id, self.config.repo_order)
+
+    def squash_subject(self, node_id: str, repo: str) -> str:
+        """The subject of the one commit a container's landing puts on its target in `repo`: a
+        spec's `commit` frontmatter, a string or one subject per repository."""
+        node = self.node(node_id)
+        commit = node.frontmatter.get("commit") if node.kind == NodeKind.SPEC else None
+        if isinstance(commit, dict):
+            commit = commit.get(repo)
+        return str(commit) if commit else f"{node.id}: {node.title}"
 
     def ttl_for(self, action: Action) -> int:
         return self.config.lease_ttl_for(action)
@@ -690,7 +702,20 @@ class Claims:
             worktrees,
             bases=bases,
             remotes={repo: self.config.remote(repo) for repo in repos},
+            squashes=self._squashes(node, action, repos),
         )
+
+    def _squashes(self, node: Node, action: Action, repos: list[str]) -> dict[str, str]:
+        if action != Action.REVIEW or node.claimed_from != Status.LANDED:
+            return {}
+        recorded = self.recorded_squashes(node.id)
+        return {repo: recorded[repo] for repo in repos if repo in recorded}
+
+    def recorded_squashes(self, node_id: str) -> dict[str, str]:
+        """The latest `squash: <repo> <sha>` line of the node's `:merge` section per repository:
+        the commit its landing put on the target."""
+        found = self.nodes.get_section(node_id, "merge")
+        return squash_lines(found.content if found else "")
 
     def _landing(self) -> LandingJobs:
         if self.landing is None:
@@ -711,8 +736,10 @@ class Claims:
         branch = self.branch_of(node.id)
 
         def cut(repo: str, path: Path, base: str) -> str:
-            if fix and self._spent(self.root / repo, branch, base):
-                self._retire(repo, branch)
+            if fix and self._spent(self.root / repo, branch, base, node.on_target):
+                retired, _ = self._retire(repo, branch)
+                if self.is_container(node):
+                    self._note_retired(node.id, retired)
             return str(GitManager(self.root / repo).create_worktree(branch, path, base))
 
         if not self.is_container(node):
@@ -730,9 +757,13 @@ class Claims:
         return str(base_dir / node.id), worktrees
 
     @staticmethod
-    def _spent(repo_dir: Path, branch: str, base: str) -> bool:
+    def _spent(repo_dir: Path, branch: str, base: str, landed: bool) -> bool:
+        """`landed` is the node's own record: a squashed container's branch is no ancestor of
+        its target, and its diff against it is not empty."""
         return bool(gitops.rev_parse(repo_dir, f"refs/heads/{branch}")) and (
-            gitops.is_ancestor(repo_dir, branch, base) or gitops.diff_quiet(repo_dir, base, branch)
+            landed
+            or gitops.is_ancestor(repo_dir, branch, base)
+            or gitops.diff_quiet(repo_dir, base, branch)
         )
 
     def _base_ref(self, node_id: str, repo: str) -> str:
@@ -770,11 +801,32 @@ class Claims:
         creates."""
         repo_dir, remote = self.root / repo, self.ops.remote(repo)
         top, default = self.ops.landing_branch(node_id, repo), self.ops.default_branch(repo)
+        self.seed_top(repo, top)
         self._fetch(repo, remote, top, fresh)
         if top != default and not gitops.rev_parse(repo_dir, gitops.tracking(remote, top)):
             self._fetch(repo, remote, default, fresh)
             return default
         return top
+
+    def seed_top(self, repo: str, top: str) -> None:
+        """With landings kept local, a top that is not a local branch yet is cut from what the
+        fetch remote holds: the branch itself, else its default branch. An existing local top is
+        the owner's to manage and is never touched."""
+        remote = self.config.fetch_remote(repo)
+        repo_dir = self.root / repo
+        if self.ops.remote(repo) is not None or remote is None:
+            return
+        if gitops.rev_parse(repo_dir, f"refs/heads/{top}"):
+            return
+        # A failed fetch is not an error: the claim then refuses a repository with no base.
+        gitops.fetch(repo_dir, remote, top)
+        source = gitops.tracking(remote, top)
+        if not gitops.rev_parse(repo_dir, source):
+            default = self.ops.default_branch(repo)
+            gitops.fetch(repo_dir, remote, default)
+            source = gitops.tracking(remote, default)
+        if gitops.rev_parse(repo_dir, source):
+            gitops.ensure_branch(repo_dir, top, source)
 
     def _fetch(self, repo: str, remote: str | None, branch: str, fresh: bool) -> None:
         """A failed fetch leaves the tracking ref an earlier fetch wrote, which `fresh` refuses to
@@ -842,30 +894,6 @@ class Claims:
                 f"`tm finding close` or `tm finding dispute` first",
                 409,
             )
-        left_green = _left_green(self.nodes.get_checks(node_id))
-        if left_green:
-            raise OperationError(
-                f"{node_id} has deletions that left every test passing: {', '.join(left_green)}. "
-                "Add a test that fails without each, then record "
-                "`tm check add --deleted <same> --red <test>`",
-                409,
-            )
-        unchecked = self._unchecked_guards(node)
-        if unchecked:
-            sites = "; ".join(
-                f"{s.label} `{s.text}`" + (f" ({s.rows} operands)" if s.rows > 1 else "")
-                for s in unchecked
-            )
-            # Spelled out whole, so an agent copies the command rather than rebuilding it.
-            add = f"tm check add {node_id} --agent {lease.agent_id} --token <token> --deleted"
-            raise OperationError(
-                f"{node_id} adds or changes guards no check records: {sites}. Delete each, run "
-                f"the suite, and record it, once per operand: `{add} {unchecked[0].label} --red "
-                f"<test>`; a line that is no guard: `{add} {unchecked[0].label} --waive "
-                '"<why>"`. Pass --agent and --token as separate words, never through one '
-                "unsplit variable",
-                409,
-            )
         return self._advance(
             self._with_written_migrations(node),
             Event.COMPLETE,
@@ -878,19 +906,6 @@ class Claims:
         if not gitops.rev_parse(self.root / repo, base):
             base = self.ops.top_ref(repo, self.ops.default_branch(repo))
         return base
-
-    def _unchecked_guards(self, node: Node) -> list[GuardSite]:
-        """The guards the step's branch adds or changes in source files that its checks do not
-        cover; a container's branch carries its children's, which their own steps checked."""
-        if self.is_container(node):
-            return []
-        branch = self.branch_of(node.id)
-        sites = [
-            site
-            for repo in self.repos_of(node.id)
-            for site in guard_sites(self.root / repo, self._step_diff_base(node, repo), branch)
-        ]
-        return uncovered(sites, self.nodes.get_checks(node.id))
 
     def _with_written_migrations(self, node: Node) -> Node:
         """`node` declaring each file under its repository's `migrations` its branch changes: a
@@ -1469,9 +1484,13 @@ class Claims:
         return nxt.status
 
     def _prove_landed(self, node_id: str) -> None:
+        """Each repository is proven by the commit a squashed landing recorded there, else by
+        the node's branch being on its target; either way its checks run on that target."""
         branch = self.branch_of(node_id)
         at_top = self.ops.landing_parent(node_id) is None
-        container = self.is_container(self.node(node_id))
+        node = self.node(node_id)
+        container = self.is_container(node)
+        squashes = self.recorded_squashes(node_id) if container and node.on_target else {}
         repos = self.repos_of(node_id)
         if not container and not repos:
             raise OperationError(
@@ -1482,7 +1501,21 @@ class Claims:
             target, ref = self.target_of(node_id, repo), self.target_ref(node_id, repo)
             if at_top:
                 self._fetch(repo, self.ops.remote(repo), target, fresh=True)
-            if gitops.rev_parse(repo_dir, f"refs/heads/{branch}"):
+            held = gitops.rev_parse(repo_dir, f"refs/heads/{branch}")
+            if (squash := squashes.get(repo)) is not None:
+                if not gitops.is_ancestor(repo_dir, squash, ref):
+                    raise OperationError(
+                        f"{squash[:12]} is not on {target} in {repo}: land it", 409
+                    )
+                # A squash is not an ancestor of the branch, so what the branch holds past it
+                # is read as what merging the branch into the squash would change.
+                if held and not gitops.holds_nothing_past(repo_dir, squash, branch):
+                    raise OperationError(
+                        f"{branch} holds commits that {squash[:12]} did not take in {repo}: "
+                        "land it",
+                        409,
+                    )
+            elif held:
                 if not gitops.is_ancestor(repo_dir, branch, ref):
                     raise OperationError(
                         f"{branch} is not on {target} in {repo}: land it first", 409
@@ -1507,19 +1540,34 @@ class Claims:
             for undo in undos:
                 undo()
 
+        retired: list[str] = []
         try:
             for repo in self.known_repos():
-                undos.append(self._retire(repo, branch))
+                name, undo = self._retire(repo, branch)
+                undos.append(undo)
+                if name:
+                    retired.append(name)
+            if self.is_container(self.node(node_id)):
+                self._note_retired(node_id, *retired)
         except BaseException:
             undo_all()
             raise
         return undo_all
 
-    def _retire(self, repo: str, branch: str) -> Callable[[], None]:
-        """Retires `branch` in `repo`; the result moves it back, and raises nothing."""
+    def _note_retired(self, node_id: str, *names: str) -> None:
+        """Records where a container's granular history went: the first `retired:` line is the
+        `backup` of its first landing, since each fix landing writes a branch of its own."""
+        found = self.nodes.get_section(node_id, "merge")
+        text = found.content if found else ""
+        if names and not re.search(r"^retired: ", text, re.MULTILINE):
+            self.note(node_id, "merge", f"granular history kept\nretired: {names[0]}")
+
+    def _retire(self, repo: str, branch: str) -> tuple[str, Callable[[], None]]:
+        """Retires `branch` in `repo`: the name it moved to, and a function that moves it back and
+        raises nothing."""
         repo_dir = self.root / repo
         if not gitops.rev_parse(repo_dir, f"refs/heads/{branch}"):
-            return _nothing
+            return "", _nothing
         n = 1
         while gitops.rev_parse(repo_dir, f"refs/heads/{branch}@{n}"):
             n += 1
@@ -1544,7 +1592,7 @@ class Claims:
             raise OperationError(
                 f"could not retire {branch} in {repo}: {exc.stderr or exc}".strip(), 409
             ) from exc
-        return undo
+        return f"{branch}@{n}", undo
 
     def _strand(self, node_id: str, status: Status) -> None:
         dependents = stranded_dependents(self.ops, node_id)
@@ -1658,6 +1706,10 @@ class Claims:
         )
 
 
+def squash_lines(merge: str) -> dict[str, str]:
+    return dict(re.findall(r"^squash: (\S+) ([0-9a-f]{7,64})$", merge, re.MULTILINE))
+
+
 def _hash_of(findings: list[Finding]) -> str:
     rows = [f.model_dump(mode="json") for f in findings]
     return hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
@@ -1665,13 +1717,6 @@ def _hash_of(findings: list[Finding]) -> str:
 
 def _numbers(numbers: list[int]) -> str:
     return ", ".join(f"#{n}" for n in numbers)
-
-
-def _left_green(checks: list[Check]) -> list[str]:
-    """Each deletion whose latest check left every test passing: a later red check of the same
-    deletion answers an earlier green one."""
-    latest = {c.deleted: c.result for c in checks}
-    return [deleted for deleted, result in latest.items() if result == CheckResult.GREEN]
 
 
 def _same_claim(at: str, breaks: str) -> tuple[str, str]:

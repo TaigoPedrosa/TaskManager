@@ -14,7 +14,7 @@ import tempfile
 from collections.abc import AsyncGenerator, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote, urlsplit
@@ -42,10 +42,8 @@ from taskmanager.core.status import (
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
-from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.di.container import TaskManagerProvider
-from taskmanager.engine.archive import Archive, archived_specs
 from taskmanager.engine.assets import ASSET_NAME_RE
 from taskmanager.engine.claims import Claims
 from taskmanager.engine.config import ConfigStore, DispatchConfig, project_name
@@ -56,9 +54,11 @@ from taskmanager.engine.selection import gated_repos
 from taskmanager.engine.simulate import simulate
 from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder, stored_status
 from taskmanager.engine.verification import RETIRED_VERIFICATIONS
+from taskmanager.web.archived import Stores, archive_stores, rows_with_archive
 from taskmanager.web.bodies import BodyRepos, attachments_with_size, build_bodies, lease_dict
 from taskmanager.web.live import LiveHub
 from taskmanager.web.rows import (
+    ArchivedMode,
     build_rows,
     canonical,
     decisions_open,
@@ -80,8 +80,8 @@ class SpecCreate(BaseModel):
     title: str
     slug: str | None = None
     priority: int = 50
-    review: bool = False
-    fix: bool = False
+    review: bool = True
+    fix: bool = True
     land_on: str | None = None
 
 
@@ -372,9 +372,22 @@ def _decode_nodes_cursor(raw: str) -> tuple[int, str, str]:
         raise HTTPException(400, "invalid cursor") from exc
 
 
-def _node_details(ids: list[str], view: DisplayView, repos: BodyRepos) -> dict[str, dict[str, Any]]:
+def _node_details(
+    ids: list[str],
+    view: DisplayView,
+    repos: BodyRepos,
+    cold: Callable[[], Stores] | None = None,
+) -> dict[str, dict[str, Any]]:
     """The single place `/api/nodes/{id}` and a bulk page's `include=body` build a node's detail
-    from, so the two are equal by construction rather than by two routes staying in sync."""
+    from, so the two are equal by construction rather than by two routes staying in sync. An id
+    the hot estate lacks is read from the archive, which `cold` opens."""
+    details = _hot_details(ids, view, repos)
+    if cold is not None and (missing := [i for i in ids if i not in details]):
+        details |= _hot_details(missing, *cold())
+    return details
+
+
+def _hot_details(ids: list[str], view: DisplayView, repos: BodyRepos) -> dict[str, dict[str, Any]]:
     bodies = build_bodies(view, ids, repos=repos)
     return {
         node_id: {
@@ -397,6 +410,7 @@ def paginate_nodes(
     include_body: bool,
     cursor: str | None,
     limit: int,
+    cold: Callable[[], Stores] | None = None,
 ) -> dict[str, Any]:
     """One page of `ids`, or of `parent`'s direct children (`None`/`"root"` for the roots),
     filtered exactly as `visibility.py` filters the whole tree -- a client walks the tree one
@@ -443,7 +457,7 @@ def paginate_nodes(
     if include_body and page:
         if view is None or repos is None:
             raise ValueError("include_body requires view and repos")
-        details = _node_details([r["id"] for r in page], view, repos)
+        details = _node_details([r["id"] for r in page], view, repos, cold)
         items = [{**r, "body": details.get(r["id"])} for r in page]
     else:
         items = [dict(r) for r in page]
@@ -547,7 +561,6 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
 
     jobs = container.get(JobRepository)
     cache = container.get(CacheRepository)
-    ledger = container.get(LedgerRepository)
 
     def _condition_ttl() -> int:
         return ConfigStore(project_root).project().condition_ttl
@@ -599,12 +612,13 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         """One snapshot per request, so every display in one response reads the same tree."""
         return DisplayView(snapshots, cache, _condition_ttl())
 
-    def view_archive(view: DisplayView) -> Archive:
-        days = ConfigStore(project_root).project().web.archive_after_days
-        return archived_specs(view.snapshot, ledger, datetime.now(tz=UTC), days)
+    def cold_stores() -> Stores:
+        return archive_stores(project_root, cache, _condition_ttl(), assets_dir)
 
-    def view_rows(view: DisplayView) -> dict[str, dict[str, Any]]:
-        return build_rows(view, view_archive(view).nodes)
+    def view_rows(view: DisplayView, mode: ArchivedMode) -> dict[str, dict[str, Any]]:
+        if mode == "exclude":
+            return build_rows(view)
+        return rows_with_archive(view, cold_stores()[0])
 
     def _body_repos() -> BodyRepos:
         return BodyRepos(
@@ -633,7 +647,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
     @app.get("/api/nodes/{node_id:path}")
     def get_node_detail(node_id: str) -> dict[str, Any]:
         view = new_view()
-        detail = _node_details([node_id], view, _body_repos()).get(node_id)
+        detail = _node_details([node_id], view, _body_repos(), cold_stores).get(node_id)
         if detail is None:
             raise HTTPException(status_code=404, detail="Node not found")
         return detail
@@ -645,7 +659,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         view = new_view()
-        entries = statuses(rows_in(view_rows(view), mode))
+        entries = statuses(rows_in(view_rows(view, mode), mode))
         return {
             "statuses": entries,
             "hash": statuses_hash(entries),
@@ -668,8 +682,13 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             if len(id_list) > _MAX_NODES_IDS:
                 raise HTTPException(400, f"at most {_MAX_NODES_IDS} ids")
         view = new_view()
+        try:
+            mode = parse_filters(query).archived
+        except ValueError:
+            # The page refuses the bad filter itself, naming it.
+            mode = "exclude"
         return paginate_nodes(
-            view_rows(view),
+            view_rows(view, mode),
             view=view,
             repos=_body_repos(),
             parent=parent,
@@ -678,6 +697,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             include_body=include == "body",
             cursor=cursor,
             limit=limit,
+            cold=cold_stores,
         )
 
     _DECISION_TAB_STATUS = {
@@ -747,13 +767,9 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
         # condition's command under.
         view = new_view()
         snap = view.snapshot
-        if mode != "include":
-            # The archive holds whole spec subtrees, so scoping by spec is the whole filter;
-            # "none" scopes the nodes under no spec, which never archive.
-            archive = view_archive(view)
-            every_spec = [n.id for n in snap.graph_data().nodes.values() if n.kind == NodeKind.SPEC]
-            pool = spec if spec is not None else [*every_spec, "none"]
-            spec = [s for s in pool if (s in archive.specs) is (mode == "only")]
+        if mode == "only":
+            # An archived spec is finished throughout, so no step of it is left to simulate.
+            spec = []
         cached_conditions = cache.all_conditions(_condition_ttl())
         project = ConfigStore(project_root).project()
         waves = simulate(

@@ -59,7 +59,7 @@ def test_run_gate_with_a_red_exit_is_red_not_no_tests(tmp_path: Path) -> None:
 
 def landing_with(tmp_path: Path, gate: Gate) -> tuple[str, JobState, Claims]:
     claims = make_estate(
-        tmp_path, config=ProjectConfig(repos={"api": RepoConfig(gates={"main": gate})})
+        tmp_path, config=ProjectConfig(repos={"api": RepoConfig(push=True, gates={"main": gate})})
     )
     landing = attach_landing(claims)
     add(claims, "T1", status=Status.REVIEWED, outcome=Outcome.APPROVE, review_cycles=1)
@@ -134,7 +134,9 @@ def test_sync_with_a_parent_gate_that_ran_no_tests_stops_for_an_agent(tmp_path: 
     claims, landing = lagging_parent(
         tmp_path,
         ProjectConfig(
-            repos={"api": RepoConfig(gates={"main": Gate(command="true"), "parent": gate})}
+            repos={
+                "api": RepoConfig(push=True, gates={"main": Gate(command="true"), "parent": gate})
+            }
         ),
     )
     first = claims.start("X", "implementer", "s1")

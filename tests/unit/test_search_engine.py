@@ -546,3 +546,20 @@ def test_search_refuses_a_status_that_is_not_one(project: Path) -> None:
         "S1-P1-keys",
         "S1-P1-docs",
     }
+
+
+def test_archived_nodes_leave_search(project: Path) -> None:
+    for slug in ("keys", "docs"):
+        _cli(project, "task", "abandon", f"S1-P1-{slug}", "--note", "dropped")
+    _cli(project, "config", "set", "embeddings.provider", "mock")
+    _cli(project, "config", "set", "embeddings.dimensions", "16")
+    assert _cli(project, "index")[0] == 0
+
+    assert _cli(project, "spec", "archive", "S1")[0] == 0
+    code, out = _cli(project, "search", "--json", "rotate")
+    assert code == 0 and json.loads(out)["results"] == []
+
+    assert _cli(project, "spec", "unarchive", "S1")[0] == 0
+    assert _cli(project, "index")[0] == 0
+    code, out = _cli(project, "search", "--json", "rotate")
+    assert {hit["id"] for hit in json.loads(out)["results"]} >= {"S1-P1-keys"}

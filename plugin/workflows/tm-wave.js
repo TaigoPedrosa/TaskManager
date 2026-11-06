@@ -206,6 +206,7 @@ async function read(n) {
 // ponytail: whole list rows go through the runner's transcript; a --fields on tm task list and
 // tm plan list would cut a large spec's to its ids.
 async function lineage(n) {
+  if (n.kind === 'task') return [q(n.id)]
   const ids = [q(n.id)]
   const queue = [[n.id, n.kind]]
   const rows = async list => {
@@ -274,7 +275,10 @@ const close = (n, c) => ({
   sync: `${TM} job resume ${c.job} ${owner(n, c.token)}`,
 })[c.action]
 
-const head = (n, c, model, role) => {
+// A reviewer reads code only: it gets no brief line, no section rules and no notes, and `closes`
+// says whether it ends the step or leaves that to the seam reviewer.
+const head = (n, c, model, role, { closes = true } = {}) => {
+  const review = role === 'review'
   const repo = (c.repos || n.repos || [])[0]
   const preamble = PREAMBLE[repo] ?? PREAMBLE.default ?? ''
   const rules = RULES_DIR
@@ -287,17 +291,24 @@ const head = (n, c, model, role) => {
   const needs = requires.length ? `\nRequires: ${requires.join(', ')}; load the tools that provide it with ToolSearch before the first step that needs them.` : ''
   // Implement and fix claims print these for their worktree, a review claim for the commit under review; tm's own wording reaches the agent.
   const codegraph = (c.codegraph || []).map(line => `\ncodegraph: ${line}`).join('')
-  const blocked = c.action in CLAIMED
+  const blocked = c.action in CLAIMED && closes
     ? `, or, when something outside this step must happen first, with ${TM} task release ${n.id} ${owner(n, c.token)} --blocked naming the edge, decision or condition it waits on`
     : ''
   // Every agent of a session shares one scratchpad; a script one writes at its top level is
   // overwritten by the next agent that picks the same name.
   const scratch = `${n.id}-${c.action}${c.token ? `-${c.token}` : ''}/`
+  const closing = closes
+    ? `Close the step with ${close(n, c)}${blocked}.`
+    : `You do not close the step: the seam reviewer does, after every repository's reviewer has recorded its findings.`
+  const reads = review
+    ? `\nIsolation: judge the code as it stands. Read neither the node's brief, its notes, the spec, the design nor the plan; run no tm command but ${TM} guide review, ${TM} finding add, finding list, finding reopen and task heartbeat, ${TM} task list and plan list only to name the nodes under a container landed without a squash${closes ? `, and the one that closes the step` : ''}.${codegraph}`
+    : `\nBrief: tm render ${n.id} --view subagent${codegraph}`
+  const sections = review
+    ? ''
+    : `\nSections: before any tm section set, tm section get the same key. Append an entry to :merge; rewrite any other section whole, in the present tense, with every sentence it overrides gone.`
   return `${preamble ? preamble + '\n' : ''}tm-task: ${n.id}
 Model: ${model}
-The tm-wave workflow claimed this ${c.action} step for you: never run tm task start, and never claim or release any other node. Read tm guide ${role} and follow it from the step after its claim. Close the step with ${close(n, c)}${blocked}.
-Brief: tm render ${n.id} --view subagent${codegraph}${rules}${gate}${needs}
-Sections: before any tm section set, tm section get the same key. Append an entry to :merge; rewrite any other section whole, in the present tense, with every sentence it overrides gone.
+The tm-wave workflow claimed this ${c.action} step for you: never run tm task start, and never claim or release any other node. Read tm guide ${role} and follow it from the step after its claim. ${closing}${reads}${rules}${gate}${needs}${sections}
 Waiting: never end your turn while a command you started in the background still runs; wait for it in the foreground, or with Monitor past 10 minutes, read its result, then close the step. Run a build, gate or test that may run or queue for minutes as ${TM} task heartbeat ${n.id} -- <command>: it keeps the lease alive until the command exits, and exits with its code.
 Scratch files: write every script, log and temporary file under ${scratch} in your scratchpad directory (your temp directory if you have none), never at its top level; other agents share it, so never read, overwrite or delete anything outside that folder.`
 }
@@ -314,39 +325,59 @@ async function work(n, c, s, trail) {
   const refOf = r => s.merge === 'parent' || !remoteOf(r) ? baseOf(r) : `${remoteOf(r)}/${baseOf(r)}`
   let type = AGENT_TYPE[repos[0]]
   let body
+  const parts = []
   if (c.action === 'review') {
     // Only a sensitive fix is reviewed again, container or task, and that review never widens past
     // the open findings.
     const again = s.status === 'FIXED'
+    const landed = s.status === 'LANDED'
     const container = !again && n.kind !== 'task'
     type = REVIEWER[container ? 'container' : again ? 'rereview' : 'task']
-    // A landed node's claim names its target as the branch, so base...branch is empty; its code is
-    // what landed there: its own landing merge, and that of every node under it that landed on the
-    // target itself rather than on the node's branch, which leaves the node no landing merge of
-    // its own. Each merge is read against its first parent, the target before it landed. A grep
-    // names no revision, so a merge that is not there prints nothing rather than failing.
-    const landed = s.status === 'LANDED'
-    const family = landed ? await lineage(n) : []
+    // The state under review, checked out detached in each repository: the target a landed node
+    // squashed onto, or the node's own branch.
+    const wtDir = WT || `<the directory ${TM} config get worktree_dir names>`
+    // The claim's token keeps a worktree an earlier claim's dead reviewer left behind from taking
+    // the path; every reviewer of this claim shares the token, so the seam reviewer's role keeps
+    // a repository reviewer's leftover from taking its path.
+    const tag = c.token ? `-${q(c.token)}` : ''
+    const treeOf = (r, role) => `${wtDir}/${q(r)}-${n.id}-review${role}${tag}`
+    const stateOf = r => (landed ? refOf(r) : q(c.branch))
+    // A landing that squashed names its commit, which holds the whole node however far the target
+    // has moved since. A container landed as merges is read through every landing merge under it,
+    // each against its first parent; a grep names no revision, so a merge that is not there prints
+    // nothing rather than failing.
+    const squashes = c.squashes || {}
+    const merged = landed && !again && repos.some(r => !squashes[r])
+    const family = merged ? await lineage(n) : []
     if (!family) {
       await release(n, trail, 'the nodes under it could not be read', c.token)
       return read(n)
     }
-    // Landed code is read on each repository's own target, the claim's branch being only the first's.
-    const diff = r => landed
-      ? `log -p --diff-merges=first-parent -E --grep '^merge[(](${family.map(literal).join('|')})[)]: land [^ ]+ on ${literal(baseOf(r))}$' ${q(refOf(r))} --`
-      : `diff ${q(refOf(r))}...${q(c.branch)}`
-    const targets = [...new Set(repos.map(refOf))].join(' and ')
-    body = again
-      ? `Scope: every finding ${TM} finding list ${n.id} shows with its answer, a failed landing's included, against the fix commits on ${c.branch} and the fixer's notes in ${TM} note list ${n.id}. Establish each closure by mutation, and open one that still holds again with ${TM} finding reopen ${n.id} <n> ${owner(n, c.token)}.`
-      : `Scope: ${landed ? `what ${n.id} and every node under it landed on ${targets}` : `the whole diff of ${c.branch} from its base`}, in each repository it touched: ${repos.map(r => `git -C ${ROOT}/${r} ${diff(r)}`).join('; ')}.${landed ? ' A repository where that prints nothing had nothing land.' : ''}${container ? ' This is a container review: read what is true only between its children, and every child tm render lists with open findings.' : ''}`
-    if (!again) body += `\nNotes: read ${TM} note list ${n.id} only after your findings are recorded, to judge the discrepancies they record; with review.blind on, the default, the brief leaves them out.`
-    body += `\nFindings: record each one with ${TM} finding add ${n.id} ${owner(n, c.token)} --blocking or --minor --at "<file>:<symbol>" --breaks "<what breaks>"; with none, close with --clean.`
-    // One scratch path per repository: a container review may execute code in several.
-    const wtDir = WT || `<the directory ${TM} config get worktree_dir names>`
-    // The claim's token keeps a worktree an earlier, dead reviewer left behind from taking the path.
-    const tag = c.token ? `-${q(c.token)}` : ''
-    const scratch = repos.map(r => `${wtDir}/${r}-${n.id}-review${tag}`).join(' or ') || `${wtDir}/<repo>-${n.id}-review${tag}`
-    body += `\nScratch: a worktree you cut to execute the code goes at ${scratch}, the one named for its repository, detached, and you remove it with git worktree remove before you close the step.`
+    const rangeOf = r => again || !landed
+      ? `diff ${q(refOf(r))}...HEAD`
+      : squashes[r]
+        ? `show ${q(squashes[r])}`
+        : `log -p --diff-merges=first-parent -E --grep '^merge[(](${family.map(literal).join('|')})[)]: land [^ ]+ on ${literal(baseOf(r))}$' HEAD --`
+    const cut = (rs, role = '') => `Worktree${rs.length > 1 ? 's' : ''}, detached at the state under review: ${rs.map(r => `${r} at ${treeOf(r, role)}, cut with git -C ${ROOT}/${q(r)} worktree add --detach ${treeOf(r, role)} ${stateOf(r)}`).join('; ')}. Read only there, and remove each with git worktree remove before you end.`
+    const cmds = (rs, role = '') => rs.map(r => `git -C ${treeOf(r, role)} ${rangeOf(r)}`).join('; ')
+    const range = (rs, role = '') => `${landed ? `what ${n.id} landed on ${[...new Set(rs.map(refOf))].join(' and ')}` : `the whole diff of ${c.branch} from its base`}, in ${rs.length > 1 ? 'each repository it touched' : rs[0]}: ${cmds(rs, role)}.`
+    const method = 'Method: run the code-review skill at high effort over that range, and record each defect it confirms as a finding; where the harness has no such skill, follow the defect recipe in tm guide review.'
+    const record = end => `Findings: record each one with ${TM} finding add ${n.id} ${owner(n, c.token)} --blocking or --minor --at "<file>:<symbol>" --breaks "<what breaks>"; ${end}`
+    if (again) {
+      body = `Scope: judge only the findings ${TM} finding list ${n.id} shows with their answers, a failed landing's included. You read the whole diff of ${c.branch} from its base (${cmds(repos)}). Establish each closure by reading the fix, and open one that still holds again with ${TM} finding reopen ${n.id} <n> ${owner(n, c.token)}. Run the code-review skill at high effort over that diff, and record nothing outside those findings.`
+      body += `\n${cut(repos)}\n${record('with none, close with --clean.')}`
+    } else if (landed && container && repos.length > 1) {
+      // One reviewer per repository records findings and never closes; the seam reviewer sees them all and closes.
+      for (const r of repos) {
+        parts.push({
+          repo: r,
+          prompt: `${head(n, c, model, 'review', { closes: false })}\nRepository: ${r}\nScope: ${range([r])} This is a container review of one repository: read it as a whole, as it stands on its target.\n${cut([r])}\n${method}\n${record('with none, record nothing.')}`,
+        })
+      }
+      body = `Scope: ${range(repos, '-seam')} This is the seam review: the repository reviewers recorded their findings with ${TM} finding add, listed by ${TM} finding list ${n.id}. Read what is true only between repositories: a producer and its consumer that do not agree, a field written on one side and never read on the other.\n${cut(repos, '-seam')}\n${method}\n${record('with none, close with --clean once no reviewer recorded one either.')}`
+    } else {
+      body = `Scope: ${range(repos)}${container ? ' This is a container review: read what is true only between its parts, as it stands on its target.' : ''}\n${cut(repos)}\n${method}\n${record('with none, close with --clean.')}`
+    }
   } else {
     // A container's step spans repositories, and tm cuts one worktree of its branch in each.
     const trees = Object.entries(c.worktrees || {})
@@ -356,9 +387,19 @@ async function work(n, c, s, trail) {
     body = c.action === 'fix'
       ? `${where}\nFindings: every one ${TM} finding list ${n.id} --open shows, a failed landing's included. Fix each one, commit on the branch, and answer each with ${TM} finding close ${n.id} <n> ${owner(n, c.token)} --commit <sha>, or ${TM} finding dispute ${n.id} <n> ${owner(n, c.token)} --evidence "<what was read>".`
       : where
-    body += `\nReport: record each red-check deletion with ${TM} check add ${n.id} ${owner(n, c.token)} --deleted "<file>:<line>" --red <test>, once per && or || operand, --green when every test still passed, or --waive "<why>" for a line that is no guard, and anything else as one line with ${TM} note add ${n.id} ${owner(n, c.token)} "<line>".`
+    body += `\nReport: record one line per fact the code and the checks do not carry with ${TM} note add ${n.id} ${owner(n, c.token)} "<line>".`
   }
   const opts = { label: `${c.action}:${n.id}`, phase: WORK_PHASE[c.action], model, agentType: pickType(type, n.requires) }
+  if (parts.length) {
+    const reviewed = await Promise.all(parts.map(p => agent(p.prompt, { ...opts, label: `review:${n.id}:${p.repo}` })))
+    reviewed.forEach((r, i) => trail.push(`review of ${parts[i].repo} on ${model}: ${r === null ? 'the agent died' : clip(r)}`))
+    // A seam review over a repository nobody reviewed could close the step clean.
+    const dead = parts.filter((p, i) => reviewed[i] === null).map(p => p.repo)
+    if (dead.length) {
+      await release(n, trail, `the reviewer of ${dead.join(', ')} died, so no seam review ran`, c.token)
+      return read(n)
+    }
+  }
   const r = await agent(`${head(n, c, model, c.action)}\n${body}`, opts)
   trail.push(`${c.action} on ${model}: ${r === null ? 'the agent died' : clip(r)}`)
   let after = await read(n)

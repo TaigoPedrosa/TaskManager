@@ -70,6 +70,21 @@ export function landedRepo(dir, { id, landings = [id], inner = [], onto = 'main'
   git('branch', 'tm/S1', 'main')
 }
 
+// A repository whose main holds one commit per subject, oldest first, each adding its own file;
+// origin/main points at the last. Every git call throws on a non-zero exit, so a fixture that
+// failed to build fails the test.
+export function squashedRepo(dir, subjects) {
+  const git = (...a) => execFileSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { stdio: 'pipe' })
+  mkdirSync(dir, { recursive: true })
+  git('init', '-q', '-b', 'main')
+  subjects.forEach((subject, i) => {
+    writeFileSync(`${dir}/f${i}.txt`, subject)
+    git('add', `f${i}.txt`)
+    git('commit', '-q', '-m', subject)
+  })
+  git('update-ref', 'refs/remotes/origin/main', 'main')
+}
+
 export const json = (value, exit = 0) => ({ text: JSON.stringify(value), exit })
 
 // What `tm wave discover --lines` prints for this batch.

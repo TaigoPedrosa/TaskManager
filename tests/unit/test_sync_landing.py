@@ -102,7 +102,8 @@ def test_a_red_parent_gate_stops_a_sync_for_an_agent(tmp_path: Path) -> None:
     red = ProjectConfig(
         repos={
             "api": RepoConfig(
-                gates={"main": TRUE, "parent": Gate(command="exit 1", junit=None, timeout=60)}
+                push=True,
+                gates={"main": TRUE, "parent": Gate(command="exit 1", junit=None, timeout=60)},
             )
         }
     )
@@ -143,8 +144,8 @@ def two_repo_container(tmp_path: Path, **columns: object) -> tuple[Claims, Landi
     config = ProjectConfig(
         repo_order=["api", "web"],
         repos={
-            "api": RepoConfig(gates={"main": TRUE}),
-            "web": RepoConfig(gates={"main": junit_gate(tmp_path)}),
+            "api": RepoConfig(push=True, gates={"main": TRUE}),
+            "web": RepoConfig(push=True, gates={"main": junit_gate(tmp_path)}),
         },
     )
     claims = make_estate(tmp_path, repos=("api", "web"), config=config)
@@ -204,7 +205,7 @@ def test_a_container_lands_each_repository_in_order_and_only_what_is_left_after_
     assert stored(claims, "P").status == Status.COMPLETED
     git(api, "fetch", "-q", "origin")
     subjects = git(api, "log", "--first-parent", "--format=%s", "origin/main").splitlines()
-    assert subjects.count("merge(P): land tm/P on main") == 1
+    assert subjects.count("P: P") == 1
     assert git(web, "show", "origin/main:b.py") == "b = 1"
     first_job = claims.jobs.get(again.job)
     assert first_job is not None and first_job.result["next"]

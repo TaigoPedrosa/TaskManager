@@ -16,6 +16,7 @@ STEPS = (
     "Approaches",
     "Write the design",
     "Self-review",
+    "Independent check",
     "Gate",
 )
 CITED = ("tm decision add", "tm decision list", "tm section set", "tm guide plan", "tm doctor")
@@ -92,7 +93,7 @@ def test_the_design_skill_names_every_step_and_its_gate() -> None:
     text = _text(SKILL)
     assert "no plan is written" in text.lower()
     assert '"approve the design" decision is answered approve' in text
-    assert "--blocks <spec-id>" in text.split("## 8. Gate", 1)[1]
+    assert "--blocks <spec-id>" in text.split("## 9. Gate", 1)[1]
 
 
 def test_design_command_hands_the_call_to_the_design_skill() -> None:
@@ -136,9 +137,9 @@ def test_design_skill_takes_architectural_when_the_scale_is_in_doubt() -> None:
 
 def test_design_skill_takes_a_scale_overrule_only_through_the_approval_decision() -> None:
     scale = _text(SKILL).split("## 2. Scale", 1)[1].split("## 3.", 1)[0]
-    assert "overrules it through the step 8 decision" in scale
-    gate = _text(SKILL).split("## 8. Gate", 1)[1]
-    assert "summary names the scale" in gate
+    assert "overrules it through the step 9 decision" in scale
+    gate = _text(SKILL).split("## 9. Gate", 1)[1]
+    assert "names the scale" in gate
     assert "A change of scale goes back to step 3" in gate
 
 
@@ -163,7 +164,12 @@ def test_design_skill_writes_the_design_into_the_spec_from_the_reference() -> No
         "Data flow",
         "Failure handling",
         "Out of scope",
-        "Verification",
+        "Test plan",
+        "Architecture breakdown",
+        "Assumptions",
+        "Seams and contracts",
+        "Prior issues",
+        "Premises checked",
     ],
 )
 def test_design_sections_reference_holds_each_heading(heading: str) -> None:
@@ -183,3 +189,41 @@ def test_design_text_names_no_tracker_language_test_runner_package_manager_or_ed
     text = _text(path)
     named = [w for w in DENIED if re.search(rf"\b{re.escape(w)}\b", text, re.IGNORECASE)]
     assert named == []
+
+
+CHECKLIST = (
+    "tenant scoping",
+    "escaping and normalisation ownership",
+    "time limits, thread pools and shutdown",
+    "rollback and replay",
+    "composition-root boot",
+    "secrets and personal data in logs",
+    "existing callers whose behaviour changes",
+)
+
+
+def test_the_design_names_its_assumptions_seams_prior_issues_and_test_plan() -> None:
+    text = _text(SKILL) + _text(SECTIONS)
+    for heading in (
+        "Architecture breakdown",
+        "Assumptions",
+        "Seams and contracts",
+        "Prior issues",
+        "Premises checked",
+        "Test plan",
+    ):
+        assert f"**{heading}**" in text or f"### {heading}" in text, heading
+    reference = _text(SECTIONS)
+    assert [item for item in CHECKLIST if f"- {item}" not in reference] == []
+
+
+def test_the_design_is_checked_by_a_fresh_reviewer_before_the_gate() -> None:
+    text = _text(SKILL)
+    check = text.index("## 8. Independent check")
+    assert check < text.index("## 9. Gate")
+    body = text[check : text.index("## 9. Gate")]
+    assert "fresh reviewer" in body
+    assert "Opus or Fable" in body
+    assert "neither your reasoning nor the conclusions" in body
+    gate = text.split("## 9. Gate", 1)[1]
+    assert gate.index("assumptions") < gate.index("scale")

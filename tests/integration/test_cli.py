@@ -845,3 +845,13 @@ def test_task_list_filters_by_stored_parent_not_id_prefix(tmp_path: Path) -> Non
     assert res.exit_code == 0
     assert "S1-P2-FOSTER" in res.stdout
     assert "S1-P1-ORPHAN" not in res.stdout
+
+
+def test_spec_add_reviews_by_default(tmp_path: Path) -> None:
+    assert runner.invoke(app, ["init", "--path", str(tmp_path)]).exit_code == 0
+    for slug, flags in (("ON", []), ("OFF", ["--no-review", "--no-fix"])):
+        add = runner.invoke(app, ["spec", "add", "S", "--slug", slug, *flags, "-C", str(tmp_path)])
+        assert add.exit_code == 0
+        got = runner.invoke(app, ["task", "get", slug, "--json", "-C", str(tmp_path)])
+        assert got.exit_code == 0, got.output
+        assert json.loads(got.stdout)["review"] is (slug == "ON")

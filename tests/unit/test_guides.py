@@ -231,36 +231,6 @@ def test_every_step_guide_waits_on_its_background_runs_before_ending_its_turn(to
     )
 
 
-@pytest.mark.parametrize("topic", ["implement", "fix"])
-def test_implement_and_fix_guides_delete_each_guard_and_watch_a_test_turn_red(topic: str) -> None:
-    """Neither agent reads the other's guide, so each carries the deletion runs before closing."""
-    steps = _guide_text(topic).split("## Never", 1)[0]
-    assert (
-        "- Before closing, delete each guard, bound, filter and escape in your diff one at a time"
-        " (one branch, one statement; null, empty and whitespace as separate inputs) and confirm a"
-        " test turns red. A deletion that stays green gets a test before the step closes, and a"
-        " filter a mock stands in for (a repository query, an HTTP route) gets a test through the"
-        " real component. Record each deletion as it runs: `tm check add <ID> --agent <name>"
-        " --token <token> --deleted <file>:<line> --red <test>`, once per `&&` or `||` operand,"
-        " or `--green` in place of `--red` when every test still passed. A green one is answered"
-        " by the test you then add and a `--red` record of the same `--deleted`: `tm task"
-        " complete` refuses while a deletion's latest record is green, and while a guard the diff"
-        " adds or changes outside test files (a condition and each of its operands, an early"
-        " return, a `catch`, a field assignment, a list element) has no record naming its"
-        " `<file>:<line>`. A line tm reads as a guard that is none takes `--waive <why>` in place"
-        " of `--red`, and the why is recorded with it.\n".replace("<ID>", f"<{_ID[topic]}>")
-    ) in steps
-
-
-def test_fix_guide_requires_a_test_per_branch_that_fails_when_reverted() -> None:
-    """A finding closes only with a test per branch, each proven to fail when that branch alone is undone."""
-    text = _guide_text("fix")
-    steps, never = text.split("## Never", 1)
-    assert "each test fails when its branch alone is" in steps
-    assert "Never close a finding with a branch that nothing fails on" in never
-    assert "Never close a finding with nothing that fails when the fix is reverted" not in text
-
-
 def test_dispatch_guide_says_the_fix_round_caps_bound_only_the_sensitive_path() -> None:
     """A rejection buys one fix, so only a sensitive node's re-review can reach a cap."""
     text = _guide_text("dispatch")
@@ -333,7 +303,6 @@ RULING_RULE_OF_THUMB_GUIDES = ("implement", "fix", "review")
 def test_guide_tells_a_ruling_from_a_defect(topic: str) -> None:
     """A blocker that is a judgement call, not a defect, is a decision raised at once."""
     text = _guide_text(topic)
-    assert "the brief doesn't say" in text
     assert "which of these is correct" in text
 
 
@@ -341,30 +310,17 @@ def test_review_guide_says_a_reviewer_raises_a_ruling_instead_of_rejecting() -> 
     assert "raises it instead of rejecting" in _guide_text("review")
 
 
-def test_review_guide_proves_each_behaviour_line_by_breaking_it_from_the_acceptance(
-    rendered: Callable[[str], str],
-) -> None:
-    text = rendered("review")
-    checks, never = text.split("## 5. Write the findings", 1)[0], text.split("## Never", 1)[1]
-    assert "Every acceptance line about behaviour is proven by breaking it" in checks
-    assert "Choose what to break from the acceptance, never from the tests" in checks
-    assert "A limit is broken from both sides" in checks
-    assert "each break turns only its own test red" in checks
-    assert "An acceptance line no break turns red is a finding" in checks
-    assert "restored, never committed" in never
-
-
 def test_review_guide_counts_a_defect_the_diff_makes_reachable(
     rendered: Callable[[str], str],
 ) -> None:
-    branch = rendered("review").split("## 3. Read the branch", 1)[1].split("## 4.", 1)[0]
+    branch = rendered("review").split("## 3. Review the range", 1)[1].split("## Waiting", 1)[0]
     assert "a defect in code the diff leaves unchanged but makes reachable" in branch
 
 
 def test_review_guide_findings_are_read_and_name_their_search_and_rule(
     rendered: Callable[[str], str],
 ) -> None:
-    findings = rendered("review").split("## 5. Record the findings", 1)[1].split("## 6.", 1)[0]
+    findings = rendered("review").split("## 4. Record the findings", 1)[1].split("## 5.", 1)[0]
     assert "a derived claim is not a finding until it is read" in findings
     assert "A claim that something is absent" in findings
     assert "names in `--breaks` the search that would have found it" in findings
@@ -509,7 +465,10 @@ def test_plan_guide_lists_every_input_a_matches_acceptance_reads() -> None:
 
 def test_review_guide_rejects_on_a_red_test_whoever_declared_its_file() -> None:
     """A red test on the branch is this diff's failure regardless of which task's declared_files named the file."""
-    assert "rejects the node" in _guide_text("review")
+    assert (
+        "A test that fails on the range is a blocking finding, whichever task owned its file."
+        in (_guide_text("review"))
+    )
 
 
 def test_plan_guide_tells_a_deliverable_from_a_ruling_and_a_measurement() -> None:
@@ -589,18 +548,10 @@ def test_review_guide_drives_a_ui_node_s_behaviour_in_the_running_app(
 ) -> None:
     """A screenshot beside the frame passes a page whose writes, focus and keyboard route are broken."""
     assert (
-        "A UI node's behaviour lines are checked by driving them in the running app: the write and "
-        "its feedback, the focus after it, the keyboard route, a live update mid-edit, a reload. A "
+        "A UI node's behaviour is checked by driving it in the running app: the write and its "
+        "feedback, the focus after it, the keyboard route, a live update mid-edit, a reload. A "
         "screenshot beside the frame shows the look and proves none of them."
     ) in rendered("review")
-
-
-def test_review_guide_runs_every_check_the_acceptance_lists() -> None:
-    """A check skipped rather than run and reported leaves a node approved over untested acceptance."""
-    assert (
-        "Run every check the acceptance lists. A check you could not run is named in the findings "
-        "as not run, and the node is not approved over it."
-    ) in _guide_text("review")
 
 
 def test_fix_guide_says_a_source_grep_is_not_a_test_of_behaviour() -> None:
@@ -624,8 +575,7 @@ def test_plan_guide_says_a_source_grep_is_not_a_test_of_behaviour() -> None:
 def test_review_guide_says_a_source_grep_is_no_evidence_for_behaviour() -> None:
     """A reviewer who accepts a source grep as proof of behaviour approves a page that crashes at runtime."""
     assert (
-        "A test that only searches source text is not evidence for an acceptance line about "
-        "behaviour; name it in the findings."
+        "**Tests**: does each run the code it names, or only search its source text?"
     ) in _guide_text("review")
 
 
@@ -682,43 +632,42 @@ def test_review_guide_reviews_a_container_once_on_its_landed_target(
 ) -> None:
     text = rendered("review")
     assert "- `LANDED`: a plan's or spec's one review." in text
-    assert "**A plan's or spec's review** runs once, on its landed target." in text
+    assert (
+        "- **A review claimed from `LANDED`**: in each repository, `git -C <worktree> show <squash>`"
+        in text
+    )
 
 
-def test_review_guide_reads_what_every_node_under_a_landed_container_landed_on_its_target(
+def test_review_guide_reads_a_landed_container_through_its_squash_or_its_landing_merges(
     rendered: Callable[[str], str],
 ) -> None:
-    """A plan whose children landed on main by themselves has no landing merge of its own to read."""
     text = rendered("review")
-    assert (
-        "the landing merge of every node under it that landed on that target itself rather than "
-        "on the node's branch; a node whose children all landed that way has no landing merge of "
-        "its own."
-    ) in text
-    assert (
-        "git -C <repo> log -p --diff-merges=first-parent -E --grep "
-        "'^merge[(](<node-id>|<id under it>|...)[)]: land [^ ]+ on <base>$' <branch> --"
-    ) in text
-    assert "A repository where that prints nothing had nothing land." in text
-    assert '--grep "^merge(<node-id>): land " <branch>' not in text
+    assert "that repository's entry in the claim's `squashes`" in text
+    assert "A repository with no entry in `squashes` was landed as merges" in text
+    assert "--diff-merges=first-parent" in text
+    assert "log -1 -p -E --grep" not in text
+
+
+def test_overview_guide_names_the_claims_squashes(rendered: Callable[[str], str]) -> None:
+    assert "`squashes` naming, for a review claimed from `LANDED`" in rendered("overview")
 
 
 def test_merge_guide_ends_a_reviewed_container_s_landing_at_landed(
     rendered: Callable[[str], str],
 ) -> None:
     assert (
-        "7. **Complete.** The merge worktree is removed and the node is `COMPLETED`, or `LANDED` "
+        "8. **Complete.** The merge worktree is removed and the node is `COMPLETED`, or `LANDED` "
         "when it is a plan or spec with review on: its one review reads what landed."
     ) in rendered("merge")
 
 
-def test_merge_guide_scopes_push_errors_to_a_push_to_the_spec_s_target(
+def test_merge_guide_scopes_push_errors_to_a_move_of_the_spec_s_target(
     rendered: Callable[[str], str],
 ) -> None:
     """A container branch's compare-and-swap stops at push_failed without any push_errors."""
     text = rendered("merge")
     assert (
-        "A push to the spec's target records each in `result.push_errors` with its command, exit "
+        "A move of the spec's target records each in `result.push_errors` with its command, exit "
         "code and stderr: an `ls-remote` with no answer is the network or the remote, a refused "
         "`push` a permission, a protection rule or a hook."
     ) in text
@@ -728,53 +677,42 @@ def test_merge_guide_scopes_push_errors_to_a_push_to_the_spec_s_target(
     ) in text
 
 
-def test_merge_guide_builds_gates_and_pushes_on_the_spec_s_target_whatever_it_is_named(
+def test_merge_guide_builds_gates_and_moves_the_spec_s_target_whatever_it_is_named(
     rendered: Callable[[str], str],
 ) -> None:
     text = rendered("merge")
     assert (
-        "A fresh merge worktree cut from the target (`<remote>/<target>` when it is the branch the "
-        "node's spec lands on, or the container branch), and `git merge --no-ff` of the node's "
-        "branch with the subject `merge(<node-id>): land <branch> on <target>`. A spec's target "
-        "that its remote does not have yet is cut from the repository's `default_branch`."
+        "A fresh merge worktree cut from the target (the local branch when it is the branch the "
+        "node's spec lands on and the repository does not push, `<remote>/<target>` when it "
+        "does, or the container branch), and `git merge --no-ff` of the node's branch with the "
+        "subject `merge(<node-id>): land <branch> on <target>`."
     ) in text
     assert (
         "On the spec's target: the repository's `main` gate, whatever the target is named"
     ) in text
     assert (
         "push `HEAD:<target>`, never force; a target its remote does not have yet is created by "
-        "this push. In a repository with no remote, the push moves the local target branch."
+        "this push. In a repository that does not push, the same step is a push into the "
+        "repository itself, which moves the local target branch"
     ) in text
     assert (
         "both red and neither a report nor the gate's `failing_pattern` names the failures"
     ) in text
 
 
-def test_review_guide_reads_a_spec_s_target_on_its_remote_and_a_container_branch_locally(
+def test_review_guide_reads_a_spec_s_target_where_it_lives_and_a_container_branch_locally(
     rendered: Callable[[str], str],
 ) -> None:
-    """A landing's subject names the bare target, so the landed grep reads the claim's `base`,
-    while the diffs read the target where it lives: on its remote, or in the shared clone."""
+    """The diffs read the target where it lives: on its remote where the repository pushes, else in
+    the shared clone."""
     text = rendered("review")
     assert (
-        "`<base>` is that repository's entry in the claim's `bases`, since a container's "
-        "repositories can land on different default branches (`base` is the first repository's): "
-        "the branch the node's spec lands on, or the container branch the node lands on. A spec's "
-        "target that its remote does not have yet reads as the repository's default branch, which "
-        "the branch was cut from. `<base-ref>` is where it is read: `<remote>/<base>` for the "
-        "spec's target, `<remote>` being that repository's entry in the claim's `remotes` (the "
-        "local `<base>` where it is null), and `<base>` itself "
-        "for a container branch, which is local to the clone:"
+        "`<base-ref>` is where it is read: `<remote>/<base>` for the spec's target in a "
+        "repository whose entry in the claim's `remotes` names a remote (it pushes), the local "
+        "`<base>` where that entry is null, and `<base>` itself for a container branch, which is "
+        "local to the clone."
     ) in text
-    assert "git -C <repo> diff <base-ref>...<branch>" in text
-    assert (
-        "For a review claimed from `LANDED`, `<branch>` in each repository is that repository's "
-        "`<base-ref>`, so `<base-ref>...<branch>` is empty"
-    ) in text
-    assert (
-        "For a review claimed from `LANDED`, run it with no `--ref`: each task is then read at its "
-        "own target on its remote, fetched first, which every repository it touched holds."
-    ) in text
+    assert "git -C <worktree> diff <base-ref>...HEAD" in text
 
 
 def test_plan_guide_sets_a_spec_s_target_with_land_on_once(rendered: Callable[[str], str]) -> None:
@@ -897,26 +835,26 @@ VERIFY_DEFAULT_REF = [
         "overview",
         (
             "With no `--ref`, it reads each task at its own branch `tm/<id>` until the node lands "
-            "there, then at `<remote>/<the branch its spec lands on>`, fetched first, or at the "
-            "repository's default branch while that branch does not exist yet (a spec's `land_on` "
-            "before its first landing creates it), and a row that fails where neither resolves "
-            "names both;"
+            "there, then at the branch its spec lands on (`<remote>/<branch>`, fetched first, where "
+            "the repository pushes), or at the repository's default branch while that branch does "
+            "not exist yet (a spec's `land_on` before its first landing creates it), and a row "
+            "that fails where neither resolves names both;"
         ),
     ),
     (
         "plan",
         (
             "with no `--ref`, the task's own branch until the task lands there, then "
-            "`<remote>/<the branch its spec lands on>`, fetched first, or the repository's default "
-            "branch while that branch does not exist yet (a spec's `land_on` before its first "
-            "landing creates it);"
+            "the branch its spec lands on (the local branch, or `<remote>/<branch>` fetched first "
+            "where the repository pushes), or the repository's default branch while that branch "
+            "does not exist yet (a spec's `land_on` before its first landing creates it);"
         ),
     ),
     (
         "implement",
         (
-            "they read the task's own branch until the task lands, then `<remote>/<the branch the "
-            "task's spec lands on>`; a row that fails where neither resolves names both. "
+            "they read the task's own branch until the task lands, then the branch the task's spec "
+            "lands on (`<remote>/<branch>` where the repository pushes); a row that fails where neither resolves names both. "
             "A `test_command` reads the same ref from `TM_VERIFY_REF`, which every run exports: "
             "the `--ref` given, the ref read without one, and the landing target when tm lands "
             "the task."
@@ -961,7 +899,7 @@ def test_review_guide_says_once_that_a_fix_lands_without_a_re_review_unless_sens
     assert "lands without another review unless the node is sensitive" in text
     assert "It is the only review a fix gets; every other fix lands without one." not in text
     assert "- `FIXED`: the re-review of a sensitive node's fix (`tm guide plan`, §2).\n" in text
-    assert "two halves that do not join.\n" in text
+    assert "and two halves that do not join are each a finding." in text
     assert "the fix lands without coming back to review" not in text
 
 
@@ -969,9 +907,9 @@ def test_plan_guide_gives_children_of_a_reviewed_plan_no_review_of_their_own(
     rendered: Callable[[str], str],
 ) -> None:
     assert (
-        "Children under a reviewed plan or spec take `review: false` and `fix: false` by default"
-        in rendered("plan")
-    )
+        "A child under a reviewed ancestor, the nearest one at any depth, takes `review: false` "
+        "and `fix: false` and `merge: parent`"
+    ) in rendered("plan")
 
 
 def test_plan_guide_shows_the_sensitive_key_with_every_area_tm_accepts_and_the_migration_rule(
@@ -1002,7 +940,7 @@ def test_dispatch_guide_never_re_dispatches_a_review_of_a_fix_that_is_not_sensit
 
 def test_dispatcher_skill_lands_a_container_first_and_never_re_reviews_a_plain_fix() -> None:
     text = _doc_text("plugin/skills/dispatcher/SKILL.md")
-    assert "reads `LANDED` until its one review, on its landed target, runs" in text
+    assert "reads `LANDED` until its one review, on that commit, runs" in text
     assert "never re-dispatch a review of a fix that is not sensitive" in text
 
 
@@ -1021,7 +959,7 @@ def test_overview_names_the_remote_a_claim_prints_for_each_repository(
     rendered: Callable[[str], str],
 ) -> None:
     assert (
-        "`remotes` naming each repository's `repos.<repo>.remote`, null for one with no remote"
+        "`remotes` naming each repository's `repos.<repo>.remote`, null for one that does not push"
     ) in rendered("overview")
     assert (
         "Its name is letters, digits, `.`, `_`, `/` and `-`, the characters tm-wave quotes into a "
@@ -1171,18 +1109,16 @@ BRIEF_RULES = [
     ),
     pytest.param(
         "review",
-        "## 3. Read the branch",
-        "A diff that edits a file missing from `declared_files`, a UI test that reaches a control "
-        "another file owns by its implementation rather than by what it shows the user, and "
-        "anything the diff left without a reader (a file, symbol, field, or a computation or load "
-        "whose only consumer it removed) are each a finding.",
+        "## 3. Review the range",
+        "Anything the diff left without a reader (a file, symbol, field, or a computation or "
+        "load whose only consumer it removed) is a finding.",
         id="review:scope-findings",
     ),
     pytest.param(
         "overview",
         "# How TaskManager works",
         "Every repository a task names in `target_repo` needs a `main` gate, the command tm runs "
-        "on the merged tip before it pushes; outside `tm init`, `tm config set "
+        "on the merged tip before it moves the target; outside `tm init`, `tm config set "
         'repos.<repo>.gates.main.command "<command>"` sets one. It gates every landing on a spec\'s target '
         "branch, whatever that branch is named; without one, every such landing stops with "
         "`no gate`.",
@@ -1484,28 +1420,11 @@ def test_review_guide_gives_every_finding_a_severity_and_gates_the_verdict_on_it
     rendered: Callable[[str], str],
 ) -> None:
     text = rendered("review")
-    findings = text.split("## 5. Record the findings", 1)[1].split("## 6.", 1)[0]
-    assert (
-        "- `--blocking`: the node must not land as it is, and `--breaks` cites the line of the"
-        " brief, the skill or the profile CLAUDE.md it breaks."
-    ) in findings
+    findings = text.split("## 4. Record the findings", 1)[1].split("## 5.", 1)[0]
+    assert "- `--blocking`: the node must not land as it is. It is any of these:" in findings
     assert "- `--minor`: landing as it is breaks nothing." in findings
-    assert (
-        "- When in doubt whether a gap against one of those holds the landing, it is blocking."
-    ) in findings
-    assert (
-        "A reviewer files as blocking only a gap against the brief, the stack's skill or the"
-        " profile CLAUDE.md, and cites the line. Any other gap is filed minor with the rule it"
-        " proposes. A question the brief does not answer is a decision, not a finding. A"
-        " re-review files neither kind outside the findings it re-reads (§3)."
-    ) in findings
-    checks = text.split("## 4. Run the checks", 1)[1].split("## 5.", 1)[0]
-    assert (
-        "A task review also runs every verification row of the parent plan that names a file in"
-        " the task's diff. A test class that waits on a broker, a socket or a container runs three"
-        " times; a single red run is a blocking finding. A re-review runs only the rows its"
-        " findings name."
-    ) in checks
+    assert "When in doubt whether a defect holds the landing, it is blocking." in findings
+    assert "A re-review files neither kind outside the findings it re-reads (§2)." in findings
     assert "opened again with `tm finding reopen`, never recorded a second time" in findings
     assert (
         "It refuses `--approve` while a blocking finding is open, and `--reject` while none is"
@@ -1522,3 +1441,30 @@ def test_fix_guide_answers_each_finding_by_closing_or_disputing_it(
     assert "`tm finding dispute <node-id> <n> --agent <name> --token <token> --evidence" in text
     assert "tm refuses it while any finding on the node is still open." in text
     assert "the fix is cut from the target, on top of what landed" in text
+
+
+def test_no_guide_or_brief_asks_for_red_checks() -> None:
+    root = Path(__file__).parents[2]
+    files = [
+        *(root / "src/taskmanager/guides").glob("*.md"),
+        *(root / "plugin/skills").glob("**/SKILL.md"),
+        *(root / "plugin/commands").glob("*.md"),
+        root / "plugin/workflows/tm-wave.js",
+    ]
+    assert len(files) > 5
+    for file in files:
+        text = file.read_text(encoding="utf-8")
+        assert "red-check" not in text and "--red " not in text, file
+
+
+def test_the_review_guide_never_sends_a_reviewer_to_the_brief() -> None:
+    text = files("taskmanager").joinpath("guides/review.md").read_text(encoding="utf-8")
+    assert "tm render" not in text and "tm note list" not in text
+    assert "code-review" in text
+
+
+def test_no_guide_states_an_exact_test_count() -> None:
+    root = Path(__file__).parents[2] / "src/taskmanager/guides"
+    for file in root.glob("*.md"):
+        text = file.read_text(encoding="utf-8")
+        assert not re.search(r"exactly.{0,40}test|test.{0,40}exactly", text, re.IGNORECASE), file

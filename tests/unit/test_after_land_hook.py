@@ -11,7 +11,9 @@ TRUE = Gate(command="true", timeout=60)
 
 
 def estate(tmp_path: Path, hook: str | None) -> Claims:
-    config = ProjectConfig(repos={"api": RepoConfig(gates={"main": TRUE}, after_land=hook)})
+    config = ProjectConfig(
+        repos={"api": RepoConfig(push=True, gates={"main": TRUE}, after_land=hook)}
+    )
     return make_estate(tmp_path, config=config)
 
 
@@ -41,7 +43,10 @@ def land(claims: Claims, node_id: str) -> JobState:
 
 def landed_on_main(claims: Claims, node_id: str) -> bool:
     subjects = git(claims.root / "api", "log", "--first-parent", "--format=%s", "origin/main")
-    return f"merge({node_id}): land tm/{node_id} on main" in subjects.splitlines()
+    # A container lands as one squashed commit, a task as a merge.
+    return {f"{node_id}: {node_id}", f"merge({node_id}): land tm/{node_id} on main"} & set(
+        subjects.splitlines()
+    ) != set()
 
 
 def test_after_land_on_a_container_push_runs_in_the_landing_worktree_with_placeholders_filled(

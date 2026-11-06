@@ -4,14 +4,16 @@ from pathlib import Path
 import pytest
 
 from taskmanager.core.enums import NodeKind, VerificationType
-from taskmanager.core.status import DecisionStatus, Status
+from taskmanager.core.models import Node
+from taskmanager.core.status import DecisionStatus, Merge, Status
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
+from taskmanager.engine.config import ConfigStore, ProjectConfig
 from taskmanager.engine.decisions import read_decision
-from taskmanager.engine.operations import OperationError, Operations
+from taskmanager.engine.operations import OperationError, Operations, child_defaults
 from taskmanager.engine.verification import VerificationEngine
 
 
@@ -340,7 +342,7 @@ def test_run_verifications_stops_a_test_command_at_the_configured_timeout(
     assert all_passed is False
     assert results[0].message == (
         "Test command timed out after 1s; no ref to read S1-P1-T1 at in .: neither tm/S1-P1-T1 "
-        "nor origin/main resolves, so name one with --ref"
+        "nor main resolves, so name one with --ref"
     )
 
 
@@ -381,6 +383,7 @@ def test_run_verifications_resolves_the_task_target_repo(
     subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "add out.txt"], check=True)
     subprocess.run(["git", "-C", str(repo), "push", "-q", "-u", "origin", "main"], check=True)
 
+    ConfigStore(tmp_path).set("repos.myrepo.push", "true")
     ops.update_node(task_id, repo="myrepo")
     ops.add_verification(task_id, VerificationType.FILE_EXISTS, "out.txt")
 
@@ -1078,3 +1081,47 @@ def test_answer_decision_write_failure_leaves_decision_unanswered(ops_setup: tup
     assert node.status == DecisionStatus.OPEN
     assert read_decision(node).answer is None
     assert len(ledger_repo.list_events(limit=1000)) == before
+
+
+def test_a_task_under_an_unreviewed_plan_in_a_reviewed_spec_is_not_reviewed(
+    ops_setup: tuple,
+) -> None:
+    node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    _spec_id, _plan_id, task_id = _seed_task(ops)
+    task = node_repo.get_node(task_id)
+    assert task is not None
+    assert (task.review, task.fix, task.merge) == (False, False, Merge.PARENT)
+
+
+def test_a_sensitive_task_under_a_reviewed_spec_keeps_its_review(ops_setup: tuple) -> None:
+    node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    spec_id = ops.add_spec("Spec", slug="S1")
+    plan_id = ops.add_plan("Plan", spec_id, slug="P1")
+    task_id = ops.add_task("Task", plan_id, slug="T1", frontmatter={"sensitive": ["rls"]})
+    task = node_repo.get_node(task_id)
+    assert task is not None
+    assert (task.review, task.fix, task.merge) == (True, True, Merge.PARENT)
+
+
+def test_a_task_with_no_reviewed_ancestor_reviews_itself(ops_setup: tuple) -> None:
+    node_repo, _runtime_repo, _ledger_repo, ops = ops_setup
+    spec_id = ops.add_spec("Spec", slug="S1", review=False, fix=False)
+    plan_id = ops.add_plan("Plan", spec_id, slug="P1")
+    task_id = ops.add_task("Task", plan_id, slug="T1")
+    task = node_repo.get_node(task_id)
+    assert task is not None
+    assert (task.review, task.fix, task.merge) == (True, True, Merge.PARENT)
+
+
+def test_every_child_defaults_to_landing_on_its_parent() -> None:
+    config = ProjectConfig()
+    plan = Node(id="P", kind=NodeKind.PLAN, title="P")
+    task = Node(id="T", kind=NodeKind.TASK, title="T", target_repo="api")
+
+    assert child_defaults(task, plan, config=config).merge == Merge.PARENT
+    assert child_defaults(
+        plan, Node(id="S", kind=NodeKind.SPEC, title="S"), config=config
+    ).merge == (Merge.PARENT)
+    assert child_defaults(task, plan, config=config, merge=Merge.SPEC).merge == Merge.SPEC
+    assert child_defaults(task, None, config=config).merge == Merge.PARENT
+    assert child_defaults(task, None, config=config, parentless=True).merge == Merge.SPEC

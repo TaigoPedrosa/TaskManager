@@ -1,3 +1,4 @@
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -6,6 +7,7 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from taskmanager.core.enums import (
+    CONTAINERS,
     LedgerCommand,
     LockType,
     NodeKind,
@@ -69,11 +71,12 @@ class Node(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _only_tasks_review_by_default(cls, data: Any) -> Any:
-        # A plan or spec reviews and fixes only when its planner asks for it, and a decision
-        # never does; a task does unless its planner opts out.
-        if isinstance(data, dict) and data.get("kind", NodeKind.TASK) != NodeKind.TASK:
-            return {"review": False, "fix": False, **data}
+    def _review_defaults_by_kind(cls, data: Any) -> Any:
+        # A task and a spec review and fix unless their planner opts out; a plan reviews only
+        # when its planner asks, and a decision never does.
+        if isinstance(data, dict):
+            on = data.get("kind", NodeKind.TASK) in (NodeKind.TASK, NodeKind.SPEC)
+            return {"review": on, "fix": on, **data}
         return data
 
     @model_validator(mode="after")
@@ -122,6 +125,18 @@ class Node(BaseModel):
         """This node re-validated: `model_copy` skips the validators, so a writer calls this
         before it stores a copy."""
         return Node.model_validate(self.model_dump())
+
+
+def backup_of(node: Node, merge: str) -> str | None:
+    """The branch that holds the granular history of a landed container's first landing, read
+    from its `:merge` section: the branch a fix set aside (`retired:`), else the container's own
+    (`backup:`). None when no child landed on that branch, since the landing writes no `backup:`
+    line then."""
+    if node.kind not in CONTAINERS or not node.on_target:
+        return None
+    kept = re.findall(r"^(backup|retired): (\S+)$", merge, re.MULTILINE)
+    names = {key: name for key, name in reversed(kept)}
+    return names.get("retired") or names.get("backup") if "backup" in names else None
 
 
 class Condition(BaseModel):

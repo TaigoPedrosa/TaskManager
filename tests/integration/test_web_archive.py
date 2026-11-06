@@ -6,7 +6,9 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from typer.testing import CliRunner
 
+from taskmanager.cli.main import app as cli_app
 from taskmanager.core.enums import NodeKind, RelationType
 from taskmanager.core.models import LedgerEvent, Node, NodeRelation
 from taskmanager.core.status import Status
@@ -16,12 +18,22 @@ from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
+from taskmanager.di.container import create_container
 from taskmanager.engine.config import ConfigError, ConfigStore
+from taskmanager.engine.operations import Operations
 from taskmanager.engine.snapshot import SnapshotBuilder
+from taskmanager.web import live
 from taskmanager.web.app import create_app
 from taskmanager.web.live import LiveHub
 from taskmanager.web.rows import statuses_hash
 from taskmanager.web.static_export import export_static_html
+
+runner = CliRunner()
+
+
+def tm(root: Path, *args: str) -> None:
+    res = runner.invoke(cli_app, [*args, "-C", str(root)])
+    assert res.exit_code == 0, res.output
 
 
 class FakeSocket:
@@ -89,6 +101,7 @@ def estate(tmp_path: Path) -> Estate:
     built.spec("OLD", Status.COMPLETED)
     built.completed("OLD", datetime.now(tz=UTC) - timedelta(days=4))
     built.spec("LIVE", Status.READY)
+    tm(tmp_path, "spec", "archive", "OLD")
     return built
 
 
@@ -109,17 +122,22 @@ def test_api_statuses_archived_mode_selects_specs(
     assert body["hash"] == statuses_hash(body["statuses"])
 
 
-def test_api_statuses_with_archival_off_in_config_counts_every_spec(estate: Estate) -> None:
-    ConfigStore(estate.root).set("web.archive_after_days", "0")
+def test_the_web_leaves_a_finished_spec_hot_with_automatic_archival_off(tmp_path: Path) -> None:
+    hot = Estate(tmp_path)
+    hot.spec("OLD", Status.COMPLETED)
+    hot.completed("OLD", datetime.now(tz=UTC) - timedelta(days=4))
+    ConfigStore(tmp_path).set("archive.automatically_after_hours", "0")
 
-    body = TestClient(create_app(estate.root)).get("/api/statuses").json()
+    with TestClient(create_app(tmp_path)) as client:
+        body = client.get("/api/statuses").json()
 
-    assert _specs(body["statuses"]) == {"LIVE", "OLD"}
+    assert _specs(body["statuses"]) == {"OLD"}
+    assert hot.nodes.get_node("OLD") is not None
 
 
 def test_config_refuses_a_negative_archive_window(tmp_path: Path) -> None:
-    with pytest.raises(ConfigError, match="web.archive_after_days"):
-        ConfigStore(tmp_path).set("web.archive_after_days", "-1")
+    with pytest.raises(ConfigError, match="archive.automatically_after_hours"):
+        ConfigStore(tmp_path).set("archive.automatically_after_hours", "-1")
 
 
 def test_api_statuses_unknown_archived_mode_is_refused(estate: Estate) -> None:
@@ -237,3 +255,114 @@ def test_static_export_carries_the_archive_flag_and_its_own_statuses(
     }
     assert _specs(data["statuses"]) == {"LIVE"}
     assert _specs(data["archived_statuses"]) == {"OLD"}
+
+
+def test_the_web_archive_reads_the_archive_store(tmp_path: Path) -> None:
+    tm(tmp_path, "init")
+    ops = create_container(tmp_path).get(Operations)
+    spec = ops.add_spec("Finished", slug="S")
+    plan = ops.add_plan("p", spec, slug="P", review=False, fix=False)
+    task = ops.add_task("t", plan, slug="T")
+    ops.add_spec("Current", slug="LIVE")
+    tm(tmp_path, "task", "abandon", task, "--note", "dropped")
+    tm(tmp_path, "spec", "archive", spec)
+    client = TestClient(create_app(tmp_path))
+
+    def ids(parent: str, mode: str) -> list[str]:
+        body = client.get(f"/api/nodes?parent={parent}&archived={mode}").json()
+        return sorted(item["id"] for item in body["items"])
+
+    assert ids("root", "only") == [spec]
+    assert ids(spec, "only") == [plan]
+    assert ids("root", "exclude") == ["LIVE"]
+    assert ids("root", "include") == sorted(["LIVE", spec])
+    detail = client.get(f"/api/nodes/{task}").json()
+    assert detail["node"]["id"] == task
+    assert detail["sections"][0]["key"] == "abandonment"
+
+
+def test_a_rebuild_with_no_boundary_passed_and_no_archive_change_skips_the_archive_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    estate = Estate(tmp_path)
+    estate.spec("OLD", Status.COMPLETED)
+    estate.spec("LIVE", Status.READY)
+    now = datetime(2026, 10, 8, 12, 0, tzinfo=UTC)
+    estate.completed("OLD", now - timedelta(days=4))
+    hub = estate.hub(clock=lambda: now)
+    calls = {"archive_due": 0, "cold_rows": 0}
+    due, cold_rows = live.archive_due, live.archived_rows
+
+    def counting_due(*args: Any) -> list[str]:
+        calls["archive_due"] += 1
+        return due(*args)
+
+    def counting_rows(cold: Any) -> dict[str, dict[str, Any]]:
+        calls["cold_rows"] += 1
+        return cold_rows(cold)
+
+    monkeypatch.setattr(live, "archive_due", counting_due)
+    monkeypatch.setattr(live, "archived_rows", counting_rows)
+
+    async def scenario() -> None:
+        await hub.refresh()
+        assert calls == {"archive_due": 1, "cold_rows": 1}
+        tm(tmp_path, "spec", "add", "Another")
+        await hub.refresh()
+
+    asyncio.run(scenario())
+
+    assert calls == {"archive_due": 1, "cold_rows": 1}
+    assert hub.rows["OLD"]["archived"] is True
+    assert "S1" in hub.rows
+
+
+def test_a_spec_due_but_not_archived_is_tried_again_once_a_minute_not_on_every_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    estate = Estate(tmp_path)
+    estate.spec("STUCK", Status.COMPLETED)
+    clock = {"now": datetime(2026, 10, 8, 12, 0, tzinfo=UTC)}
+    estate.completed("STUCK", clock["now"] - timedelta(days=4))
+    hub = estate.hub(clock=lambda: clock["now"])
+    tries: list[datetime] = []
+
+    def blocked(_root: Path, now: datetime, *_: Any) -> list[str]:
+        tries.append(now)
+        return []
+
+    monkeypatch.setattr(live, "archive_due", blocked)
+
+    async def scenario() -> None:
+        await hub.refresh()
+        tm(tmp_path, "spec", "add", "Another")
+        await hub.refresh()
+        assert len(tries) == 1
+        assert hub._deadline is not None
+        assert hub._deadline <= clock["now"] + live.ARCHIVE_RETRY
+        clock["now"] += live.ARCHIVE_RETRY
+        await hub.refresh()
+
+    asyncio.run(scenario())
+
+    assert len(tries) == 2
+    assert hub.rows["STUCK"]["archived"] is False
+
+
+def test_a_rebuild_reads_the_archive_again_once_it_changes(tmp_path: Path) -> None:
+    estate = Estate(tmp_path)
+    estate.spec("LATER", Status.COMPLETED)
+    now = datetime(2026, 10, 8, 12, 0, tzinfo=UTC)
+    estate.completed("LATER", now)
+    ConfigStore(tmp_path).set("archive.automatically_after_hours", "0")
+    hub = estate.hub(clock=lambda: now)
+
+    async def scenario() -> None:
+        await hub.refresh()
+        assert "LATER" in hub.rows
+        tm(tmp_path, "spec", "archive", "LATER")
+        await hub.refresh()
+
+    asyncio.run(scenario())
+
+    assert hub.rows["LATER"]["archived"] is True

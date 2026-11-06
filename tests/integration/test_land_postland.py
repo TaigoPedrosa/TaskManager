@@ -9,6 +9,7 @@ release or a sweep of that review returns it to LANDED with its review still nex
 
 import copy
 import json
+import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -130,7 +131,9 @@ def test_a_child_landing_on_main_unreviewed_under_a_reviewed_plan_is_refused_and
 
 
 MAIN_GATE = ProjectConfig(
-    repos={"api": RepoConfig(gates={"main": Gate(command="true", junit=None, timeout=60)})}
+    repos={
+        "api": RepoConfig(push=True, gates={"main": Gate(command="true", junit=None, timeout=60)})
+    }
 )
 MIGRATION_PLAN: dict[str, Any] = {
     "spec": SPEC,
@@ -208,19 +211,27 @@ REVIEW_OFF_AT_LANDED = (
 UNREVIEWED = {"review": False, "fix": False}
 
 
-def landed_plan(tmp_path: Path, *, reviewed: bool) -> tuple[Claims, Path]:
+def landed_plan(
+    tmp_path: Path, *, reviewed: bool, child_merge: str = "parent"
+) -> tuple[Claims, Path]:
     """S-P with one unreviewed child landed on its branch, then S-P landed on main."""
     claims = make_estate(tmp_path, config=MAIN_GATE)
     plain = {"id": "S-P-A", "title": "A", "target_repo": "api", "merge": "parent", **UNREVIEWED}
     plan = {"id": "S-P", "title": "Plan", "review": reviewed, "fix": reviewed, "tasks": [plain]}
     BulkImporter(claims.nodes, claims.ops).import_dict({"spec": SPEC, "plans": [plan]})
+    # A child stored with `merge: spec` is one a release before squashing created.
+    child = stored(claims, "S-P-A")
+    claims.nodes.save_node(child.model_copy(update={"merge": Merge(child_merge)}))
     landing = attach_landing(claims)
     built = start(claims, "S-P-A", Action.IMPLEMENT)
     assert built.worktree is not None
     commit(Path(built.worktree), "a.py", "a\n", "S-P-A: a.py")
     assert claims.complete("S-P-A") == Status.IMPLEMENTED
     assert land(claims, landing, "S-P-A") == Status.COMPLETED
-    assert land(claims, landing, "S-P") == (Status.LANDED if reviewed else Status.COMPLETED)
+    if child_merge == "parent":
+        assert land(claims, landing, "S-P") == (Status.LANDED if reviewed else Status.COMPLETED)
+    else:
+        assert stored(claims, "S-P").status == Status.COMPLETED
     return claims, claims.root
 
 
@@ -312,3 +323,64 @@ def test_turning_review_off_during_a_landed_plans_review_is_refused_so_its_end_r
     back = stored(claims, "S-P")
     assert (back.status, back.review, back.fix) == (Status.LANDED, True, True)
     assert claims.next_step(back, claims.snapshots.build())[0] == Action.REVIEW
+
+
+def test_a_landed_container_names_its_backup_branch(tmp_path: Path) -> None:
+    claims, estate = landed_plan(tmp_path, reviewed=True)
+
+    code, output = tm(estate, "task", "get", "S-P", "--json")
+    body = TestClient(create_app(estate)).get("/api/nodes/S-P").json()
+    child_code, child_output = tm(estate, "task", "get", "S-P-A", "--json")
+
+    assert code == 0 and child_code == 0, (output, child_output)
+    assert json.loads(output)["backup"] == "tm/S-P"
+    assert body["node"]["backup"] == "tm/S-P"
+    assert json.loads(child_output)["backup"] is None
+    assert "backup: tm/S-P" in {s["key"]: s["content"] for s in body["sections"]}["merge"]
+    assert stored(claims, "S-P").on_target
+
+
+def backup_of(estate: Path, node_id: str) -> tuple[str | None, str | None]:
+    """The `backup` the CLI and the web detail print for `node_id`."""
+    code, output = tm(estate, "task", "get", node_id, "--json")
+    assert code == 0, output
+    body = TestClient(create_app(estate)).get(f"/api/nodes/{node_id}").json()
+    return json.loads(output)["backup"], body["node"]["backup"]
+
+
+def test_a_containers_backup_is_the_branch_a_fix_retired_to_and_not_the_one_holding_only_the_fix(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path, config=MAIN_GATE)
+    BulkImporter(claims.nodes, claims.ops).import_dict(copy.deepcopy(MIGRATION_PLAN))
+    landing = attach_landing(claims)
+    built = start(claims, "S-P-M", Action.IMPLEMENT)
+    assert built.worktree is not None
+    commit(Path(built.worktree), MIGRATION, "create table keys();\n", "S-P-M: keys")
+    assert claims.complete("S-P-M") == Status.IMPLEMENTED
+    assert review(claims, "S-P-M") == Status.REVIEWED
+    assert land(claims, landing, "S-P-M") == Status.COMPLETED
+    assert land(claims, landing, "S-P") == Status.LANDED
+    assert backup_of(claims.root, "S-P") == ("tm/S-P", "tm/S-P")
+    assert review(claims, "S-P", "keys has no primary key") == Status.REVIEWED
+
+    start(claims, "S-P", Action.FIX)
+
+    assert backup_of(claims.root, "S-P") == ("tm/S-P@1", "tm/S-P@1")
+    assert git_branch_exists(claims.root / "api", "tm/S-P@1")
+
+
+def git_branch_exists(repo: Path, branch: str) -> bool:
+    return bool(
+        subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+            capture_output=True,
+            check=False,
+        ).stdout
+    )
+
+
+def test_a_container_whose_children_landed_on_its_target_names_no_backup(tmp_path: Path) -> None:
+    _, estate = landed_plan(tmp_path, reviewed=False, child_merge="spec")
+
+    assert backup_of(estate, "S-P") == (None, None)

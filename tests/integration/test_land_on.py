@@ -34,13 +34,20 @@ RELEASE = "release/x"
 # Run from the tm root, it records each ref a run hands it.
 REF_LOG = "verify-ref.log"
 RELEASED: dict[str, Any] = {
-    "spec": {"id": "S1", "title": "Released", "frontmatter": {"land_on": RELEASE}},
+    "spec": {
+        "id": "S1",
+        "title": "Released",
+        "review": False,
+        "fix": False,
+        "frontmatter": {"land_on": RELEASE},
+    },
     "plans": [
         {
             "id": "S1-P",
             "title": "Plan",
             "review": True,
             "fix": True,
+            "merge": "spec",
             "tasks": [
                 {
                     "id": "S1-P-A",
@@ -60,11 +67,11 @@ RELEASED: dict[str, Any] = {
             ],
         }
     ],
-    "tasks": [{"id": "S1-R", "title": "R", "target_repo": "api", "review": True}],
+    "tasks": [{"id": "S1-R", "title": "R", "target_repo": "api", "review": True, "merge": "spec"}],
 }
 DEFAULTED: dict[str, Any] = {
-    "spec": {"id": "S2", "title": "Defaulted"},
-    "tasks": [{"id": "S2-T", "title": "T", "target_repo": "api", "review": True}],
+    "spec": {"id": "S2", "title": "Defaulted", "review": False, "fix": False},
+    "tasks": [{"id": "S2-T", "title": "T", "target_repo": "api", "review": True, "merge": "spec"}],
 }
 
 Estate = tuple[Claims, Landing]
@@ -77,7 +84,11 @@ def tm(root: Path, *args: str, stdin: str | None = None) -> tuple[int, str]:
 
 def estate(tmp_path: Path) -> Estate:
     config = ProjectConfig(
-        repos={"api": RepoConfig(default_branch="trunk", gates={"main": junit_gate(tmp_path)})},
+        repos={
+            "api": RepoConfig(
+                push=True, default_branch="trunk", gates={"main": junit_gate(tmp_path)}
+            )
+        },
         condition_ttl=1,
     )
     claims = make_estate(tmp_path, config=config)
@@ -134,7 +145,7 @@ def test_each_spec_lands_on_its_own_target_and_main_never_moves(tmp_path: Path) 
     assert git(api, "show", f"origin/{RELEASE}:trunk.txt") == "t"
 
     assert review(claims, "S1-P") == (f"origin/{RELEASE}", RELEASE)
-    assert f"merge(S1-P): land tm/S1-P on {RELEASE}" in subjects(api, f"origin/{RELEASE}")
+    assert "S1-P: Plan" in subjects(api, f"origin/{RELEASE}")
     assert stored(claims, "S1-P").status == Status.COMPLETED
 
     code, out = tm(claims.root, "verify", "run", "S1-P-A")

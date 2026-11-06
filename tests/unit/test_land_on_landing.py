@@ -44,7 +44,7 @@ def push_branch(repo: Path, branch: str, path: str, content: str | None) -> str:
 
 def released(tmp_path: Path, gate: Gate = TRUE) -> tuple[Claims, Landing]:
     """Spec S lands on release/x. A condition's result is cached for a second only."""
-    repos = {"api": RepoConfig(gates={"main": gate})}
+    repos = {"api": RepoConfig(push=True, gates={"main": gate})}
     claims = make_estate(tmp_path, config=ProjectConfig(repos=repos, condition_ttl=1))
     add(claims, "S", NodeKind.SPEC)
     claims.ops.update_node("S", frontmatter_set={"land_on": RELEASE})
@@ -147,7 +147,7 @@ class FakeRemote:
         return self.head, subprocess.CompletedProcess(["git", "ls-remote"], 0, "", "")
 
     def push(
-        self, _worktree: Path, _remote: str | None, target: str
+        self, _worktree: Path, _remote: str | None, target: str, _lease: str | None = None
     ) -> subprocess.CompletedProcess[str]:
         self.pushed.append(target)
         return subprocess.CompletedProcess(["git", "push"], 0, "", "")
@@ -205,7 +205,7 @@ def test_a_top_landing_with_no_main_gate_stops_naming_its_target(tmp_path: Path)
     reviewed(claims, "T1", "x = 1\n")
     merge = claims.start("T1", "merger", "s1")
     assert merge.job is not None, merge.reason
-    claims.config.repos["api"] = RepoConfig()
+    claims.config.repos["api"] = RepoConfig(push=True)
 
     state = landing.run(merge.job)
     job = claims.jobs.get(merge.job)
@@ -265,8 +265,8 @@ def two_defaults(tmp_path: Path) -> tuple[Claims, Landing]:
     config = ProjectConfig(
         repo_order=["api", "web"],
         repos={
-            "api": RepoConfig(default_branch="trunk", gates={"main": TRUE}),
-            "web": RepoConfig(gates={"main": TRUE}),
+            "api": RepoConfig(push=True, default_branch="trunk", gates={"main": TRUE}),
+            "web": RepoConfig(push=True, gates={"main": TRUE}),
         },
     )
     claims = make_estate(tmp_path, repos=("api", "web"), config=config)
@@ -305,8 +305,8 @@ def test_a_container_lands_in_each_repository_on_that_repository_s_default_branc
         "web",
         "main",
     )
-    assert git(api, "log", "-1", "--format=%s", "origin/trunk") == "merge(P): land tm/P on trunk"
-    assert git(web, "log", "-1", "--format=%s", "origin/main") == "merge(P): land tm/P on main"
+    assert git(api, "log", "-1", "--format=%s", "origin/trunk") == "P: P"
+    assert git(web, "log", "-1", "--format=%s", "origin/main") == "P: P"
     assert not remote_head(web, "trunk")
 
 
@@ -377,8 +377,8 @@ def test_a_review_of_a_container_landed_across_targets_names_each_repository_s_o
     config = ProjectConfig(
         repo_order=["web", "api"],
         repos={
-            "api": RepoConfig(default_branch="trunk", gates={"main": TRUE}),
-            "web": RepoConfig(gates={"main": TRUE}),
+            "api": RepoConfig(push=True, default_branch="trunk", gates={"main": TRUE}),
+            "web": RepoConfig(push=True, gates={"main": TRUE}),
         },
     )
     claims = make_estate(tmp_path, repos=("api", "web"), config=config)
@@ -405,8 +405,8 @@ def test_a_claim_prints_each_repository_s_remote_and_none_where_it_has_none(
     config = ProjectConfig(
         repo_order=["web", "api"],
         repos={
-            "api": RepoConfig(gates={"main": TRUE}),
-            "web": RepoConfig(remote=None, gates={"main": TRUE}),
+            "api": RepoConfig(push=True, gates={"main": TRUE}),
+            "web": RepoConfig(push=True, remote=None, gates={"main": TRUE}),
         },
     )
     claims = make_estate(tmp_path, repos=("api", "web"), config=config)

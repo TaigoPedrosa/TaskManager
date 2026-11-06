@@ -162,7 +162,7 @@ def test_every_lifecycle_column_round_trips(tmp_path: Path) -> None:
     [
         (NodeKind.TASK, True, True),
         (NodeKind.PLAN, False, False),
-        (NodeKind.SPEC, False, False),
+        (NodeKind.SPEC, True, True),
         (NodeKind.DECISION, False, False),
     ],
 )

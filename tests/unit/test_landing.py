@@ -1,3 +1,4 @@
+import subprocess
 import sys
 import time
 from collections.abc import Iterator
@@ -5,13 +6,16 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from lifecycle_estate import (
     add,
     attach_landing,
     branch_at,
+    commit,
     gate_runs,
+    gated,
     git,
     junit_gate,
     make_estate,
@@ -24,6 +28,7 @@ from lifecycle_estate import (
 from taskmanager.core.enums import NodeKind, VerificationType
 from taskmanager.core.models import Condition, Job, NodeVerification
 from taskmanager.core.status import Action, ConditionStage, JobState, Merge, Outcome, Status
+from taskmanager.engine import git as landing_git
 from taskmanager.engine.claims import Claims, Verified
 from taskmanager.engine.config import Gate, ProjectConfig, RepoConfig
 from taskmanager.engine.landing import Landing
@@ -35,7 +40,7 @@ TRUE = Gate(command="true", junit=None, timeout=60)
 
 
 def estate_with(tmp_path: Path, gate: Gate, **config: object) -> tuple[Claims, Landing]:
-    repos = {"api": RepoConfig(gates={"main": gate})}
+    repos = {"api": RepoConfig(push=True, gates={"main": gate})}
     claims = make_estate(tmp_path, config=ProjectConfig(repos=repos, **config))
     return claims, attach_landing(claims)
 
@@ -66,7 +71,7 @@ def land_ungated(claims: Claims, landing: Landing) -> tuple[str, JobState]:
     """A landing claimed while its repository has a main gate that is then removed."""
     merge = claims.start("T1", "merger", "s1")
     assert merge.job is not None, merge.reason
-    claims.config.repos["api"] = RepoConfig()
+    claims.config.repos["api"] = RepoConfig(push=True)
     return merge.job, landing.run(merge.job)
 
 
@@ -442,7 +447,7 @@ def test_succeed_writes_the_node_completed_no_later_than_the_job_reads_succeeded
 def test_succeed_writes_the_merge_note_and_next_job_no_later_than_the_first_repository_succeeds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    gates = {repo: RepoConfig(gates={"main": TRUE}) for repo in ("api", "web")}
+    gates = {repo: RepoConfig(push=True, gates={"main": TRUE}) for repo in ("api", "web")}
     claims = make_estate(tmp_path, repos=("api", "web"), config=ProjectConfig(repos=gates))
     landing = attach_landing(claims)
     add(claims, "P", NodeKind.PLAN, status=Status.REVIEWED, outcome=Outcome.APPROVE)
@@ -502,7 +507,7 @@ def test_succeed_writes_neither_when_the_node_refuses_to_land(
 
 def test_the_module_entry_point_runs_a_landing_as_a_detached_process(tmp_path: Path) -> None:
     claims = make_estate(
-        tmp_path, config=ProjectConfig(repos={"api": RepoConfig(gates={"main": TRUE})})
+        tmp_path, config=ProjectConfig(repos={"api": RepoConfig(push=True, gates={"main": TRUE})})
     )
     attach_landing(claims, detach=True)
     reviewed_task(claims)
@@ -659,7 +664,9 @@ def release_from_the_gate(root: Path) -> Gate:
 
 def test_a_landing_released_mid_gate_stays_expired_and_pushes_nothing(tmp_path: Path) -> None:
     claims, landing = estate_with(tmp_path, TRUE)
-    claims.config.repos["api"] = RepoConfig(gates={"main": release_from_the_gate(claims.root)})
+    claims.config.repos["api"] = RepoConfig(
+        push=True, gates={"main": release_from_the_gate(claims.root)}
+    )
     api = claims.root / "api"
     reviewed_task(claims)
     before = git(api, "ls-remote", "origin", "refs/heads/main")
@@ -687,7 +694,9 @@ def test_releasing_a_running_landing_stops_its_process(tmp_path: Path) -> None:
     claims = make_estate(
         tmp_path,
         config=ProjectConfig(
-            repos={"api": RepoConfig(gates={"main": Gate(command="sleep 3", timeout=60)})}
+            repos={
+                "api": RepoConfig(push=True, gates={"main": Gate(command="sleep 3", timeout=60)})
+            }
         ),
     )
     attach_landing(claims, detach=True)
@@ -739,7 +748,9 @@ def test_a_landing_parked_on_a_red_parent_branch_waits_until_that_branch_moves(
     claims = make_estate(
         tmp_path,
         config=ProjectConfig(
-            repos={"api": RepoConfig(gates={"main": TRUE, "parent": junit_gate(tmp_path)})},
+            repos={
+                "api": RepoConfig(push=True, gates={"main": TRUE, "parent": junit_gate(tmp_path)})
+            },
             condition_ttl=1,
         ),
     )
@@ -938,3 +949,540 @@ def test_a_job_stopped_again_after_each_resume_counts_resumes_under_the_key_tm_w
         assert landing.resume(job_id) == JobState.NEEDS_AGENT
         job = claims.jobs.get(job_id)
         assert job is not None and job.result["resumed"] == resumes
+
+
+def plan_on_spec_branch(claims: Claims) -> Path:
+    """Plan P, approved, whose two tasks' granular commits sit on tm/P, over the spec branch tm/S."""
+    api = claims.root / "api"
+    add(claims, "S", NodeKind.SPEC)
+    add(
+        claims,
+        "P",
+        NodeKind.PLAN,
+        parent="S",
+        merge=Merge.PARENT,
+        review=True,
+        fix=True,
+        status=Status.REVIEWED,
+        outcome=Outcome.APPROVE,
+        review_cycles=1,
+    )
+    add(claims, "A", parent="P", merge=Merge.PARENT, status=Status.COMPLETED)
+    add(claims, "B", parent="P", merge=Merge.PARENT, status=Status.COMPLETED)
+    branch_at(api, "tm/S")
+    branch_at(api, "tm/P", "tm/S")
+    on_branch(api, "tm/P", "a.py", "a\n")
+    on_branch(api, "tm/P", "b.py", "b\n")
+    return api
+
+
+def test_a_plan_lands_on_its_spec_branch_as_one_commit(tmp_path: Path) -> None:
+    claims, landing = estate_with(tmp_path, TRUE)
+    api = plan_on_spec_branch(claims)
+    before = git(api, "rev-parse", "tm/S")
+    merged_tree = git(api, "merge-tree", "--write-tree", before, "tm/P")
+
+    assert land(claims, landing, "P")[1] == JobState.SUCCEEDED
+
+    assert git(api, "rev-list", "--count", f"{before}..tm/S") == "1"
+    assert git(api, "rev-list", "--parents", "-n1", "tm/S").split()[1:] == [before]
+    assert git(api, "rev-parse", "tm/S^{tree}") == merged_tree
+    assert git(api, "log", "-1", "--format=%s", "tm/S") == "P: P"
+    assert git(api, "rev-list", "--count", f"{before}..tm/P") == "2"
+
+
+def test_a_spec_lands_on_its_target_as_one_commit_per_repository(tmp_path: Path) -> None:
+    claims = make_estate(tmp_path, repos=("r1", "r2"), config=gated("r1", "r2"))
+    landing = attach_landing(claims)
+    add(
+        claims,
+        "S",
+        NodeKind.SPEC,
+        review=True,
+        fix=True,
+        status=Status.REVIEWED,
+        outcome=Outcome.APPROVE,
+        review_cycles=1,
+    )
+    claims.ops.update_node(
+        "S", frontmatter_set={"commit": {"r1": "feat(S): one", "r2": "fix(S): two"}}
+    )
+    before = {}
+    for repo in ("r1", "r2"):
+        add(claims, f"T-{repo}", parent="S", repo=repo, merge=Merge.PARENT, status=Status.COMPLETED)
+        on_branch(claims.root / repo, "tm/S", "f.py", f"{repo}\n")
+        before[repo] = git(claims.root / repo, "rev-parse", "origin/main")
+
+    assert land(claims, landing, "S")[1] == JobState.SUCCEEDED
+
+    for repo, subject in (("r1", "feat(S): one"), ("r2", "fix(S): two")):
+        clone = claims.root / repo
+        assert git(clone, "rev-list", "--count", f"{before[repo]}..origin/main") == "1"
+        assert git(clone, "log", "-1", "--format=%s", "origin/main") == subject
+        assert git(clone, "log", "-1", "--format=%b", "origin/main") == ""
+
+
+def test_a_spec_commit_string_and_fallback_subjects(tmp_path: Path) -> None:
+    claims, _ = estate_with(tmp_path, TRUE)
+    add(claims, "S", NodeKind.SPEC)
+    add(claims, "P", NodeKind.PLAN, parent="S")
+
+    fallback = claims.squash_subject("S", "api")
+    claims.ops.update_node("S", frontmatter_set={"commit": "feat(S): everywhere"})
+    everywhere = (claims.squash_subject("S", "api"), claims.squash_subject("S", "web"))
+    claims.ops.update_node("S", frontmatter_set={"commit": {"web": "fix(S): web"}})
+
+    assert fallback == "S: S"
+    assert everywhere == ("feat(S): everywhere", "feat(S): everywhere")
+    assert claims.squash_subject("S", "api") == "S: S"
+    assert claims.squash_subject("P", "api") == "P: P"
+
+
+def test_a_resolved_container_conflict_still_lands_one_commit(tmp_path: Path) -> None:
+    claims, landing = estate_with(tmp_path, TRUE)
+    api = plan_on_spec_branch(claims)
+    on_branch(api, "tm/P", "app.py", "plan\n")
+    on_branch(api, "tm/S", "app.py", "spec\n")
+    before = git(api, "rev-parse", "tm/S")
+
+    job_id, state = land(claims, landing, "P")
+    assert state == JobState.NEEDS_AGENT
+    handed = claims.start("P", "resolver", "s2")
+    assert handed.worktree is not None
+    worktree = Path(handed.worktree)
+    (worktree / "app.py").write_text("both\n")
+    git(worktree, "add", "app.py")
+    git(worktree, "commit", "-q", "--no-edit")
+
+    assert landing.resume(job_id) == JobState.SUCCEEDED
+
+    assert git(api, "rev-list", "--count", f"{before}..tm/S") == "1"
+    assert git(api, "rev-list", "--parents", "-n1", "tm/S").split()[1:] == [before]
+    assert git(api, "show", "tm/S:app.py") == "both"
+    assert git(api, "show", "tm/S:a.py") == "a"
+
+
+MOVE_TARGET = """
+import pathlib, subprocess, sys
+api, flag = sys.argv[1], pathlib.Path(sys.argv[2])
+if not flag.exists():
+    flag.touch()
+    def git(*args):
+        return subprocess.run(["git", "-C", api, *args], check=True, capture_output=True, text=True).stdout.strip()
+    tree = git("rev-parse", "refs/heads/tm/S^{tree}")
+    moved = git("commit-tree", tree, "-p", "refs/heads/tm/S", "-m", "moved")
+    git("update-ref", "refs/heads/tm/S", moved)
+"""
+
+
+def test_a_target_that_moved_during_the_gate_gains_one_commit_on_top(tmp_path: Path) -> None:
+    script = tmp_path / "move_target.py"
+    script.write_text(MOVE_TARGET)
+    command = f"{sys.executable} {script} {tmp_path / 'estate' / 'api'} {tmp_path / 'moved'}"
+    repos = {
+        "api": RepoConfig(
+            push=True, gates={"main": TRUE, "parent": Gate(command=command, junit=None, timeout=60)}
+        )
+    }
+    claims = make_estate(tmp_path, config=ProjectConfig(repos=repos))
+    landing = attach_landing(claims)
+    api = plan_on_spec_branch(claims)
+
+    assert land(claims, landing, "P")[1] == JobState.SUCCEEDED
+
+    head = git(api, "rev-parse", "tm/S")
+    parent = git(api, "rev-parse", "tm/S^")
+    assert git(api, "log", "-1", "--format=%s", parent) == "moved"
+    assert git(api, "rev-list", "--count", f"{parent}..{head}") == "1"
+    assert git(api, "show", "tm/S:b.py") == "b"
+
+
+def test_a_task_landing_at_the_top_stays_a_no_ff_merge(tmp_path: Path) -> None:
+    claims, landing = estate_with(tmp_path, TRUE)
+    api = claims.root / "api"
+    reviewed_task(claims)
+    before = git(api, "rev-parse", "origin/main")
+
+    assert land(claims, landing)[1] == JobState.SUCCEEDED
+
+    assert len(git(api, "rev-list", "--parents", "-n1", "origin/main").split()) == 3
+    assert git(api, "rev-list", "--count", f"{before}..origin/main") == "2"
+
+
+def test_a_container_landing_killed_after_its_move_is_not_squashed_a_second_time(
+    tmp_path: Path,
+) -> None:
+    claims, landing = estate_with(tmp_path, TRUE)
+    api = plan_on_spec_branch(claims)
+    before = git(api, "rev-parse", "tm/S")
+    first = claims.start("P", "merger", "s1", ttl=1)
+    assert first.job is not None
+    dead = claims.jobs.get(first.job)
+    assert dead is not None
+    tree = git(api, "merge-tree", "--write-tree", before, "tm/P")
+    squash = git(api, "commit-tree", tree, "-p", before, "-m", "P: P")
+    git(api, "update-ref", "refs/heads/tm/S", squash, before)
+    dead.result.update(squash=squash, tip=git(api, "rev-parse", "tm/P"))
+    assert claims.jobs.update(dead)
+    time.sleep(1.5)
+    assert claims.sweep() == ["P"]
+
+    second = claims.start("P", "merger", "s1")
+    assert second.job is not None
+    assert landing.run(second.job) == JobState.SUCCEEDED
+
+    assert git(api, "rev-parse", "tm/S") == squash
+
+
+def local_spec(tmp_path: Path, push: bool = False) -> tuple[Claims, Landing, Path]:
+    repos = {"api": RepoConfig(push=push, gates={"main": TRUE})}
+    claims = make_estate(tmp_path, config=ProjectConfig(repos=repos))
+    landing = attach_landing(claims)
+    add(
+        claims,
+        "S",
+        NodeKind.SPEC,
+        review=True,
+        fix=True,
+        status=Status.REVIEWED,
+        outcome=Outcome.APPROVE,
+        review_cycles=1,
+    )
+    add(claims, "T", parent="S", merge=Merge.PARENT, status=Status.COMPLETED)
+    api = claims.root / "api"
+    on_branch(api, "tm/S", "f.py", "f\n")
+    return claims, landing, api
+
+
+def fix_landing(claims: Claims, landing: Landing, api: Path, name: str = "fix.py") -> JobState:
+    """The spec's rejected review is fixed on a branch cut from its target, which lands again."""
+    target = "origin/main" if claims.config.repos["api"].push else "main"
+    n = 1
+    while git(api, "branch", "--list", f"tm/S@{n}"):
+        n += 1
+    git(api, "branch", "-m", "tm/S", f"tm/S@{n}")
+    branch_at(api, "tm/S", target)
+    on_branch(api, "tm/S", name, f"{name}\n")
+    claims.nodes.save_node(
+        stored(claims, "S").model_copy(update={"status": Status.FIXED, "fix_for": Outcome.REJECT})
+    )
+    return land(claims, landing, "S")[1]
+
+
+def test_a_spec_fix_folds_into_one_commit_with_a_backup(tmp_path: Path) -> None:
+    claims, landing, api = local_spec(tmp_path)
+    base = git(api, "rev-parse", "main")
+    assert land(claims, landing, "S")[1] == JobState.SUCCEEDED
+    first = git(api, "rev-parse", "main")
+
+    assert fix_landing(claims, landing, api) == JobState.SUCCEEDED
+
+    assert git(api, "rev-list", "--count", f"{base}..main") == "1"
+    assert git(api, "rev-list", "--parents", "-n1", "main").split()[1:] == [base]
+    assert git(api, "show", "main:f.py") == "f"
+    assert git(api, "show", "main:fix.py") == "fix.py"
+    assert git(api, "rev-parse", "backup/S") == first
+    assert git(api, "log", "-1", "--format=%s", "main") == "S: S"
+    assert "fold skipped" not in section(claims, "S", "merge")
+    assert "previous head kept at backup/S" in section(claims, "S", "merge")
+
+
+def test_a_second_fold_takes_the_next_backup_name(tmp_path: Path) -> None:
+    claims, landing, api = local_spec(tmp_path)
+    base = git(api, "rev-parse", "main")
+    assert land(claims, landing, "S")[1] == JobState.SUCCEEDED
+    assert fix_landing(claims, landing, api) == JobState.SUCCEEDED
+    second = git(api, "rev-parse", "main")
+
+    assert fix_landing(claims, landing, api, "again.py") == JobState.SUCCEEDED
+
+    assert git(api, "rev-list", "--count", f"{base}..main") == "1"
+    assert git(api, "rev-parse", "backup/S-r2") == second
+    assert git(api, "show", "main:fix.py") == "fix.py"
+    assert git(api, "show", "main:again.py") == "again.py"
+
+
+def test_the_fold_skips_when_another_branch_holds_the_range(tmp_path: Path) -> None:
+    claims, landing, api = local_spec(tmp_path)
+    base = git(api, "rev-parse", "main")
+    assert land(claims, landing, "S")[1] == JobState.SUCCEEDED
+    git(api, "branch", "other", "main")
+
+    assert fix_landing(claims, landing, api) == JobState.SUCCEEDED
+
+    assert git(api, "rev-list", "--count", f"{base}..main") == "2"
+    note = section(claims, "S", "merge")
+    assert "fold skipped" in note and "branch other" in note
+    assert not git(api, "branch", "--list", "backup/*")
+
+
+def test_the_fold_skips_a_range_the_owner_pushed(tmp_path: Path) -> None:
+    claims, landing, api = local_spec(tmp_path)
+    base = git(api, "rev-parse", "main")
+    assert land(claims, landing, "S")[1] == JobState.SUCCEEDED
+    git(api, "push", "-q", "origin", "main")
+
+    assert fix_landing(claims, landing, api) == JobState.SUCCEEDED
+
+    assert git(api, "rev-list", "--count", f"{base}..main") == "2"
+    assert "fold skipped" in section(claims, "S", "merge")
+
+
+def test_the_fold_skips_when_push_is_on(tmp_path: Path) -> None:
+    claims, landing, api = local_spec(tmp_path, push=True)
+    base = git(api, "rev-parse", "origin/main")
+    assert land(claims, landing, "S")[1] == JobState.SUCCEEDED
+
+    assert fix_landing(claims, landing, api) == JobState.SUCCEEDED
+
+    assert git(api, "rev-list", "--count", f"{base}..origin/main") == "2"
+    assert "fold skipped" in section(claims, "S", "merge")
+
+
+def test_the_fold_skips_foreign_commits(tmp_path: Path) -> None:
+    claims, landing, api = local_spec(tmp_path)
+    base = git(api, "rev-parse", "main")
+    assert land(claims, landing, "S")[1] == JobState.SUCCEEDED
+    commit(api, "x.py", "x\n", "foreign")
+
+    assert fix_landing(claims, landing, api) == JobState.SUCCEEDED
+
+    assert git(api, "rev-list", "--count", f"{base}..main") == "3"
+    assert "fold skipped" in section(claims, "S", "merge")
+    assert "not this spec's" in section(claims, "S", "merge")
+
+
+def add_spec_on_main(claims: Claims, api: Path, spec_id: str, path: str) -> None:
+    add(
+        claims,
+        spec_id,
+        NodeKind.SPEC,
+        review=True,
+        fix=True,
+        status=Status.IMPLEMENTED,
+    )
+    add(claims, f"T-{spec_id}", parent=spec_id, merge=Merge.PARENT, status=Status.COMPLETED)
+    on_branch(api, f"tm/{spec_id}", path, f"{path}\n")
+
+
+def reviewed_after_landing(tmp_path: Path) -> tuple[Claims, Landing, Path]:
+    """A local spec whose review comes after its landing."""
+    repos = {"api": RepoConfig(push=False, gates={"main": TRUE})}
+    claims = make_estate(tmp_path, config=ProjectConfig(repos=repos))
+    api = claims.root / "api"
+    add_spec_on_main(claims, api, "S", "f.py")
+    return claims, attach_landing(claims), api
+
+
+def test_a_review_of_a_landed_spec_names_the_commit_its_landing_squashed_to(
+    tmp_path: Path,
+) -> None:
+    claims, landing, api = reviewed_after_landing(tmp_path)
+    assert land(claims, landing, "S")[1] == JobState.SUCCEEDED
+    squash = git(api, "rev-parse", "main")
+
+    review = claims.start("S", "reviewer", "s2")
+
+    assert review.action == Action.REVIEW
+    assert review.squashes == {"api": squash}
+
+
+def test_a_later_landing_on_the_same_target_leaves_a_specs_review_on_its_own_squash(
+    tmp_path: Path,
+) -> None:
+    claims, landing, api = reviewed_after_landing(tmp_path)
+    assert land(claims, landing, "S")[1] == JobState.SUCCEEDED
+    squash = git(api, "rev-parse", "main")
+    add_spec_on_main(claims, api, "S2", "g.py")
+    assert land(claims, landing, "S2")[1] == JobState.SUCCEEDED
+    assert git(api, "rev-parse", "main") != squash
+
+    review = claims.start("S", "reviewer", "s2")
+
+    assert review.action == Action.REVIEW
+    assert review.squashes == {"api": squash}
+
+
+def test_a_folded_specs_review_names_the_folded_commit(tmp_path: Path) -> None:
+    claims, landing, api = reviewed_after_landing(tmp_path)
+    assert land(claims, landing, "S")[1] == JobState.SUCCEEDED
+    assert fix_landing(claims, landing, api) == JobState.SUCCEEDED
+    folded = git(api, "rev-parse", "main")
+
+    review = claims.start("S", "reviewer", "s2")
+
+    assert review.squashes == {"api": folded}
+
+
+def test_a_container_landed_without_a_squash_has_no_entry_in_its_reviews_squashes(
+    tmp_path: Path,
+) -> None:
+    claims, landing, _ = reviewed_after_landing(tmp_path)
+    land(claims, landing, "S")
+    merge = claims.nodes.get_section("S", "merge")
+    assert merge is not None
+    kept = [ln for ln in merge.content.splitlines() if not ln.startswith("squash: ")]
+    claims.ops.set_section("S", "merge", "\n".join(kept), merge.header)
+
+    review = claims.start("S", "reviewer", "s2")
+
+    assert review.action == Action.REVIEW
+    assert review.squashes == {}
+
+
+def test_a_review_reads_the_squash_from_the_merge_note_and_not_from_the_jobs(
+    tmp_path: Path,
+) -> None:
+    claims, landing, api = reviewed_after_landing(tmp_path)
+    job_id, _ = land(claims, landing, "S")
+    squash = git(api, "rev-parse", "main")
+    job = claims.jobs.get(job_id)
+    assert job is not None
+    job.result.pop("squash")
+    assert claims.jobs.set_state(job)
+
+    review = claims.start("S", "reviewer", "s2")
+
+    assert f"squash: api {squash}\n" in section(claims, "S", "merge") + "\n"
+    assert review.squashes == {"api": squash}
+
+
+def test_a_landing_retried_past_its_move_records_the_squash_it_found_on_the_target(
+    tmp_path: Path,
+) -> None:
+    claims, landing, api = reviewed_after_landing(tmp_path)
+    before = git(api, "rev-parse", "main")
+    first = claims.start("S", "merger", "s1", ttl=1)
+    assert first.job is not None
+    dead = claims.jobs.get(first.job)
+    assert dead is not None
+    tree = git(api, "merge-tree", "--write-tree", before, "tm/S")
+    squash = git(api, "commit-tree", tree, "-p", before, "-m", "S: S")
+    git(api, "update-ref", "refs/heads/main", squash, before)
+    dead.result.update(squash=squash, tip=git(api, "rev-parse", "tm/S"))
+    assert claims.jobs.update(dead)
+    time.sleep(1.5)
+    assert claims.sweep() == ["S"]
+    second = claims.start("S", "merger", "s1")
+    assert second.job is not None
+    assert landing.run(second.job) == JobState.SUCCEEDED
+
+    review = claims.start("S", "reviewer", "s2")
+
+    assert review.action == Action.REVIEW
+    assert review.squashes == {"api": squash}
+
+
+def test_a_job_whose_push_failed_leaves_no_squash_line_for_a_commit_that_is_not_on_the_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claims, landing, api = reviewed_after_landing(tmp_path)
+    real = landing_git.push
+    tried: list[str] = []
+
+    def refused_once(*args: Any, **kwargs: Any) -> Any:
+        if tried:
+            return real(*args, **kwargs)
+        tried.append(git(args[0], "rev-parse", "HEAD"))
+        return subprocess.CompletedProcess([], 1, "", "refused")
+
+    monkeypatch.setattr(landing_git, "push", refused_once)
+    assert land(claims, landing, "S")[1] == JobState.SUCCEEDED
+
+    recorded = claims.recorded_squashes("S")
+    assert recorded == {"api": git(api, "rev-parse", "main")}
+    assert tried[0] not in recorded.values()
+
+
+def test_a_reset_to_landed_is_refused_while_the_containers_branch_holds_commits_its_squash_lacks(
+    tmp_path: Path,
+) -> None:
+    claims, landing, api = reviewed_after_landing(tmp_path)
+    assert land(claims, landing, "S")[1] == JobState.SUCCEEDED
+    on_branch(api, "tm/S", "late.py", "late\n", base="tm/S")
+
+    with pytest.raises(OperationError, match="did not take in"):
+        claims.reset("S", Status.LANDED, "repair")
+
+    assert stored(claims, "S").status == Status.LANDED
+    git(api, "branch", "-f", "tm/S", "tm/S~1")
+    claims.reset("S", Status.COMPLETED, "repair")
+    assert stored(claims, "S").status == Status.COMPLETED
+
+
+def test_a_reset_of_a_container_with_no_recorded_squash_proves_its_branch_is_on_the_target(
+    tmp_path: Path,
+) -> None:
+    claims, landing, api = reviewed_after_landing(tmp_path)
+    assert land(claims, landing, "S")[1] == JobState.SUCCEEDED
+    merge = claims.nodes.get_section("S", "merge")
+    assert merge is not None
+    kept = [ln for ln in merge.content.splitlines() if not ln.startswith("squash: ")]
+    claims.ops.set_section("S", "merge", "\n".join(kept), merge.header)
+
+    with pytest.raises(OperationError, match="is not on main"):
+        claims.reset("S", Status.COMPLETED, "repair")
+
+    git(api, "branch", "-f", "tm/S", "main")
+    claims.reset("S", Status.COMPLETED, "repair")
+    assert stored(claims, "S").status == Status.COMPLETED
+
+
+def test_a_reset_of_a_squashed_container_runs_its_checks_on_the_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claims, landing, _ = reviewed_after_landing(tmp_path)
+    assert land(claims, landing, "S")[1] == JobState.SUCCEEDED
+    read: list[str] = []
+
+    def red(node_id: str, ref: str, repo: str) -> tuple[bool, str, None]:
+        read.append(ref)
+        return False, "one row red", None
+
+    monkeypatch.setattr(claims, "verify", red)
+
+    with pytest.raises(OperationError, match="verifications red on main"):
+        claims.reset("S", Status.COMPLETED, "repair")
+
+    assert read == ["main"]
+    assert stored(claims, "S").status == Status.LANDED
+
+
+def fold_after_a_lost_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, move_backup: bool
+) -> tuple[Claims, Path]:
+    claims, landing, api = local_spec(tmp_path)
+    assert land(claims, landing, "S")[1] == JobState.SUCCEEDED
+    real = landing_git.push
+    lost: list[bool] = []
+
+    def lost_once(*args: Any, **kwargs: Any) -> Any:
+        if lost:
+            return real(*args, **kwargs)
+        lost.append(True)
+        git(api, "branch", "other", "main")
+        if move_backup:
+            git(api, "branch", "-f", "backup/S", "main~1")
+        return subprocess.CompletedProcess([], 1, "", "stale info")
+
+    monkeypatch.setattr(landing_git, "push", lost_once)
+    assert fix_landing(claims, landing, api) == JobState.SUCCEEDED
+    return claims, api
+
+
+def test_a_fold_refused_after_its_backup_was_cut_deletes_that_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claims, api = fold_after_a_lost_lease(tmp_path, monkeypatch, move_backup=False)
+
+    assert not git(api, "branch", "--list", "backup/*")
+    assert "fold skipped" in section(claims, "S", "merge")
+
+
+def test_a_fold_refused_after_its_backup_moved_names_the_backup_in_the_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claims, api = fold_after_a_lost_lease(tmp_path, monkeypatch, move_backup=True)
+
+    assert git(api, "branch", "--list", "backup/S")
+    assert "backup/S holds the previous head" in section(claims, "S", "merge")

@@ -1,5 +1,7 @@
 import json
 import re
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -234,3 +236,32 @@ def test_restore_of_a_version_3_export_puts_on_target_only_what_it_states_landed
     tm("restore", str(export), "-C", str(fresh))
 
     assert on_target(fresh) == {"S": False, "S-P": False, "S-P-C": True}
+
+
+def archived_events(root: Path) -> int:
+    with closing(sqlite3.connect(root / ".taskmanager" / "archive.db")) as conn:
+        return conn.execute("SELECT COUNT(*) FROM ledger_events").fetchone()[0]
+
+
+def test_export_and_restore_carry_the_archive(tmp_path: Path) -> None:
+    source, fresh, out = tmp_path / "source", tmp_path / "fresh", tmp_path / "out"
+    source.mkdir()
+    fresh.mkdir()
+    tm("init", "-C", str(source))
+    ops = create_container(source).get(Operations)
+    spec = ops.add_spec("Finished", slug="DONE")
+    plan = ops.add_plan("p", spec, slug="P", review=False, fix=False)
+    task = ops.add_task("t", plan, slug="T")
+    tm("task", "abandon", task, "--note", "dropped", "-C", str(source))
+    tm("spec", "archive", spec, "-C", str(source))
+    held = archived_events(source)
+    assert held > 0
+
+    tm("export", str(out), "-C", str(source))
+    tm("restore", str(out), "-C", str(fresh))
+
+    assert (out / "archive.db").is_file()
+    listed = runner.invoke(app, ["spec", "list", "--archived", "--json", "-C", str(fresh)])
+    assert [row["id"] for row in json.loads(listed.stdout)] == [spec]
+    assert archived_events(fresh) == held
+    assert not any(spec in f.name for f in out.glob("*.json"))

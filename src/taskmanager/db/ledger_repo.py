@@ -1,7 +1,7 @@
 import json
 import logging
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from datetime import datetime
 from typing import Any
 
@@ -91,23 +91,26 @@ class LedgerRepository:
             events.setdefault(r[4], []).append(_row_to_event(r))
         return events
 
-    def completed_at(self, target_ids: Iterable[str]) -> dict[str, datetime]:
-        """When the ledger last recorded each of `target_ids` moving to COMPLETED."""
+    def completed_at(
+        self, target_ids: Iterable[str], statuses: Collection[str] = ("COMPLETED",)
+    ) -> dict[str, datetime]:
+        """When the ledger last recorded each of `target_ids` moving to one of `statuses`."""
         ids = list(target_ids)
         if not ids:
             return {}
         placeholders = ",".join("?" for _ in ids)
+        moved_to = ",".join("?" for _ in statuses)
         with self.db.get_ledger_connection() as conn:
             rows = conn.execute(
                 f"""
                 SELECT target_id, timestamp FROM ledger_events WHERE id IN (
                     SELECT MAX(id) FROM ledger_events
                     WHERE target_id IN ({placeholders})
-                    AND json_extract(payload_json, '$.to') = 'COMPLETED'
+                    AND json_extract(payload_json, '$.to') IN ({moved_to})
                     GROUP BY target_id
                 )
                 """,
-                ids,
+                [*ids, *statuses],
             ).fetchall()
         return {r[0]: parse_db_datetime(r[1]) for r in rows}
 

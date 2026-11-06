@@ -10,9 +10,8 @@ from taskmanager.engine.snapshot import display_view, stored_status
 
 
 class MarkdownRenderer:
-    def __init__(self, node_repo: NodeRepository, blind_review: bool = False) -> None:
+    def __init__(self, node_repo: NodeRepository) -> None:
         self.node_repo = node_repo
-        self.blind_review = blind_review
 
     def render(self, node_id: str, view: RenderView | str = RenderView.FULL) -> str:
         node = self.node_repo.get_node(node_id)
@@ -77,16 +76,13 @@ class MarkdownRenderer:
 
             out.append(f"# Task Brief: {node.title}")
             out.extend(superseded)
-            blind = self.blind_review and node.status == Status.REVIEWING
             for sec in sections:
-                if blind and sec.section_key == "report":
-                    continue
                 if sec.header:
                     out.append(f"{sec.header}\n\n{sec.content}")
                 else:
                     out.append(sec.content)
 
-            out.extend(self._report(node_id, hide_notes=blind))
+            out.extend(self._report(node_id))
 
             verifications = self.node_repo.get_verifications(node_id)
             if verifications:
@@ -120,7 +116,7 @@ class MarkdownRenderer:
                     out.append(f"{sec.header}\n\n{sec.content}")
                 else:
                     out.append(sec.content)
-            out.extend(self._report(node_id, hide_notes=False))
+            out.extend(self._report(node_id))
             return "\n\n".join(out) + "\n"
 
         raise ValueError(f"Unknown view '{view}'. Supported views: summary, subagent, full")
@@ -143,7 +139,7 @@ class MarkdownRenderer:
             parts.append(self.render_recursive(child_id, view, seen))
         return "\n\n---\n\n".join(parts)
 
-    def _report(self, node_id: str, hide_notes: bool) -> list[str]:
+    def _report(self, node_id: str) -> list[str]:
         out = []
         checks = self.node_repo.get_checks(node_id)
         if checks:
@@ -155,7 +151,7 @@ class MarkdownRenderer:
                     ]
                 )
             )
-        notes = [] if hide_notes else self.node_repo.get_notes(node_id)
+        notes = self.node_repo.get_notes(node_id)
         if notes:
             out.append("\n".join(["### Notes", *(f"- {n.text}" for n in notes)]))
         return out

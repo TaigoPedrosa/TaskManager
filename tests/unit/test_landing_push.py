@@ -4,15 +4,17 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from lifecycle_estate import add, make_estate
+from lifecycle_estate import add, attach_landing, git, make_estate, on_branch, push_main, stored
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import app
+from taskmanager.core.enums import NodeKind
 from taskmanager.core.models import Job
-from taskmanager.core.status import JobKind, JobState, Status
+from taskmanager.core.status import Action, JobKind, JobState, Merge, Outcome, Status
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.engine import git as gitops
 from taskmanager.engine.claims import Claims
+from taskmanager.engine.config import Gate, ProjectConfig, RepoConfig
 from taskmanager.engine.landing import PUSH_ERROR_LINES, PUSH_PAUSE_SECONDS, Landing
 
 UNREACHABLE = "fatal: unable to access 'origin': Could not resolve host: example.test"
@@ -46,7 +48,7 @@ class FakeRemote:
         return "", ran("ls-remote", "origin", ref, code=128, stderr=UNREACHABLE)
 
     def push(
-        self, _worktree: Path, _remote: str | None, target: str
+        self, _worktree: Path, _remote: str | None, target: str, _lease: str | None = None
     ) -> subprocess.CompletedProcess[str]:
         self.pushes.append(target)
         if self.refusals:
@@ -56,7 +58,10 @@ class FakeRemote:
 
 
 def estate(tmp_path: Path) -> tuple[Claims, Landing, list[float]]:
-    claims = make_estate(tmp_path)
+    config = ProjectConfig(
+        repos={"api": RepoConfig(gates={"main": Gate(command="true")}, push=True)}
+    )
+    claims = make_estate(tmp_path, config=config)
     add(claims, "T1", status=Status.MERGING, claimed_from=Status.REVIEWED)
     pauses: list[float] = []
     landing = Landing(
@@ -208,3 +213,133 @@ def test_a_container_branch_that_moved_and_conflicts_parks_with_the_moved_sha_as
     assert stored is not None
     assert stored.result["reason"] == "conflict"
     assert stored.result["base_sha"] == "moved"
+
+
+RELEASE = "release/x"
+
+
+def spec_estate(tmp_path: Path, **repo: object) -> Claims:
+    """Spec S lands on release/x; task T1, reviewed, is the only task under it."""
+    repos = {"api": RepoConfig(gates={"main": Gate(command="true", timeout=60)}, **repo)}
+    claims = make_estate(tmp_path, config=ProjectConfig(repos=repos))
+    add(claims, "S", NodeKind.SPEC)
+    claims.ops.update_node("S", frontmatter_set={"land_on": RELEASE})
+    add(
+        claims,
+        "T1",
+        parent="S",
+        status=Status.REVIEWED,
+        outcome=Outcome.APPROVE,
+        review_cycles=1,
+    )
+    return claims
+
+
+def land_t1(claims: Claims) -> tuple[Job, JobState]:
+    landing = attach_landing(claims)
+    result = claims.start("T1", "merger", "s1")
+    assert result.action == Action.MERGE, result.reason
+    assert result.job is not None
+    state = landing.run(result.job)
+    job = claims.jobs.get(result.job)
+    assert job is not None
+    return job, state
+
+
+def seed_origin_release(api: Path) -> str:
+    """origin holds release/x with one commit and the clone has no such local branch."""
+    on_branch(api, RELEASE, "release.txt", "r\n")
+    git(api, "push", "-q", "origin", f"{RELEASE}:{RELEASE}")
+    git(api, "branch", "-q", "-D", RELEASE)
+    git(api, "fetch", "-q", "origin")
+    return git(api, "rev-parse", f"origin/{RELEASE}")
+
+
+def test_a_container_lands_locally_when_push_is_off(tmp_path: Path) -> None:
+    claims = spec_estate(tmp_path)
+    api = claims.root / "api"
+    on_branch(api, "tm/T1", "feature.py", "x = 1\n")
+
+    assert land_t1(claims)[1] == JobState.SUCCEEDED
+
+    assert git(api, "ls-remote", "origin", f"refs/heads/{RELEASE}") == ""
+    assert git(api, "show", f"refs/heads/{RELEASE}:feature.py") == "x = 1"
+    assert stored(claims, "T1").status == Status.COMPLETED
+
+
+def test_after_land_still_runs_when_push_is_off(tmp_path: Path) -> None:
+    marker = tmp_path / "hook.ran"
+    claims = spec_estate(tmp_path, after_land=f"touch {marker}")
+    add(
+        claims,
+        "P",
+        NodeKind.PLAN,
+        review=True,
+        fix=True,
+        status=Status.REVIEWED,
+        outcome=Outcome.APPROVE,
+        review_cycles=1,
+    )
+    add(claims, "A", parent="P", merge=Merge.PARENT, status=Status.COMPLETED)
+    on_branch(claims.root / "api", "tm/P", "feature.py", "x = 1\n")
+    landing = attach_landing(claims)
+    result = claims.start("P", "merger", "s1")
+    assert result.action == Action.MERGE and result.job is not None, result.reason
+
+    assert landing.run(result.job) == JobState.SUCCEEDED
+
+    assert marker.exists()
+
+
+def test_a_local_top_is_seeded_from_the_remote_branch_it_already_has(tmp_path: Path) -> None:
+    claims = spec_estate(tmp_path)
+    api = claims.root / "api"
+    seeded = seed_origin_release(api)
+    on_branch(api, "tm/T1", "feature.py", "x = 1\n", base=f"origin/{RELEASE}")
+
+    job, state = land_t1(claims)
+
+    assert state == JobState.SUCCEEDED
+    assert job.result["base_sha"] == seeded
+    assert git(api, "rev-parse", f"origin/{RELEASE}") == seeded
+
+
+def test_a_missing_top_is_cut_from_the_fetched_default_branch(tmp_path: Path) -> None:
+    claims = spec_estate(tmp_path)
+    api = claims.root / "api"
+    on_branch(api, "tm/T1", "feature.py", "x = 1\n")
+    newer = push_main(api, "newer.txt", "y\n")
+
+    assert land_t1(claims)[1] == JobState.SUCCEEDED
+
+    git(api, "merge-base", "--is-ancestor", newer, RELEASE)
+
+
+def test_a_local_top_landing_refuses_a_dirty_checked_out_target(tmp_path: Path) -> None:
+    claims = spec_estate(tmp_path)
+    api = claims.root / "api"
+    seed_origin_release(api)
+    git(api, "branch", "-q", "--no-track", RELEASE, f"origin/{RELEASE}")
+    on_branch(api, "tm/T1", "feature.py", "x = 1\n", base=RELEASE)
+    git(api, "checkout", "-q", RELEASE)
+    (api / "README.md").write_text("dirty\n")
+    before = git(api, "rev-parse", f"refs/heads/{RELEASE}")
+
+    job, state = land_t1(claims)
+
+    assert state == JobState.NEEDS_AGENT
+    assert job.result["reason"] == "push_failed"
+    assert git(api, "rev-parse", f"refs/heads/{RELEASE}") == before
+
+
+def test_push_true_pushes_as_before(tmp_path: Path) -> None:
+    claims = spec_estate(tmp_path, push=True)
+    api = claims.root / "api"
+    on_branch(api, "tm/T1", "feature.py", "x = 1\n")
+
+    assert land_t1(claims)[1] == JobState.SUCCEEDED
+
+    git(api, "fetch", "-q", "origin")
+    landed = git(api, "ls-remote", "origin", f"refs/heads/{RELEASE}").split()[0]
+    assert landed == git(api, "rev-parse", f"origin/{RELEASE}")
+    assert git(api, "show", f"origin/{RELEASE}:feature.py") == "x = 1"

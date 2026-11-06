@@ -11,6 +11,7 @@ from taskmanager.core.enums import VerificationType
 from taskmanager.core.models import NodeVerification
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.di.container import create_container
+from taskmanager.engine.config import ConfigStore
 from taskmanager.engine.verification import CODEGRAPH_INSTALL, VerificationEngine
 
 runner = CliRunner()
@@ -96,6 +97,7 @@ def log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def root(tmp_path: Path) -> Path:
     """A tm root whose target repo `app` is a git checkout with a codegraph index."""
     _make_repo(tmp_path / "root" / "app")
+    ConfigStore(tmp_path / "root").set("repos.app.push", "true")
     return tmp_path / "root"
 
 

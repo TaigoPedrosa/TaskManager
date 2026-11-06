@@ -87,9 +87,7 @@ class TaskManagerProvider(Provider):
 
     @provide(scope=Scope.APP)
     def renderer(self, node_repo: NodeRepository) -> MarkdownRenderer:
-        return MarkdownRenderer(
-            node_repo, blind_review=ConfigStore(self.root).resolve("review.blind").value
-        )
+        return MarkdownRenderer(node_repo)
 
     @provide(scope=Scope.APP)
     def importer(self, node_repo: NodeRepository, operations: Operations) -> BulkImporter:

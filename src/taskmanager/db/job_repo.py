@@ -69,6 +69,14 @@ class JobRepository:
             ).fetchall()
         return [_row_to_job(r) for r in rows]
 
+    def succeeded_land_jobs(self, node_id: str, repo: str) -> list[Job]:
+        """The node's landing jobs in `repo` that succeeded, oldest first."""
+        return [
+            j
+            for j in self.for_node(node_id)
+            if j.kind == JobKind.LAND and j.repo == repo and j.state == JobState.SUCCEEDED
+        ]
+
     def list_jobs(
         self, node_id: str | None = None, states: Collection[JobState] | None = None
     ) -> list[Job]:

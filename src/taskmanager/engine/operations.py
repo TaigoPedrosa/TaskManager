@@ -70,7 +70,7 @@ from taskmanager.engine.snapshot import (
     with_tops,
 )
 from taskmanager.engine.stepgraph import Snapshot
-from taskmanager.engine.validation import moved_tops, retargets, validate
+from taskmanager.engine.validation import moved_tops, retargets, reviewed_ancestor, validate
 from taskmanager.engine.verification import (
     VerificationEngine,
     VerificationResult,
@@ -142,14 +142,17 @@ def child_defaults(
     review: bool | None = None,
     fix: bool | None = None,
     merge: Merge | None = None,
+    parentless: bool = False,
 ) -> Node:
     """`child` carrying each review, fix and merge flag its write states, and a default for each
-    one it leaves out. A reviewed parent's one review reads what lands on the parent's branch,
-    so a child under it lands there with no review of its own unless it is sensitive; anywhere
-    else a task reviews and fixes itself and lands on its spec's target, and a container does
-    neither."""
+    one it leaves out. `parent` is the nearest reviewed ancestor: its one review reads what lands
+    on its branch, so a child under it lands there with no review of its own unless it is
+    sensitive; anywhere else a task or a spec reviews and fixes itself and a plan does neither.
+    Every child lands on its parent's branch, so a container's landing is the one commit its
+    target gains; a `parentless` node has no parent branch and lands on its target."""
     if parent is None or not parent.review:
-        own, lands_on = child.kind == NodeKind.TASK, Merge.SPEC
+        own = child.kind in (NodeKind.TASK, NodeKind.SPEC)
+        lands_on = Merge.SPEC if parentless else Merge.PARENT
     else:
         files = declared_files_of(child, list(verifications))
         own, lands_on = is_sensitive(child, files, config), Merge.PARENT
@@ -349,16 +352,18 @@ class Operations:
         return ConfigStore(self._project_root()).branches().default_branch(repo)
 
     def remote(self, repo: str | None) -> str | None:
-        """`repos.<repo>.remote`: every fetch, push and remote-tracking ref reads the remote here.
+        """`repos.<repo>.remote` when `repos.<repo>.push` is on, else None: every push and
+        remote-tracking ref reads the remote here.
         A remote set in the config that `repo` does not have is refused naming the key; the
         default is not checked, and a clone without it fails on its missing ref."""
         root = self._project_root()
-        config = ConfigStore(root).branches().repo(repo)
+        branches = ConfigStore(root).branches()
+        config = branches.repo(repo)
         if "remote" in config.model_fields_set:
             missing = gitops.missing_remote(root / (repo or "."), repo, config.remote)
             if missing is not None:
                 raise OperationError(missing, 409)
-        return config.remote
+        return branches.remote(repo)
 
     def top_ref(self, repo: str | None, branch: str) -> str:
         """Where a top branch is read in `repo`: `<remote>/<branch>`, or the local branch in a
@@ -504,16 +509,33 @@ class Operations:
         if not 1 <= priority <= 100:
             raise OperationError("priority is 1-100", 400)
 
+    def _reviewed_parent(self, parent: Node) -> Node | None:
+        if parent.review:
+            return parent
+        ancestor = reviewed_ancestor(self.node_repo, parent.id)
+        return None if ancestor is None else self.node_repo.get_node(ancestor)
+
     def _new_id(self, explicit: str | None, auto_prefix: str) -> str:
         """The id a new node takes: `explicit`, refused when taken, else the first free
-        `<auto_prefix><n>`. Every add calls this inside its write transaction, so a concurrent
-        add cannot pick the same id and `save_node` cannot upsert over the other's node."""
+        `<auto_prefix><n>`. An id held in archive.db is taken. Every add calls this inside its
+        write transaction, so a concurrent add cannot pick the same id and `save_node` cannot
+        upsert over the other's node."""
+        # Imported here: archive.py raises this module's OperationError.
+        from taskmanager.engine.archive import archived_owner
+
         if explicit is not None:
             if self.node_repo.get_node(explicit) is not None:
                 raise OperationError(f"'{explicit}' already exists", 409)
+            if (owner := archived_owner(self._project_root(), explicit)) is not None:
+                raise OperationError(
+                    f"'{explicit}' is archived: run tm spec unarchive {owner} to bring it back", 409
+                )
             return explicit
         counter = 1
-        while self.node_repo.get_node(f"{auto_prefix}{counter}") is not None:
+        while (
+            self.node_repo.get_node(f"{auto_prefix}{counter}") is not None
+            or archived_owner(self._project_root(), f"{auto_prefix}{counter}") is not None
+        ):
             counter += 1
         return f"{auto_prefix}{counter}"
 
@@ -523,8 +545,8 @@ class Operations:
         slug: str | None = None,
         priority: int = 50,
         order: int = 0,
-        review: bool = False,
-        fix: bool = False,
+        review: bool = True,
+        fix: bool = True,
         land_on: str | None = None,
     ) -> str:
         self._validate_priority(priority)
@@ -597,7 +619,7 @@ class Operations:
                     status=Status.READY,
                     frontmatter=_land_on(land_on),
                 ),
-                parent,
+                self._reviewed_parent(parent),
                 config=self.rules(),
                 review=review,
                 fix=fix,
@@ -668,7 +690,7 @@ class Operations:
                     requires=requires or [],
                     target_repo=repo,
                 ),
-                parent,
+                self._reviewed_parent(parent),
                 config=self.rules(),
                 review=review,
                 fix=fix,
@@ -1047,8 +1069,19 @@ class Operations:
         repo_dir = self._project_root() / (own or ".")
         remote = ConfigStore(self._project_root()).branches().remote(own)
         branch = self.branch_of(node_id)
-        landed = gitops.is_ancestor(repo_dir, branch, gitops.tracking(remote, landing))
+        landed = self._landed_at_top(node_id) or gitops.is_ancestor(
+            repo_dir, branch, gitops.tracking(remote, landing)
+        )
         return branch if gitops.rev_parse(repo_dir, branch) and not landed else None
+
+    def _landed_at_top(self, node_id: str) -> bool:
+        """True when `node_id` and every container its code lands through are on their targets:
+        the top then holds it as a squashed commit, which its own branch is no ancestor of."""
+        while (node := self.node_repo.get_node(node_id)) is not None and node.on_target:
+            if (parent := self.landing_parent(node_id)) is None:
+                return True
+            node_id = parent
+        return False
 
     def _unread(self, node_id: str, repo: str | None, landing: str) -> str | None:
         """Why `node_id` has no ref to read, or None once its landing ref resolves."""

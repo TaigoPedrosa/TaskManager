@@ -120,7 +120,9 @@ def make_estate(
 
 def gated(*repos: str) -> ProjectConfig:
     """A config giving each repository a main gate, so discovery offers the nodes in it."""
-    return ProjectConfig(repos={r: RepoConfig(gates={"main": Gate(command="true")}) for r in repos})
+    return ProjectConfig(
+        repos={r: RepoConfig(push=True, gates={"main": Gate(command="true")}) for r in repos}
+    )
 
 
 def add(

@@ -37,13 +37,18 @@ Classify the work and say which and why in one line:
 - **Bounded**: a change to a flow that already exists in the code.
 - **Architectural**: a new subsystem, or a change to an interface others depend on.
 
-When in doubt, take architectural. Record the scale as the first line of the `design` section (`Scale: bounded` or `Scale: architectural`, with its reason), written with `tm section set` as in step 6. The owner overrules it through the step 8 decision, whose summary leads with the scale, never in the conversation: a scale needs no decision of its own, since the owner sees it there with the design it shaped.
+When in doubt, take architectural. Record the scale as the first line of the `design` section (`Scale: bounded` or `Scale: architectural`, with its reason), written with `tm section set` as in step 6. The owner overrules it through the step 9 decision, whose summary names the scale, never in the conversation: a scale needs no decision of its own, since the owner sees it there with the design it shaped.
 
 ## 3. Explore
 
 Read the code the work touches before asking anything the code can answer. When the `codegraph` CLI is on PATH (`tm doctor` lists it) and a repo has no index (`codegraph status <repo>` prints `Not initialized`), run `codegraph init -y <repo>` first, then ask the index first (`codegraph explore -p <repo> "<what the source asks for>"`, `codegraph query`) and read only the files it points to; without the CLI, search and read the files directly.
 
 Record every answer the code gives, with its `file:line`, under **Code read** in the `design` section. A question the code answers is never raised as a decision.
+
+Also record:
+
+- **Prior issues.** On brownfield work, the defects, debts and complications already in the code the change touches, each with its `file:line`. Anything security-relevant that is already in master is raised as a decision (step 4): fix it here, or split it into its own spec.
+- **Premises checked.** Any premise about production behaviour or data that a choice rests on is checked against real data before it is written down (the project's profile names any read-only database logins). Record what was queried and what it showed. A premise that cannot be checked is listed as an assumption.
 
 ## 4. Ask
 
@@ -69,7 +74,7 @@ Write the whole `design` section from a file, following `references/design-secti
 tm section set <spec-id>:design --file <design-file> --header "## Design"
 ```
 
-It holds the chosen approach, the components and their contracts, the data flow, failure handling, what is out of scope, and how each part will be verified. Bounded work gets a few paragraphs under the approach and verification and a line under each other heading; architectural work fills every heading. Keep the scale line, **Code read** and **Decisions** from the earlier steps. Each run rewrites the section whole, in the present tense.
+It leads with the **Architecture breakdown**, the **Assumptions** and the **Seams and contracts**, then holds the chosen approach, the components and their contracts, the data flow, failure handling, what is out of scope, and the **Test plan**: which seams get an integration test that runs the real producer into the real consumer, which composition roots get a boot test, which flows get end-to-end coverage, and what is deliberately not tested and why. Every value that crosses a service or plan boundary appears under **Seams and contracts** with its owner, its exact shape and its risks from the fixed checklist in `references/design-sections.md`; each shared contract becomes either a first task that the others depend on, or a block copied verbatim into every brief that touches it. Bounded work gets a few paragraphs under the approach and the test plan and a line under each other heading; architectural work fills every heading. Keep the scale line, **Prior issues**, **Premises checked**, **Code read** and **Decisions** from the earlier steps. Each run rewrites the section whole, in the present tense.
 
 ## 7. Self-review
 
@@ -82,7 +87,11 @@ Read the written section back with `tm section get <spec-id>:design` and fix it 
 
 A gap only the owner can close goes back to step 4 as a decision, never a guess.
 
-## 8. Gate
+## 8. Independent check
+
+Dispatch one fresh reviewer on Opus or Fable (name the model on the dispatch). Give it the written `design` section, the spec's `source` and `context`, and the code paths listed under **Code read**; give it neither your reasoning nor the conclusions you reached before writing the section. It looks for seam gaps, unchecked premises, contradictions with the code, and prior issues the design missed, and returns a list of defects, one line each. This is one round: write each finding into the design in place, or raise it as a decision (step 4). Then read the section back once more as in step 7.
+
+## 9. Gate
 
 Raise one decision to approve the design, blocking the spec:
 
@@ -90,4 +99,4 @@ Raise one decision to approve the design, blocking the spec:
 tm decision add "Approve the design of <spec-id>?" --context-file <summary> --option "approve|Approve|the plan is written against this design" --option "change|Change it|name what to change; the design is revised and raised again" --recommend approve --blocks <spec-id>
 ```
 
-The summary names the scale, the chosen approach and each component in one line. Report the decision id, and stop. No plan is written before this decision is answered approve; once it is, `/taskmanager:plan` writes the plan as `tm guide plan` describes. An answer of change goes back to step 6 with what it names, and the gate is raised again. A change of scale goes back to step 3 under the scale it names, so architectural work gets its approaches decision.
+The summary leads with the assumptions, the architecture breakdown and the prior issues, then names the scale, the chosen approach and each component in one line: the owner approves those, not only the approach. Report the decision id, and stop. No plan is written before this decision is answered approve; once it is, `/taskmanager:plan` writes the plan as `tm guide plan` describes. An answer of change goes back to step 6 with what it names, and the gate is raised again. A change of scale goes back to step 3 under the scale it names, so architectural work gets its approaches decision.

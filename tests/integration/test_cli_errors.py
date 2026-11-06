@@ -37,7 +37,7 @@ def root(tmp_path: Path) -> Path:
 
 
 PLAN_YAML = """\
-spec: {id: S1, title: Spec}
+spec: {id: S1, title: Spec, review: false, fix: false}
 plans:
   - id: S1-P1
     title: Plan
@@ -209,7 +209,8 @@ def test_a_config_naming_another_secret_refuses_index_in_one_line_and_leaves_fts
     assert (
         tm(root, "config", "set", "embeddings.api_key_env", "AWS_SECRET_ACCESS_KEY").exit_code == 0
     )
-    assert tm(root, "spec", "add", "Keys", "--slug", "S1").exit_code == 0
+    spec_add = tm(root, "spec", "add", "Keys", "--slug", "S1", "--no-review", "--no-fix")
+    assert spec_add.exit_code == 0
 
     index = tm(root, "index")
     fts = tm(root, "search", "--mode", "fts", "keys")
@@ -304,7 +305,8 @@ def test_web_run_is_gone_and_web_alone_serves(root: Path) -> None:
 
 
 def test_search_highlights_read_as_bold_not_as_a_link(root: Path) -> None:
-    assert tm(root, "spec", "add", "Signing keys", "--slug", "S1").exit_code == 0
+    spec_add = tm(root, "spec", "add", "Signing keys", "--slug", "S1", "--no-review", "--no-fix")
+    assert spec_add.exit_code == 0
     assert tm(root, "section", "set", "S1:notes", "rotate (a, b) now").exit_code == 0
 
     res = tm(root, "search", "--mode", "fts", "rotate")

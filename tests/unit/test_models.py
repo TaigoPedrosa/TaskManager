@@ -284,3 +284,11 @@ def test_every_readable_cycle_shape_is_accepted() -> None:
         outcome=Outcome.MERGE_FAILED,
         fix_for=Outcome.MERGE_FAILED,
     )
+
+
+def test_a_spec_reviews_and_fixes_by_default_and_a_plan_does_not() -> None:
+    spec = Node(id="S", kind=NodeKind.SPEC, title="t")
+    plan = Node(id="P", kind=NodeKind.PLAN, title="t")
+
+    assert (spec.review, spec.fix) == (True, True)
+    assert (plan.review, plan.fix) == (False, False)

@@ -49,7 +49,7 @@ def landing_on_red_main(
     tmp_path: Path, gate: Gate, on_main: str, on_tip: str
 ) -> tuple[Claims, Landing, str, JobState]:
     claims = make_estate(
-        tmp_path, config=ProjectConfig(repos={"api": RepoConfig(gates={"main": gate})})
+        tmp_path, config=ProjectConfig(repos={"api": RepoConfig(push=True, gates={"main": gate})})
     )
     landing = attach_landing(claims)
     api = claims.root / "api"
@@ -90,7 +90,7 @@ def test_land_with_a_pattern_and_a_new_failure_is_an_own_defect_naming_it(tmp_pa
 def test_land_after_a_pattern_is_set_reruns_a_baseline_cached_without_it(tmp_path: Path) -> None:
     gate = printing_gate(tmp_path, FAILING)
     claims = make_estate(
-        tmp_path, config=ProjectConfig(repos={"api": RepoConfig(gates={"main": gate})})
+        tmp_path, config=ProjectConfig(repos={"api": RepoConfig(push=True, gates={"main": gate})})
     )
     landing = attach_landing(claims)
     api = claims.root / "api"

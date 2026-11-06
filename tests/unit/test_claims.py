@@ -209,7 +209,7 @@ def test_a_claim_on_an_existing_parent_branch_never_reads_the_remote_from_git(
     """A child landing on its parent's branch never fetches, so a remote the clone lacks
     leaves its claim, and the worktree it cuts, standing."""
     config = ProjectConfig(
-        repos={"api": RepoConfig(remote="gone", gates={"main": Gate(command="true")})}
+        repos={"api": RepoConfig(push=True, remote="gone", gates={"main": Gate(command="true")})}
     )
     claims = make_estate(tmp_path, config=config)
     api = claims.root / "api"
@@ -1528,54 +1528,25 @@ def test_two_counts_racing_below_the_cap_fail_the_node_that_reaches_it(
     assert (node.status, node.step_failures) == (Status.FAILED, claims.caps.step_failures)
 
 
-def test_a_complete_is_refused_while_a_deletion_s_latest_check_is_green(tmp_path: Path) -> None:
+def test_complete_closes_a_step_whose_diff_adds_guards_with_no_checks(tmp_path: Path) -> None:
     claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1")
-    claims.start("T1", "implementer", "s1")
-    claims.add_check("T1", "a.py:guard_null", "test_null_id")
-    claims.add_check("T1", "a.py:guard_empty", None)
-    claims.add_check("T1", "a.py:escape", None)
+    worktree = claims.start("T1", "implementer", "s1").worktree
+    assert worktree is not None
+    commit(Path(worktree), "src/a.py", "def f(x):\n    if x:\n        return 1\n", "f")
 
-    with pytest.raises(OperationError, match="a.py:guard_empty, a.py:escape") as refused:
-        claims.complete("T1")
-    assert refused.value.status_code == 409
-
-    claims.add_check("T1", " a.py:guard_empty ", "test_empty_id")
-    with pytest.raises(OperationError, match="passing: a.py:escape. Add"):
-        claims.complete("T1")
-    claims.add_check("T1", "a.py:escape", "test_quote")
     assert claims.complete("T1") == Status.IMPLEMENTED
-    assert [(c.number, c.deleted, c.result, c.test) for c in claims.nodes.get_checks("T1")] == [
-        (1, "a.py:guard_null", CheckResult.RED, "test_null_id"),
-        (2, "a.py:guard_empty", CheckResult.GREEN, None),
-        (3, "a.py:escape", CheckResult.GREEN, None),
-        (4, "a.py:guard_empty", CheckResult.RED, "test_empty_id"),
-        (5, "a.py:escape", CheckResult.RED, "test_quote"),
-    ]
+    assert claims.nodes.get_checks("T1") == []
 
 
-def test_a_green_check_after_a_red_one_of_the_same_deletion_refuses_the_complete(
-    tmp_path: Path,
-) -> None:
+def test_complete_closes_with_a_green_check_recorded(tmp_path: Path) -> None:
     claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1")
     claims.start("T1", "implementer", "s1")
-    claims.add_check("T1", "a.py:guard", "test_guard")
     claims.add_check("T1", "a.py:guard", None)
 
-    with pytest.raises(OperationError, match="passing: a.py:guard"):
-        claims.complete("T1")
-
-
-def test_a_fix_complete_is_refused_while_its_deletion_stands_green(tmp_path: Path) -> None:
-    claims = make_estate(tmp_path, config=gated("api"))
-    _rejected_and_fixing(claims)
-    claims.answer_finding("T1", 1, FindingState.DISPUTED, "the id is never null")
-    claims.answer_finding("T1", 2, FindingState.DISPUTED, "the unit is in the type")
-    claims.add_check("T1", "a.py:scope", None)
-
-    with pytest.raises(OperationError, match="passing: a.py:scope"):
-        claims.complete("T1")
+    assert claims.complete("T1") == Status.IMPLEMENTED
+    assert [c.result for c in claims.nodes.get_checks("T1")] == [CheckResult.GREEN]
 
 
 def test_a_check_and_a_note_are_recorded_only_under_the_implement_or_fix_lease(

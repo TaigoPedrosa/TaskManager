@@ -416,3 +416,69 @@ def test_a_replace_waits_for_a_set_that_read_before_it(
 
     monkeypatch.undo()
     assert store.document() == {"worktree_dir": "wt"}
+
+
+def test_archive_hours_default_and_old_key_refused(tmp_path: Path) -> None:
+    assert ProjectConfig().archive.automatically_after_hours == 72
+    path = tmp_path / ".taskmanager" / "config.yaml"
+    path.parent.mkdir()
+    path.write_text(yaml.safe_dump({"web": {"archive_after_days": 3}}), encoding="utf-8")
+
+    with pytest.raises(ConfigError) as refused:
+        ConfigStore(tmp_path).project()
+
+    assert str(refused.value) == (
+        "web.archive_after_days is replaced by archive.automatically_after_hours (hours): "
+        "run tm config set archive.automatically_after_hours <hours>, "
+        "or tm config unset web.archive_after_days"
+    )
+
+
+def test_a_stored_review_blind_is_ignored_and_setting_it_is_refused_with_its_reason(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / ".taskmanager" / "config.yaml"
+    path.parent.mkdir()
+    path.write_text(yaml.safe_dump({"review": {"blind": False}, "name": "n"}), encoding="utf-8")
+
+    assert ConfigStore(tmp_path).project().name == "n"
+    with pytest.raises(ConfigError, match="reads code only"):
+        ConfigStore(tmp_path).set("review.blind", "false")
+
+
+def test_unset_clears_each_removed_key_from_the_stored_file(tmp_path: Path) -> None:
+    path = tmp_path / ".taskmanager" / "config.yaml"
+    path.parent.mkdir()
+    path.write_text(
+        yaml.safe_dump({"review": {"blind": False}, "web": {"archive_after_days": 3}, "name": "n"}),
+        encoding="utf-8",
+    )
+
+    ConfigStore(tmp_path).unset("web.archive_after_days")
+    ConfigStore(tmp_path).unset("review.blind")
+
+    assert yaml.safe_load(path.read_text(encoding="utf-8")) == {"name": "n"}
+    assert ConfigStore(tmp_path).project().name == "n"
+
+
+def test_setting_the_hours_replaces_a_stored_old_key(tmp_path: Path) -> None:
+    path = tmp_path / ".taskmanager" / "config.yaml"
+    path.parent.mkdir()
+    path.write_text(yaml.safe_dump({"web": {"archive_after_days": 3}}), encoding="utf-8")
+
+    ConfigStore(tmp_path).set("archive.automatically_after_hours", "5")
+
+    assert yaml.safe_load(path.read_text(encoding="utf-8")) == {
+        "archive": {"automatically_after_hours": 5}
+    }
+    assert ConfigStore(tmp_path).project().archive.automatically_after_hours == 5
+
+
+def test_push_defaults_off_and_hides_the_remote_from_landing() -> None:
+    assert RepoConfig().push is False
+    off = ProjectConfig(repos={"r": RepoConfig(remote="origin")})
+    on = ProjectConfig(repos={"r": RepoConfig(remote="origin", push=True)})
+
+    assert off.remote("r") is None
+    assert off.fetch_remote("r") == "origin"
+    assert on.remote("r") == "origin"

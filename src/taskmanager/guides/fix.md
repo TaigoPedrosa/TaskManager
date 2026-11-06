@@ -31,11 +31,10 @@ One commit per finding, or one commit naming them all — either way on the node
 - A finding you can close, close, then record it: `tm finding close <node-id> <n> --agent <name> --token <token> --commit <sha>`, naming the commit on the branch that fixed it.
 - A finding you judge wrong is answered with the evidence that refutes it, `tm finding dispute <node-id> <n> --agent <name> --token <token> --evidence "<what was read>"`, and the code is left alone. It is never silently skipped. Evidence is what was read; a derived claim refutes nothing until it is read. A claim that something is absent (no caller, no other reader, not reachable) names the search that would have found it: the command, the path and pattern, and the range it covered.
 - A finding you close starts with its test: write it first, run it on the unfixed branch and watch it fail for the reason the finding names, then fix and watch it pass. A test first seen green proves nothing about the finding.
-- A finding you close lands with a test for each branch the fix adds (each stage a fold adds, each guard, each argument threaded through a call), and each test fails when its branch alone is reverted: revert each branch on its own, watch the suite go red, then restore it. Reverting the whole fix at once proves nothing about its parts.
-- Before closing, delete each guard, bound, filter and escape in your diff one at a time (one branch, one statement; null, empty and whitespace as separate inputs) and confirm a test turns red. A deletion that stays green gets a test before the step closes, and a filter a mock stands in for (a repository query, an HTTP route) gets a test through the real component. Record each deletion as it runs: `tm check add <node-id> --agent <name> --token <token> --deleted <file>:<line> --red <test>`, once per `&&` or `||` operand, or `--green` in place of `--red` when every test still passed. A green one is answered by the test you then add and a `--red` record of the same `--deleted`: `tm task complete` refuses while a deletion's latest record is green, and while a guard the diff adds or changes outside test files (a condition and each of its operands, an early return, a `catch`, a field assignment, a list element) has no record naming its `<file>:<line>`. A line tm reads as a guard that is none takes `--waive <why>` in place of `--red`, and the why is recorded with it.
+- A finding you close lands with a test for each branch the fix adds (each stage a fold adds, each guard, each argument threaded through a call).
 - Anything else you notice goes in a note, not in the diff. Widening the scope is what spends the next round.
 - A landing failure whose red lies in files this node does not declare belongs to the node that caused it: find or file that node, then `tm task release <node-id> --agent <name> --token <token> --blocked --depends <that-node>`, and say so in a note.
-- A finding whose fix needs a call only the owner can make: `tm task release <node-id> --agent <name> --token <token> --blocked --decision "<question>" --option "a|Do X|why" --recommend a`, and leave the finding open: the fix claimed after the owner answers closes it. A finding that turns on "the brief doesn't say" or "which of these is correct" is exactly that call, raised at once rather than guessed at.
+- A finding whose fix needs a call only the owner can make: `tm task release <node-id> --agent <name> --token <token> --blocked --decision "<question>" --option "a|Do X|why" --recommend a`, and leave the finding open: the fix claimed after the owner answers closes it. A finding that turns on "which of these is correct", or on something the code cannot answer, is exactly that call, raised at once rather than guessed at.
 - A test of behaviour runs the code it tests: it calls the function, drives the page's scripts, or runs the command, and asserts what comes out. Searching the source for a call or a string is not a test of behaviour, even when it fails once the line is deleted.
 - A test that checks a generated artifact against its generator fails, never skips, when the generator is missing: a skipped check reads as a pass in every gate that runs it.
 
@@ -69,7 +68,7 @@ A command that waits inside itself (a build queued on a slot, a long test run) r
 
 ## 4. Report
 
-Every finding is answered by `tm finding close` or `tm finding dispute`, and every deletion by `tm check add`. What neither carries is one line each:
+Every finding is answered by `tm finding close` or `tm finding dispute`. What neither carries is one line each:
 
 ```
 tm note add <node-id> --agent <name> --token <token> "<one line>"
@@ -91,5 +90,5 @@ On every path that finished the round, including one where a finding was dispute
 - Never edit outside your worktree, and never merge or push anything.
 - Never force-push, rebase or squash the node's branch.
 - Never change a test so a finding stops firing; close the finding the test names.
-- Never close a finding with a branch that nothing fails on when that branch alone is reverted.
+- Never close a finding with a branch that no test of yours covers.
 - Never end your turn with the step open: close it, or release it naming why. Never end it while a command you started in the background still runs: wait for it, read its result, then close.

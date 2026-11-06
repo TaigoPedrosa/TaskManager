@@ -4,6 +4,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import EXPORT_FORMAT, app
+from taskmanager.core.status import Merge
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.node_repo import NodeRepository
 
@@ -97,3 +98,35 @@ def test_a_restore_takes_back_a_plan_its_export_holds_under_no_spec(tmp_path: Pa
     assert result.exit_code == 0, result.stderr
     assert _repo(root).get_node("S-P") is not None
     assert _repo(root).get_parent_ids("S-P") == []
+
+
+def test_an_imported_spec_without_flags_is_reviewed(tmp_path: Path) -> None:
+    root = _estate(tmp_path)
+    assert _import(root, {"spec": {"id": "S", "title": "Spec"}, "plans": [PLAN]}) == (0, "")
+
+    repo = _repo(root)
+    spec, plan, task = (repo.get_node(i) for i in ("S", "S-P", "S-P-a"))
+    assert spec is not None and plan is not None and task is not None
+    assert (spec.review, spec.fix) == (True, True)
+    assert (plan.review, task.review) == (False, False)
+    assert task.merge == Merge.PARENT
+
+
+def test_a_task_imported_under_an_unreviewed_plan_takes_the_review_defaults_task_add_gives_it(
+    tmp_path: Path,
+) -> None:
+    root = _estate(tmp_path)
+    for args in (["spec", "add", "Spec"], ["plan", "add", "Plan", "--spec", "S1"]):
+        assert runner.invoke(app, [*args, "-C", str(root)]).exit_code == 0
+    added = runner.invoke(app, ["task", "add", "added", "--plan", "S1-P1", "-C", str(root)])
+    assert added.exit_code == 0, added.output
+
+    code, stderr = _import(
+        root, {"plans": [{"id": "S1-P1", "tasks": [{"id": "S1-P1-imp", "title": "imported"}]}]}
+    )
+
+    assert code == 0, stderr
+    repo = _repo(root)
+    by_add, by_import = repo.get_node("S1-P1-T1"), repo.get_node("S1-P1-imp")
+    assert by_add is not None and by_import is not None
+    assert (by_import.review, by_import.fix) == (by_add.review, by_add.fix)

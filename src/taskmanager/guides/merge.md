@@ -8,11 +8,12 @@ tm lands every node itself, as a job, one repository at a time in the node's lan
 
 1. **Already landed?** A branch that is already on its target, or adds nothing to it, skips straight to the verification.
 2. **Landing conditions.** An unmet `landing` condition ends the job; the node waits on it.
-3. **Build.** A fresh merge worktree cut from the target (`<remote>/<target>` when it is the branch the node's spec lands on, or the container branch), and `git merge --no-ff` of the node's branch with the subject `merge(<node-id>): land <branch> on <target>`. A spec's target that its remote does not have yet is cut from the repository's `default_branch`.
+3. **Build.** A fresh merge worktree cut from the target (the local branch when it is the branch the node's spec lands on and the repository does not push, `<remote>/<target>` when it does, or the container branch), and `git merge --no-ff` of the node's branch with the subject `merge(<node-id>): land <branch> on <target>`. A spec's target that does not exist yet was seeded at the first claim from the remote's branch, else from the repository's `default_branch`.
 4. **Gate.** On a container branch: the node's own verifications, then the repository's `parent` gate when one is configured. On the spec's target: the repository's `main` gate, whatever the target is named, and when it is red, the same gate on the untouched target, cached per target commit, to attribute the red.
-5. **Push.** To the spec's target: re-read the remote, merge it in again and re-gate if it moved, push `HEAD:<target>`, never force; a target its remote does not have yet is created by this push. In a repository with no remote, the push moves the local target branch. To a container branch: a compare-and-swap of the local ref.
-6. **Verify.** The node's verifications at the target; a red here is the node's own defect. A `test_command` check runs for at most `verify_timeout` seconds, 600 unless set, and one that runs out stops the job for an agent instead, here or at the gate.
-7. **Complete.** The merge worktree is removed and the node is `COMPLETED`, or `LANDED` when it is a plan or spec with review on: its one review reads what landed.
+5. **Squash.** A plan or spec lands as one commit: tm commits the gated merge's tree on the target's old head, with the spec's `commit` frontmatter as its subject (a string, or one per repository), else `<spec-id>: <title>`, and `<plan-id>: <plan title>` for a plan, and asserts the tree is the merge's before it moves the target. A conflict you resolved in the merge therefore needs nothing more. The container's own `tm/<node-id>` branch keeps the granular history, and a container with a child landed on it names that branch as `backup` in `tm task get --json`, the web detail and a `backup:` line of the `:merge` note: once a fix retires it to `tm/<node-id>@<n>`, the first retired name, which holds the first landing's history. The landing writes `squash: <repo> <sha>` to the `:merge` note once the target moved; a review, a reset and a restore read the latest such line per repository. A task's landing is not squashed.
+6. **Move the target.** To the spec's target in a repository that pushes (`repos.<repo>.push`): re-read the remote, merge it in again and re-gate if it moved, push `HEAD:<target>`, never force; a target its remote does not have yet is created by this push. In a repository that does not push, the same step is a push into the repository itself, which moves the local target branch and, for one checked out in a clean worktree, its files. To a container branch: a compare-and-swap of the local ref.
+7. **Verify.** The node's verifications at the target; a red here is the node's own defect. A `test_command` check runs for at most `verify_timeout` seconds, 600 unless set, and one that runs out stops the job for an agent instead, here or at the gate.
+8. **Complete.** The merge worktree is removed and the node is `COMPLETED`, or `LANDED` when it is a plan or spec with review on: its one review reads what landed.
 
 A sync merges a target into a container branch the same way, under that branch's lock. Either job stops at `needs_agent` only for something a rule cannot settle, and that is the one moment an agent is dispatched:
 
@@ -20,7 +21,7 @@ A sync merges a target into a container branch the same way, under that branch's
 |:--|:--|
 | `conflict` | resolve the merge in the job's worktree and commit it, then resume |
 | `unattributed` | the tip and the untouched target are both red and neither a report nor the gate's `failing_pattern` names the failures: read both outputs; if the tip adds a failure, record an own defect, and if it adds none, resume with `--push` |
-| `push_failed` | three failed tries. A push to the spec's target records each in `result.push_errors` with its command, exit code and stderr: an `ls-remote` with no answer is the network or the remote, a refused `push` a permission, a protection rule or a hook. A container branch, moved by a landing or a sync, records none: it moved under each of three compare-and-swaps, so other landings or syncs onto it kept moving it. Report it, resume only once the cause is gone, and never force |
+| `push_failed` | three failed tries. A move of the spec's target records each in `result.push_errors` with its command, exit code and stderr: an `ls-remote` with no answer is the network or the remote, a refused `push` a permission, a protection rule or a hook. In a repository that does not push, a refused move is a target checked out with uncommitted changes: report it, and resume once the owner has committed or stashed them. A container branch, moved by a landing or a sync, records none: it moved under each of three compare-and-swaps, so other landings or syncs onto it kept moving it. Report it, resume only once the cause is gone, and never force |
 | `no gate` | the repository has no `main` gate, which every landing on a spec's target needs: report it; the owner sets it with `tm config set repos.<repo>.gates.main.command "<command>"` |
 | `no tests` | the test gate exited 0 but ran no tests: its test report is missing or holds 0 tests, or its `tests_ran` pattern never matched the output or captured 0. `result.detail` names the report or the pattern, and the count. Report it; the owner fixes the gate, then resume |
 | `verify timeout` | a `test_command` check ran past `verify_timeout` seconds. Its clock starts with the command, so a wait for a shared runner's slot inside it counts too, and nothing says the code is wrong. `result.report` names the check. Resume once the runner is free; the owner raises it with `tm config set verify_timeout <seconds>`, and a check that times out again is reported |
@@ -28,6 +29,8 @@ A sync merges a target into a container branch the same way, under that branch's
 | `branch_locked` | another landing or sync held the container branch's lock for 120 seconds. `tm job list` shows the holder; resume once it has ended |
 | `no branch` | the node's branch does not exist in the repository, so there is nothing to land. Report it: a resume starts over and stops here again until the branch is back |
 | `error` | a step raised or the job's process would not launch. `result.error` holds the cause and the job's log the traceback; a resume starts over, so fix the cause first |
+
+A spec's fix landing folds into the spec's one commit when `push` is off and nothing else holds the range: every commit above the first landing's `base_sha` is this spec's own, none is on `<remote>/<target>`, and no branch but the spec's own, its `@<n>` set-asides and `backup/` branches contains one. Before it replaces the target tm keeps its head as `backup/<spec-id>` (`backup/<spec-id>-r<n>` when the name is taken), commits the fold on the first base, asserts the tree is unchanged and moves the target by compare-and-swap, so a target that moved fails the move. When any condition fails, tm skips the fold (deleting the backup branch it set aside if it still points at the head it was cut at, else naming it in the note), lands the fix as its own squash and writes `<repo>: fold skipped, <reason>` to the node's `:merge`; a skip is not a stop and needs no agent.
 
 A gate says how many tests it ran in one of two ways. It writes a test report at the glob its report key names, which tm counts; or it declares `tests_ran`, a regular expression whose one group captures the count from the command's output:
 
@@ -38,7 +41,7 @@ tm config set repos.<repo>.gates.main.tests_ran "<a pattern whose one group capt
 
 A gate that declares neither is judged by its exit code alone.
 
-After a plan's or spec's push to the spec's target, tm runs the repository's `after_land` command in the merge worktree, when one is set, with `{target}`, `{branch}`, `{node}` and `{repo}` filled in. Its exit and output go to the node's `:merge`; the push stands whatever it exits, and a task's landing never runs it. tm calls no git provider itself, so opening a pull or merge request is a hook such as:
+After a plan's or spec's move of the spec's target, push or no push, tm runs the repository's `after_land` command in the merge worktree, when one is set, with `{target}`, `{branch}`, `{node}` and `{repo}` filled in. Its exit and output go to the node's `:merge`; the move stands whatever it exits, and a task's landing never runs it. tm calls no git provider itself, so opening a pull or merge request is a hook such as:
 
 ```
 tm config set repos.<repo>.after_land "gh pr create --base main --head {target} --fill"
@@ -58,7 +61,7 @@ The claim prints the lease's `token`; pass it, with your name, to `tm job resume
 
 ## 2. Work in the job's worktree
 
-It is tm's own merge worktree, holding the merge in progress. Resolve there, commit there with an explicit pathspec, and push nothing: tm pushes when it resumes. Never rebase, never force, and never merge in the project's own checkout or on its local copy of the target.
+It is tm's own merge worktree, holding the merge in progress. Resolve there, commit there with an explicit pathspec, and push nothing: tm moves the target when it resumes. Never rebase, never force, and never merge in the project's own checkout or on its local copy of the target.
 
 - A generated file (a built stylesheet, a lockfile, a schema dump) is regenerated, never edited or hand-merged: a branch that changes any of its inputs rebuilds it before closing, and a conflict on it is resolved by rebuilding it on the merged tree.
 
@@ -94,7 +97,7 @@ The job, where it stopped, what you changed and in which commit, which resume yo
 
 ## Never
 
-- Never push, force-push, rebase or reset anything; tm pushes.
+- Never push, force-push, rebase or reset anything; tm moves the target.
 - Never merge into, commit on, or push the project checkout's local copy of a spec's target branch.
 - Never set a node `COMPLETED` or resume with `--push` on a red you have not attributed.
 - Never review or fix the node's own code while resolving its landing: that is an own defect, recorded with `--own-defect`.

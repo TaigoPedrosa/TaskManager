@@ -233,7 +233,7 @@ def test_a_gate_command_keeps_every_brace_that_names_no_placeholder() -> None:
 
 
 def landing_estate(tmp_path: Path, gate_config: Gate = TRUE) -> tuple[Claims, Landing]:
-    repos = {"api": RepoConfig(gates={"main": gate_config})}
+    repos = {"api": RepoConfig(push=True, gates={"main": gate_config})}
     claims = make_estate(tmp_path, config=ProjectConfig(repos=repos))
     return claims, attach_landing(claims)
 
@@ -290,7 +290,7 @@ def test_a_landing_with_no_main_gate_names_the_command_that_sets_one(tmp_path: P
     implemented(claims)
     merge = claims.start("T1", "merger", "s1")
     assert merge.job is not None, merge.reason
-    claims.config.repos["api"] = RepoConfig()
+    claims.config.repos["api"] = RepoConfig(push=True)
 
     job_id, state = merge.job, landing.run(merge.job)
 
@@ -309,7 +309,7 @@ def test_a_landing_with_no_main_gate_names_the_command_that_sets_one(tmp_path: P
 def test_a_claim_in_a_repository_with_no_origin_branch_is_refused_naming_it(
     tmp_path: Path, setup: tuple[str, ...] | None, branch: str
 ) -> None:
-    repos = {"api": RepoConfig(default_branch=branch, gates={"main": TRUE})}
+    repos = {"api": RepoConfig(push=True, default_branch=branch, gates={"main": TRUE})}
     claims = make_estate(tmp_path, config=ProjectConfig(repos=repos))
     add(claims, "T1")
     api = claims.root / "api"

@@ -53,7 +53,7 @@ def estate(root: Path) -> None:
     git(work, "push", "origin", "HEAD:main")
     git(work, "fetch", "origin")
     assert tm(root, "init").exit_code == 0
-    tm(root, "spec", "add", "S", "--slug", "S1")
+    tm(root, "spec", "add", "S", "--slug", "S1", "--no-review", "--no-fix")
     tm(root, "plan", "add", "P", "--spec", "S1", "--slug", "P1")
     tm(root, "task", "add", "a", "--plan", "S1-P1", "--slug", "a")
     tm(root, "task", "add", "b", "--plan", "S1-P1", "--slug", "b", "--depends-on", "S1-P1-a")
@@ -88,6 +88,7 @@ def test_start_claims_implement_then_complete_and_a_review_that_approves(tmp_pat
         "base",
         "bases",
         "remotes",
+        "squashes",
         "worktree",
         "worktrees",
         "token",
@@ -96,8 +97,8 @@ def test_start_claims_implement_then_complete_and_a_review_that_approves(tmp_pat
         "implement",
         ["core"],
         "tm/S1-P1-a",
-        "main",
-        {"core": "main"},
+        "tm/S1-P1",
+        {"core": "tm/S1-P1"},
     )
     assert step["worktree"] and Path(step["worktree"]).is_dir()
     assert tm(tmp_path, "task", "heartbeat", "S1-P1-a").exit_code == 0
@@ -689,7 +690,7 @@ def test_next_leaves_out_a_task_whose_claim_condition_last_failed(tmp_path: Path
     assert "S1-P1-a" not in [t["task_id"] for t in ranked]
 
 
-def test_an_implement_records_checks_and_notes_and_completes_once_none_stands_green(
+def test_an_implement_records_checks_and_notes_and_completes_with_a_green_check_standing(
     tmp_path: Path,
 ) -> None:
     estate(tmp_path)
@@ -709,8 +710,6 @@ def test_an_implement_records_checks_and_notes_and_completes_once_none_stands_gr
     note = tm(tmp_path, "note", "add", "S1-P1-a", "verify row 1 red: the gate needs docker")
     assert (note.exit_code, note.stdout.strip()) == (0, "1")
 
-    refused = tm(tmp_path, "task", "complete", "S1-P1-a")
-    assert refused.exit_code == 1 and "left every test passing: core/a.py:guard" in refused.output
     red = tm(tmp_path, "check", "add", "S1-P1-a", *deleted, "--red", "test_guard")
     assert (red.exit_code, red.stdout.strip()) == (0, "2")
     waived = tm(tmp_path, "check", "add", "S1-P1-a", "--deleted", "core/b.py:3", "--waive", "a log")

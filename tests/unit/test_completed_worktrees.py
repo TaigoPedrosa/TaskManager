@@ -20,7 +20,7 @@ Completion = tuple[str, Path, Callable[[], object]]
 def estate(tmp_path: Path) -> Claims:
     gate = Gate(command="true", timeout=60)
     return make_estate(
-        tmp_path, config=ProjectConfig(repos={"api": RepoConfig(gates={"main": gate})})
+        tmp_path, config=ProjectConfig(repos={"api": RepoConfig(push=True, gates={"main": gate})})
     )
 
 

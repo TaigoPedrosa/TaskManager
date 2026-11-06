@@ -40,7 +40,7 @@ WRAPPER = '#!/bin/sh\nprintf "%s\\n" "$*" >> "{log}"\nexec "{git}" "$@"\n'
 
 def estate(tmp_path: Path, remote: str | None) -> Claims:
     """An estate holding T1, a task with review off, in `api` with `remote` configured."""
-    repos = {"api": RepoConfig(remote=remote, gates={"main": TRUE})}
+    repos = {"api": RepoConfig(push=True, remote=remote, gates={"main": TRUE})}
     claims = make_estate(tmp_path, config=ProjectConfig(repos=repos))
     add(claims, "T1", review=False)
     return claims
@@ -198,10 +198,10 @@ def test_the_remote_key_takes_null_for_a_repo_with_no_remote(tmp_path: Path) -> 
     store = ConfigStore(tmp_path)
 
     store.set("repos.api.remote", "null")
-    assert store.branches().remote("api") is None
+    assert store.branches().fetch_remote("api") is None
     store.set("repos.api.remote", "upstream")
-    assert store.branches().remote("api") == "upstream"
-    assert ProjectConfig().remote("api") == "origin"
+    assert store.branches().fetch_remote("api") == "upstream"
+    assert ProjectConfig().fetch_remote("api") == "origin"
 
 
 def test_a_remote_name_git_refuses_is_refused(tmp_path: Path) -> None:
@@ -213,7 +213,7 @@ def test_a_remote_name_git_refuses_is_refused(tmp_path: Path) -> None:
 def test_a_literal_origin_main_check_on_main_is_refused_only_where_origin_is_not_the_remote(
     remote: str | None, refused: bool
 ) -> None:
-    config = ProjectConfig(repos={"api": RepoConfig(remote=remote)})
+    config = ProjectConfig(repos={"api": RepoConfig(push=True, remote=remote)})
     node = SnapNode("T", NodeKind.TASK, repo="api", literal_origin_main=True)
     after = Snapshot({"T": node}, [], config=config)
     found = [r.rule for r in validate(Snapshot({}, []), after, {"T"}, NoBranches())]

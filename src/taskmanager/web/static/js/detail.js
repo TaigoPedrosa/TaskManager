@@ -52,6 +52,7 @@ function factsStripHtml(node, lease, surface) {
   if (lands) facts.push(factHtml('Lands', factText(lands)));
   facts.push(factHtml('Review', factText(node.review ? 'on' : 'off')));
   facts.push(factHtml('Fix', factText(node.fix ? 'on' : 'off')));
+  if (node.backup) facts.push(factHtml('Backup', factText(node.backup)));
   if (node.outcome) facts.push(factHtml('Outcome', factText(node.outcome)));
   if (node.verdict) facts.push(factHtml('Verdict', factText(node.verdict)));
   FACT_COUNTERS.forEach(([label, key]) => {

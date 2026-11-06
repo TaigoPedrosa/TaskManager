@@ -63,26 +63,15 @@ def brief(root: Path, status: Status, claimed_from: Status) -> str:
     return tm("render", TASK, "--view", "subagent", "-C", str(root))
 
 
-def test_review_brief_by_default_leaves_out_the_report(root: Path) -> None:
-    out = brief(root, Status.REVIEWING, Status.IMPLEMENTED)
+@pytest.mark.parametrize(
+    ("status", "claimed_from"),
+    [(Status.REVIEWING, Status.IMPLEMENTED), (Status.FIXING, Status.REVIEWED)],
+)
+def test_the_brief_keeps_the_report_checks_and_notes(
+    root: Path, status: Status, claimed_from: Status
+) -> None:
+    out = brief(root, status, claimed_from)
     assert "the acceptance line" in out
-    assert "the implementer's report" not in out
-    assert "the implementer's note" not in out
-    assert CHECKS in out
-
-
-def test_review_brief_with_blind_off_keeps_the_report(root: Path) -> None:
-    tm("config", "set", "review.blind", "false", "-C", str(root))
-    out = brief(root, Status.REVIEWING, Status.IMPLEMENTED)
-    assert "the acceptance line" in out
-    assert "the implementer's report" in out
-    assert CHECKS + NOTES in out
-
-
-@pytest.mark.parametrize("blind", ["true", "false"])
-def test_fix_brief_keeps_the_report_whatever_review_blind(root: Path, blind: str) -> None:
-    tm("config", "set", "review.blind", blind, "-C", str(root))
-    out = brief(root, Status.FIXING, Status.REVIEWED)
     assert "the implementer's report" in out
     assert CHECKS + NOTES in out
 
@@ -92,9 +81,3 @@ def test_full_view_of_a_review_keeps_the_report(root: Path) -> None:
     out = tm("render", TASK, "--view", "full", "-C", str(root))
     assert "the implementer's report" in out
     assert CHECKS + NOTES in out
-
-
-def test_config_set_review_blind_refuses_a_non_boolean(root: Path) -> None:
-    res = runner.invoke(app, ["config", "set", "review.blind", "sometimes", "-C", str(root)])
-    assert res.exit_code != 0
-    assert "review.blind" in res.output

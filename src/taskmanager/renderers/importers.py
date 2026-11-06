@@ -40,6 +40,7 @@ from taskmanager.engine.operations import (
     validated_write,
 )
 from taskmanager.engine.snapshot import roll_up_ancestors
+from taskmanager.engine.validation import reviewed_ancestor
 from taskmanager.engine.verification import VerificationEngine, codegraph_flags
 
 REFUSED = "import refused, nothing written: "
@@ -173,7 +174,12 @@ class BulkImporter:
         imported = Imported()
         config = self.ops.rules()
 
-        def take(raw: dict[str, Any], kind: NodeKind, parent: Node | None) -> Node:
+        def take(
+            raw: dict[str, Any],
+            kind: NodeKind,
+            parent: Node | None,
+            reviewed: Node | None = None,
+        ) -> Node:
             stated = (
                 [self._parse_verification(raw["id"], v) for v in raw["verifications"]]
                 if "verifications" in raw
@@ -185,7 +191,18 @@ class BulkImporter:
                     check_slug(str(raw["id"]))
                 except OperationError as exc:
                     raise ValueError(f"{REFUSED}id {exc}") from None
-            node = self._parse_node(raw, kind, config, existing, parent, stated or ())
+                # Imported here: archive.py reaches this module through the container.
+                from taskmanager.engine.archive import archived_owner
+
+                root = self.node_repo.db.taskmanager_dir.parent
+                if (owner := archived_owner(root, str(raw["id"]))) is not None:
+                    raise ValueError(
+                        f"{REFUSED}'{raw['id']}' is archived: run tm spec unarchive {owner} "
+                        "to bring it back"
+                    )
+            node = self._parse_node(
+                raw, kind, config, existing, reviewed, stated or (), parentless=parent is None
+            )
             nodes.append(node)
             (imported.created if existing is None else imported.updated).append(node.id)
             sections.extend(self._parse_sections(node.id, raw.get("sections")))
@@ -230,16 +247,26 @@ class BulkImporter:
                 )
             return node
 
+        def reviewed_of(*chain: Node | None) -> Node | None:
+            """The nearest reviewed node of the document's own ancestors (nearest first, flags as
+            the document states them), then the stored ones above the highest of them, as
+            `tm task add` reads them."""
+            held = [n for n in chain if n is not None]
+            if (found := next((n for n in held if n.review), None)) or not held:
+                return found
+            above = reviewed_ancestor(self.node_repo, held[-1].id)
+            return self.node_repo.get_node(above) if above else None
+
         spec_data = data.get("spec")
         spec = take(spec_data, NodeKind.SPEC, None) if spec_data else None
         for p_idx, plan_data in enumerate(data.get("plans", []), start=1):
             plan_data.setdefault("ordinal", p_idx)
-            plan = take(plan_data, NodeKind.PLAN, spec)
+            plan = take(plan_data, NodeKind.PLAN, spec, reviewed_of(spec))
             for t_idx, task_data in enumerate(plan_data.get("tasks", []), start=1):
                 task_data.setdefault("ordinal", t_idx)
-                take(task_data, NodeKind.TASK, plan)
+                take(task_data, NodeKind.TASK, plan, reviewed_of(plan, spec))
         for task_data in data.get("tasks", []):
-            take(task_data, NodeKind.TASK, spec)
+            take(task_data, NodeKind.TASK, spec, reviewed_of(spec))
         for dec_data in data.get("decisions", []):
             take(dec_data, NodeKind.DECISION, None)
         # An export carries a plan stored under no spec as it is, so a restore takes it back.
@@ -405,6 +432,8 @@ class BulkImporter:
         existing: Node | None = None,
         parent: Node | None = None,
         verifications: Sequence[NodeVerification] = (),
+        *,
+        parentless: bool = False,
     ) -> Node:
         """A key the document omits keeps the value the node already has, so importing a document
         again never resets the progress recorded since; a key it states wins. A new node's flags
@@ -480,6 +509,7 @@ class BulkImporter:
             review=flag("review"),
             fix=flag("fix"),
             merge=merge,
+            parentless=parentless,
         )
         if node.fix and not node.review:
             raise ValueError(

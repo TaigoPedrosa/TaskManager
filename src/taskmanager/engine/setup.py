@@ -103,7 +103,7 @@ def _has_default_branch(store: ConfigStore, repo: str) -> bool:
 def _default_branches(root: Path, store: ConfigStore, repos: list[str], ask: Ask) -> None:
     for repo in repos:
         if not _has_default_branch(store, repo):
-            found = remote_head(root / repo, store.branches().remote(repo))
+            found = remote_head(root / repo, store.branches().fetch_remote(repo))
             branch = ask(f"default branch ({repo})", found)
             store.set(f"repos.{repo}.default_branch", branch)
 
@@ -128,7 +128,7 @@ def _gates(root: Path, store: ConfigStore, repos: list[str], flags: Flags, ask: 
         # Without a prompt the default-branch step never runs, so a gate's repo takes its
         # remote's HEAD.
         if not _has_default_branch(store, repo):
-            head = remote_head(root / repo, store.branches().remote(repo))
+            head = remote_head(root / repo, store.branches().fetch_remote(repo))
             store.set(f"repos.{repo}.default_branch", head)
         store.set(f"repos.{repo}.gates.main.command", command)
     if ask is None:

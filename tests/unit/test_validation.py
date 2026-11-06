@@ -5,6 +5,7 @@ import pytest
 from taskmanager.core.enums import NodeKind
 from taskmanager.core.status import DecisionStatus, Merge, Status
 from taskmanager.engine.chains import TOP
+from taskmanager.engine.config import ProjectConfig, RepoConfig
 from taskmanager.engine.stepgraph import SnapNode, Snapshot
 from taskmanager.engine.validation import Refusal, validate
 
@@ -170,8 +171,13 @@ def test_a_merge_change_that_keeps_the_target_is_not_a_retarget() -> None:
 def test_a_literal_origin_main_verification_is_refused_unless_the_node_lands_on_main(
     merge: Merge, top: str, refused: bool
 ) -> None:
-    node = SnapNode("T", TASK, parent="P", merge=merge, literal_origin_main=True, top=top)
-    assert rules(EMPTY, with_node(EMPTY, node), {"T"}) == ([("T", 5)] if refused else [])
+    node = SnapNode(
+        "T", TASK, parent="P", merge=merge, literal_origin_main=True, top=top, repo="api"
+    )
+    after = replace(
+        with_node(EMPTY, node), config=ProjectConfig(repos={"api": RepoConfig(push=True)})
+    )
+    assert rules(EMPTY, after, {"T"}) == ([("T", 5)] if refused else [])
 
 
 def test_a_literal_origin_main_refusal_names_the_target_the_node_lands_on() -> None:
@@ -368,3 +374,11 @@ def test_review_off_is_refused_only_on_a_node_at_landed_or_in_a_step_claimed_fro
         SnapNode("P", PLAN, status=status, claimed_from=claimed_from, review=review, fix=review)
     )
     assert rules(before, after, {"P"}) == ([("P", 11)] if refused else [])
+
+
+def test_rule_10_reads_the_nearest_reviewed_ancestor() -> None:
+    before = snap(SnapNode("S", SPEC), SnapNode("P", PLAN, "S", PARENT, review=False, fix=False))
+    task = SnapNode("T", TASK, "P", Merge.SPEC, review=False, fix=False)
+    after = with_node(before, task)
+
+    assert rules(before, after, {"T"}) == [("T", 10)]

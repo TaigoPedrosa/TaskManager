@@ -15,7 +15,9 @@ TARGET = "feature/notify"
 
 
 def estate(tmp_path: Path, remote: str | None = "origin") -> Claims:
-    claims = make_estate(tmp_path, config=ProjectConfig(repos={"api": RepoConfig(remote=remote)}))
+    claims = make_estate(
+        tmp_path, config=ProjectConfig(repos={"api": RepoConfig(push=True, remote=remote)})
+    )
     add(claims, "S", NodeKind.SPEC)
     add(claims, "T1", parent="S")
     claims.ops.update_node("S", frontmatter_set={"land_on": TARGET})
@@ -145,7 +147,7 @@ def test_a_landing_ref_that_does_not_resolve_is_named_with_the_own_branch_tried(
     tmp_path: Path,
 ) -> None:
     claims = make_estate(
-        tmp_path, config=ProjectConfig(repos={"api": RepoConfig(default_branch="trunk")})
+        tmp_path, config=ProjectConfig(repos={"api": RepoConfig(push=True, default_branch="trunk")})
     )
     add(claims, "T1")
     claims.nodes.add_verification(
@@ -227,7 +229,7 @@ def test_a_plan_with_no_repository_yet_still_runs_its_commands(tmp_path: Path) -
             "Test command passed",
             (
                 "Test command failed with exit code 1; no ref to read P at in .: neither tm/P nor "
-                "origin/main resolves, so name one with --ref"
+                "main resolves, so name one with --ref"
             ),
         ],
     )

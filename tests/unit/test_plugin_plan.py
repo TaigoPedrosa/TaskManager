@@ -181,3 +181,8 @@ def test_plan_skill_says_a_document_without_spec_has_its_plans_refused() -> None
     text = SKILL.read_text(encoding="utf-8")
     assert "has its plans refused unless they already sit under a spec" in text
     assert "no spec at all" not in text
+
+
+def test_the_plan_writes_a_commit_subject_and_a_tests_plan() -> None:
+    text = SKILL.read_text(encoding="utf-8")
+    assert "`commit:`" in text and "-TESTS" in text

@@ -41,7 +41,7 @@ def estate(
     cut: bool = True,
 ) -> Claims:
     """S > T, T landing where S lands, its branch cut from `default` when `cut`."""
-    config = ProjectConfig(repos={"api": RepoConfig(default_branch=default)})
+    config = ProjectConfig(repos={"api": RepoConfig(push=True, default_branch=default)})
     claims = make_estate(tmp_path, config=config)
     add(claims, "S", NodeKind.SPEC)
     if land_on is not None:
@@ -55,7 +55,7 @@ def estate(
 
 
 MOVES = [
-    ("main", ("set", "repos", "{api: {default_branch: develop}}"), "develop"),
+    ("main", ("set", "repos", "{api: {default_branch: develop, push: true}}"), "develop"),
     ("develop", ("set", "repos", "{api: {gates: {main: {command: make}}}}"), "main"),
     ("develop", ("unset", "repos"), "main"),
 ]
@@ -109,7 +109,9 @@ def test_moving_the_default_branch_is_accepted_when_nothing_cut_from_it_still_la
 ) -> None:
     claims = estate(tmp_path, land_on=land_on, status=status, cut=cut)
 
-    code, output = tm(claims, "config", "set", "repos", "{api: {default_branch: develop}}")
+    code, output = tm(
+        claims, "config", "set", "repos", "{api: {default_branch: develop, push: true}}"
+    )
 
     assert code == 0, output
     assert default_branch(claims) == "develop"
@@ -118,7 +120,8 @@ def test_moving_the_default_branch_is_accepted_when_nothing_cut_from_it_still_la
 def multi_repo_estate(tmp_path: Path) -> Claims:
     """S > P > (A in api, W in web), both landing on P; P's branch cut in web alone, where
     `develop` and `main` have forked."""
-    claims = make_estate(tmp_path, repos=("api", "web"), config=ProjectConfig())
+    pushing = ProjectConfig(repos={r: RepoConfig(push=True) for r in ("api", "web")})
+    claims = make_estate(tmp_path, repos=("api", "web"), config=pushing)
     add(claims, "S", NodeKind.SPEC)
     add(claims, "P", NodeKind.PLAN, parent="S")
     add(claims, "A", parent="P", merge=Merge.PARENT)
@@ -134,7 +137,13 @@ def test_moving_a_repository_s_default_branch_refuses_a_container_cut_there(
 ) -> None:
     claims = multi_repo_estate(tmp_path)
 
-    code, output = tm(claims, "config", "set", "repos", "{web: {default_branch: develop}}")
+    code, output = tm(
+        claims,
+        "config",
+        "set",
+        "repos",
+        "{api: {push: true}, web: {default_branch: develop, push: true}}",
+    )
 
     assert code == 1
     assert "P: its branch exists and was not cut from develop" in output
@@ -146,7 +155,13 @@ def test_moving_a_repository_s_default_branch_ignores_a_branch_cut_in_another_on
 ) -> None:
     claims = multi_repo_estate(tmp_path)
 
-    code, output = tm(claims, "config", "set", "repos", "{api: {default_branch: develop}}")
+    code, output = tm(
+        claims,
+        "config",
+        "set",
+        "repos",
+        "{api: {default_branch: develop, push: true}, web: {push: true}}",
+    )
 
     assert code == 0, output
     assert default_branch(claims, "api") == "develop"
@@ -163,7 +178,9 @@ def test_moving_a_repository_s_default_branch_ignores_a_node_with_no_repository(
     git(root, *who, "commit", "-q", "--allow-empty", "-m", "init")
     branch_at(root, "tm/N", "main")
 
-    code, output = tm(claims, "config", "set", "repos", "{api: {default_branch: develop}}")
+    code, output = tm(
+        claims, "config", "set", "repos", "{api: {default_branch: develop, push: true}}"
+    )
 
     assert code == 0, output
     assert default_branch(claims) == "develop"

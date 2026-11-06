@@ -57,7 +57,7 @@ tm config get repos.<repo>.remote                # the remote's name, `origin` u
 git -C <root>/<repo> remote get-url <remote>     # skipped when the remote is null
 ```
 
-`.` names the root itself when it is the repository. A repo with no remote (`null`) is valid: tm lands in its local branch. A repo that fails a check it owes is reported to the user and left out: a repo missing from the list is never reviewed or landed. A repo with no `repos.<repo>.gates.main` (`tm config get repos.<repo>.gates.main`) stops every landing: set it with the user as `tm guide overview` describes. Record the validated list as the spec's landing order and in `context`:
+`.` names the root itself when it is the repository. A repo with no remote (`null`) is valid: tm lands in its local branch. A repo with a remote still lands locally unless `repos.<repo>.push` is on; tm never pushes otherwise. A repo that fails a check it owes is reported to the user and left out: a repo missing from the list is never reviewed or landed. A repo with no `repos.<repo>.gates.main` (`tm config get repos.<repo>.gates.main`) stops every landing: set it with the user as `tm guide overview` describes. Record the validated list as the spec's landing order and in `context`:
 
 ```
 tm task update <spec-id> --land-order <repo>,<repo>

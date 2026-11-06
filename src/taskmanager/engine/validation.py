@@ -11,6 +11,7 @@ from typing import Final, Protocol
 from taskmanager.core.enums import NodeKind, VerificationType
 from taskmanager.core.lifecycle import REOPENABLE
 from taskmanager.core.status import EXITS, IN_STEP, ON_TARGET, Merge, Status
+from taskmanager.db.node_repo import NodeRepository
 from taskmanager.engine.chains import TOP, landing_target, target
 from taskmanager.engine.config import ProjectConfig
 from taskmanager.engine.git import tracking, valid_branch
@@ -136,18 +137,41 @@ def _origin_main(n: SnapNode, config: ProjectConfig) -> list[Refusal]:
     ]
 
 
+def reviewed_ancestor(source: Snapshot | NodeRepository, node_id: str) -> str | None:
+    """The nearest ancestor of `node_id` with review on, walking up through unreviewed
+    containers; None once the chain runs out or repeats a node."""
+    seen = {node_id}
+    current = node_id
+    while True:
+        if isinstance(source, Snapshot):
+            parent = source.nodes[current].parent if current in source.nodes else None
+        else:
+            parents = source.get_parent_ids(current)
+            parent = parents[0] if parents else None
+        if parent is None or parent in seen:
+            return None
+        seen.add(parent)
+        if isinstance(source, Snapshot):
+            reviewed = parent in source.nodes and source.nodes[parent].review
+        else:
+            node = source.get_node(parent)
+            reviewed = node is not None and node.review
+        if reviewed:
+            return parent
+        current = parent
+
+
 def _unreviewed_on_target(before: Snapshot, after: Snapshot, n: SnapNode) -> list[Refusal]:
-    parent = after.nodes.get(n.parent) if n.parent is not None else None
-    if parent is None or not parent.review or n.review or n.merge != Merge.SPEC:
+    reviewed = reviewed_ancestor(after, n.id)
+    if reviewed is None or n.review or n.merge != Merge.SPEC:
         return []
+    parent = after.nodes[reviewed]
     # Only the write that makes this shape is refused: a node already in it, left as it is,
     # never blocks a write around it.
     old = before.nodes.get(n.id)
-    old_parent = before.nodes.get(parent.id)
     if (
         old is not None
-        and old_parent is not None
-        and old_parent.review
+        and reviewed_ancestor(before, n.id) == reviewed
         and (old.parent, old.review, old.merge) == (n.parent, n.review, n.merge)
     ):
         return []

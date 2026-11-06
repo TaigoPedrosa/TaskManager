@@ -39,7 +39,9 @@ Orchestrate the queue with the `Workflow` tool running the plugin's `tm-wave` wo
 
 Each tick, `tm wave discover` chooses a batch of claimable nodes, disjoint by their declared files, and each node's next step is claimed once: `tm task start` names it and the model it runs on, the workflow dispatches that agent, and the agent closes its step with its guide's verb. One run claims and runs that one step and stops — implement, review, fix and merge each wait for their own tick, and a node needing more goes back through `tm wave discover` next time. tm counts fix rounds, landing failures and failed steps into `FAILED` and opens a decision for the owner, so the workflow keeps no counter and no hold of its own. The one hold a dispatcher keeps is `holdMerge`, which discovery reads as `tm wave discover --hold-merge <node-id>`: nodes whose landing is irreversible, deploys, or is the owner's call wait at their merge step, and a reviewed plan or spec, which lands before its review, waits with that review still owed.
 
-A reviewed plan or spec lands first and reads `LANDED` until its one review, on its landed target, runs. A fix lands without a re-review unless the node is sensitive, so never re-dispatch a review of a fix that is not sensitive.
+A spec reviews once by default, and a plan only when its document opts in; a task under a reviewed ancestor is reviewed only when sensitive. A reviewed plan or spec lands first, as one squashed commit per repository, and reads `LANDED` until its one review, on that commit, runs. A landing stays local unless `repos.<repo>.push` is on. A fix lands without a re-review unless the node is sensitive, so never re-dispatch a review of a fix that is not sensitive.
+
+A review reads code only. The workflow sends a review claimed from `LANDED` on a spec or plan with several repositories to one reviewer per repository, in parallel, each in a detached worktree of its repository at the target, recording findings under the claim's agent and token without closing, then to one seam reviewer that sees every one of those repositories and the recorded findings and closes the step; with one repository, one reviewer closes. Every reviewer runs the `code-review` skill at `high` over its range, and no review prompt carries the brief, the notes, the spec, the design or the plan. A repository the claim does not name is never checked out for a reviewer.
 
 Because a run takes one step per node, the dispatching session loops itself to carry a node the rest of the way: arm `/loop` with a dynamic interval unless the user says otherwise. Each wakeup is one tick — read `tm run list`, then one `tm wave discover` sized to the tick's budget, split into staggered waves of at most `wave_size` nodes; launch each wave as its own `tm-wave` run by `scriptPath` with `maxBatch` set to `wave_size` and every other wave's chosen ids in `exclude`, so no two runs draw the same node. Record what each wave landed, failed or blocked, and schedule the next wakeup, shorter while nodes are mid-step and longer when nothing is claimable. Never run two ticks in one wakeup off the same unclaimed pool. When `tm wave discover` offers nothing and no step is in flight, report and stop. `tm guide dispatch` prints the effective `tick_min`, `tick_max`, `wave_size` and `tick_budget` as the typical target; a dispatch message's own numbers override them for that session.
 
@@ -51,13 +53,12 @@ If the harness demands a permission for that mechanism which the session cannot 
 
 ## The shape of it
 
-`tm wave discover --session <id> --slots <n> --max-strong <n>` offers what is claimable; `acceptable_models` and `review_models` route each step, and tm prints the model id with every claim, which the workflow runs the agent on; the brief is `tm render <task-id> --view subagent`, with nothing added to it. `tm run list --yaml` is what is in flight. `tm task defer`, `tm task supersede` and `tm task reopen` are how a plan changes shape.
+`tm wave discover --session <id> --slots <n> --max-strong <n>` offers what is claimable; `acceptable_models` and `review_models` route each step, and tm prints the model id with every claim, which the workflow runs the agent on; the brief an implementer or fixer reads is `tm render <task-id> --view subagent`, with nothing added to it, and a reviewer never reads it. `tm run list --yaml` is what is in flight. `tm task defer`, `tm task supersede` and `tm task reopen` are how a plan changes shape.
 
-## Before a review is claimed
+## Before a step is claimed
 
-- Before claiming a review, compare the step's `tm check list` with the guards in its diff. A missing row sends the step back to its implementer; a reviewer is never the first one to run a deletion.
-- A ruling the owner or the dispatcher makes on a task becomes an acceptance line and a verification row in that task before its next step is claimed. A ruling that exists only in `:context` does not bind a review.
-- When an implementer reports a contradiction in the brief, fix the brief before the review is claimed, and tell the blind reviewer which brief lines changed. A review never rejects for a contradiction the brief still holds.
+- A ruling the owner or the dispatcher makes on a task becomes an acceptance line and a verification row in that task before its next step is claimed. A ruling that exists only in `:context` binds nothing a landing checks.
+- When an implementer reports a contradiction in the brief, fix the brief before the next step is claimed. A reviewer never sees the brief, so a contradiction it holds reaches review only as the code it produced.
 
 ## Shared outputs and contract decisions
 

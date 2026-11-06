@@ -6,6 +6,7 @@ import pytest
 
 from taskmanager.core.enums import VerificationType
 from taskmanager.core.models import NodeVerification
+from taskmanager.engine.config import ConfigStore
 from taskmanager.engine.verification import (
     RETIRED_VERIFICATIONS,
     VerificationEngine,
@@ -137,6 +138,7 @@ def git_repo(tmp_path: Path) -> Path:
     _git(repo, "remote", "add", "origin", str(origin))
     _commit(repo, "committed.py", "def committed_symbol():\n    pass\n")
     _git(repo, "push", "-q", "-u", "origin", "main")
+    ConfigStore(tmp_path).set("repos.myrepo.push", "true")
     return repo
 
 

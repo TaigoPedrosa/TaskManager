@@ -4,6 +4,7 @@ timer in `app.py` and directly by tests."""
 
 import asyncio
 import json
+import logging
 import sqlite3
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -15,7 +16,8 @@ from typing import Any, Protocol
 from fastapi import WebSocketDisconnect
 from pydantic import BaseModel, Field, ValidationError
 
-from taskmanager.core.models import Job, Lease
+from taskmanager.core.enums import NodeKind
+from taskmanager.core.models import Job, Lease, Node
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.graph_reader import GraphData
 from taskmanager.db.job_repo import _COLUMNS as _JOB_COLUMNS
@@ -23,14 +25,20 @@ from taskmanager.db.job_repo import JobRepository, _row_to_job
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.utils import parse_db_datetime
-from taskmanager.engine.archive import archived_specs
+from taskmanager.engine.archive import (
+    ArchiveSchedule,
+    archive_due,
+    archive_path,
+    archive_schedule,
+    archived_repo,
+)
 from taskmanager.engine.config import ConfigStore
 from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder
+from taskmanager.web.archived import Stores, archive_stores, archived_rows, bodies_with_archive
 from taskmanager.web.bodies import (
     BodyRepos,
     _condition_result,
     body_items,
-    build_bodies,
     bulk_steps,
     lease_dict,
     refresh_relations,
@@ -95,6 +103,12 @@ def _runtime_parts(
             ],
         }
     return parts
+
+
+_logger = logging.getLogger(__name__)
+
+
+ARCHIVE_RETRY = timedelta(minutes=1)
 
 
 def _next_deadline(
@@ -187,9 +201,17 @@ class LiveHub:
         # state's change started may read the ledger before the completion lands in it.
         self._ledger_conn = sqlite3.connect(str(node_repo.db.ledger_db), check_same_thread=False)
         self._ledger = LedgerRepository(node_repo.db)
-        self._config = ConfigStore(node_repo.db.taskmanager_dir.parent)
+        self._root = node_repo.db.taskmanager_dir.parent
+        self._config = ConfigStore(self._root)
         self._last_versions: tuple[int, ...] | None = None
         self._deadline: datetime | None = None
+        # ponytail: a spec due but blocked is tried again once a minute rather than on every
+        # rebuild; reading its blockers' clearing from the change itself would make it immediate.
+        self._archive_retry: datetime | None = None
+        # The archive's rows are rebuilt only when archive.db changes.
+        self._archive_conn: sqlite3.Connection | None = None
+        self._cold_version: int | None = None
+        self._cold_rows: dict[str, dict[str, Any]] = {}
         # Guards a rebuild's diff step against a subscribe answered mid-cycle: both touch a
         # session's `sent_*` fields, and a subscribe must always start from what was last
         # actually sent.
@@ -209,6 +231,22 @@ class LiveHub:
         self.decisions_open: int = 0
         self._raw_edges: list[tuple[str, str, str]] = []
         self._bodies: dict[str, dict[str, Any]] = {}
+
+    def _body_repos(self) -> BodyRepos:
+        return BodyRepos(
+            node_repo=self._node_repo,
+            job_repo=self._job_repo,
+            cache=self._cache,
+            condition_ttl=self._condition_ttl(),
+            assets_dir=self._assets_dir,
+        )
+
+    @staticmethod
+    def _archive_failed(spec_id: str, exc: Exception) -> None:
+        _logger.warning("spec %s was not archived: %s", spec_id, type(exc).__name__)
+
+    def _cold(self) -> Stores:
+        return archive_stores(self._root, self._cache, self._condition_ttl(), self._assets_dir)
 
     @property
     def statuses(self) -> list[dict[str, Any]]:
@@ -255,14 +293,7 @@ class LiveHub:
         if not wanted:
             return
         view = DisplayView(self._snapshots, self._cache, self._condition_ttl())
-        repos = BodyRepos(
-            node_repo=self._node_repo,
-            job_repo=self._job_repo,
-            cache=self._cache,
-            condition_ttl=self._condition_ttl(),
-            assets_dir=self._assets_dir,
-        )
-        self._bodies.update(build_bodies(view, wanted, repos=repos))
+        self._bodies.update(bodies_with_archive(view, self._body_repos(), wanted, self._cold))
 
     def _process_frame(self, session: Session, text: str) -> dict[str, Any]:
         try:
@@ -473,17 +504,44 @@ class LiveHub:
             sessions = list(self.sessions.values())
         return [(session, self._update_items(session)) for session in sessions]
 
+    def _archive_version(self) -> int:
+        """Moves when another connection commits to archive.db, as the other databases' versions
+        do; opening the file reads leave it unchanged."""
+        if self._archive_conn is None:
+            archived_repo(self._root)
+            self._archive_conn = sqlite3.connect(
+                str(archive_path(self._root)), check_same_thread=False
+            )
+        return int(self._archive_conn.execute("PRAGMA data_version").fetchone()[0])
+
+    def _hot_view(self) -> DisplayView:
+        return DisplayView(self._snapshots, self._cache, self._condition_ttl())
+
+    def _schedule(self, view: DisplayView, now: datetime) -> ArchiveSchedule:
+        specs: list[Node] = [
+            node for node in view.snapshot.graph_data().nodes.values() if node.kind == NodeKind.SPEC
+        ]
+        hours = self._config.project().archive.automatically_after_hours
+        return archive_schedule(specs, self._ledger, now, hours)
+
     def _rebuild(self) -> None:
-        view = DisplayView(self._snapshots, self._cache, self._condition_ttl())
-        data = view.snapshot.graph_data()
         now = self._clock()
-        archive = archived_specs(
-            view.snapshot,
-            self._ledger,
-            now,
-            self._config.project().web.archive_after_days,
-        )
-        new_rows = build_rows(view, archive.nodes)
+        view = self._hot_view()
+        schedule = self._schedule(view, now)
+        if schedule.due and (self._archive_retry is None or now >= self._archive_retry):
+            archive_due(self._root, now, self._archive_failed)
+            view = self._hot_view()
+            schedule = self._schedule(view, now)
+            self._archive_retry = now + ARCHIVE_RETRY if schedule.due else None
+        data = view.snapshot.graph_data()
+        next_boundary = schedule.next_boundary
+        if schedule.due and self._archive_retry is not None:
+            next_boundary = min(filter(None, (next_boundary, self._archive_retry)))
+        version = self._archive_version()
+        if version != self._cold_version:
+            self._cold_rows = archived_rows(self._cold()[0])
+            self._cold_version = version
+        new_rows = build_rows(view) | self._cold_rows
         raw_edges = [(source, target, "depends_on") for source, target in view.snapshot.edges]
 
         with self._sessions_lock:
@@ -495,16 +553,15 @@ class LiveHub:
             if node_id not in self._bodies
             or self.rows.get(node_id, {}).get("rev") != new_rows.get(node_id, {}).get("rev")
         ]
-        repos = BodyRepos(
-            node_repo=self._node_repo,
-            job_repo=self._job_repo,
-            cache=self._cache,
-            condition_ttl=self._condition_ttl(),
-            assets_dir=self._assets_dir,
-        )
+        repos = self._body_repos()
         if changed_ids:
-            self._bodies.update(build_bodies(view, changed_ids, repos=repos))
-        stale = {i: self._bodies[i] for i in watched if i not in changed_ids and i in self._bodies}
+            self._bodies.update(bodies_with_archive(view, repos, changed_ids, self._cold))
+        # An archived body never moves, so only the hot ones are refreshed.
+        stale = {
+            i: self._bodies[i]
+            for i in watched
+            if i not in changed_ids and i in self._bodies and i in data.nodes
+        }
         if stale:
             relations = refresh_relations(view, data, stale)
             for node_id, parts in _runtime_parts(repos, data, list(stale)).items():
@@ -525,5 +582,5 @@ class LiveHub:
         self.decisions_open = decisions_open(view)
         self._raw_edges = raw_edges
         self._deadline = _next_deadline(
-            data.leases, self._cache_conn, self._condition_ttl(), archive.next_boundary, now
+            data.leases, self._cache_conn, self._condition_ttl(), next_boundary, now
         )

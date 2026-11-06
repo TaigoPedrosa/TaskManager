@@ -97,8 +97,9 @@ def test_the_example_imports_the_documented_flags(tmp_path: Path) -> None:
         doc = _yaml("task", "get", node_id, "--yaml", "-C", str(root))
         return doc["review"], doc["fix"], doc["merge"]
 
-    assert flags("NOTIFY-EMAIL") == (True, True, "spec")
-    # The plan's one review of its landed branch covers every task under it.
+    assert flags("NOTIFY") == (True, True, "spec")
+    # The spec's one review of its landing covers every plan and task under it.
+    assert flags("NOTIFY-EMAIL") == (False, False, "parent")
     assert flags("NOTIFY-EMAIL-SENDER") == (False, False, "parent")
     assert flags("NOTIFY-EMAIL-TEMPLATES") == (False, False, "parent")
     assert flags("NOTIFY-EMAIL-API") == (False, False, "parent")
@@ -107,7 +108,7 @@ def test_the_example_imports_the_documented_flags(tmp_path: Path) -> None:
 def test_every_example_node_lands_on_the_spec_s_land_on(tmp_path: Path) -> None:
     land_on = yaml.safe_load(_example_document())["spec"]["frontmatter"]["land_on"]
     guide = files("taskmanager").joinpath("guides/plan.md").read_text(encoding="utf-8")
-    assert f"the plan lands on the spec's `land_on`, `{land_on}`," in guide
+    assert f"the spec lands on its `land_on`, `{land_on}`, as one commit" in guide
     root = _imported_root(tmp_path)
 
     lands_on = {

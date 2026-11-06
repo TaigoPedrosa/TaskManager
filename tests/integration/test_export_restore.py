@@ -8,16 +8,14 @@ import pytest
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import EXPORT_FORMAT, EXPORT_FORMATS_MERGE_MAIN, app
+from taskmanager.core.enums import NodeKind
 from taskmanager.core.status import ConditionStage, Merge
 from taskmanager.db.connection import DatabaseManager
-from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
-from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.di.container import create_container
-from taskmanager.engine.archive import archived_specs
+from taskmanager.engine.archive import archive_schedule
 from taskmanager.engine.operations import MERGE_REFUSAL, Operations
-from taskmanager.engine.snapshot import SnapshotBuilder
 from taskmanager.renderers.importers import BulkImporter
 
 runner = CliRunner()
@@ -27,8 +25,8 @@ CHECK = "curl -fsS https://staging.example/health"
 def seeded(root: Path) -> None:
     assert runner.invoke(app, ["init", "-C", str(root)]).exit_code == 0
     ops = create_container(root).get(Operations)
-    spec = ops.add_spec("S", slug="S1")
-    plan = ops.add_plan("P", spec, slug="P1", review=True, fix=True)
+    spec = ops.add_spec("S", slug="S1", review=False, fix=False)
+    plan = ops.add_plan("P", spec, slug="P1", review=True, fix=True, merge=Merge.SPEC)
     a = ops.add_task("a", plan, slug="a", merge=Merge.PARENT, requires=["figma"])
     # b depends on a, which only reaches its target once the plan lands; b must land through the
     # plan too, or that dependency and b's own containment close a cycle.
@@ -200,11 +198,11 @@ def completed_spec_export(directory: Path, version: int, completed_at: str | Non
     (directory / "_spec-OLD.json").write_text(json.dumps({"spec": spec}))
 
 
-def archived_in(root: Path, days: int = 3) -> frozenset[str]:
+def archived_in(root: Path, hours: int = 72) -> frozenset[str]:
     db = DatabaseManager(root / ".taskmanager")
     nodes = NodeRepository(db)
-    snapshot = SnapshotBuilder(nodes, RuntimeRepository(db), JobRepository(db)).build()
-    return archived_specs(snapshot, LedgerRepository(db), datetime.now(tz=UTC), days).specs
+    specs = nodes.list_nodes(kind=NodeKind.SPEC)
+    return frozenset(archive_schedule(specs, LedgerRepository(db), datetime.now(tz=UTC), hours).due)
 
 
 def test_restore_keeps_a_completed_spec_s_completion_time_so_an_old_one_archives(

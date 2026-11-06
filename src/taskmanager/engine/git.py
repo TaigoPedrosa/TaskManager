@@ -125,6 +125,21 @@ def rev_parse(repo: Path, ref: str) -> str:
     return res.stdout.strip() if res.returncode == 0 else ""
 
 
+def tree_of(repo: Path, ref: str) -> str:
+    """The tree `ref` holds, or "" when it names no commit."""
+    res = _git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{tree}}")
+    return res.stdout.strip() if res.returncode == 0 else ""
+
+
+def commit_tree(repo: Path, tree: str, parent: str, subject: str) -> str:
+    """A commit holding `tree` on top of `parent` alone, with `subject` and no body."""
+    return _run(repo, "commit-tree", tree, "-p", parent, "-m", subject)
+
+
+def reset_soft(worktree: Path, sha: str) -> None:
+    _run(worktree, "reset", "--soft", sha)
+
+
 def is_ancestor(repo: Path, a: str, b: str) -> bool:
     return _git(repo, "merge-base", "--is-ancestor", a, b).returncode == 0
 
@@ -240,6 +255,18 @@ def update_ref_cas(repo: Path, ref: str, new: str, old: str) -> bool:
     return _git(repo, "update-ref", ref, new, old).returncode == 0
 
 
+def holds_nothing_past(repo: Path, squash: str, branch: str) -> bool:
+    """True when merging `branch` into `squash` changes nothing: every change the branch
+    carries is already in the commit that squashed it."""
+    res = _git(repo, "merge-tree", "--write-tree", squash, branch)
+    return res.returncode == 0 and res.stdout.split("\n", 1)[0] == tree_of(repo, squash)
+
+
+def delete_branch(repo: Path, branch: str, at: str) -> bool:
+    """Deletes `branch` only if it still points at `at`."""
+    return _git(repo, "update-ref", "-d", f"refs/heads/{branch}", at).returncode == 0
+
+
 def ls_remote(
     repo: Path, remote: str | None, ref: str
 ) -> tuple[str, subprocess.CompletedProcess[str]]:
@@ -250,18 +277,35 @@ def ls_remote(
     return (fields[0] if res.returncode == 0 and fields else ""), res
 
 
-def push(worktree: Path, remote: str | None, target: str) -> subprocess.CompletedProcess[str]:
-    """Never forced: a push refused because the target moved is merged in by the caller.
+def rev_list(repo: Path, span: str) -> list[str]:
+    """The commits `span` (`a..b`) names, newest first; empty on a git error."""
+    res = _git(repo, "rev-list", span)
+    return res.stdout.split() if res.returncode == 0 else []
+
+
+def contains(repo: Path, sha: str) -> list[str]:
+    """The local branches whose history holds `sha`; empty on a git error."""
+    res = _git(repo, "for-each-ref", "--format=%(refname:short)", "--contains", sha, "refs/heads")
+    return res.stdout.split() if res.returncode == 0 else []
+
+
+def push(
+    worktree: Path, remote: str | None, target: str, force_with_lease: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Never forced but for `force_with_lease` (`<ref>:<expected sha>`), which only the
+    repository's own push uses: a push refused because the target moved is merged in by the caller.
 
     With no remote the repository receives its own push: `updateInstead` moves a target checked
     out in a clean worktree along with its files, and refuses one with uncommitted changes.
     """
     if remote is not None:
         return _git(worktree, "push", "-q", remote, f"HEAD:refs/heads/{target}")
+    lease = [f"--force-with-lease={force_with_lease}"] if force_with_lease else []
     return _git(
         worktree,
         "push",
         "-q",
+        *lease,
         "--receive-pack=git -c receive.denyCurrentBranch=updateInstead receive-pack",
         ".",
         f"HEAD:refs/heads/{target}",

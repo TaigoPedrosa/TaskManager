@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from taskmanager.core.enums import NodeKind
 from taskmanager.core.models import Condition, Job
 from taskmanager.core.status import Action, ConditionStage, JobKind, JobState, Outcome, Status
 from taskmanager.db.cache_repo import CacheRepository
@@ -235,6 +236,7 @@ class Landing:
         else:
             target, creating = self.claims.target_ref(job.node_id, job.repo), False
         exists = bool(gitops.rev_parse(repo_dir, f"refs/heads/{branch}"))
+        squash = None
         if not exists and not self.claims.is_container(self.claims.node(job.node_id)):
             # A task always has a branch by now; landing nothing would complete it untested.
             return self._needs_agent(
@@ -247,11 +249,14 @@ class Landing:
             and (
                 gitops.is_ancestor(repo_dir, branch, target)
                 or gitops.diff_quiet(repo_dir, target, branch)
+                or (squash := self._squashed(job, branch, target)) is not None
             )
         ):
             # A landing killed after its push, a repository with nothing to land, and a partial
             # container landing retried all resume here.
             job.result["already_landed"] = True
+            if squash is not None:
+                job.result["squash"] = squash
             return "verify"
         unmet = self.claims.conditions.unmet(job.node_id, ConditionStage.LANDING)
         self._drop_cleared_red_targets(job.node_id, unmet)
@@ -331,6 +336,7 @@ class Landing:
                 # Recorded before the merge: a conflict parks the job here, and the resumed gate
                 # attributes a red tip against the target it now contains.
                 job.result["base_sha"] = gitops.rev_parse(repo_dir, moved)
+                self._unsquash(job, worktree)
                 if not gitops.merge_no_ff(worktree, moved, subject):
                     return self._needs_agent(job, "conflict")
                 return "gate"
@@ -338,7 +344,11 @@ class Landing:
             if head or run.returncode == 0:
                 if not self._running(job):
                     return self._state(job)
-                run = gitops.push(worktree, remote, job.target)
+                fold = self._fold_base(job)
+                if (stopped := self._squash(job, worktree, fold)) is not None:
+                    return stopped
+                lease = self._keep_backup(job) if fold else None
+                run = gitops.push(worktree, remote, job.target, lease)
                 if run.returncode == 0:
                     self._after_land(job, worktree)
                     return "verify"
@@ -380,6 +390,8 @@ class Landing:
         try:
             if not self._running(job):
                 return self._state(job)
+            if (stopped := self._squash(job, worktree)) is not None:
+                return stopped
             head = gitops.rev_parse(worktree, "HEAD")
             if gitops.update_ref_cas(repo_dir, ref, head, str(job.result["base_sha"])):
                 return done
@@ -388,9 +400,136 @@ class Landing:
             self.jobs.release_branch(job.repo, job.target, job.id)
         job.result["push_tries"] = tries + 1
         job.result["base_sha"] = moved
+        self._unsquash(job, worktree)
         if not gitops.merge_no_ff(worktree, moved, f"merge({job.node_id}): {job.target} moved"):
             return self._needs_agent(job, "conflict")
         return "gate"
+
+    def _fold_base(self, job: Job) -> str | None:
+        """The first landing's base when this spec landing may replace the commits its earlier
+        landings put on the target, so the target keeps one commit of the spec; None otherwise,
+        with the reason in the `:merge` note."""
+        if job.kind != JobKind.LAND or self.claims.node(job.node_id).kind != NodeKind.SPEC:
+            return None
+        earlier = self.jobs.succeeded_land_jobs(job.node_id, job.repo)
+        if not earlier:
+            return None
+        base, why = self._fold_refusal(job, earlier)
+        if why is None:
+            return base
+        kept = self._drop_fold_backup(job)
+        if job.result.get("fold_skipped") != why:
+            job.result["fold_skipped"] = why
+            tail = f"; {kept} holds the previous head" if kept else ""
+            self.claims.note(job.node_id, "merge", f"{job.repo}: fold skipped, {why}{tail}")
+        return None
+
+    def _drop_fold_backup(self, job: Job) -> str | None:
+        """Deletes the backup branch of a fold that did not go ahead, while it still points at
+        the head it was cut at; the name of one that stays, else None."""
+        name = str(job.result.pop("fold_backup", None) or "")
+        at = str(job.result.pop("fold_backup_at", None) or "")
+        if not name or (at and gitops.delete_branch(self._dir(job), name, at)):
+            return None
+        return name
+
+    def _fold_refusal(self, job: Job, earlier: list[Job]) -> tuple[str, str | None]:
+        """The first landing's base, and why the range above it cannot be rewritten (None when
+        it can). Rewriting is safe only while nobody else can hold a commit of the range: the
+        owner's branches and the fetch remote are both read."""
+        repo_dir, target = self._dir(job), job.target
+        base = str(earlier[0].result.get("base_sha") or "")
+        if self.claims.ops.remote(job.repo) is not None:
+            return base, "push is on, so the target is shared"
+        span = gitops.rev_list(repo_dir, f"{base}..{target}") if base else []
+        squashes = {str(j.result["squash"]) for j in earlier if j.result.get("squash")}
+        if not span or not gitops.is_ancestor(repo_dir, base, target):
+            return base, f"{target} no longer sits on the first landing's base"
+        if not set(span) <= squashes:
+            return base, f"commits that are not this spec's sit on {target}"
+        remote = self.config.fetch_remote(job.repo)
+        if remote:
+            pushed, run = gitops.ls_remote(repo_dir, remote, f"refs/heads/{target}")
+            if run.returncode != 0:
+                return base, f"{remote} could not be read"
+            if pushed and not (
+                gitops.fetch(repo_dir, remote, target) and gitops.rev_parse(repo_dir, pushed)
+            ):
+                return base, f"{remote}/{target} could not be fetched"
+            if pushed and any(gitops.is_ancestor(repo_dir, sha, pushed) for sha in span):
+                return base, f"{remote}/{target} holds the range"
+        own = self.claims.branch_of(job.node_id)
+        for sha in span:
+            for branch in gitops.contains(repo_dir, sha):
+                if branch not in (target, own) and not branch.startswith((f"{own}@", "backup/")):
+                    return base, f"branch {branch} holds {sha[:12]}"
+        return base, None
+
+    def _keep_backup(self, job: Job) -> str:
+        """Sets the target's head aside as `backup/<node>` (`-r<n>` when taken) before the fold
+        replaces it, and returns the lease that makes the replacing push fail if it moved."""
+        head, repo_dir = str(job.result["base_sha"]), self._dir(job)
+        name = str(job.result.get("fold_backup") or "")
+        if not name or gitops.rev_parse(repo_dir, f"refs/heads/{name}") != head:
+            name, n = f"backup/{job.node_id}", 1
+            while not gitops.ensure_branch(repo_dir, name, head):
+                n += 1
+                name = f"backup/{job.node_id}-r{n}"
+            job.result["fold_backup"], job.result["fold_backup_at"] = name, head
+            self.jobs.update(job)
+        return f"refs/heads/{job.target}:{head}"
+
+    def _squash(self, job: Job, worktree: Path, parent: str | None = None) -> JobState | None:
+        """Replaces a container's gated merge at HEAD by one commit that holds its tree on the
+        target's head, so the target gains one commit and the container's branch keeps the
+        granular history. None when the worktree is ready to move the target."""
+        if job.kind != JobKind.LAND or not self.claims.is_container(self.claims.node(job.node_id)):
+            return None
+        self._unsquash(job, worktree)
+        repo_dir = self._dir(job)
+        merged, tree = gitops.rev_parse(worktree, "HEAD"), gitops.tree_of(worktree, "HEAD")
+        sha = gitops.commit_tree(
+            repo_dir,
+            tree,
+            parent or str(job.result["base_sha"]),
+            self.claims.squash_subject(job.node_id, job.repo),
+        )
+        gitops.reset_soft(worktree, sha)
+        if gitops.tree_of(worktree, "HEAD") != tree:
+            return self._needs_agent(job, "error")
+        job.result.update(
+            squash=sha,
+            merged=merged,
+            tip=gitops.rev_parse(repo_dir, self.claims.branch_of(job.node_id)),
+        )
+        # Written before the target moves: a landing killed after its move is recognised by it.
+        return None if self.jobs.update(job) else self._state(job)
+
+    @staticmethod
+    def _unsquash(job: Job, worktree: Path) -> None:
+        """Puts HEAD back on the gated merge, which a merge of a moved target and a resolved
+        conflict both build on; the trees are equal, so the index stays as it is."""
+        if (merged := job.result.pop("merged", None)) is not None:
+            gitops.reset_soft(worktree, str(merged))
+
+    def _squashed(self, job: Job, branch: str, target: str) -> str | None:
+        """A container's branch is never an ancestor of its target once squashed: an earlier
+        landing job of this branch's current tip that put its squash on the target proves it,
+        and the squash is returned."""
+        repo_dir = self._dir(job)
+        tip = gitops.rev_parse(repo_dir, branch)
+        return next(
+            (
+                str(j.result["squash"])
+                for j in reversed(self.jobs.for_node(job.node_id))
+                if j.kind == JobKind.LAND
+                and j.repo == job.repo
+                and j.result.get("squash")
+                and j.result.get("tip") == tip
+                and gitops.is_ancestor(repo_dir, str(j.result["squash"]), target)
+            ),
+            None,
+        )
 
     def _verify(self, job: Job) -> JobState:
         passed, report, timed_out = self.claims.verify(job.node_id, self._target_ref(job), job.repo)
@@ -404,8 +543,34 @@ class Landing:
         self._remove_worktree(job)
         return self._succeed(job, report)
 
+    def _container_lines(self, job: Job) -> str:
+        """The `:merge` lines a container's landing records: the `backup:` branch when a child
+        landed on it, and the `squash:` commit once it is on the target, which export, restore
+        and the reviews read back. A squash already recorded is not written twice."""
+        lines = ""
+        node_id = job.node_id
+        if any(
+            self.claims.ops.landing_parent(child) == node_id
+            for child in self.claims.nodes.get_children(node_id)
+        ):
+            lines += f"\nbackup: {self.claims.branch_of(node_id)}"
+        squash = str(job.result.get("squash") or "")
+        if (
+            squash
+            and gitops.is_ancestor(self._dir(job), squash, self._target_ref(job))
+            and self.claims.recorded_squashes(node_id).get(job.repo) != squash
+        ):
+            lines += f"\nsquash: {job.repo} {squash}"
+        return lines
+
     def _succeed(self, job: Job, report: str) -> JobState:
         summary = f"{job.repo}: landed on {job.target}\n{report}"
+        if self.claims.is_container(self.claims.node(job.node_id)):
+            summary += self._container_lines(job)
+        if job.result.get("fold_backup"):
+            summary += (
+                f"\nfolded into one commit, the previous head kept at {job.result['fold_backup']}"
+            )
         repos = self.claims.repos_of(job.node_id)
         later = repos[repos.index(job.repo) + 1 :] if job.repo in repos else []
         # The job's SUCCEEDED and the node's result commit together: a reader polling the job

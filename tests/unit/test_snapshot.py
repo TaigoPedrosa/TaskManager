@@ -127,7 +127,7 @@ def test_a_snapshot_carries_every_node_its_parent_and_every_edge(estate: Estate)
     )
     assert (snap.nodes["P"].review, snap.nodes["S"].review, snap.nodes["S"].parent) == (
         True,
-        False,
+        True,
         None,
     )
 

@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { SOURCE, discovery, djb2, json, landedRepo, makeTm, meta, realCksum, runWave, scriptCksum } from './harness.mjs'
+import { SOURCE, discovery, djb2, json, landedRepo, makeTm, meta, realCksum, runWave, scriptCksum, squashedRepo } from './harness.mjs'
 
 const ARGS = { session: 's1', worktreeDir: '/wt', root: '/est' }
 const T1 = { id: 'T1', kind: 'task', action: 'implement', model: 'claude-sonnet-5-5', repos: ['core'], requires: [], job: null, migration: false }
@@ -254,7 +254,7 @@ for (const [action, { before, during, after }] of Object.entries(STEPS)) {
     }
     const plain = await brief({})
     const carried = await brief({ codegraph: lines })
-    const at = plain.findIndex(l => l.startsWith('Brief: tm render T1'))
+    const at = plain.findIndex(l => l.startsWith(action === 'review' ? 'Isolation:' : 'Brief: tm render T1'))
     assert.ok(at > 0)
     assert.ok(!plain.some(l => l.includes('codegraph')))
     assert.deepEqual(carried, [...plain.slice(0, at + 1), ...lines.map(l => `codegraph: ${l}`), ...plain.slice(at + 1)])
@@ -692,25 +692,160 @@ test('a sync the handed agent left stopped is released under its claim, so its l
   assert.ok(result.results[0].trail.includes('released, the sync agent left the job stopped'))
 })
 
-for (const [base, merge, from] of [['main', 'spec', 'origin/main'], ['release/1.0', 'spec', 'origin/release/1.0'], ['tm/S1', 'parent', 'tm/S1']]) {
-  test(`a container review with merge ${merge} based on ${base} reads every repository it touched from ${from}, on the container reviewer`, async () => {
-    const P1 = { id: 'P1', kind: 'plan', action: 'review', model: 'claude-opus-5-5', repos: ['core', 'web'], requires: [], job: null, migration: false }
-    const tm = makeTm({
-      chosen: [P1],
-      nodes: { P1: { ...node('IMPLEMENTED', 'review', { merge }), id: 'P1', kind: 'plan' } },
-      start: { P1: [() => (tm.set('P1', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'claude-opus-5-5', repos: ['core', 'web'], branch: 'tm/P1', base }))] },
-    })
-    const agents = () => (tm.set('P1', { status: 'REVIEWED', next_action: null }), 'done')
-    const reviewerTypes = { task: 'task-reviewer', rereview: 'scoped-re-reviewer', container: 'branch-reviewer' }
-    const { work } = await runWave({ args: { ...ARGS, reviewerTypes }, tm, agents })
-    assert.equal(work[0].opts.agentType, 'branch-reviewer')
-    assert.equal(work[0].opts.model, 'claude-opus-5-5')
-    assert.ok(work[0].prompt.includes(`git -C /est/core diff ${from}...tm/P1`))
-    assert.ok(work[0].prompt.includes(`git -C /est/web diff ${from}...tm/P1`))
-    assert.ok(work[0].prompt.includes('container review'))
-    assert.ok(work[0].prompt.includes('/wt/core-P1-review') && work[0].prompt.includes('/wt/web-P1-review'))
+const BRIEF_READERS = /tm render|task render|note list|Brief:|Notes:/
+const landedSpec = (repos, extra = {}, { id = 'S1', kind = 'spec' } = {}) => {
+  const tm = makeTm({
+    chosen: [{ id, kind, action: 'review', model: 'claude-opus-5-5', repos, requires: [], job: null, migration: false }],
+    nodes: { [id]: { ...node('LANDED', 'review'), id, kind } },
+    start: { [id]: [() => (tm.set(id, { status: 'REVIEWING', next_action: null }), claim('review', { model: 'claude-opus-5-5', repos, branch: 'origin/main', base: 'main', ...extra }))] },
   })
+  return tm
 }
+// The seam reviewer, the one prompt that names the closing verb, completes the node.
+const closesOn = (tm, id = 'S1') => prompt => {
+  if (prompt.includes(`tm task review ${id}`)) tm.set(id, { status: 'COMPLETED', next_action: null })
+  return 'done'
+}
+
+test('a spec review from LANDED fans out per repo and the seam reviewer closes', async () => {
+  const tm = landedSpec(['a', 'b'])
+  const { work, errors } = await runWave({ args: { ...ARGS, reviewerTypes: REVIEWERS }, tm, agents: closesOn(tm) })
+  assert.deepEqual(errors, [])
+  assert.deepEqual(work.map(w => w.opts.label), ['review:S1:a', 'review:S1:b', 'review:S1'])
+  assert.deepEqual(work.map(w => w.opts.agentType), ['branch-reviewer', 'branch-reviewer', 'branch-reviewer'])
+  const [a, b, seam] = work.map(w => w.prompt)
+  for (const prompt of [a, b]) {
+    assert.ok(!prompt.includes('tm task review'), prompt)
+    assert.ok(!prompt.includes('tm task release'), prompt)
+    assert.ok(prompt.includes('You do not close the step'), prompt)
+    assert.ok(prompt.includes('code-review skill at high effort'), prompt)
+    assert.ok(prompt.includes('tm finding add S1 --agent wf-s1-S1 --token k1'), prompt)
+  }
+  assert.ok(a.includes('/wt/a-S1-review-k1') && !a.includes('/wt/b-S1-review'), a)
+  assert.ok(b.includes('/wt/b-S1-review-k1') && !b.includes('/wt/a-S1-review'), b)
+  assert.ok(seam.includes('tm task review S1 --agent wf-s1-S1 --token k1 --approve or --reject'), seam)
+  assert.ok(seam.includes('/wt/a-S1-review-seam-k1') && seam.includes('/wt/b-S1-review-seam-k1'), seam)
+  assert.ok(!seam.includes('/wt/a-S1-review-k1'), seam)
+  assert.ok(seam.includes('tm finding list S1'), seam)
+})
+
+test('a spec review whose repository reviewer died runs no seam reviewer and releases the claim naming the repository', async () => {
+  const tm = landedSpec(['a', 'b'])
+  const { work, ops, result } = await runWave({
+    args: { ...ARGS, reviewerTypes: REVIEWERS },
+    tm,
+    agents: prompt => (prompt.includes('Repository: b') ? null : closesOn(tm)(prompt)),
+  })
+  assert.deepEqual(work.map(w => w.opts.label), ['review:S1:a', 'review:S1:b'])
+  assert.deepEqual(releases(ops), ['tm task release S1 --agent wf-s1-S1 --token k1 >/dev/null 2>&1'])
+  assert.ok(result.results[0].trail.some(l => l.startsWith('released, the reviewer of b died')), result.results[0].trail)
+})
+
+test('a one-repo spec review runs one reviewer that closes', async () => {
+  const tm = landedSpec(['a'])
+  const { work } = await runWave({ args: { ...ARGS, reviewerTypes: REVIEWERS }, tm, agents: closesOn(tm) })
+  assert.equal(work.length, 1)
+  assert.ok(work[0].prompt.includes('tm task review S1 --agent wf-s1-S1 --token k1'), work[0].prompt)
+})
+
+test('a task review still runs one reviewer', async () => {
+  const tm = makeTm({
+    chosen: [{ ...T1, action: 'review' }],
+    nodes: { T1: node('IMPLEMENTED', 'review') },
+    start: { T1: [() => (tm.set('T1', { status: 'REVIEWING', next_action: null }), claim('review'))] },
+  })
+  const { work } = await runWave({ args: { ...ARGS, reviewerTypes: REVIEWERS }, tm, agents: () => (tm.set('T1', { status: 'REVIEWED', next_action: null }), 'done') })
+  assert.equal(work.length, 1)
+  assert.equal(work[0].opts.agentType, 'task-reviewer')
+  assert.ok(work[0].prompt.includes('git -C /wt/core-T1-review-k1 diff origin/main...HEAD'), work[0].prompt)
+  assert.ok(work[0].prompt.includes('worktree add --detach /wt/core-T1-review-k1 tm/T1'), work[0].prompt)
+})
+
+test('no review prompt sends the reviewer to the brief', async () => {
+  const prompts = []
+  const task = makeTm({
+    chosen: [{ ...T1, action: 'review' }],
+    nodes: { T1: node('IMPLEMENTED', 'review') },
+    start: { T1: [() => (task.set('T1', { status: 'REVIEWING', next_action: null }), claim('review'))] },
+  })
+  prompts.push(...(await runWave({ args: ARGS, tm: task, agents: () => (task.set('T1', { status: 'REVIEWED', next_action: null }), 'done') })).work)
+  const again = makeTm({
+    chosen: [{ ...T1, action: 'review' }],
+    nodes: { T1: node('FIXED', 'review', { outcome: 'reject' }) },
+    start: { T1: [() => (again.set('T1', { status: 'REVIEWING', next_action: null }), claim('review'))] },
+  })
+  prompts.push(...(await runWave({ args: ARGS, tm: again, agents: () => (again.set('T1', { status: 'REVIEWED', next_action: null }), 'done') })).work)
+  const container = landedSpec(['a', 'b'])
+  prompts.push(...(await runWave({ args: ARGS, tm: container, agents: closesOn(container) })).work)
+  assert.equal(prompts.length, 5)
+  for (const { prompt } of prompts) {
+    assert.ok(prompt.includes('code-review'), prompt)
+    assert.doesNotMatch(prompt, BRIEF_READERS)
+    assert.ok(!prompt.includes('Sections:'), prompt)
+  }
+})
+
+test('a reviewer gets only the repos the claim names', async () => {
+  const tm = landedSpec(['a', 'b'], { bases: { a: 'main', b: 'main', c: 'main' }, remotes: { a: null, b: null, c: null } })
+  const { work } = await runWave({ args: { ...ARGS, reviewerTypes: REVIEWERS }, tm, agents: closesOn(tm) })
+  assert.equal(work.length, 3)
+  for (const { prompt } of work) assert.doesNotMatch(prompt, /\/c-S1|\/est\/c\b|\bc at\b/, prompt)
+})
+
+test('a landed container with no squash in a repository is read through its landing merges, and one with a squash through it', async () => {
+  const tm = landedSpec(['a', 'b'], { squashes: { a: 'abc123' } }, { id: 'S2', kind: 'spec' })
+  const { work } = await runWave({ args: ARGS, tm, agents: closesOn(tm, 'S2') })
+  assert.ok(work[0].prompt.includes('git -C /wt/a-S2-review-k1 show abc123'), work[0].prompt)
+  assert.ok(!work[0].prompt.includes('--diff-merges'), work[0].prompt)
+  assert.ok(work[1].prompt.includes('git -C /wt/b-S2-review-k1 log -p --diff-merges=first-parent'), work[1].prompt)
+  assert.ok(!work[1].prompt.includes('show HEAD'), work[1].prompt)
+})
+
+test('a landed review with no squash at all carries the lineage walk', async () => {
+  const tm = landedSpec(['a'])
+  const { work } = await runWave({ args: ARGS, tm, agents: closesOn(tm) })
+  assert.ok(work[0].prompt.includes("log -p --diff-merges=first-parent -E --grep '^merge[(](S1)[)]: land [^ ]+ on main$' HEAD --"), work[0].prompt)
+})
+
+test('a landed review whose nodes under it cannot be read is released without a reviewer', async () => {
+  const tm = landedSpec(['a'])
+  const { work, ops } = await runWave({ args: ARGS, tm, agents: closesOn(tm), lose: (o, cmd) => / plan list /.test(cmd) })
+  assert.deepEqual(work, [])
+  assert.equal(releases(ops).length, 1)
+})
+
+test('a landed review reads the commit its landing squashed to, not the head of the target', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'wave-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  squashedRepo(join(root, 'core'), ['P1: first plan', 'P12: later plan', 'S1: the spec'])
+  const squash = execFileSync('git', ['-C', join(root, 'core'), 'rev-parse', 'main~2'], { encoding: 'utf8' }).trim()
+  for (const [id, kind] of [['S1', 'spec'], ['P1', 'plan']]) {
+    const tm = landedSpec(['core'], { squashes: { core: squash } }, { id, kind })
+    const { work } = await runWave({ args: { ...ARGS, root }, tm, agents: closesOn(tm, id) })
+    const [command] = work[0].prompt.match(/git -C \S+ show [0-9a-f]+/) || []
+    assert.equal(command, `git -C /wt/core-${id}-review-k1 show ${squash}`, work[0].prompt)
+    assert.ok(!work[0].prompt.includes('show HEAD'), work[0].prompt)
+    const patch = execFileSync('sh', ['-c', command.replace(/-C \S+/, `-C ${root}/core`)], { encoding: 'utf8' })
+    assert.deepEqual([...patch.matchAll(/^diff --git a\/(\S+)/gm)].map(m => m[1]), ['f0.txt'], command)
+  }
+})
+
+test("a review reads the spec's target on each repository's own remote, and locally where it has none", async () => {
+  const tm = landedSpec(['core', 'web'], { bases: { core: 'trunk', web: 'main' }, remotes: { core: null, web: 'upstream' } })
+  const { work } = await runWave({ args: ARGS, tm, agents: closesOn(tm) })
+  const seam = work.at(-1).prompt
+  assert.ok(seam.includes('core at /wt/core-S1-review-seam-k1, cut with git -C /est/core worktree add --detach /wt/core-S1-review-seam-k1 trunk'), seam)
+  assert.ok(seam.includes('web at /wt/web-S1-review-seam-k1, cut with git -C /est/web worktree add --detach /wt/web-S1-review-seam-k1 upstream/main'), seam)
+})
+
+// The reviewer's worktree is cut at the target, so HEAD there is the target; the test reads the same
+// range in the fixture repository, whose HEAD is its main.
+const landingCommand = (prompt, root, repo) => {
+  const [command] = prompt.match(/git -C \S+ log [^']*'[^']*' HEAD --/) || []
+  assert.ok(command, prompt)
+  return command.replace(/-C \S+/, `-C ${root}/${repo}`)
+}
+const filesOf = command => [...execFileSync('sh', ['-c', command], { encoding: 'utf8' }).matchAll(/^diff --git a\/(\S+)/gm)].map(m => m[1]).sort()
 
 // T9 lands on main beside every container and is no node under it.
 const PLAN_CHILDREN = { 'task list --plan P1': ['C1', 'C2'] }
@@ -741,16 +876,10 @@ for (const target of ['origin/main', 'tm/S1']) {
       const agents = () => (tm.set(id, { status: 'COMPLETED', next_action: null }), 'done')
       const { work, errors } = await runWave({ args: { ...ARGS, root, reviewerTypes: REVIEWERS }, tm, agents })
       assert.deepEqual(errors, [])
-      const scope = scopeOf(work[0])
       assert.equal(work[0].opts.agentType, 'branch-reviewer')
-      assert.ok(scope.includes('container review'), scope)
-      const commands = scope.match(new RegExp(`git -C \\S+ log [^']*'[^']*' ${target} --`, 'g')) || []
-      assert.deepEqual(commands.map(c => c.split(' ')[2]), [`${root}/core`, `${root}/web`], scope)
+      assert.ok(scopeOf(work[0]).includes('container review'), scopeOf(work[0]))
       // git exits non-zero on a revision the repository does not hold, and execFileSync throws on it.
-      for (const command of commands) {
-        const patch = execFileSync('sh', ['-c', command], { encoding: 'utf8' })
-        assert.deepEqual([...patch.matchAll(/^diff --git a\/(\S+)/gm)].map(m => m[1]).sort(), files, command)
-      }
+      repos.forEach((repo, i) => assert.deepEqual(filesOf(landingCommand(work[i].prompt, root, repo)), files, work[i].prompt))
     })
   }
 }
@@ -771,11 +900,8 @@ test("a landed plan's review on origin/release/1.0 reads only the landings that 
   const { work, errors } = await runWave({ args: { ...ARGS, root, reviewerTypes: REVIEWERS }, tm, agents })
   assert.deepEqual(errors, [])
   const scope = scopeOf(work[0])
-  assert.ok(scope.startsWith('Scope: what P1 and every node under it landed on origin/release/1.0, '), scope)
-  const [command] = scope.match(/git -C \S+ log [^']*'[^']*' origin\/release\/1\.0 --/) || []
-  assert.ok(command, scope)
-  const patch = execFileSync('sh', ['-c', command], { encoding: 'utf8' })
-  assert.deepEqual([...patch.matchAll(/^diff --git a\/(\S+)/gm)].map(m => m[1]).sort(), ['C1.txt', 'P1.txt'], command)
+  assert.ok(scope.startsWith('Scope: what P1 landed on origin/release/1.0, '), scope)
+  assert.deepEqual(filesOf(landingCommand(work[0].prompt, root, 'core')), ['C1.txt', 'P1.txt'])
 })
 
 test("a landed plan's review reads each repository's landings on that repository's own target", async t => {
@@ -792,60 +918,34 @@ test("a landed plan's review reads each repository's landings on that repository
   const agents = () => (tm.set('P1', { status: 'COMPLETED', next_action: null }), 'done')
   const { work, errors } = await runWave({ args: { ...ARGS, root, reviewerTypes: REVIEWERS }, tm, agents })
   assert.deepEqual(errors, [])
-  const scope = scopeOf(work[0])
-  assert.ok(scope.startsWith('Scope: what P1 and every node under it landed on origin/trunk and origin/main, '), scope)
-  const commands = scope.match(/git -C \S+ log [^']*'[^']*' \S+ --/g) || []
-  assert.equal(commands.length, 2, scope)
-  const files = commands.map(command => [...execFileSync('sh', ['-c', command], { encoding: 'utf8' }).matchAll(/^diff --git a\/(\S+)/gm)].map(m => m[1]).sort())
-  assert.deepEqual(files, [['P1.txt'], ['C1.txt', 'P1.txt']], scope)
+  assert.ok(work[0].prompt.includes('landed on origin/trunk,') && work[1].prompt.includes('landed on origin/main,'), work[0].prompt)
+  assert.deepEqual(filesOf(landingCommand(work[0].prompt, root, 'core')), ['P1.txt'])
+  assert.deepEqual(filesOf(landingCommand(work[1].prompt, root, 'web')), ['C1.txt', 'P1.txt'])
 })
 
-test("a container's review and fix read each repository against that repository's own base", async () => {
-  const P1 = { id: 'P1', kind: 'plan', model: 'claude-opus-5-5', repos: ['core', 'web'], requires: [], job: null, migration: false }
-  const bases = { core: 'trunk', web: 'main' }
-  const review = makeTm({
-    chosen: [{ ...P1, action: 'review' }],
-    nodes: { P1: { ...node('IMPLEMENTED', 'review'), id: 'P1', kind: 'plan' } },
-    start: { P1: [() => (review.set('P1', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'claude-opus-5-5', repos: ['core', 'web'], branch: 'tm/P1', base: 'trunk', bases }))] },
-  })
-  const reviewed = await runWave({ args: { ...ARGS, reviewerTypes: REVIEWERS }, tm: review, agents: () => (review.set('P1', { status: 'REVIEWED', next_action: null }), 'done') })
-  const scope = scopeOf(reviewed.work[0])
-  assert.ok(scope.includes('git -C /est/core diff origin/trunk...tm/P1') && scope.includes('git -C /est/web diff origin/main...tm/P1'), scope)
-  const worktrees = { core: '/wt/P1/core', web: '/wt/P1/web' }
-  const fix = makeTm({
-    chosen: [{ ...P1, action: 'fix' }],
-    nodes: { P1: { ...node('REVIEWED', 'fix', { outcome: 'reject' }), id: 'P1', kind: 'plan' } },
-    start: { P1: [() => (fix.set('P1', { status: 'FIXING', next_action: null }), claim('fix', { model: 'claude-opus-5-5', repos: ['core', 'web'], branch: 'tm/P1', base: 'trunk', bases, worktree: '/wt/P1', worktrees }))] },
-  })
-  const fixed = await runWave({ args: ARGS, tm: fix, agents: () => (fix.set('P1', { status: 'FIXED', next_action: null }), 'done') })
-  assert.ok(fixed.work[0].prompt.includes('core at /wt/P1/core, based on origin/trunk; web at /wt/P1/web, based on origin/main.'), fixed.work[0].prompt)
-})
-
-test("a review reads the spec's target on each repository's own remote, and locally where it has none", async () => {
-  const P1 = { id: 'P1', kind: 'plan', action: 'review', model: 'claude-opus-5-5', repos: ['core', 'web'], requires: [], job: null, migration: false }
+test("a landed spec's review reads the landings of a plan nested under its plan, and of the tasks under that", async () => {
   const tm = makeTm({
-    chosen: [P1],
-    nodes: { P1: { ...node('IMPLEMENTED', 'review'), id: 'P1', kind: 'plan' } },
-    start: { P1: [() => (tm.set('P1', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'claude-opus-5-5', repos: ['core', 'web'], branch: 'tm/P1', base: 'trunk', bases: { core: 'trunk', web: 'main' }, remotes: { core: null, web: 'upstream' } }))] },
+    chosen: [{ id: 'S2', kind: 'spec', action: 'review', model: 'claude-opus-5-5', repos: ['core'], requires: [], job: null, migration: false }],
+    nodes: { S2: { ...node('LANDED', 'review'), id: 'S2', kind: 'spec' } },
+    lists: { 'plan list --spec S2': ['P1'], 'plan list --spec P1': ['P2'], 'task list --plan P1': ['C1'], 'task list --plan P2': ['C2'] },
+    start: { S2: [() => (tm.set('S2', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'claude-opus-5-5', branch: 'origin/main', base: 'main' }))] },
   })
-  const { work } = await runWave({ args: { ...ARGS, reviewerTypes: REVIEWERS }, tm, agents: () => (tm.set('P1', { status: 'REVIEWED', next_action: null }), 'done') })
-  const scope = scopeOf(work[0])
-  assert.ok(scope.includes('git -C /est/core diff trunk...tm/P1') && scope.includes('git -C /est/web diff upstream/main...tm/P1'), scope)
+  const agents = () => (tm.set('S2', { status: 'COMPLETED', next_action: null }), 'done')
+  const { work, errors } = await runWave({ args: { ...ARGS, reviewerTypes: REVIEWERS }, tm, agents })
+  assert.deepEqual(errors, [])
+  assert.ok(scopeOf(work[0]).includes('^merge[(](S2|P1|P2|C1|C2)[)]: land '), scopeOf(work[0]))
 })
 
-test('a landed container whose children cannot be read is released, never reviewed on a partial scope', async () => {
-  const P1 = { id: 'P1', kind: 'plan', action: 'review', model: 'claude-opus-5-5', repos: ['core'], requires: [], job: null, migration: false }
+test("a landed plan's review reads a nested plan's own landing and its tasks", async () => {
   const tm = makeTm({
-    chosen: [P1],
+    chosen: [{ id: 'P1', kind: 'plan', action: 'review', model: 'claude-opus-5-5', repos: ['core'], requires: [], job: null, migration: false }],
     nodes: { P1: { ...node('LANDED', 'review'), id: 'P1', kind: 'plan' } },
-    lists: PLAN_CHILDREN,
-    start: { P1: [() => (tm.set('P1', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'claude-opus-5-5', branch: 'origin/main' }))] },
-    corrupt: inner => / task list /.test(inner),
+    lists: { 'plan list --spec P1': ['P2'], 'task list --plan P1': ['C1'], 'task list --plan P2': ['C2'] },
+    start: { P1: [() => (tm.set('P1', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'claude-opus-5-5', branch: 'origin/main', base: 'main' }))] },
   })
-  const { ops, work, result } = await runWave({ args: ARGS, tm })
-  assert.deepEqual(work, [])
-  assert.deepEqual(releases(ops), ['tm task release P1 --agent wf-s1-P1 --token k1 >/dev/null 2>&1'])
-  assert.ok(result.results[0].trail.includes('released, the nodes under it could not be read'))
+  const agents = () => (tm.set('P1', { status: 'COMPLETED', next_action: null }), 'done')
+  const { work } = await runWave({ args: { ...ARGS, reviewerTypes: REVIEWERS }, tm, agents })
+  assert.ok(scopeOf(work[0]).includes('^merge[(](P1|P2|C1|C2)[)]: land '), scopeOf(work[0]))
 })
 
 for (const [kind, id] of [['task', 'T1'], ['plan', 'P1']]) {
@@ -861,12 +961,13 @@ for (const [kind, id] of [['task', 'T1'], ['plan', 'P1']]) {
     assert.equal(work[0].opts.agentType, 'scoped-re-reviewer')
     assert.equal(
       scopeOf(work[0]),
-      `Scope: every finding tm finding list ${id} shows with its answer, a failed landing's included, against the fix commits on tm/${id} and the fixer's notes in tm note list ${id}. Establish each closure by mutation, and open one that still holds again with tm finding reopen ${id} <n> --agent wf-s1-${id} --token k1.`,
+      `Scope: judge only the findings tm finding list ${id} shows with their answers, a failed landing's included. You read the whole diff of tm/${id} from its base (${repos.map(r => `git -C /wt/${r}-${id}-review-k1 diff origin/main...HEAD`).join('; ')}). Establish each closure by reading the fix, and open one that still holds again with tm finding reopen ${id} <n> --agent wf-s1-${id} --token k1. Run the code-review skill at high effort over that diff, and record nothing outside those findings.`,
     )
+    assert.doesNotMatch(work[0].prompt, BRIEF_READERS)
     assert.ok(!work[0].prompt.includes('container review'))
     assert.ok(work[0].prompt.includes(`tm task review ${id} --agent wf-s1-${id} --token k1 --approve or --reject`))
     assert.ok(work[0].prompt.includes('git worktree remove'))
-    assert.ok(work[0].prompt.includes(`/wt/core-${id}-review`))
+    assert.ok(work[0].prompt.includes(`/wt/core-${id}-review-k1`))
   })
 }
 
@@ -886,7 +987,7 @@ test('a container fix across repositories names the worktree tm cut in each', as
   assert.ok(!work[0].prompt.includes('worktree add'))
 })
 
-const REPORT_RECORDS = 'Report: record each red-check deletion with tm check add T1 --agent wf-s1-T1 --token k1 --deleted "<file>:<line>" --red <test>, once per && or || operand, --green when every test still passed, or --waive "<why>" for a line that is no guard, and anything else as one line with tm note add T1 --agent wf-s1-T1 --token k1 "<line>".'
+const REPORT_RECORDS = 'Report: record one line per fact the code and the checks do not carry with tm note add T1 --agent wf-s1-T1 --token k1 "<line>".'
 
 const OPEN_FINDINGS = 'Findings: every one tm finding list T1 --open shows, a failed landing\'s included. Fix each one, commit on the branch, and answer each with tm finding close T1 <n> --agent wf-s1-T1 --token k1 --commit <sha>, or tm finding dispute T1 <n> --agent wf-s1-T1 --token k1 --evidence "<what was read>".'
 for (const outcome of ['merge_failed', 'reject', 'approve']) {
@@ -1071,27 +1172,11 @@ test('a brief leaves comment, test-name and review-format rules to the project g
   for (let i = 0; i < 2; i++) briefs.push(...(await runWave({ args: ARGS, tm, agents })).work.map(w => w.prompt))
   assert.equal(briefs.length, 2)
   for (const brief of briefs) {
-    assert.match(brief, /^Sections: before any tm section set, tm section get the same key\. Append an entry to :merge; rewrite any other section whole, in the present tense, with every sentence it overrides gone\.$/m)
     assert.ok(!brief.includes('never name a ruling'), brief)
   }
+  assert.match(briefs[0], /^Sections: before any tm section set, tm section get the same key\. Append an entry to :merge; rewrite any other section whole, in the present tense, with every sentence it overrides gone\.$/m)
   assert.match(briefs[1], /^Findings: record each one with tm finding add T1 --agent wf-s1-T1 --token k1 --blocking or --minor --at "<file>:<symbol>" --breaks "<what breaks>"; with none, close with --clean\.$/m)
 })
-
-const REPORT_AFTER_FINDINGS = /^Notes: read tm note list T1 only after your findings are recorded, to judge the discrepancies they record; with review\.blind on, the default, the brief leaves them out\.$/m
-
-for (const [from, first] of [['IMPLEMENTED', true], ['FIXED', false]]) {
-  test(`a review claimed from ${from} ${first ? 'reads' : 'is not told to defer'} the notes after its findings`, async () => {
-    const tm = makeTm({
-      chosen: [{ ...T1, action: 'review' }],
-      nodes: { T1: node(from, 'review', from === 'FIXED' ? { outcome: 'reject' } : {}) },
-      start: { T1: [() => (tm.set('T1', { status: 'REVIEWING', next_action: null }), claim('review'))] },
-    })
-    const agents = () => (tm.set('T1', { status: 'REVIEWED', next_action: null }), 'done')
-    const { work } = await runWave({ args: ARGS, tm, agents })
-    assert.match(work[0].prompt, /^Brief: tm render T1 --view subagent$/m)
-    assert.equal(REPORT_AFTER_FINDINGS.test(work[0].prompt), first)
-  })
-}
 
 test("a container fix claim covering one repository works in that repository's tree, not the container directory", async () => {
   const P1 = { id: 'P1', kind: 'plan', action: 'fix', model: 'claude-sonnet-5-5', repos: ['core'], requires: [], job: null, migration: false }
@@ -1104,31 +1189,6 @@ test("a container fix claim covering one repository works in that repository's t
   const { work } = await runWave({ args: ARGS, tm, agents })
   assert.ok(work[0].prompt.includes('core at /wt/P1/core, based on origin/main'), work[0].prompt)
   assert.ok(!work[0].prompt.includes('Worktree: /wt/P1 '), work[0].prompt)
-})
-
-test("a landed spec's review reads the landings of a plan nested under its plan, and of the tasks under that", async () => {
-  const tm = makeTm({
-    chosen: [{ id: 'S2', kind: 'spec', action: 'review', model: 'claude-opus-5-5', repos: ['core'], requires: [], job: null, migration: false }],
-    nodes: { S2: { ...node('LANDED', 'review'), id: 'S2', kind: 'spec' } },
-    lists: { 'plan list --spec S2': ['P1'], 'plan list --spec P1': ['P2'], 'task list --plan P1': ['C1'], 'task list --plan P2': ['C2'] },
-    start: { S2: [() => (tm.set('S2', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'claude-opus-5-5', branch: 'origin/main', base: 'main' }))] },
-  })
-  const agents = () => (tm.set('S2', { status: 'COMPLETED', next_action: null }), 'done')
-  const { work, errors } = await runWave({ args: { ...ARGS, reviewerTypes: REVIEWERS }, tm, agents })
-  assert.deepEqual(errors, [])
-  assert.ok(scopeOf(work[0]).includes('^merge[(](S2|P1|P2|C1|C2)[)]: land '), scopeOf(work[0]))
-})
-
-test("a landed plan's review reads a nested plan's own landing and its tasks", async () => {
-  const tm = makeTm({
-    chosen: [{ id: 'P1', kind: 'plan', action: 'review', model: 'claude-opus-5-5', repos: ['core'], requires: [], job: null, migration: false }],
-    nodes: { P1: { ...node('LANDED', 'review'), id: 'P1', kind: 'plan' } },
-    lists: { 'plan list --spec P1': ['P2'], 'task list --plan P1': ['C1'], 'task list --plan P2': ['C2'] },
-    start: { P1: [() => (tm.set('P1', { status: 'REVIEWING', next_action: null }), claim('review', { model: 'claude-opus-5-5', branch: 'origin/main', base: 'main' }))] },
-  })
-  const agents = () => (tm.set('P1', { status: 'COMPLETED', next_action: null }), 'done')
-  const { work } = await runWave({ args: { ...ARGS, reviewerTypes: REVIEWERS }, tm, agents })
-  assert.ok(scopeOf(work[0]).includes('^merge[(](P1|P2|C1|C2)[)]: land '), scopeOf(work[0]))
 })
 
 test('a claim whose runner returned nothing after the command ran is sent once, never to the next runner type', async () => {
@@ -1194,7 +1254,7 @@ test("a review's scratch worktree path is unique to the claim, so a dead reviewe
       start: { T1: [() => (tm.set('T1', { status: 'REVIEWING', next_action: null }), claim('review', { token }))] },
     })
     const { work } = await runWave({ args: ARGS, tm, agents: () => (tm.set('T1', { status: 'REVIEWED', next_action: null }), 'done') })
-    return work[0].prompt.match(/goes at (\S+),/)[1]
+    return work[0].prompt.match(/worktree add --detach (\S+) /)[1]
   }
   assert.equal(await scratchFor('k1'), '/wt/core-T1-review-k1')
   assert.equal(await scratchFor('k2'), '/wt/core-T1-review-k2')

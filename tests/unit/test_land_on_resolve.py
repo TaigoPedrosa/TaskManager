@@ -28,7 +28,9 @@ def push_branch(repo: Path, branch: str, base: str = "origin/main") -> str:
 
 def estate(tmp_path: Path, default: str | None = None) -> Claims:
     """S > P > (T, C): T lands where its spec lands, C on P's branch."""
-    repo = RepoConfig(default_branch=default or "main", gates={"main": Gate(command="true")})
+    repo = RepoConfig(
+        push=True, default_branch=default or "main", gates={"main": Gate(command="true")}
+    )
     claims = make_estate(tmp_path, config=ProjectConfig(repos={"api": repo}))
     add(claims, "S", NodeKind.SPEC)
     add(claims, "P", NodeKind.PLAN, parent="S")
@@ -67,7 +69,7 @@ def test_landing_branch_of_a_node_with_no_spec_is_its_repository_s_default_branc
     tmp_path: Path,
 ) -> None:
     claims = make_estate(
-        tmp_path, config=ProjectConfig(repos={"api": RepoConfig(default_branch="trunk")})
+        tmp_path, config=ProjectConfig(repos={"api": RepoConfig(push=True, default_branch="trunk")})
     )
     add(claims, "LONE")
     add(claims, "ELSEWHERE", repo="web")

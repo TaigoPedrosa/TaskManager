@@ -35,17 +35,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "unit"))
 from lifecycle_estate import attach_landing, commit, git, make_estate, stored
 
 MAIN_GATE = ProjectConfig(
-    repos={"api": RepoConfig(gates={"main": Gate(command="true", junit=None, timeout=60)})}
+    repos={
+        "api": RepoConfig(push=True, gates={"main": Gate(command="true", junit=None, timeout=60)})
+    }
 )
 MIGRATION = "api/migrations/versions/0001_tenants.py"
 DOCUMENT: dict[str, Any] = {
-    "spec": {"id": "S", "title": "Spec"},
+    "spec": {"id": "S", "title": "Spec", "review": False, "fix": False},
     "plans": [
         {
             "id": "S-P",
             "title": "Plan",
             "review": True,
             "fix": True,
+            "merge": "spec",
             "tasks": [
                 {"id": "S-P-A", "title": "A", "target_repo": "api", "merge": "parent"},
                 {"id": "S-P-B", "title": "B", "target_repo": "api", "merge": "parent"},

@@ -2,7 +2,7 @@
 
 import json
 import subprocess
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -11,10 +11,9 @@ from typer.testing import CliRunner
 
 from taskmanager.cli.main import app as cli_app
 from taskmanager.core.enums import NodeKind
-from taskmanager.core.models import Lease, LedgerEvent, Node
+from taskmanager.core.models import Lease, Node
 from taskmanager.core.status import Action, Status
 from taskmanager.db.connection import DatabaseManager
-from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.di.container import create_container
@@ -192,24 +191,14 @@ def test_waves_name_each_held_node_and_the_lease_an_in_flight_step_runs_under(we
     }
 
 
-def _archive(root: Path, spec_id: str) -> None:
-    """Completes the spec past `web.archive_after_days` while its task stays claimable, so only
-    the archive filter keeps the task out of a wave."""
-    db = DatabaseManager(root / ".taskmanager")
-    node_repo = NodeRepository(db)
-    spec = node_repo.get_node(spec_id)
-    assert spec is not None
-    spec.status = Status.COMPLETED
-    node_repo.save_node(spec)
-    LedgerRepository(db).append(
-        LedgerEvent(
-            timestamp=datetime.now(tz=UTC) - timedelta(days=4),
-            actor_id="tm",
-            command="rollup",
-            target_id=spec_id,
-            payload={"from": "READY", "to": "COMPLETED"},
-        )
-    )
+def _archive(root: Path, spec_id: str, task_id: str) -> None:
+    """Abandons the spec's only task, which finishes the spec, and moves it into the archive."""
+    for command in (
+        ("task", "abandon", task_id, "--note", "dropped"),
+        ("spec", "archive", spec_id),
+    ):
+        res = runner.invoke(cli_app, [*command, "-C", str(root)])
+        assert res.exit_code == 0, res.output
 
 
 def _wave_one(client: TestClient, **params: object) -> list[str]:
@@ -217,27 +206,15 @@ def _wave_one(client: TestClient, **params: object) -> list[str]:
     return sorted(e["id"] for e in body["waves"][0]["entries"])
 
 
-def test_archive_leaves_an_archived_specs_nodes_out_of_waves_unless_asked(web: Web) -> None:
+def test_waves_of_an_archived_spec_are_empty_and_the_hot_waves_are_unchanged(web: Web) -> None:
     client, root = web
     _claimable_task(root, "OLD", "A")
     _claimable_task(root, "LIVE", "B")
-    _archive(root, "OLD")
+    _archive(root, "OLD", "OLD-P-A")
 
     assert _wave_one(client) == ["LIVE-P-B"]
-    assert _wave_one(client, archived="only") == ["OLD-P-A"]
-    assert _wave_one(client, archived="include") == ["LIVE-P-B", "OLD-P-A"]
-    assert _wave_one(client, spec="OLD") == []
-    assert _wave_one(client, spec="OLD", archived="only") == ["OLD-P-A"]
-
-
-def test_archive_off_in_config_keeps_every_spec_in_waves(web: Web) -> None:
-    client, root = web
-    _claimable_task(root, "OLD", "A")
-    _archive(root, "OLD")
-    ConfigStore(root).set("web.archive_after_days", "0")
-
-    assert _wave_one(client) == ["OLD-P-A"]
     assert _wave_one(client, archived="only") == []
+    assert _wave_one(client, archived="include") == ["LIVE-P-B"]
 
 
 def test_archive_refuses_an_unknown_mode(web: Web) -> None:
@@ -250,11 +227,11 @@ def test_archive_refuses_an_unknown_mode(web: Web) -> None:
 def test_archive_keeps_a_node_under_no_spec_in_the_default_waves(web: Web) -> None:
     client, root = web
     _claimable_task(root, "OLD", "A")
-    _archive(root, "OLD")
+    _archive(root, "OLD", "OLD-P-A")
     node_repo = NodeRepository(DatabaseManager(root / ".taskmanager"))
     node_repo.save_node(
         Node(id="LONE", kind=NodeKind.TASK, title="LONE", status=Status.READY, target_repo="api")
     )
 
     assert _wave_one(client) == ["LONE"]
-    assert _wave_one(client, archived="only") == ["OLD-P-A"]
+    assert _wave_one(client, archived="only") == []

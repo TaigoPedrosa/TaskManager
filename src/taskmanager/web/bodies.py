@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from taskmanager.core.enums import NodeKind, RelationType
-from taskmanager.core.models import Condition, Job, Lease, Node, NodeSection
+from taskmanager.core.models import Condition, Job, Lease, Node, NodeSection, backup_of
 from taskmanager.core.status import DecisionStatus
 from taskmanager.db.cache_repo import CacheRepository, _command_hash
 from taskmanager.db.graph_reader import GraphData
@@ -316,6 +316,12 @@ def build_bodies(
     steps = bulk_steps(repos.node_repo, wanted)
     cached_conditions = repos.cache.all_conditions(repos.condition_ttl)
 
+    merge_text = {
+        node_id: found.content
+        for node_id, all_sections in sections.items()
+        for found in all_sections
+        if found.section_key == "merge"
+    }
     bodies: dict[str, dict[str, Any]] = {}
     for node_id in wanted:
         node = data.nodes[node_id]
@@ -324,6 +330,7 @@ def build_bodies(
             "kind": node.kind.value,
             "title": node.title,
             **lifecycle_fields(node, view),
+            "backup": backup_of(node, merge_text.get(node_id, "")),
             "priority": node.priority,
             "ordinal": node.ordinal,
             "target_repo": node.target_repo,

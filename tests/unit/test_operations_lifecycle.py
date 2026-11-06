@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from lifecycle_estate import make_repo
 from typer.testing import CliRunner
 
 from taskmanager.cli.main import app as cli_app
@@ -27,6 +28,7 @@ from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
+from taskmanager.engine.config import ConfigStore
 from taskmanager.engine.operations import OperationError, Operations
 from taskmanager.engine.verification import VerificationEngine
 from taskmanager.renderers.markdown import MarkdownRenderer
@@ -79,7 +81,7 @@ def name_uncloned_repo(repo: NodeRepository, node_id: str, name: str) -> None:
 
 
 def tree(ops: Operations, **plan_flags: object) -> tuple[str, str, str]:
-    spec = ops.add_spec("S", slug="S1")
+    spec = ops.add_spec("S", slug="S1", review=False, fix=False)
     plan = ops.add_plan("P", spec, slug="P1", **plan_flags)  # type: ignore[arg-type]
     task = ops.add_task("T", plan, slug="T1")
     return spec, plan, task
@@ -109,13 +111,13 @@ def test_new_nodes_start_ready_with_the_flags_of_their_kind(env: Env) -> None:
     spec, plan, task = tree(ops)
     s, p, t = get(node_repo, spec), get(node_repo, plan), get(node_repo, task)
     assert (s.status, s.review, s.fix, s.merge) == (Status.READY, False, False, Merge.SPEC)
-    assert (p.status, p.review, p.fix, p.merge) == (Status.READY, False, False, Merge.SPEC)
-    assert (t.status, t.review, t.fix, t.merge) == (Status.READY, True, True, Merge.SPEC)
+    assert (p.status, p.review, p.fix, p.merge) == (Status.READY, False, False, Merge.PARENT)
+    assert (t.status, t.review, t.fix, t.merge) == (Status.READY, True, True, Merge.PARENT)
 
 
 def test_add_plan_with_review_stores_the_flags_and_creates_no_gate_node(env: Env) -> None:
     node_repo, _runtime, _ledger, ops = env
-    spec = ops.add_spec("S", slug="S1")
+    spec = ops.add_spec("S", slug="S1", review=False, fix=False)
     plan = ops.add_plan("P", spec, slug="P1", review=True, fix=True)
     stored = get(node_repo, plan)
     assert (stored.review, stored.fix) == (True, True)
@@ -177,9 +179,14 @@ def test_a_parent_write_that_leaves_a_child_rejection_unfixed_is_refused(env: En
     assert get(node_repo, plan).fix is True
 
 
-def test_landing_on_a_parent_is_refused_for_a_test_command_naming_origin_main(env: Env) -> None:
+def test_landing_on_a_parent_is_refused_for_a_test_command_naming_origin_main(
+    env: Env, tmp_path: Path
+) -> None:
     node_repo, _runtime, _ledger, ops = env
     _spec, _plan, task = tree(ops)
+    make_repo(tmp_path, "api")
+    ConfigStore(tmp_path).set("repos.api.push", "true")
+    ops.update_node(task, repo="api", merge=Merge.SPEC)
     ops.add_verification(
         task, VerificationType.TEST_COMMAND, "reads main", "git show origin/main:README.md"
     )
@@ -465,7 +472,7 @@ def test_a_move_completes_a_plan_left_with_nothing_to_land_and_keeps_one_with_co
 ) -> None:
     node_repo, _runtime, _ledger, ops = env
     work = repo_with_origin(tmp_path, "core")
-    spec = ops.add_spec("S", slug="S1")
+    spec = ops.add_spec("S", slug="S1", review=False, fix=False)
     empty, full = ops.add_plan("Empty", spec, slug="E"), ops.add_plan("Full", spec, slug="F")
     parked = ops.add_plan("Parked", spec, slug="Z")
     for plan in (empty, full):
@@ -670,7 +677,7 @@ def test_add_task_under_a_reviewed_plan_lands_on_its_branch_and_reviews_only_if_
     env: Env, given: dict[str, object], expected: tuple[bool, bool, Merge]
 ) -> None:
     node_repo, _runtime, _ledger, ops = env
-    spec = ops.add_spec("S", slug="S1")
+    spec = ops.add_spec("S", slug="S1", review=False, fix=False)
     plan = ops.add_plan("P", spec, slug="P1", review=True, fix=True)
     task = ops.add_task("T", plan, slug="T1", **given)  # type: ignore[arg-type]
     stored = get(node_repo, task)
@@ -693,7 +700,7 @@ def test_add_task_landing_on_main_unreviewed_under_a_reviewed_plan_is_refused(
     env: Env, given: dict[str, object]
 ) -> None:
     node_repo, _runtime, ledger, ops = env
-    spec = ops.add_spec("S", slug="S1")
+    spec = ops.add_spec("S", slug="S1", review=False, fix=False)
     plan = ops.add_plan("P", spec, slug="P1", review=True, fix=True)
     count = events(ledger)
     with pytest.raises(OperationError, match=f"S1-P1-T1: {UNREVIEWED_ON_MAIN}") as exc:
@@ -716,7 +723,7 @@ def test_an_update_sending_a_reviewed_plan_s_child_to_main_unreviewed_is_refused
 def test_turning_review_on_over_a_child_landing_on_main_unreviewed_is_refused(env: Env) -> None:
     node_repo, _runtime, _ledger, ops = env
     _spec, plan, task = tree(ops)
-    ops.update_node(task, review=False, fix=False)
+    ops.update_node(task, review=False, fix=False, merge=Merge.SPEC)
     with pytest.raises(OperationError, match=f"{task}: {UNREVIEWED_ON_MAIN}"):
         ops.update_node(plan, review=True, fix=True)
     assert get(node_repo, plan).review is False

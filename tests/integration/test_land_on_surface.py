@@ -28,7 +28,10 @@ def estate(tmp_path: Path) -> Path:
 
 def chain(root: Path, spec_args: list[str]) -> None:
     """S > S-P > S-P-T, the task landing on its plan's branch."""
-    assert tm(root, "spec", "add", "Spec", "--slug", "S", *spec_args)[0] == 0
+    assert (
+        tm(root, "spec", "add", "Spec", "--slug", "S", "--no-review", "--no-fix", *spec_args)[0]
+        == 0
+    )
     assert tm(root, "plan", "add", "Plan", "--spec", "S", "--slug", "P")[0] == 0
     assert (
         tm(root, "task", "add", "Task", "--plan", "S-P", "--slug", "T", "--merge", "parent")[0] == 0
@@ -48,7 +51,7 @@ def test_spec_add_land_on_is_the_branch_task_get_names_for_every_node_under_it(
     assert task_get(estate, "S")["frontmatter"] == {"land_on": "release/0.4"}
     for node_id in ("S", "S-P", "S-P-T"):
         assert task_get(estate, node_id)["lands_on"] == "release/0.4"
-    assert task_get(estate, "S-P-T")["landing_chain"] == ["S-P-T", "S-P"]
+    assert task_get(estate, "S-P-T")["landing_chain"] == ["S-P-T", "S-P", "S"]
 
 
 def test_without_land_on_task_get_names_the_default_branch(estate: Path) -> None:
@@ -85,11 +88,14 @@ def detail(client: TestClient, node_id: str) -> dict[str, object]:
 
 
 def test_post_spec_writes_land_on_and_its_nodes_name_the_branch(web: TestClient) -> None:
-    res = web.post("/api/specs", json={"title": "R", "slug": "R", "land_on": "release/0.4"})
+    res = web.post(
+        "/api/specs",
+        json={"title": "R", "slug": "R", "review": False, "fix": False, "land_on": "release/0.4"},
+    )
     assert res.status_code == 201, res.text
     assert web.post("/api/plans", json={"title": "Q", "spec": "R", "slug": "Q"}).status_code == 201
     assert detail(web, "R")["frontmatter"] == {"land_on": "release/0.4"}
-    assert detail(web, "R-Q")["base_chain"] == ["release/0.4"]
+    assert detail(web, "R-Q")["base_chain"] == ["R", "release/0.4"]
 
 
 def test_post_spec_refuses_a_branch_name_git_rejects(web: TestClient) -> None:
@@ -107,15 +113,15 @@ def test_post_plan_refuses_land_on(web: TestClient) -> None:
 
 
 def test_patch_spec_land_on_moves_every_lands_line_under_it(web: TestClient) -> None:
-    assert detail(web, "S-P-T")["base_chain"] == ["S-P", "main"]
+    assert detail(web, "S-P-T")["base_chain"] == ["S-P", "S", "main"]
     res = web.patch("/api/nodes/S", json={"land_on": "release/0.4"})
     assert res.status_code == 200, res.text
     assert res.json() == {"frontmatter.land_on": "release/0.4"}
     assert detail(web, "S")["base_chain"] == ["release/0.4"]
-    assert detail(web, "S-P-T")["base_chain"] == ["S-P", "release/0.4"]
+    assert detail(web, "S-P-T")["base_chain"] == ["S-P", "S", "release/0.4"]
     unset = web.patch("/api/nodes/S", json={"frontmatter_unset": ["land_on"]})
     assert unset.status_code == 200, unset.text
-    assert detail(web, "S-P-T")["base_chain"] == ["S-P", "main"]
+    assert detail(web, "S-P-T")["base_chain"] == ["S-P", "S", "main"]
 
 
 def test_patch_spec_refuses_a_branch_name_git_rejects(web: TestClient) -> None:
