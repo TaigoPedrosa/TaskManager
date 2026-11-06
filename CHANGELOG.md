@@ -5,6 +5,73 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.21] - 2026-11-06
+
+### Changed
+
+- Landings stay local. A repository pushes its landings to its remote only with
+  `repos.<repo>.push: true`. Otherwise every landing moves local branches, and a checked-out
+  target is updated in place. A missing local top is cut from the remote's copy of that branch,
+  or from the remote's default branch. Existing projects that should keep pushing run
+  `tm config set repos.<repo>.push true` once per repository.
+- A plan or spec lands as one squashed commit on its target. Its `tm/<id>` branch keeps the
+  granular history. A container with a child landed on it shows the branch holding its first
+  landing's history (`tm/<id>`, or `tm/<id>@<n>` once a fix retired it) as `backup` in
+  `tm task get --json`, in the web detail and in the `:merge` note, which also carries a
+  `squash: <repo> <sha>` line per landing.
+  - The commit subject is the spec's frontmatter `commit` (a string, or a map from repository
+    to string), else `<spec-id>: <title>`. A plan's subject is `<plan-id>: <title>`.
+  - A spec's fix landing folds into that one commit, keeping the previous head at
+    `backup/<spec-id>[-r<n>]`, when push is off and nothing of the range is on the remote.
+    Otherwise it lands as a second commit and the `:merge` note says why the fold was skipped.
+  - Every child defaults to `merge: parent`.
+  - Nodes stored before this release keep their stored flags and land as before.
+- One review per spec by default.
+  - A spec defaults to `review: true, fix: true`. A plan defaults to off and opts in with
+    `review: true`.
+  - A child's defaults read its nearest reviewed ancestor, so a task under one is reviewed only
+    when it is sensitive.
+  - A landed spec's review runs one reviewer per repository, then one seam reviewer across them
+    that closes the step.
+- A reviewer reads code only: the repositories the claim names, detached at the state under
+  review, never the spec, design, plan, brief or notes.
+  - Each reviewer runs the `code-review` skill at `high` effort.
+  - A review claimed from `LANDED` prints `squashes`, each repository's latest `squash:` line of
+    the `:merge` note, so a landing retried past its move and a restored node keep it.
+  - A re-review reads the branch's whole diff and judges only the open findings and their
+    answers.
+  - A container landed without a squash is read through every landing merge under it.
+  - A reviewer may run `tm guide review`. When a repository's reviewer dies, no seam reviewer
+    runs and the step is claimed again; the seam reviewer's worktrees carry a `-seam` suffix.
+  - `tm import` reads a task's review and fix defaults from its nearest reviewed ancestor, as
+    `tm task add` does.
+- The design skill records prior issues, premises checked, an architecture breakdown,
+  assumptions, seams and contracts (against a fixed risk checklist) and a test plan. A fresh
+  reviewer checks it before the approval gate. The plan skill writes the spec's `commit`
+  subject and a `<SPEC>-TESTS` plan.
+- No guide or brief states an exact test count. A counting row reads "at least N ran, none
+  failed or skipped".
+
+### Added
+
+- `tm spec archive` and `tm spec unarchive` move a finished spec, with its history, between the
+  hot `state.db` and `.taskmanager/archive.db`. A spec that has been finished for
+  `archive.automatically_after_hours` (default 72, 0 = never) is archived by `tm next`,
+  `tm run sweep` and the web; a spec that cannot be moved prints one warning and the rest carry
+  on. An id held in `archive.db` stays taken: `tm spec add` skips it and refuses it as a slug.
+  - `tm spec list` and `tm render` take `--archived`.
+  - The web archive, search and waves read the archive store.
+  - Export and restore carry `archive.db`.
+
+### Removed
+
+- The refusals in `tm task complete` for a guard with no check record and for a deletion whose
+  latest check is green, and the red-check instructions in every guide, skill and brief.
+  `tm check add` stays as an optional record.
+- `review.blind`. `tm config set` refuses it and a stored value is ignored.
+- `web.archive_after_days`. A config that stores it is refused until `tm config unset
+  web.archive_after_days` or `tm config set archive.automatically_after_hours <hours>` removes it.
+
 ## [0.3.20] - 2026-10-20
 
 ### Changed
