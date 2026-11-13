@@ -5,6 +5,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+
+- A landing on a local plan or spec branch moves a checkout of that branch along with its files,
+  and a checkout with uncommitted changes refuses the move. Before, the checkout stayed behind
+  with the landing staged as its reverse, and a commit from it undid the landing.
+- A landing rebuilt after an error squashes its own merge. Before, it squashed the merge of the
+  attempt before it, so commits added since never reached the target and the rest showed as
+  staged changes in the landing worktree.
+- The repository's own `pre-push` hook does not run when a landing moves a local branch.
+- Completing a node removes its worktree when the only thing in it is the codegraph index its
+  claim seeded.
+
 ## [0.3.21] - 2026-11-06
 
 ### Changed

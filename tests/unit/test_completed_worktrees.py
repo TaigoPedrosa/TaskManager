@@ -132,6 +132,23 @@ def test_completing_a_node_keeps_a_worktree_holding_uncommitted_work(
     assert (worktree / "notes.txt").read_text() == "keep me\n"
 
 
+@pytest.mark.parametrize("path", PATHS, ids=IDS)
+def test_completing_a_node_removes_a_worktree_holding_only_its_seeded_codegraph_index(
+    tmp_path: Path, path: Callable[[Claims], Completion]
+) -> None:
+    claims = estate(tmp_path)
+    node_id, worktree, complete = path(claims)
+    index = worktree / ".codegraph"
+    index.mkdir(exist_ok=True)
+    (index / ".gitignore").write_text("*\n!.gitignore\n")
+    (index / "codegraph.db").write_bytes(b"index")
+
+    complete()
+
+    assert stored(claims, node_id).status == Status.COMPLETED
+    assert not worktree.exists()
+
+
 def test_a_refused_write_to_completed_keeps_the_worktree(tmp_path: Path) -> None:
     claims = estate(tmp_path)
     add(claims, "T1", review=False)

@@ -457,8 +457,8 @@ class Operations:
 
     def drop_worktrees(self, node_id: str) -> None:
         """A completed node's code is on its target, so the worktrees its steps worked in go.
-        Its branch stays: a later sync reads it as the carrier of that code. A worktree git
-        refuses to remove, one holding uncommitted work, stays and is logged."""
+        Its branch stays: a later sync reads it as the carrier of that code. A worktree holding
+        uncommitted work stays and is logged; the codegraph index a claim seeded is not work."""
         # Set-aside nodes count here: a container whose children were all superseded still
         # holds the worktrees its steps cut in their repositories.
         repos: set[str] = set()
@@ -480,7 +480,7 @@ class Operations:
             try:
                 worktree = manager.find_worktree(branch)
                 if worktree is not None:
-                    manager.remove_worktree(worktree)
+                    manager.remove_worktree(worktree, force=gitops.holds_only_its_index(worktree))
             except (subprocess.CalledProcessError, OSError) as exc:
                 detail = getattr(exc, "stderr", None) or exc
                 _log.warning("kept the worktree of %s in %s: %s", node_id, repo, detail)

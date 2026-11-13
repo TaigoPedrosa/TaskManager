@@ -250,11 +250,6 @@ def merge_no_ff(worktree: Path, ref: str, subject: str) -> bool:
     raise subprocess.CalledProcessError(res.returncode, res.args, res.stdout, res.stderr)
 
 
-def update_ref_cas(repo: Path, ref: str, new: str, old: str) -> bool:
-    """Moves `ref` to `new` only if it still points at `old`."""
-    return _git(repo, "update-ref", ref, new, old).returncode == 0
-
-
 def holds_nothing_past(repo: Path, squash: str, branch: str) -> bool:
     """True when merging `branch` into `squash` changes nothing: every change the branch
     carries is already in the commit that squashed it."""
@@ -296,7 +291,8 @@ def push(
     repository's own push uses: a push refused because the target moved is merged in by the caller.
 
     With no remote the repository receives its own push: `updateInstead` moves a target checked
-    out in a clean worktree along with its files, and refuses one with uncommitted changes.
+    out in a clean worktree along with its files, and refuses one with uncommitted changes. It
+    publishes nothing, so the repository's `pre-push` hook does not run.
     """
     if remote is not None:
         return _git(worktree, "push", "-q", remote, f"HEAD:refs/heads/{target}")
@@ -305,11 +301,20 @@ def push(
         worktree,
         "push",
         "-q",
+        "--no-verify",
         *lease,
         "--receive-pack=git -c receive.denyCurrentBranch=updateInstead receive-pack",
         ".",
         f"HEAD:refs/heads/{target}",
     )
+
+
+def holds_only_its_index(worktree: Path) -> bool:
+    """Nothing in `worktree` differs from its HEAD but the `.codegraph/` index a claim seeds,
+    which git counts as untracked unless the repository ignores it."""
+    res = _git(worktree, "status", "--porcelain", "--untracked-files=all")
+    lines = res.stdout.splitlines()
+    return res.returncode == 0 and all(line.startswith("?? .codegraph/") for line in lines)
 
 
 def prune_worktrees(repo: Path) -> None:

@@ -204,7 +204,11 @@ def test_a_container_branch_that_moved_and_conflicts_parks_with_the_moved_sha_as
 ) -> None:
     claims, landing, _ = estate(tmp_path)
     conflicting(monkeypatch)
-    monkeypatch.setattr(gitops, "update_ref_cas", lambda repo, ref, new, old: False)
+    monkeypatch.setattr(
+        gitops,
+        "push",
+        lambda worktree, remote, target, lease=None: subprocess.CompletedProcess([], 1, "", ""),
+    )
     job = pushing(claims)
 
     assert landing._move_branch(job, Path(job.worktree or ""), "done") == JobState.NEEDS_AGENT

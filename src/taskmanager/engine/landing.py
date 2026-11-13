@@ -267,6 +267,9 @@ class Landing:
         gitops.add_detached_worktree(repo_dir, worktree, base)
         job.worktree = str(worktree)
         job.result["base_sha"] = base
+        # An earlier build's merge is not in this worktree: putting HEAD back on it would squash
+        # that build's tree and leave this one's staged.
+        job.result.pop("merged", None)
         if not gitops.merge_no_ff(worktree, branch, self._subject(job)):
             return self._needs_agent(job, "conflict")
         return "gate"
@@ -379,7 +382,9 @@ class Landing:
 
     def _move_branch(self, job: Job, worktree: Path, done: str) -> str | JobState:
         """Moves a local container branch to the worktree's HEAD by compare-and-swap, under the
-        branch's lock; a branch that moved meanwhile is merged in and gated again."""
+        branch's lock; a branch that moved meanwhile is merged in and gated again. The move is
+        the repository's own push, so a checkout of the branch moves with its files, and one
+        with uncommitted changes refuses it rather than being left with the move staged."""
         tries = int(job.result.get("push_tries", 0))
         if tries >= PUSH_TRIES:
             return self._needs_agent(job, "push_failed")
@@ -392,13 +397,17 @@ class Landing:
                 return self._state(job)
             if (stopped := self._squash(job, worktree)) is not None:
                 return stopped
-            head = gitops.rev_parse(worktree, "HEAD")
-            if gitops.update_ref_cas(repo_dir, ref, head, str(job.result["base_sha"])):
+            base = str(job.result["base_sha"])
+            run = gitops.push(worktree, None, job.target, f"{ref}:{base}")
+            if run.returncode == 0:
                 return done
             moved = gitops.rev_parse(repo_dir, ref)
         finally:
             self.jobs.release_branch(job.repo, job.target, job.id)
         job.result["push_tries"] = tries + 1
+        if moved == base:
+            job.result.setdefault("push_errors", []).append(_git_failure(run))
+            return "push"
         job.result["base_sha"] = moved
         self._unsquash(job, worktree)
         if not gitops.merge_no_ff(worktree, moved, f"merge({job.node_id}): {job.target} moved"):

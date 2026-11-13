@@ -1134,6 +1134,78 @@ def test_a_container_landing_killed_after_its_move_is_not_squashed_a_second_time
     assert git(api, "rev-parse", "tm/S") == squash
 
 
+def test_a_plan_landing_moves_a_clean_checkout_of_its_spec_branch_with_its_files(
+    tmp_path: Path,
+) -> None:
+    claims, landing = estate_with(tmp_path, TRUE)
+    api = plan_on_spec_branch(claims)
+    git(api, "switch", "-q", "tm/S")
+
+    assert land(claims, landing, "P")[1] == JobState.SUCCEEDED
+
+    assert git(api, "status", "--porcelain", "--untracked-files=no") == ""
+    assert (api / "b.py").read_text() == "b\n"
+
+
+def test_a_plan_landing_leaves_a_dirty_checkout_of_its_spec_branch_as_it_was(
+    tmp_path: Path,
+) -> None:
+    claims, landing = estate_with(tmp_path, TRUE)
+    api = plan_on_spec_branch(claims)
+    before = git(api, "rev-parse", "tm/S")
+    worktree = tmp_path / "owner"
+    git(api, "worktree", "add", "-q", str(worktree), "tm/S")
+    (worktree / "notes.py").write_text("mine\n")
+    git(worktree, "add", "notes.py")
+
+    job_id, state = land(claims, landing, "P")
+
+    assert state == JobState.NEEDS_AGENT
+    job = claims.jobs.get(job_id)
+    assert job is not None and job.result["reason"] == "push_failed"
+    assert "Working directory has staged changes" in job.result["push_errors"][-1]["stderr"]
+    assert git(api, "rev-parse", "tm/S") == before
+    assert git(worktree, "status", "--porcelain") == "A  notes.py"
+
+
+def test_a_container_branch_moves_past_a_pre_push_hook_that_refuses(tmp_path: Path) -> None:
+    claims, landing = estate_with(tmp_path, TRUE)
+    api = plan_on_spec_branch(claims)
+    hook = api / git(api, "rev-parse", "--git-path", "hooks/pre-push")
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+
+    assert land(claims, landing, "P")[1] == JobState.SUCCEEDED
+    assert git(api, "show", "tm/S:b.py") == "b"
+
+
+def test_a_landing_rebuilt_after_an_error_squashes_its_new_merge_and_not_the_one_before(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claims, landing = estate_with(tmp_path, TRUE)
+    api = plan_on_spec_branch(claims)
+    squash, failed = Landing._squash, []
+
+    def fails_once(self: Landing, job: Job, worktree: Path, parent: str | None = None) -> Any:
+        stopped = squash(self, job, worktree, parent)
+        if not failed:
+            failed.append(job.id)
+            raise RuntimeError("the move was cut off")
+        return stopped
+
+    monkeypatch.setattr(Landing, "_squash", fails_once)
+    job_id, state = land(claims, landing, "P")
+    assert state == JobState.NEEDS_AGENT
+    on_branch(api, "tm/P", "c.py", "c\n")
+    claims.start("P", "resolver", "s2")
+
+    assert landing.resume(job_id) == JobState.SUCCEEDED
+
+    assert git(api, "show", "tm/S:c.py") == "c"
+    assert git(api, "show", "tm/S:b.py") == "b"
+
+
 def local_spec(tmp_path: Path, push: bool = False) -> tuple[Claims, Landing, Path]:
     repos = {"api": RepoConfig(push=push, gates={"main": TRUE})}
     claims = make_estate(tmp_path, config=ProjectConfig(repos=repos))
