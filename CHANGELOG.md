@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.22] - 2026-11-16
+
 ### Fixed
 
 - A landing on a local plan or spec branch moves a checkout of that branch along with its files,
@@ -765,7 +767,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - A web visualizer with a live socket, and a static exporter.
 - The taskmanager and dispatcher skills, packaged as a Claude Code plugin.
 
-[Unreleased]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.20...HEAD
+[Unreleased]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.22...HEAD
+[0.3.22]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.21...v0.3.22
+[0.3.21]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.20...v0.3.21
 [0.3.20]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.19...v0.3.20
 [0.3.19]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.18...v0.3.19
 [0.3.18]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.17...v0.3.18
