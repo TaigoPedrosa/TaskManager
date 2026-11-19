@@ -78,17 +78,45 @@ class CacheRepository:
             if (now - parse_db_datetime(checked_at)).total_seconds() <= max_age
         }
 
-    def put_condition(self, node_id: str, idx: int, command: str, exit_code: int) -> None:
+    def condition_checked_at(self) -> dict[tuple[str, int], tuple[str, datetime]]:
+        """Every condition result, fresh or not, keyed by `(node_id, idx)` to its command hash and
+        when it was recorded."""
         with self.db.get_cache_connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO condition_results (node_id, idx, command_hash, exit_code, checked_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(node_id, idx) DO UPDATE SET
-                    command_hash = excluded.command_hash,
-                    exit_code = excluded.exit_code,
-                    checked_at = excluded.checked_at
-                """,
-                (node_id, idx, _command_hash(command), exit_code, to_db_timestamp(None)),
-            )
+            rows = conn.execute(
+                "SELECT node_id, idx, command_hash, checked_at FROM condition_results"
+            ).fetchall()
+        return {(n, i): (h, parse_db_datetime(at)) for n, i, h, at in rows}
+
+    def put_condition(self, node_id: str, idx: int, command: str, exit_code: int) -> None:
+        self.swap_condition(node_id, idx, command, exit_code)
+
+    def swap_condition(
+        self, node_id: str, idx: int, command: str, exit_code: int
+    ) -> tuple[str, int] | None:
+        """Stores the result and returns the command hash and exit code it replaced, expired or
+        not. The read and the write share one write lock, so of two runners storing the same
+        condition only the first sees the result the other is about to replace."""
+        with self.db.get_cache_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT command_hash, exit_code FROM condition_results "
+                    "WHERE node_id = ? AND idx = ?",
+                    (node_id, idx),
+                ).fetchone()
+                conn.execute(
+                    """
+                    INSERT INTO condition_results (node_id, idx, command_hash, exit_code, checked_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(node_id, idx) DO UPDATE SET
+                        command_hash = excluded.command_hash,
+                        exit_code = excluded.exit_code,
+                        checked_at = excluded.checked_at
+                    """,
+                    (node_id, idx, _command_hash(command), exit_code, to_db_timestamp(None)),
+                )
+            except BaseException:
+                conn.rollback()
+                raise
             conn.commit()
+        return None if row is None else (row[0], int(row[1]))

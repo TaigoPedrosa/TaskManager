@@ -5,6 +5,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- `tm monitor` prints the ledger events a dispatching session acts on, one per line, ending each
+  batch with `cursor <id>`. `--once` exits at the first batch and prints the `next:` command that
+  resumes it; a session keeps its cursor in `.taskmanager/monitor/<session>.json`. Under the Monitor
+  tool it streams. The dispatcher skill and `tm guide dispatch` run on it in place of `/loop`.
+- Three ledger rows feed it: `job parked`, `condition met` / `condition unmet` (written when a
+  condition's result flips) and `config set` / `config unset` (the key, never the value).
+- `tm wave discover --reserve <run>` holds each chosen node for the session for 600 s or until its
+  claim, so concurrent discoveries never choose the same node; `tm wave unreserve --session <id>
+  <node-id>…` frees ids. `tm-wave` passes `--reserve`.
+- `tm web --bg` (alias `--background`) starts the web in the background and `tm web stop` stops it.
+
+### Changed
+
+- An estate runs `tm db migrate` once: reservations are a new table in `state.db`.
+
+### Removed
+
+- The `dispatch.tick_min` and `dispatch.tick_max` config keys; `tm monitor` wakes the dispatcher.
+
 ## [0.3.22] - 2026-11-16
 
 ### Fixed

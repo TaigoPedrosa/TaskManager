@@ -59,11 +59,16 @@ class TaskManagerProvider(Provider):
 
     @provide(scope=Scope.APP)
     def condition_runner(
-        self, node_repo: NodeRepository, cache_repo: CacheRepository
+        self, node_repo: NodeRepository, cache_repo: CacheRepository, ledger_repo: LedgerRepository
     ) -> ConditionRunner:
         config = ConfigStore(self.root).project()
         return ConditionRunner(
-            self.root, node_repo, cache_repo, config.condition_ttl, config.condition_timeout
+            self.root,
+            node_repo,
+            cache_repo,
+            ledger_repo,
+            config.condition_ttl,
+            config.condition_timeout,
         )
 
     @provide(scope=Scope.APP)

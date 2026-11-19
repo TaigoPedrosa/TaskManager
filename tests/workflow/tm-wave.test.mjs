@@ -21,7 +21,9 @@ const jobAt = (state, extra = {}) =>
 const starts = ops => ops.filter(c => / task start /.test(c))
 const releases = ops => ops.filter(c => / task release /.test(c))
 const gets = ops => ops.filter(c => / task get /.test(c))
-const discoverCmd = ops => ops[0].match(/^out=\$\((.*) 2>&1\); rc=/)[1]
+// The first run id the fake tm mints.
+const RUN1 = '00000000000000000000000000000001'
+const discoverCmd = ops => ops.find(c => / wave discover /.test(c)).match(/^out=\$\((.*) 2>&1\); rc=/)[1]
 // A release the script makes without having read a claim can name only the agent.
 const RELEASE_T1 = 'tm task release T1 --agent wf-s1-T1 >/dev/null 2>&1'
 const releaseOf = token => `tm task release T1 --agent wf-s1-T1 --token ${token} >/dev/null 2>&1`
@@ -57,18 +59,116 @@ for (const key of ['release', 'maxFixRounds']) {
 test('discovery asks about every spec unless specs names some', async () => {
   const all = await runWave({ args: ARGS, tm: makeTm() })
   const some = await runWave({ args: { ...ARGS, specs: ['S1', 'S2'] }, tm: makeTm() })
-  assert.equal(discoverCmd(all.ops), 'tm wave discover --lines --session s1 --slots 9 --max-strong 5')
-  assert.equal(discoverCmd(some.ops), 'tm wave discover --lines --spec S1 --spec S2 --session s1 --slots 9 --max-strong 5')
+  assert.equal(discoverCmd(all.ops), `tm wave discover --lines --reserve ${RUN1} --session s1 --slots 9 --max-strong 5`)
+  assert.equal(discoverCmd(some.ops), `tm wave discover --lines --reserve ${RUN1} --spec S1 --spec S2 --session s1 --slots 9 --max-strong 5`)
 })
 
 test('discovery is told which merges to hold, so a held merge never takes a slot', async () => {
   const { ops } = await runWave({ args: { ...ARGS, holdMerge: ['T1', 'T2'] }, tm: makeTm() })
-  assert.equal(discoverCmd(ops), 'tm wave discover --lines --session s1 --slots 9 --max-strong 5 --hold-merge T1 --hold-merge T2')
+  assert.equal(discoverCmd(ops), `tm wave discover --lines --reserve ${RUN1} --session s1 --slots 9 --max-strong 5 --hold-merge T1 --hold-merge T2`)
 })
 
 test('a discovery transcript whose cksum never matches claims nothing', async () => {
   const tm = makeTm({ chosen: [T1], corrupt: inner => /wave discover/.test(inner) })
   await assert.rejects(runWave({ args: ARGS, tm }), /discovery failed three times/)
+})
+
+const unreserves = ops => ops.filter(c => / wave unreserve /.test(c))
+const unreserveOf = (...ids) => `tm wave unreserve --session s1 ${ids.join(' ')} >/dev/null 2>&1`
+
+const discovers = ops => ops.filter(c => / wave discover /.test(c))
+
+test('every discovery attempt of a run reserves under the one run id minted before the first', async () => {
+  let attempts = 0
+  const tm = makeTm({ chosen: [T1], nodes: { T1: node('FAILED', null) }, corrupt: inner => /wave discover/.test(inner) && ++attempts < 3 })
+  const { ops, errors } = await runWave({ args: ARGS, tm })
+  assert.deepEqual(errors, [])
+  assert.equal(ops[0], "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n'; echo")
+  assert.equal(discovers(ops).length, 3)
+  for (const c of discovers(ops)) assert.match(c, new RegExp(`--reserve ${RUN1} `))
+})
+
+test('each run mints its own run id', async () => {
+  const tm = makeTm({ chosen: [T1], nodes: { T1: node('FAILED', null) } })
+  const first = await runWave({ args: ARGS, tm })
+  const second = await runWave({ args: ARGS, tm })
+  assert.match(discoverCmd(first.ops), new RegExp(`--reserve ${RUN1} `))
+  assert.match(discoverCmd(second.ops), /--reserve 00000000000000000000000000000002 /)
+})
+
+test('a run whose id cannot be read discovers and claims nothing', async () => {
+  const lose = (o, cmd) => /urandom/.test(cmd)
+  await assert.rejects(runWave({ args: ARGS, tm: makeTm({ chosen: [T1] }), lose }), /no run id could be read/)
+})
+
+// A fake of tm's reservations: a discovery first drops its own run's, then skips every other one.
+test('a retry after a discovery whose output was lost chooses the same nodes, and the session holds no other reservation', async () => {
+  const T2 = { ...T1, id: 'T2' }
+  const held = new Map()
+  const tm = makeTm({
+    nodes: { T1: node('READY', 'implement'), T2: { ...node('READY', 'implement'), id: 'T2' } },
+    start: { T1: [json({ action: 'blocked', reason: 'x', job: null }, 3)], T2: [json({ action: 'blocked', reason: 'x', job: null }, 3)] },
+    discover: cmd => {
+      const run = cmd.match(/--reserve (\S+)/)[1]
+      for (const [id, r] of held) if (r === run) held.delete(id)
+      const chosen = [T1, T2].filter(n => !held.has(n.id))
+      for (const n of chosen) held.set(n.id, run)
+      return discovery(chosen)
+    },
+  })
+  let lost = 0
+  const { ops, logs, errors } = await runWave({ args: ARGS, tm, lose: (o, cmd) => /wave discover/.test(cmd) && ++lost === 1 })
+  assert.deepEqual(errors, [])
+  assert.equal(discovers(ops).length, 2)
+  assert.ok(logs.includes('wave: T1@implement/claude-sonnet-5-5, T2@implement/claude-sonnet-5-5; 0 waiting for a slot'), logs.join('\n'))
+  assert.deepEqual([...held.keys()].sort(), ['T1', 'T2'])
+  assert.deepEqual(unreserves(ops), [])
+})
+
+test('a discovery attempt that reads cleanly frees nothing before its claims', async () => {
+  const tm = makeTm({ chosen: [T1], nodes: { T1: node('READY', 'implement') }, start: { T1: [json({ action: 'blocked', reason: 'x', job: null }, 3)] } })
+  const { ops } = await runWave({ args: ARGS, tm })
+  assert.deepEqual(unreserves(ops), [])
+})
+
+test('the ids sliced off past maxBatch are freed for the next run before any claim', async () => {
+  const T2 = { ...T1, id: 'T2' }
+  const T3 = { ...T1, id: 'T3' }
+  const tm = makeTm({
+    chosen: [T1, T2, T3],
+    nodes: { T1: node('READY', 'implement') },
+    start: { T1: [json({ action: 'blocked', reason: 'x', job: null }, 3)] },
+  })
+  const { ops, errors } = await runWave({ args: { ...ARGS, maxBatch: 1 }, tm })
+  assert.deepEqual(errors, [])
+  assert.ok(ops.indexOf(unreserveOf('T2', 'T3')) < ops.findIndex(c => / task (get|start) /.test(c)))
+  assert.deepEqual(unreserves(ops), [unreserveOf('T2', 'T3')])
+})
+
+for (const [why, nodes, args] of [
+  ['its status cannot be read', {}, ARGS],
+  ['it turned terminal', { T1: node('FAILED', null) }, ARGS],
+  ['it has no next step', { T1: node('IMPLEMENTING', null) }, ARGS],
+  ['its merge is held', { T1: node('REVIEWED', 'merge', { outcome: 'approve' }) }, { ...ARGS, holdMerge: ['T1'] }],
+]) {
+  test(`a node whose run returns before its claim because ${why} has its reservation freed`, async () => {
+    const tm = makeTm({ chosen: [T1], nodes })
+    const { ops, errors } = await runWave({ args, tm })
+    assert.deepEqual(errors, [])
+    assert.deepEqual(starts(ops), [])
+    assert.deepEqual(unreserves(ops), [unreserveOf('T1')])
+  })
+}
+
+test('a claim whose transcript cannot be read frees the reservation tm task start may never have reached', async () => {
+  const tm = makeTm({
+    chosen: [T1],
+    nodes: { T1: node('READY', 'implement') },
+    start: { T1: [claim('implement', { worktree: '/wt/core-T1' })] },
+    corrupt: inner => / task start /.test(inner),
+  })
+  const { ops } = await runWave({ args: ARGS, tm })
+  assert.deepEqual(unreserves(ops), [unreserveOf('T1')])
 })
 
 test('a discovery line of an unknown shape claims nothing', async () => {
@@ -1023,8 +1123,9 @@ for (const [capabilities, expected] of [[{}, undefined], [{ 'python-dev': ['figm
 test('every op runs the tm the caller names', async () => {
   const tm = makeTm({ chosen: [T1], nodes: { T1: node('FAILED', null) } })
   const { ops } = await runWave({ args: { ...ARGS, tm: '/opt/tm-new/bin/tm' }, tm })
-  assert.ok(ops.length >= 2)
-  for (const cmd of ops) assert.ok(cmd.startsWith('/opt/tm-new/bin/tm ') || cmd.startsWith('out=$(/opt/tm-new/bin/tm '), cmd)
+  assert.ok(ops.length >= 3)
+  // The run id is the one op that is not a tm command.
+  for (const cmd of ops.slice(1)) assert.ok(cmd.startsWith('/opt/tm-new/bin/tm ') || cmd.startsWith('out=$(/opt/tm-new/bin/tm '), cmd)
 })
 
 // op() names the estate by exporting TM_ROOT ahead of the command it runs, so the runner's own
@@ -1127,7 +1228,7 @@ test('a session that does not know taskmanager:tm-op runs every command on tm-op
   const { calls, logs } = await runWave({ args: ARGS, tm, refuse: o => o.agentType === 'taskmanager:tm-op' })
   assert.ok(opTypes(calls).length >= 2)
   assert.deepEqual([...new Set(opTypes(calls))], ['tm-op'])
-  assert.deepEqual(runnerSwitches(logs), ['discover:attempt-1: the taskmanager:tm-op runner returned nothing; tm-op takes the rest of this run'])
+  assert.deepEqual(runnerSwitches(logs), ['run:id: the taskmanager:tm-op runner returned nothing; tm-op takes the rest of this run'])
 })
 
 test('a session that knows neither runner type runs every command on the generic runner', async () => {
@@ -1137,8 +1238,8 @@ test('a session that knows neither runner type runs every command on the generic
   assert.ok(opTypes(calls).length >= 2)
   assert.deepEqual([...new Set(opTypes(calls))], [undefined])
   assert.deepEqual(runnerSwitches(logs), [
-    'discover:attempt-1: the taskmanager:tm-op runner returned nothing; tm-op takes the rest of this run',
-    'discover:attempt-1: the tm-op runner returned nothing; the generic runner takes the rest of this run',
+    'run:id: the taskmanager:tm-op runner returned nothing; tm-op takes the rest of this run',
+    'run:id: the tm-op runner returned nothing; the generic runner takes the rest of this run',
   ])
 })
 
@@ -1148,7 +1249,8 @@ test('two commands failing on one runner type at once move past that type only',
   const refuse = o => o.agentType === 'taskmanager:tm-op' && o.phase !== 'Discover'
   const { calls, logs, result } = await runWave({ args: ARGS, tm, refuse })
   assert.deepEqual(result.results.map(r => r.status), ['FAILED', 'FAILED'])
-  assert.deepEqual(opTypes(calls), ['taskmanager:tm-op', 'tm-op', 'tm-op'])
+  // the run id and discover, then each node's read and the unreserve of a node it will not claim
+  assert.deepEqual(opTypes(calls), ['taskmanager:tm-op', 'taskmanager:tm-op', 'tm-op', 'tm-op', 'tm-op', 'tm-op'])
   assert.equal(runnerSwitches(logs).length, 1)
 })
 

@@ -117,6 +117,8 @@ export function makeTm({ chosen = [], nodes = {}, start = {}, job = {}, parked =
   // hands it over: `tm job resume` refuses every other caller.
   const stopped = new Set(parked)
   const handed = new Set()
+  // Each run id the fake mints is new, as /dev/urandom's would be.
+  let runs = 0
   const parse = text => {
     try {
       return JSON.parse(text)
@@ -190,6 +192,8 @@ export function makeTm({ chosen = [], nodes = {}, start = {}, job = {}, parked =
       if (/^\S+ task release \S+ --agent wf-\S+(?: --token \S+)? >\/dev\/null 2>&1$/.test(cmd)) {
         return { stdout: `__EXIT:${releaseExit}\n` }
       }
+      if (cmd === "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n'; echo") return { stdout: `${String(++runs).padStart(32, '0')}\n__EXIT:0\n` }
+      if (/^\S+ wave unreserve --session \S+( \S+)+ >\/dev\/null 2>&1$/.test(cmd)) return { stdout: '__EXIT:0\n' }
       throw new Error(`the fake tm has no reply for: ${cmd}`)
     },
   }

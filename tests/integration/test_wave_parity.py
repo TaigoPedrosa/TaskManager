@@ -86,3 +86,33 @@ def test_wave_one_matches_discover_under_a_claim_condition_and_a_repo_order(web:
     assert [e["id"] for e in api_entries] == [c["id"] for c in chosen]
     assert [e["action"] for e in api_entries] == [c["action"] for c in chosen]
     assert [e["repos"] for e in api_entries] == [c["repos"] for c in chosen]
+
+
+def _discover(root: Path, session: str, *args: str) -> list[str]:
+    res = runner.invoke(
+        cli_app,
+        ["wave", "discover", "--session", session, "--max-strong", "5", "--path", str(root), *args],
+    )
+    assert res.exit_code == 0, res.stdout
+    return [c["id"] for c in json.loads(res.stdout.splitlines()[0])["chosen"]]
+
+
+def test_wave_one_leaves_out_a_node_another_runs_discovery_reserved(web: Web) -> None:
+    client, root = web
+    ops = create_container(root).get(Operations)
+    subprocess.run(["git", "init", "-q", str(root / "api")], check=True)
+    ConfigStore(root).set("repos.api.gates.main.command", "true")
+    spec = ops.add_spec("Spec", slug="S")
+    plan = ops.add_plan("Plan", spec, slug="P", review=False, fix=False)
+    first = ops.add_task("First", plan, slug="A", priority=90)
+    second = ops.add_task("Second", plan, slug="B", priority=80)
+    for task in (first, second):
+        ops.update_node(task, repo="api")
+
+    assert _discover(root, "other", "--slots", "1", "--reserve", "r1") == [first]
+    chosen = _discover(root, "sess", "--slots", "5")
+
+    api_entries = client.get("/api/waves", params={"size": 5}).json()["waves"][0]["entries"]
+
+    assert chosen == [second]
+    assert [e["id"] for e in api_entries] == chosen

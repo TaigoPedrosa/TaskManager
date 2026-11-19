@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from taskmanager.core.enums import NodeKind
-from taskmanager.core.models import Condition, Job
+from taskmanager.core.models import Condition, Job, LedgerEvent
 from taskmanager.core.status import Action, ConditionStage, JobKind, JobState, Outcome, Status
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.job_repo import JobRepository
@@ -687,6 +687,16 @@ class Landing:
     def _needs_agent(self, job: Job, reason: str, **detail: str) -> JobState:
         if not self._end(job, JobState.NEEDS_AGENT, reason=reason, **detail):
             return self._state(job)
+        if not job.result.get("resumed"):
+            ops = self.claims.ops
+            ops.ledger_repo.append(
+                LedgerEvent(
+                    actor_id=ops.actor,
+                    command="job parked",
+                    target_id=job.node_id,
+                    payload={"job": job.id, "reason": reason},
+                )
+            )
         self.claims.park(job.node_id)
         if job.result.get("resumed"):
             # An agent took this job over and it stopped again unresolved; counting that is what

@@ -67,7 +67,7 @@ const MAX_POLLS = 8
 const TERMINAL = new Set(['COMPLETED', 'FAILED', 'DEFERRED', 'ABANDONED', 'SUPERSEDED'])
 const CLAIMED = { implement: 'IMPLEMENTING', review: 'REVIEWING', fix: 'FIXING' }
 const ACTIONS = ['implement', 'review', 'fix', 'merge', 'sync']
-const PHASE = { discover: 'Discover', read: 'Claim', start: 'Claim', release: 'Claim', job: 'Land' }
+const PHASE = { run: 'Discover', discover: 'Discover', unreserve: 'Claim', read: 'Claim', start: 'Claim', release: 'Claim', job: 'Land' }
 const WORK_PHASE = { implement: 'Implement', review: 'Review', fix: 'Fix' }
 
 // The plugin registers the runner as taskmanager:tm-op, and a copy under a project's or user's own
@@ -152,12 +152,20 @@ async function opJson(kind, id, cmd, opts = {}) {
   return { exit: r.exit, data, text: r.m[1] }
 }
 
+// One id for the whole run, the same on every discovery attempt: tm replaces the reservations an
+// earlier attempt of the run took, so a retry after a lost transcript chooses those nodes again.
+// The script has no clock or randomness of its own, and a resumed run replays this id.
+async function runId() {
+  const r = await op('run', 'id', "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n'; echo", /^([0-9a-f]{32})\n+__EXIT:(\d+)\s*$/)
+  return r ? r.m[1] : null
+}
+
 // `--lines` keeps the runner echoing short quote-free lines: a haiku runner retyping nested JSON
 // into a structured field drops keys. Returns the batch, or null when the transcription fails
 // its exit code or the shell's cksum.
-async function discover(attempt) {
+async function discover(attempt, run) {
   const cmd = [
-    `${TM} wave discover --lines`,
+    `${TM} wave discover --lines --reserve ${q(run)}`,
     ...SPECS.map(s => `--spec ${q(s)}`),
     `--session ${q(SESSION)}`,
     `--slots ${SLOTS | 0}`,
@@ -181,6 +189,13 @@ async function discover(attempt) {
     else if (tag) return null
   }
   return plan
+}
+
+// Only tm task start deletes a reservation, so ids this run will not claim are freed here rather
+// than sitting out the 600 s and filling this session's slots.
+async function unreserve(ids, label) {
+  const r = await op('unreserve', label, `${TM} wave unreserve --session ${q(SESSION)} ${ids.map(q).join(' ')} >/dev/null 2>&1`, /^__EXIT:(\d+)\s*$/)
+  if (!r || r.exit !== 0) log(`unreserve ${ids.join(', ')}: tm refused or the runner failed; the reservations lapse in 600 s`)
 }
 
 const agentName = n => `wf-${q(SESSION)}-${q(n.id)}`
@@ -240,6 +255,8 @@ async function start(n, trail) {
     { attempts: 1, once: true })
   if (!r) {
     await release(n, trail, 'its claim could not be read')
+    // The runner may have died before tm task start ran, which would have freed the reservation.
+    await unreserve([n.id], n.id)
     return null
   }
   const d = r.data || {}
@@ -458,10 +475,12 @@ When this node's own change is at fault, close with ${TM} job resume ${id} ${own
 async function run(n) {
   const trail = []
   const end = status => ({ id: n.id, status, trail })
+  // A run that returns before tm task start frees the reservation its discovery took.
+  const skip = async status => (await unreserve([n.id], n.id), end(status))
   const s = await read(n)
-  if (!s) return end('unreadable')
-  if (TERMINAL.has(s.status) || !s.next_action) return end(s.status)
-  if (s.next_action === 'merge' && HOLD_MERGE.has(n.id)) return trail.push('merge held by args.holdMerge'), end(s.status)
+  if (!s) return skip('unreadable')
+  if (TERMINAL.has(s.status) || !s.next_action) return skip(s.status)
+  if (s.next_action === 'merge' && HOLD_MERGE.has(n.id)) return trail.push('merge held by args.holdMerge'), skip(s.status)
   const c = await start(n, trail)
   if (!c) return end(s.status)
   if (c.action === 'blocked' && !c.job) return trail.push(`blocked: ${c.reason}`), end('blocked')
@@ -485,15 +504,19 @@ async function run(n) {
 }
 
 phase('Discover')
+const RUN = await runId()
+if (!RUN) throw new Error('no run id could be read; nothing was discovered or claimed')
 let plan = null
 for (let i = 1; i <= 3 && !plan; i++) {
-  plan = await discover(i)
+  plan = await discover(i, RUN)
   if (!plan) log(`discovery attempt ${i} failed its exit code or checksum`)
 }
 if (!plan) throw new Error('discovery failed three times; nothing was claimed')
 // A run holds at most min(16, CPUs - 2) agents at once, so a batch past that sits queued and unclaimed.
 if (A.maxBatch && plan.chosen.length > A.maxBatch) {
-  log(`maxBatch ${A.maxBatch}: left for the next run: ${plan.chosen.slice(A.maxBatch).map(n => n.id).join(', ')}`)
+  const left = plan.chosen.slice(A.maxBatch).map(n => n.id)
+  log(`maxBatch ${A.maxBatch}: left for the next run: ${left.join(', ')}`)
+  await unreserve(left, 'maxBatch')
   plan.chosen = plan.chosen.slice(0, A.maxBatch)
 }
 plan.held.forEach(h => log(`held: ${h}`))

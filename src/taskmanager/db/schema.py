@@ -14,7 +14,7 @@ SCHEMA_VERSION = 1
 
 # state.db: bumped and migrated separately, since it changes far more often than the ledger
 # or the cache.
-STATE_SCHEMA_VERSION = 8
+STATE_SCHEMA_VERSION = 9
 
 # Built from the enums so the vocabulary SQLite enforces and the one the code writes cannot drift.
 _CYCLE_STATUSES = ", ".join(f"'{s.value}'" for s in Status)
@@ -173,6 +173,17 @@ BEGIN
 END;
 """
 
+# A discovery's hold on a node it chose, until the claim or `expires_at`: beside the leases, so one
+# transaction reads both before choosing.
+_RESERVATIONS_SQL = """
+CREATE TABLE IF NOT EXISTS reservations (
+    node_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+"""
+
 # Quoted because `ALTER TABLE ... RENAME TO` writes the new name quoted, so a fresh estate and
 # one the migrations below rebuilt store byte-identical `sqlite_master.sql` for `nodes` and
 # `node_checks`.
@@ -303,6 +314,7 @@ CREATE TABLE IF NOT EXISTS branch_locks (
     + ";\n"
     + _CHECKS_TRIGGERS_SQL
     + _NOTES_SQL
+    + _RESERVATIONS_SQL
 )
 
 # One node's `rev` moves on any change to the node itself or to a section, verification,
@@ -456,6 +468,7 @@ STATE_MIGRATIONS: dict[int, str] = {
     + "DROP TABLE node_checks;\n"
     + "ALTER TABLE node_checks_new RENAME TO node_checks;\n"
     + _CHECKS_TRIGGERS_SQL,
+    9: _RESERVATIONS_SQL,
 }
 
 # Derived results only: dropping this database loses time, never state.

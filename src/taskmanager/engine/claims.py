@@ -19,7 +19,7 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
 from subprocess import CalledProcessError
@@ -347,6 +347,19 @@ class _UnmovedBranches:
         return True
 
 
+class RedTarget(NamedTuple):
+    repo: str
+    target: str
+    sha: str
+    slug: str
+    # When the oldest landing parked on it.
+    since: datetime
+    failing: list[str]
+    # The parked landings no step is running on, so a new edge can reach them.
+    held: list[str]
+    existing: Node | None
+
+
 class Claims:
     def __init__(
         self,
@@ -392,7 +405,15 @@ class Claims:
             ops,
             jobs,
             SnapshotBuilder(ops.node_repo, ops.runtime_repo, jobs),
-            ConditionRunner(root, ops.node_repo, cache, cfg.condition_ttl, cfg.condition_timeout),
+            ConditionRunner(
+                root,
+                ops.node_repo,
+                cache,
+                ops.ledger_repo,
+                cfg.condition_ttl,
+                cfg.condition_timeout,
+                ops.actor,
+            ),
         )
 
     def node(self, node_id: str) -> Node:
@@ -517,30 +538,34 @@ class Claims:
         ttl: int | None = None,
         worktree_dir: Path | None = None,
     ) -> ClaimResult:
-        self.node(node_id)
-        self.sweep()
-        node = self.node(node_id)
-        handed = self._hand_over(node, agent, session, ttl)
-        if handed is not None:
-            return handed
-        snap = self.snapshots.build()
-        cycle = self.snapshots.cycle(node)
-        action = lifecycle.next_action(cycle)
-        reason = self.blocked_reason(node, snap, action) or selection.ungated_reason(
-            selection.repos_of(snap, node.id, self.config.repo_order),
-            selection.gated_repos(self.config),
-        )
-        if reason is not None or action is None:
-            return ClaimResult(Action.BLOCKED, reason)
-        pairs = self._sync_pairs(node.id, snap)
-        units = self.sync_units(pairs) if pairs else []
-        if units:
-            # A dependency landed below a branch this node builds on: that branch catches up
-            # before any step starts on it, never after.
-            job = self._landing().start_sync(node.id, pairs)
-            branches = ", ".join(dict.fromkeys(base for _, base, _ in units))
-            return ClaimResult(Action.BLOCKED, f"syncing {branches}", job=job)
-        return self._claim(node, cycle, action, agent, session, ttl, worktree_dir, snap)
+        # The discovery that chose this node is answered whatever the claim's outcome.
+        try:
+            self.node(node_id)
+            self.sweep()
+            node = self.node(node_id)
+            handed = self._hand_over(node, agent, session, ttl)
+            if handed is not None:
+                return handed
+            snap = self.snapshots.build()
+            cycle = self.snapshots.cycle(node)
+            action = lifecycle.next_action(cycle)
+            reason = self.blocked_reason(node, snap, action) or selection.ungated_reason(
+                selection.repos_of(snap, node.id, self.config.repo_order),
+                selection.gated_repos(self.config),
+            )
+            if reason is not None or action is None:
+                return ClaimResult(Action.BLOCKED, reason)
+            pairs = self._sync_pairs(node.id, snap)
+            units = self.sync_units(pairs) if pairs else []
+            if units:
+                # A dependency landed below a branch this node builds on: that branch catches up
+                # before any step starts on it, never after.
+                job = self._landing().start_sync(node.id, pairs)
+                branches = ", ".join(dict.fromkeys(base for _, base, _ in units))
+                return ClaimResult(Action.BLOCKED, f"syncing {branches}", job=job)
+            return self._claim(node, cycle, action, agent, session, ttl, worktree_dir, snap)
+        finally:
+            self.runtime.unreserve(node_id)
 
     def _hand_over(
         self, node: Node, agent: str, session: str, ttl: int | None
@@ -1154,6 +1179,7 @@ class Claims:
 
     def sweep(self) -> list[str]:
         swept = self.runtime.sweep_expired_leases()
+        self.runtime.sweep_expired_reservations()
         for node in self.nodes.list_nodes():
             if (
                 node.id not in swept
@@ -1223,11 +1249,8 @@ class Claims:
         self._ledger("job stopped again", node_id, {"step_failures": failures})
         return Status(node.status)
 
-    def _escalate_red_targets(self) -> list[str]:
-        """One decision per red target that has held landings longer than
-        red_target_decision_after, blocking every landing it holds. A node mid-step cannot take
-        a new edge and is linked on a later sweep; a refusal is logged, never raised, since
-        every claim sweeps first."""
+    def _red_targets(self) -> list[RedTarget]:
+        """Every red target some parked landing waits on, however recently it was parked."""
         # One bulk read carries both the nodes and their conditions, so this sweep costs a fixed
         # number of statements regardless of estate size: every claim runs it, and discovery
         # sweeps before every wave.
@@ -1250,43 +1273,91 @@ class Claims:
             # A mark parked before marks named their target was parked on the default branch.
             key = (str(mark["repo"]), str(mark.get("target", DEFAULT_BRANCH)), str(mark["sha"]))
             parked.setdefault(key, []).append((node.id, since, list(mark["failing"])))
-        opened: list[str] = []
-        now = datetime.now(tz=UTC)
+        found: list[RedTarget] = []
         for (repo, target, sha), entries in parked.items():
-            oldest = min(since for _, since, _ in entries)
-            if (now - oldest).total_seconds() < self.config.red_target_decision_after:
-                continue
             # Main and a container branch can be red at one sha; each needs its own fixer.
             slug = f"red-target-{repo.replace('/', '-')}-{target.replace('/', '-')}-{sha[:12]}"
-            held = [node_id for node_id, _, _ in entries if not self.ops.busy(node_id)]
             # An open decision stored before the repository's `/` was replaced keeps its id.
             existing = self.nodes.get_node(f"decision-{slug}") or self.nodes.get_node(
                 f"decision-red-target-{repo}-{target.replace('/', '-')}-{sha[:12]}"
             )
+            found.append(
+                RedTarget(
+                    repo=repo,
+                    target=target,
+                    sha=sha,
+                    slug=slug,
+                    since=min(since for _, since, _ in entries),
+                    failing=entries[0][2],
+                    held=[n for n, _, _ in entries if not self.ops.busy(n)],
+                    existing=existing,
+                )
+            )
+        return found
+
+    def _red_target_decision_after(self) -> timedelta:
+        return timedelta(seconds=self.config.red_target_decision_after)
+
+    def red_targets_due(
+        self, now: datetime | None = None, targets: list[RedTarget] | None = None
+    ) -> list[RedTarget]:
+        """The red targets that have held landings longer than red_target_decision_after and have
+        no decision yet: the ones whose fixer still has to be asked for. `targets` is a read the
+        caller already made."""
+        at = now or datetime.now(tz=UTC)
+        return [
+            t
+            for t in (self._red_targets() if targets is None else targets)
+            if t.existing is None and t.held and at - t.since >= self._red_target_decision_after()
+        ]
+
+    def red_target_deadlines(self) -> list[datetime]:
+        """When each red target still without a decision falls due."""
+        return [
+            t.since + self._red_target_decision_after()
+            for t in self._red_targets()
+            if t.existing is None and t.held
+        ]
+
+    def _escalate_red_targets(self) -> list[str]:
+        """One decision per red target that has held landings longer than
+        red_target_decision_after, blocking every landing it holds. A node mid-step cannot take
+        a new edge and is linked on a later sweep; a refusal is logged, never raised, since
+        every claim sweeps first."""
+        opened: list[str] = []
+        now = datetime.now(tz=UTC)
+        targets = self._red_targets()
+        for t in self.red_targets_due(now, targets):
             try:
-                if existing is None and held:
-                    opened.append(
-                        self.ops.add_decision(
-                            f"{target} of {repo} is red at {sha[:12]} and {len(held)} "
-                            f"landing(s) wait on it: who fixes {target}?",
-                            slug=slug,
-                            context=f"Failing on {target} and at every parked landing:\n"
-                            + "\n".join(entries[0][2]),
-                            options=[
-                                f"fixed|{target} is fixed; the parked landings retry on their own",
-                                f"investigate|Someone investigates the red {target}",
-                            ],
-                            blocks=held,
-                        )
+                opened.append(
+                    self.ops.add_decision(
+                        f"{t.target} of {t.repo} is red at {t.sha[:12]} and {len(t.held)} "
+                        f"landing(s) wait on it: who fixes {t.target}?",
+                        slug=t.slug,
+                        context=f"Failing on {t.target} and at every parked landing:\n"
+                        + "\n".join(t.failing),
+                        options=[
+                            f"fixed|{t.target} is fixed; the parked landings retry on their own",
+                            f"investigate|Someone investigates the red {t.target}",
+                        ],
+                        blocks=t.held,
                     )
-                elif existing is not None and existing.status == DecisionStatus.OPEN:
-                    unlinked = [
-                        n for n in held if existing.id not in self.nodes.get_dependencies(n)
-                    ]
-                    if unlinked:
-                        self.ops.link_decision(existing.id, add=unlinked)
+                )
             except OperationError as exc:
-                _log.warning("red %s of %s at %s not escalated: %s", target, repo, sha, exc)
+                _log.warning("red %s of %s at %s not escalated: %s", t.target, t.repo, t.sha, exc)
+        for t in targets:
+            if (
+                t.existing is None
+                or t.existing.status != DecisionStatus.OPEN
+                or now - t.since < self._red_target_decision_after()
+            ):
+                continue
+            unlinked = [n for n in t.held if t.existing.id not in self.nodes.get_dependencies(n)]
+            try:
+                if unlinked:
+                    self.ops.link_decision(t.existing.id, add=unlinked)
+            except OperationError as exc:
+                _log.warning("red %s of %s at %s not escalated: %s", t.target, t.repo, t.sha, exc)
         return opened
 
     def _expire_jobs(self, node_id: str) -> int:

@@ -5,13 +5,14 @@ import logging
 import os
 import re
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
 import time
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, NoReturn, cast
 from urllib.parse import quote
@@ -86,6 +87,7 @@ from taskmanager.engine.decisions import DECISION_STATUS_LABELS, read_decision
 from taskmanager.engine.discovery import discover, djb2
 from taskmanager.engine.heuristics import RecommendationEngine
 from taskmanager.engine.landing import Landing
+from taskmanager.engine.monitor import Clock, Monitor, SystemClock, ledger_changes
 from taskmanager.engine.operations import GUIDE_NODE, OperationError, Operations
 from taskmanager.engine.search import SearchEngine, SearchError
 from taskmanager.engine.snapshot import (
@@ -2058,6 +2060,18 @@ def run_sweep(
         print("[green]No expired leases found.[/green]")
 
 
+_RUN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def _run_id(run: str | None) -> str | None:
+    if run is not None and _RUN_RE.fullmatch(run) is None:
+        raise typer.BadParameter(
+            f"{run!r} must start with a letter or digit and hold only letters, digits, '.', "
+            "'_' and '-'"
+        )
+    return run
+
+
 @wave_app.command("discover")
 def wave_discover(
     session: Annotated[str, typer.Option("--session", help="Dispatching session id")],
@@ -2079,6 +2093,16 @@ def wave_discover(
         list[str] | None,
         typer.Option("--hold-merge", help="Node id whose merge is not offered, repeatable"),
     ] = None,
+    reserve: Annotated[
+        str | None,
+        typer.Option(
+            "--reserve",
+            metavar="RUN",
+            callback=_run_id,
+            help="Hold each chosen id for this session until its claim, or 600 s, so no other "
+            "discovery chooses it; RUN's earlier reservations are replaced",
+        ),
+    ] = None,
     lines: Annotated[
         bool,
         typer.Option(
@@ -2095,9 +2119,9 @@ def wave_discover(
     the checksum lets the caller reject a transcription that is not byte-exact. `--lines` exists
     for a small-model runner, which drops keys when it retypes nested JSON into a string field.
     """
-    claims = _claims(_get_root(path))
+    claims = _claims(_get_root(path), agent=session)
     payload, chosen_count = discover(
-        claims, spec or None, session, slots, max_strong, exclude, hold_merge
+        claims, spec or None, session, slots, max_strong, exclude, hold_merge, reserve
     )
     if not lines:
         sys.stdout.write(f"{payload}\n__CHECK n={chosen_count} h={djb2(payload)}\n")
@@ -2117,6 +2141,16 @@ def wave_discover(
     out += [f"H {' '.join(held.split())}" for held in data.get("held", [])]
     out.append(f"W {data.get('waiting_for_slot', 0)}")
     sys.stdout.write("\n".join(out) + "\n")
+
+
+@wave_app.command("unreserve")
+def wave_unreserve(
+    node_ids: Annotated[list[str], typer.Argument(help="Node ids this session will not claim")],
+    session: Annotated[str, typer.Option("--session", help="Session the reservations name")],
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Free the ids a `tm wave discover --reserve` of this session chose but will not claim."""
+    _get_container(_get_root(path)).get(RuntimeRepository).unreserve_own(session, node_ids)
 
 
 @verify_app.command("add")
@@ -2659,7 +2693,7 @@ def _dispatch_targets(text: str, root: Path) -> str:
     # str.format would choke on the guide's own literal braces (a code span like `{...}`), so
     # only these known `{{token}}` spots are substituted.
     values = {k: r.value for k, r in ConfigStore(root).effective().items()}
-    for token in ("tick_min", "tick_max", "wave_size", "tick_budget"):
+    for token in ("wave_size", "tick_budget"):
         text = text.replace(f"{{{{{token}}}}}", str(values[f"dispatch.{token}"]))
     return text
 
@@ -3087,6 +3121,7 @@ def config_set(
     root = _get_root(path)
     with _user_errors(), _refusing():
         _config_store(root).set(key, value)
+    _record_ledger(_get_container(root), "config set", "config", payload={"key": key})
     print(f"[green]Set {escape(key)}[/green]")
 
 
@@ -3099,6 +3134,7 @@ def config_unset(
     root = _get_root(path)
     with _user_errors(), _refusing():
         _config_store(root).unset(key)
+    _record_ledger(_get_container(root), "config unset", "config", payload={"key": key})
     print(f"[green]Unset {escape(key)}[/green]")
 
 
@@ -3174,6 +3210,113 @@ def search_cmd(
 def root_cmd(path: Annotated[Path | None, typer.Option("--path", "-C")] = None) -> None:
     """Print the project root `tm` resolved (a `target_repo` is `<root>/<target_repo>`)."""
     sys.stdout.write(f"{_get_root(path)}\n")
+
+
+_SESSION_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# Rows written in the same moment as the first printable one belong in its batch.
+_ONCE_SETTLE_SECONDS = 2.0
+_ONCE_POLL_SECONDS = 3600.0
+
+
+def _monitor_usage(message: str) -> NoReturn:
+    _stderr.print(f"[red]{escape(message)}[/red]")
+    raise typer.Exit(code=2)
+
+
+def _read_monitor_cursor(file: Path) -> tuple[int, list[str] | None, frozenset[str]] | None:
+    if not file.is_file():
+        return None
+    stored = json.loads(file.read_text())
+    return int(stored["after"]), stored["specs"], frozenset(stored.get("due", []))
+
+
+def _write_monitor_cursor(
+    file: Path, after: int, specs: list[str] | None, due: frozenset[str] = frozenset()
+) -> None:
+    file.parent.mkdir(parents=True, exist_ok=True)
+    pending = file.with_suffix(".tmp")
+    pending.write_text(json.dumps({"after": after, "specs": specs, "due": sorted(due)}))
+    pending.replace(file)
+
+
+def _emit_batch(lines: list[str], cursor: int, trailer: list[str]) -> None:
+    sys.stdout.write("".join(f"{line}\n" for line in [*lines, f"cursor {cursor}", *trailer]))
+    sys.stdout.flush()
+
+
+@app.command("monitor")
+def monitor_cmd(
+    once: Annotated[bool, typer.Option("--once", help="Print one batch and exit")] = False,
+    after: Annotated[int | None, typer.Option("--after", help="Ledger id to read past")] = None,
+    session: Annotated[
+        str | None, typer.Option("--session", help="Keeps a cursor and scope")
+    ] = None,
+    spec: Annotated[list[str] | None, typer.Option("--spec", help="Spec to scope to")] = None,
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Print what happened in the estate past a cursor: one batch per change, or with `--once` the
+    first batch with something to say and the command that continues from it."""
+    if session is not None and not _SESSION_NAME.match(session):
+        _monitor_usage(f"a session name matches {_SESSION_NAME.pattern}, not {session!r}")
+    root = _get_root(path)
+    file = root / ".taskmanager" / "monitor" / f"{session}.json" if session else None
+    try:
+        claims = _claims(root)
+        newest = _ledger_sequence(claims)
+        if after is not None and after > newest:
+            _monitor_usage(f"--after {after} is past the ledger's newest id {newest}")
+        stored = _read_monitor_cursor(file) if file else None
+        specs = spec or (stored[1] if stored else None)
+        cursor = after if after is not None else stored[0] if stored else None
+        clock = SystemClock()
+        monitor = Monitor(
+            claims, clock, ledger_changes(claims), stored[2] if stored else frozenset()
+        )
+
+        def settle(found: int, lines: list[str]) -> None:
+            trailer: list[str] = []
+            if once:
+                who = f" --session {session}" if session else ""
+                trailer = [
+                    f"next: tm monitor --once{who} --after {found}"
+                    + "".join(f" --spec {s}" for s in specs or [])
+                ]
+            _emit_batch(lines, found, trailer)
+            if file:
+                _write_monitor_cursor(file, found, specs, monitor.announced)
+
+        if cursor is None:
+            cursor = newest
+            sys.stdout.write("start\n")
+            _emit_batch([], cursor, [])
+            if file:
+                _write_monitor_cursor(file, cursor, specs, monitor.announced)
+            if once:
+                return
+        while True:
+            found = monitor.wait(cursor, specs, session, _ONCE_POLL_SECONDS)
+            cursor = found.cursor
+            if not found.lines:
+                continue
+            if once:
+                clock.sleep(_ONCE_SETTLE_SECONDS)
+                more = monitor.batch(cursor, specs, session)
+                settle(more.cursor, [*found.lines, *more.lines])
+                return
+            settle(cursor, found.lines)
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        _stderr.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(code=1) from exc
+
+
+def _ledger_sequence(claims: Claims) -> int:
+    with claims.ops.ledger_repo.db.get_ledger_connection() as conn:
+        row = conn.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name = 'ledger_events'"
+        ).fetchone()
+    return int(row[0]) if row else 0
 
 
 _IMPORT_SUFFIXES = {
@@ -3307,17 +3450,56 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
-def _run_web_server(
-    host: str, port: int, open_browser: bool, path: Path | None, expose: bool
-) -> None:
-    import threading
-    import time
-    import webbrowser
+_WEB_READY_SECONDS = 10.0
+_WEB_STOP_SECONDS = 5.0
+_WEB_LOG_TAIL = 20
 
-    import uvicorn
 
-    from taskmanager.web.app import create_app
+def _web_record(root: Path) -> Path:
+    return root / ".taskmanager" / "web.json"
 
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _process_start(pid: int) -> str | None:
+    # Field 22 of /proc/<pid>/stat is the start tick; it tells a reused pid from the server.
+    # The comm field may hold spaces, so the split starts after its closing parenthesis.
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    return stat.rpartition(")")[2].split()[19]
+
+
+def _read_web_record(root: Path) -> dict[str, Any] | None:
+    try:
+        record = json.loads(_web_record(root).read_text())
+    except OSError, ValueError:
+        return None
+    if not isinstance(record, dict) or not isinstance(record.get("pid"), int):
+        return None
+    return record
+
+
+def _live_web_record(root: Path) -> dict[str, Any] | None:
+    record = _read_web_record(root)
+    if record is None or not _pid_alive(record["pid"]):
+        return None
+    started = record.get("started")
+    if started is not None and _process_start(record["pid"]) not in (None, started):
+        return None
+    return record
+
+
+def _checked_web_root(host: str, path: Path | None, expose: bool) -> Path:
     # The Host pin stops a browser, not a script: any client that reaches the port can send
     # `Host: localhost` and then add and run a verification command.
     if not expose and not _is_loopback(host):
@@ -3336,6 +3518,28 @@ def _run_web_server(
             f"[red]Error:[/red] TaskManager is not initialized in {root}. Run 'tm init' first."
         )
         raise typer.Exit(code=1)
+    return root
+
+
+def _open_browser_soon(url: str) -> None:
+    import threading
+    import webbrowser
+
+    def _open() -> None:
+        time.sleep(0.6)
+        webbrowser.open(url)
+
+    threading.Thread(target=_open, daemon=True).start()
+
+
+def _run_web_server(
+    host: str, port: int, open_browser: bool, path: Path | None, expose: bool
+) -> None:
+    import uvicorn
+
+    from taskmanager.web.app import create_app
+
+    root = _checked_web_root(host, path, expose)
 
     actual_port = _find_available_port(host, port)
     if actual_port != port:
@@ -3350,15 +3554,76 @@ def _run_web_server(
     print(f"[dim]Live WebSocket connected at ws://{escape(netloc)}/ws[/dim]")
 
     if open_browser:
-
-        def _open() -> None:
-            time.sleep(0.6)
-            webbrowser.open(server_url)
-
-        threading.Thread(target=_open, daemon=True).start()
+        _open_browser_soon(server_url)
 
     fastapi_app = create_app(root, host=host, port=actual_port)
-    uvicorn.run(fastapi_app, host=host, port=actual_port, log_level="warning")
+    _web_record(root).write_text(
+        json.dumps({"pid": os.getpid(), "url": server_url, "started": _process_start(os.getpid())})
+    )
+    try:
+        uvicorn.run(fastapi_app, host=host, port=actual_port, log_level="warning")
+    finally:
+        record = _read_web_record(root)
+        if record is not None and record["pid"] == os.getpid():
+            _web_record(root).unlink(missing_ok=True)
+
+
+def _web_child_command(host: str, port: int, root: Path, expose: bool) -> list[str]:
+    return [
+        sys.executable,
+        "-c",
+        "from taskmanager.cli.main import main; main()",
+        "web",
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "-C",
+        str(root),
+        "--no-open",
+        *(["--expose"] if expose else []),
+    ]
+
+
+def _web_answers(url: str) -> bool:
+    import httpx
+
+    try:
+        return httpx.get(url + "/", timeout=1.0).status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+def _start_web_background(
+    root: Path, command: list[str], clock: Clock | None = None
+) -> dict[str, Any]:
+    clock = clock or SystemClock()
+    log = root / ".taskmanager" / "web.log"
+    with log.open("ab") as log_file:
+        child = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=log_file,
+            start_new_session=True,
+        )
+    deadline = clock.now() + timedelta(seconds=_WEB_READY_SECONDS)
+    while child.poll() is None and clock.now() < deadline:
+        record = _read_web_record(root)
+        if record is not None and record["pid"] == child.pid and _web_answers(record["url"]):
+            return record
+        clock.sleep(0.2)
+    if child.poll() is None:
+        child.terminate()
+        try:
+            child.wait(timeout=_WEB_STOP_SECONDS)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait()
+    tail = log.read_text(errors="replace").splitlines()[-_WEB_LOG_TAIL:]
+    _stderr.print(escape("\n".join(tail)))
+    _stderr.print(f"[red]Error:[/red] the web server did not become ready; see {escape(str(log))}")
+    raise typer.Exit(code=1)
 
 
 @web_app.callback(invoke_without_command=True)
@@ -3375,10 +3640,53 @@ def web_callback(
     expose: Annotated[
         bool, typer.Option("--expose", help="Allow a --host other than loopback")
     ] = False,
+    background: Annotated[
+        bool,
+        typer.Option("--bg", "--background", help="Serve from a detached process and return"),
+    ] = False,
 ) -> None:
     """Interactive web visualizer and dashboard."""
-    if ctx.invoked_subcommand is None:
+    if ctx.invoked_subcommand is not None:
+        return
+    if not background:
         _run_web_server(host=host, port=port, open_browser=open_browser, path=path, expose=expose)
+        return
+    root = _checked_web_root(host, path, expose)
+    record = _live_web_record(root)
+    if record is None:
+        record = _start_web_background(root, _web_child_command(host, port, root, expose))
+    print(
+        f"[green]TaskManager Web Visualizer at[/green] [bold cyan]{escape(record['url'])}[/bold cyan]"
+    )
+    print(f"pid {record['pid']}, log {escape(str(root / '.taskmanager' / 'web.log'))}")
+    if open_browser:
+        _open_browser_soon(record["url"])
+        time.sleep(1.0)
+
+
+@web_app.command("stop")
+def web_stop(
+    path: Annotated[
+        Path | None, typer.Option("--path", "-C", help="Project root directory")
+    ] = None,
+) -> None:
+    """Stop the background web server."""
+    root = _get_root(path)
+    record = _live_web_record(root)
+    if record is None:
+        _web_record(root).unlink(missing_ok=True)
+        print("No background web server is running.")
+        return
+    pid = record["pid"]
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + _WEB_STOP_SECONDS
+    while _pid_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    if _pid_alive(pid):
+        _stderr.print(f"[red]Error:[/red] pid {pid} is still running after {_WEB_STOP_SECONDS:g} s")
+        raise typer.Exit(code=1)
+    _web_record(root).unlink(missing_ok=True)
+    print(f"Stopped the web server at {escape(record['url'])} (pid {pid}).")
 
 
 @web_app.command("export")
@@ -3415,7 +3723,7 @@ def db_migrate(
     ] = None,
 ) -> None:
     """Copy .taskmanager/state.db to .taskmanager/state.db.schema<n>.bak with SQLite's backup
-    API, then migrate it from schema <n> to the schema this tm reads."""
+    API, then migrate it from schema <n> to the schema this tm reads; archive.db likewise."""
     root = _get_root(path)
     _refuse_pre_lifecycle(root)
     db = DatabaseManager(root / ".taskmanager")
@@ -3431,11 +3739,23 @@ def db_migrate(
         raise typer.Exit(code=1) from None
     if found is None:
         print(f"state.db is current at schema {STATE_SCHEMA_VERSION}: nothing to migrate")
+    else:
+        print(
+            f"[green]Migrated state.db from schema {found} to {STATE_SCHEMA_VERSION}[/green]; "
+            f"the schema-{found} copy is {escape(str(db.state_backup(found)))}"
+        )
+    if not archive_path(root).exists():
         return
-    print(
-        f"[green]Migrated state.db from schema {found} to {STATE_SCHEMA_VERSION}[/green]; "
-        f"the schema-{found} copy is {escape(str(db.state_backup(found)))}"
-    )
+    # archive.db holds the state schema too, and reading it refuses any other version.
+    archive = DatabaseManager(root / ".taskmanager")
+    archive.state_db = archive_path(root)
+    archived = archive.migrate_state()
+    if archived is not None:
+        print(
+            f"[green]Migrated archive.db from schema {archived} to {STATE_SCHEMA_VERSION}"
+            f"[/green]; the schema-{archived} copy is "
+            f"{escape(str(archive.state_backup(archived)))}"
+        )
 
 
 def main() -> None:

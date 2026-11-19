@@ -240,6 +240,53 @@ class RuntimeRepository:
             conn.execute("DELETE FROM file_locks WHERE task_id = ?", (task_id,))
             self.db.spec_commit(conn)
 
+    def live_reservations(self, now: datetime) -> dict[str, str]:
+        """Each node with an unexpired reservation, and the session holding it."""
+        with self.db.get_state_connection() as conn:
+            rows = conn.execute("SELECT node_id, session_id, expires_at FROM reservations")
+            return {
+                node_id: session
+                for node_id, session, expires_at in rows
+                if parse_db_datetime(expires_at) > now
+            }
+
+    def reserve(self, node_ids: list[str], session: str, run: str, expires_at: datetime) -> None:
+        with self.db.get_state_connection() as conn:
+            conn.executemany(
+                "INSERT OR REPLACE INTO reservations (node_id, session_id, run_id, expires_at) "
+                "VALUES (?, ?, ?, ?)",
+                [(node_id, session, run, to_db_timestamp(expires_at)) for node_id in node_ids],
+            )
+            self.db.spec_commit(conn)
+
+    def unreserve_run(self, run: str) -> None:
+        with self.db.get_state_connection() as conn:
+            conn.execute("DELETE FROM reservations WHERE run_id = ?", (run,))
+            self.db.spec_commit(conn)
+
+    def unreserve(self, node_id: str) -> None:
+        with self.db.get_state_connection() as conn:
+            conn.execute("DELETE FROM reservations WHERE node_id = ?", (node_id,))
+            self.db.spec_commit(conn)
+
+    def unreserve_own(self, session: str, node_ids: list[str]) -> None:
+        with self.db.get_state_connection() as conn:
+            conn.executemany(
+                "DELETE FROM reservations WHERE node_id = ? AND session_id = ?",
+                [(node_id, session) for node_id in node_ids],
+            )
+            self.db.spec_commit(conn)
+
+    def sweep_expired_reservations(self) -> None:
+        now = datetime.now(tz=UTC)
+        with self.db.spec_transaction() as conn:
+            rows = conn.execute("SELECT node_id, expires_at FROM reservations").fetchall()
+            conn.executemany(
+                "DELETE FROM reservations WHERE node_id = ?",
+                [(node_id,) for node_id, at in rows if parse_db_datetime(at) <= now],
+            )
+            self.db.spec_commit(conn)
+
     def is_file_locked(self, file_path: str) -> bool:
         return bool(self.get_conflicting_tasks([file_path]))
 

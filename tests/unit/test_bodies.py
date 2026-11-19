@@ -496,8 +496,9 @@ _PART_OF_TABLE = {
     "jobs": "jobs",
     "leases": "lease",
 }
-# Search indexes over the records above, and the file locks a lease holds while its step runs.
-_NOT_RECORDS = {"nodes_fts", "vec_nodes", "index_state", "file_locks"}
+# Search indexes over the records above, the file locks a lease holds while its step runs, and
+# the reservation a discovery holds until the claim.
+_NOT_RECORDS = {"nodes_fts", "vec_nodes", "index_state", "file_locks", "reservations"}
 _NODE_KEYS = {"node_id", "task_id", "source_id", "target_id"}
 
 

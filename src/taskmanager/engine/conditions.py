@@ -7,9 +7,10 @@ import subprocess
 from itertools import dropwhile
 from pathlib import Path
 
-from taskmanager.core.models import Condition
+from taskmanager.core.models import Condition, LedgerEvent
 from taskmanager.core.status import ConditionStage
-from taskmanager.db.cache_repo import CacheRepository
+from taskmanager.db.cache_repo import CacheRepository, _command_hash
+from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 
 # Words a POSIX shell runs itself, so a command may start with one though nothing on PATH has it.
@@ -42,12 +43,16 @@ class ConditionRunner:
         root: Path,
         node_repo: NodeRepository,
         cache_repo: CacheRepository,
+        ledger_repo: LedgerRepository,
         ttl: int,
         timeout: int,
+        actor: str = "cli",
     ) -> None:
         self.root = root
         self.node_repo = node_repo
         self.cache_repo = cache_repo
+        self.ledger_repo = ledger_repo
+        self.actor = actor
         self.ttl = ttl
         self.timeout = timeout
 
@@ -88,5 +93,22 @@ class ConditionRunner:
             os.killpg(proc.pid, signal.SIGKILL)
             proc.wait()
             code = _TIMED_OUT
-        self.cache_repo.put_condition(condition.node_id, condition.idx, condition.command, code)
+        previous = self.cache_repo.swap_condition(
+            condition.node_id, condition.idx, condition.command, code
+        )
+        # A first evaluation and a changed command have no earlier outcome to flip from.
+        flipped = (
+            previous is not None
+            and previous[0] == _command_hash(condition.command)
+            and (previous[1] == 0) != (code == 0)
+        )
+        if flipped:
+            self.ledger_repo.append(
+                LedgerEvent(
+                    actor_id=self.actor,
+                    command="condition met" if code == 0 else "condition unmet",
+                    target_id=condition.node_id,
+                    payload={"idx": condition.idx, "needs": condition.needs},
+                )
+            )
         return code

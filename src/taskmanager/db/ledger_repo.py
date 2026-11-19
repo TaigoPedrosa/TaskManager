@@ -73,6 +73,28 @@ class LedgerRepository:
                 ).fetchall()
             return [_row_to_event(r) for r in rows]
 
+    def after(self, cursor: int) -> list[LedgerEvent]:
+        """Every event with an id past `cursor`, oldest first."""
+        with self.db.get_ledger_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, timestamp, actor_id, command, target_id, payload_json, diff_json
+                FROM ledger_events WHERE id > ? ORDER BY id
+                """,
+                (cursor,),
+            ).fetchall()
+        return [_row_to_event(r) for r in rows]
+
+    def newest_at(self, cursor: int, window: int = 1000) -> datetime | None:
+        """The latest timestamp among the `window` events up to `cursor`; None when there are
+        none. Compared as datetimes, since the stored text drops a zero fraction."""
+        with self.db.get_ledger_connection() as conn:
+            rows = conn.execute(
+                "SELECT timestamp FROM ledger_events WHERE id <= ? ORDER BY id DESC LIMIT ?",
+                (cursor, window),
+            ).fetchall()
+        return max((parse_db_datetime(r[0]) for r in rows), default=None)
+
     def events_of(self, target_ids: Iterable[str]) -> dict[str, list[LedgerEvent]]:
         """Each of `target_ids`' events, oldest first."""
         ids = list(target_ids)

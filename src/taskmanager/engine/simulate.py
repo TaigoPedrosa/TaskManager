@@ -1,7 +1,8 @@
 """The wave simulator: `depth` waves ahead of a live snapshot, each node's step assumed to
-succeed. Wave 1 is `selection.candidates` + `selection.select` on the snapshot as given, plus
-every node already mid-step (in flight); each later wave reads a snapshot where the previous
-wave's nodes, chosen or in flight, landed their step's best outcome -- complete, approve, land.
+succeed. Wave 1 is `selection.candidates` + `selection.select` on the snapshot as given, less the
+ids a discovery reserved, plus every node already mid-step (in flight); each later wave reads a
+snapshot where the previous wave's nodes, chosen or in flight, landed their step's best outcome --
+complete, approve, land.
 Transitions come from `core.lifecycle`, rollup from `core.rollup`; nothing here re-derives either.
 
 A simulated wave has no real claim to run a condition's command under, so `cached_conditions` (the
@@ -68,6 +69,7 @@ def simulate(
     cached_conditions: Mapping[tuple[str, int], tuple[str, int]] | None = None,
     gated: Collection[str] | None = None,
     models: ModelsConfig | None = None,
+    reserved: Collection[str] = (),
 ) -> list[Wave]:
     """`depth` waves out from `snapshot`, each a `select` over the snapshot the wave before it
     left: `snapshot` itself is read only, never written, and this issues no SQL -- every wave
@@ -78,9 +80,20 @@ def simulate(
     waves: list[Wave] = []
     for _ in range(depth):
         snap, wave = _advance(
-            snap, size, max_strong, specs, caps, repo_order, cached_conditions, gated, models
+            snap,
+            size,
+            max_strong,
+            specs,
+            caps,
+            repo_order,
+            cached_conditions,
+            gated,
+            models,
+            reserved,
         )
         waves.append(wave)
+        # A reservation lapses at its claim or after 600 s, so only the live wave honours it.
+        reserved = ()
     return waves
 
 
@@ -94,6 +107,7 @@ def _advance(
     cached_conditions: Mapping[tuple[str, int], tuple[str, int]] | None,
     gated: Collection[str] | None,
     models: ModelsConfig,
+    reserved: Collection[str],
 ) -> tuple[Snapshot, Wave]:
     data = snap.graph_data()
     blocked_reason = partial(
@@ -107,7 +121,15 @@ def _advance(
         blocked_reason=blocked_reason,
         gated=gated,
     )
-    result = selection.select(found, snap, size, max_strong, strong=models.strong)
+    # As in `tm wave discover`: a reserved id takes its files but is never chosen.
+    result = selection.select(
+        [c for c in found if c.node.id not in reserved],
+        snap,
+        size,
+        max_strong,
+        list(reserved),
+        strong=models.strong,
+    )
     cand_by_id = {c.node.id: c for c in found}
 
     new_nodes = dict(snap.nodes)

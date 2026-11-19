@@ -14,7 +14,7 @@ import tempfile
 from collections.abc import AsyncGenerator, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import asdict
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote, urlsplit
@@ -43,6 +43,7 @@ from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
 from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.node_repo import NodeRepository
+from taskmanager.db.runtime_repo import RuntimeRepository
 from taskmanager.di.container import TaskManagerProvider
 from taskmanager.engine.assets import ASSET_NAME_RE
 from taskmanager.engine.claims import Claims
@@ -561,6 +562,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
 
     jobs = container.get(JobRepository)
     cache = container.get(CacheRepository)
+    runtime = container.get(RuntimeRepository)
 
     def _condition_ttl() -> int:
         return ConfigStore(project_root).project().condition_ttl
@@ -782,6 +784,7 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             cached_conditions=cached_conditions,
             gated=gated_repos(project),
             models=project.models,
+            reserved=list(runtime.live_reservations(datetime.now(tz=UTC))),
         )
         # What a wave row draws beyond the simulator's own fields: a held node's status and
         # title, and the live lease an in-flight step runs under.

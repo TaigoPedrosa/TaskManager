@@ -162,7 +162,8 @@ class DatabaseManager:
         return conn
 
     def state_backup(self, schema: int) -> Path:
-        return self.taskmanager_dir / f"state.db.schema{schema}.bak"
+        # Named after the file, so migrating archive.db, which shares this schema, keeps its own.
+        return self.state_db.with_name(f"{self.state_db.name}.schema{schema}.bak")
 
     def migrate_state(self) -> int | None:
         """Brings `state.db` to `STATE_SCHEMA_VERSION` and returns the schema it was at, or None

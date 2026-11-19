@@ -130,8 +130,7 @@ def _ensure_archive(root: Path) -> None:
 
 
 def archived_repo(root: Path) -> NodeRepository:
-    """The archived nodes, read-only. ponytail: `tm db migrate` leaves archive.db at the schema it
-    was made with; migrate it there when state.db's schema next changes."""
+    """The archived nodes, read-only; `tm db migrate` keeps archive.db at state.db's schema."""
     _ensure_archive(root)
     db = DatabaseManager(root / ".taskmanager")
     db.state_db = db.ledger_db = archive_path(root)

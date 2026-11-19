@@ -238,6 +238,7 @@ function stepItemHtml(item, findings) {
   let what;
   if (item.kind === 'check') what = `check #${item.number} ${item.result}`;
   else if (item.kind === 'note') what = `note #${item.number}`;
+  else if (item.kind === 'job parked') what = `job ${item.job} parked: ${item.reason}`;
   else if (item.kind === 'verification_run') what = `verifications ${item.passed ? 'passed' : 'failed'} (${item.count})`;
   else if (['raised', 'reopened', 'closed', 'disputed'].includes(item.kind)) {
     const detail = item.kind === 'raised' ? `${item.severity} ${finding ? `${finding.at}: ${finding.breaks}` : ''}` : (item.answer || '');

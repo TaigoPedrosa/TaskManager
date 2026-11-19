@@ -145,6 +145,29 @@ def test_guide_command_exists(topic: str, command: str) -> None:
     _assert_command_exists(f"{topic}.md", command)
 
 
+def test_every_tm_wave_verb_and_flag_is_shown_in_a_guide() -> None:
+    """A dispatcher running discovery by hand learns the wave verbs from the guides alone."""
+    shown: dict[str, set[str]] = {}
+    for topic in _topics():
+        for command in _tm_commands(_guide_text(topic)):
+            name, _, rest = _resolve(_tokens(command))
+            shown.setdefault(name, set()).update(t.split("=", 1)[0] for t in rest)
+    _, wave, _ = _resolve(["wave"])
+    missing = []
+    for verb, cmd in wave.commands.items():
+        name = f"tm wave {verb}"
+        if name not in shown:
+            missing.append(name)
+        missing += [
+            f"{name} {param.opts[0]}"
+            for param in cmd.params
+            if param.opts[0].startswith("--")
+            and param.opts[0] not in {"--path", "--help"}
+            and not shown.get(name, set()).intersection(param.opts)
+        ]
+    assert missing == []
+
+
 RETIRED = (
     "tm run start",
     "tm run stop",
@@ -245,7 +268,9 @@ DISPATCH_QUESTION = (
     "<ids>`. It outlives the session and holds exactly the nodes it names. Say in your status "
     "report that it is open."
 )
-DISPATCH_STOP = "When `tm wave discover` offers nothing and no step is in flight, report and stop."
+DISPATCH_STOP = (
+    "It stops when every in-scope spec is `COMPLETED` or `ABANDONED`, or when the owner says so."
+)
 DISPATCH_HOUSE_RULES = (
     "never asks the owner a question in chat",
     "Never ask the owner a question in chat",
@@ -1468,3 +1493,38 @@ def test_no_guide_states_an_exact_test_count() -> None:
     for file in root.glob("*.md"):
         text = file.read_text(encoding="utf-8")
         assert not re.search(r"exactly.{0,40}test|test.{0,40}exactly", text, re.IGNORECASE), file
+
+
+@pytest.mark.parametrize("where", ["dispatch.md", "plugin/skills/dispatcher/SKILL.md"])
+def test_dispatch_text_runs_on_a_background_monitor_and_never_arms_a_loop(
+    where: str, rendered: Callable[[str], str]
+) -> None:
+    text = " ".join((rendered("dispatch") if where == "dispatch.md" else _doc_text(where)).split())
+    for gone in ("/loop", "tick_min", "tick_max", "wakeup", "next wake"):
+        assert gone not in text
+    for held in (
+        "tm monitor --once --session <session> [--spec <id>]…` in the background",
+        "act on each `decision_answer`",
+        "report each `decision_add`, each failed step and each spec or plan reaching `COMPLETED`",
+        "run one tick, then start the `next:` command",
+        "one tick after each `tm-wave` run completes",
+        "Ticks never overlap",
+        "does not stop while work only waits",
+        "every in-scope spec is `COMPLETED` or `ABANDONED`",
+        "re-arm it with the last cursor",
+    ):
+        assert held in text
+
+
+def test_dispatch_guide_raises_its_guide_decision_as_the_session_and_reads_reservations_as_held(
+    rendered: Callable[[str], str],
+) -> None:
+    text = rendered("dispatch")
+    assert 'tm decision add "Add to guide:<topic>: <line>?" --raised-by <session>' in text
+    assert "reads reservations from other runs as held" in text
+
+
+def test_overview_guide_lists_reserve_and_unreserve() -> None:
+    text = _guide_text("overview")
+    assert "`--reserve <run>`" in text
+    assert "tm wave unreserve --session <id> <node-id>…" in text

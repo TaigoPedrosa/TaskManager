@@ -69,16 +69,21 @@ VERIFY_TIMEOUT: Final = 600
 STRONG_MODELS: Final = ("claude-opus-5-5", "claude-fable-5-1")
 
 ARCHIVE_HOURS_KEY: Final = "archive.automatically_after_hours"
+_TICK_REMOVED: Final = (
+    "dispatch.tick_min and dispatch.tick_max are removed: tm monitor wakes the dispatcher"
+)
 REPLACED_KEYS: Final = {
     "web.archive_after_days": (
         "web.archive_after_days is replaced by archive.automatically_after_hours (hours): "
         f"run tm config set {ARCHIVE_HOURS_KEY} <hours>, or tm config unset web.archive_after_days"
     ),
     "review.blind": "review.blind is removed: a reviewer reads code only, never the brief or notes",
+    "dispatch.tick_min": _TICK_REMOVED,
+    "dispatch.tick_max": _TICK_REMOVED,
 }
 
 # Keys a config.yaml may still hold that change nothing: a stored value is skipped on read.
-INERT_KEYS: Final = frozenset({"review.blind"})
+INERT_KEYS: Final = frozenset({"review.blind", "dispatch.tick_min", "dispatch.tick_max"})
 
 KEYS: Final = (
     "embeddings.provider",
@@ -99,8 +104,6 @@ KEYS: Final = (
     "name",
     "repo_order",
     "repos",
-    "dispatch.tick_min",
-    "dispatch.tick_max",
     "dispatch.wave_size",
     "dispatch.tick_budget",
     "codegraph.cache_commits",
@@ -111,20 +114,15 @@ KEYS: Final = (
     "models.strong",
 )
 
-# The dispatch loop's typical target, printed by `tm guide dispatch`: a wakeup every tick_min-
-# tick_max seconds, waves of at most wave_size nodes, at most tick_budget nodes per tick.
+# The dispatch loop's typical target, printed by `tm guide dispatch`: waves of at most wave_size
+# nodes, at most tick_budget nodes per tick.
 DISPATCH_DEFAULTS: Final = {
-    "tick_min": 300,
-    "tick_max": 900,
     "wave_size": 10,
     "tick_budget": 40,
 }
 
 # (low key, high key): the low value must never exceed the high one.
-_DISPATCH_BOUNDS: Final = (
-    ("dispatch.tick_min", "dispatch.tick_max"),
-    ("dispatch.wave_size", "dispatch.tick_budget"),
-)
+_DISPATCH_BOUNDS: Final = (("dispatch.wave_size", "dispatch.tick_budget"),)
 
 # Keys whose value is a whole mapping or list: stored and set as one value, never split into
 # dotted keys, and parsed from YAML when set from the command line.
@@ -270,8 +268,6 @@ class RepoConfig(BaseModel):
 class DispatchConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    tick_min: int = Field(default=DISPATCH_DEFAULTS["tick_min"], gt=0)
-    tick_max: int = Field(default=DISPATCH_DEFAULTS["tick_max"], gt=0)
     wave_size: int = Field(default=DISPATCH_DEFAULTS["wave_size"], gt=0)
     tick_budget: int = Field(default=DISPATCH_DEFAULTS["tick_budget"], gt=0)
 

@@ -8,6 +8,7 @@ from taskmanager.core.models import Condition, Node
 from taskmanager.core.status import ConditionStage
 from taskmanager.db.cache_repo import CacheRepository
 from taskmanager.db.connection import DatabaseManager
+from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.engine.conditions import ConditionRunner, is_executable
 
@@ -43,6 +44,7 @@ class Kit:
         db.init_all()
         self.nodes = NodeRepository(db)
         self.cache = CacheRepository(db)
+        self.ledger = LedgerRepository(db)
         self.nodes.save_node(Node(id="T1", kind=NodeKind.TASK, title="t"))
 
     def condition(self, command: str, stage: ConditionStage = ConditionStage.CLAIM) -> Condition:
@@ -51,7 +53,9 @@ class Kit:
         )
 
     def runner(self, ttl: int = 300, timeout: int = 60) -> ConditionRunner:
-        return ConditionRunner(self.root, self.nodes, self.cache, ttl=ttl, timeout=timeout)
+        return ConditionRunner(
+            self.root, self.nodes, self.cache, self.ledger, ttl=ttl, timeout=timeout
+        )
 
 
 @pytest.fixture

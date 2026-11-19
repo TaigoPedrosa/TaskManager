@@ -116,6 +116,10 @@ A node goes `READY`, `IMPLEMENTING`, `IMPLEMENTED`, then through review, fix and
 of paginated reads. The socket protocol and the HTTP reads are in
 [docs/web-protocol.md](docs/web-protocol.md).
 
+`tm web --bg` (`--background`) serves from a detached process and returns, printing the URL, the pid and
+the log path (`.taskmanager/web.log`); a second `--bg` prints the running server instead of starting
+another, and `tm web stop` ends it. `.taskmanager/web.json` records the serving pid and URL.
+
 - The toolbar holds four views, in order: Document, one card per spec/plan/task walked from the
   roots down; Graph, the node graph and inspector; Waves; and Decisions. Document opens first,
   for `tm web` and for a static export (`tm web export`) alike.

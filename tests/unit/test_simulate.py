@@ -132,6 +132,27 @@ def test_an_in_flight_containers_repos_follow_repo_order(estate: Estate) -> None
     assert action_of(waves[0], "P").repos == ["zeta", "alpha"]
 
 
+def test_a_reserved_id_is_not_chosen_and_takes_its_declared_files_from_wave_one(
+    estate: Estate,
+) -> None:
+    estate.add("T1", priority=90, frontmatter={"declared_files": ["api/a.py"]})
+    estate.add("T2", priority=80, frontmatter={"declared_files": ["api/a.py"]})
+    estate.add("T3", priority=70)
+
+    waves = simulate(estate.snap(), depth=1, size=10, max_strong=10, specs=None, reserved=["T1"])
+
+    assert [e.id for e in waves[0].entries] == ["T3"]
+    assert waves[0].held == ["T2: declared_files overlap a node chosen this wave"]
+
+
+def test_a_reserved_id_is_offered_from_wave_two(estate: Estate) -> None:
+    estate.add("T1")
+
+    waves = simulate(estate.snap(), depth=2, size=10, max_strong=10, specs=None, reserved=["T1"])
+
+    assert [[e.id for e in w.entries] for w in waves] == [[], ["T1"]]
+
+
 # -- a task marches implement -> review -> merge, one wave per step ------------------------------
 
 
