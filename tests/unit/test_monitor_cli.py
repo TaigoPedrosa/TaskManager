@@ -75,7 +75,7 @@ def test_monitor_without_a_cursor_prints_start_and_the_ledger_sequence(estate: E
     last = estate.row("config set", {"key": "a"})
     result = estate.run("--once")
     assert result.exit_code == 0, result.output
-    assert result.stdout == f"start\ncursor {last}\n"
+    assert result.stdout == f"start\ncursor {last}\nnext: tm monitor --once --after {last}\n"
 
 
 def test_monitor_session_stores_after_and_scope_then_resumes_from_them(estate: Estate) -> None:

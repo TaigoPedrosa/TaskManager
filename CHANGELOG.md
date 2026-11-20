@@ -5,6 +5,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+
+- A session's first `tm monitor --once` prints the `next:` command too, so the dispatcher always
+  has one to start.
+- The monitor's landing tests give their repository a git identity, so they pass on a runner with
+  no global git config.
+
+### Changed
+
+- README: an "Upgrading to 0.3.23" section, and the `tm-wave` feature line names `tm monitor`.
+
 ## [0.3.23] - 2026-11-19
 
 ### Added

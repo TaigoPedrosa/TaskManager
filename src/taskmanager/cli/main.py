@@ -3273,22 +3273,24 @@ def monitor_cmd(
             claims, clock, ledger_changes(claims), stored[2] if stored else frozenset()
         )
 
+        def trailer(found: int) -> list[str]:
+            if not once:
+                return []
+            who = f" --session {session}" if session else ""
+            return [
+                f"next: tm monitor --once{who} --after {found}"
+                + "".join(f" --spec {s}" for s in specs or [])
+            ]
+
         def settle(found: int, lines: list[str]) -> None:
-            trailer: list[str] = []
-            if once:
-                who = f" --session {session}" if session else ""
-                trailer = [
-                    f"next: tm monitor --once{who} --after {found}"
-                    + "".join(f" --spec {s}" for s in specs or [])
-                ]
-            _emit_batch(lines, found, trailer)
+            _emit_batch(lines, found, trailer(found))
             if file:
                 _write_monitor_cursor(file, found, specs, monitor.announced)
 
         if cursor is None:
             cursor = newest
             sys.stdout.write("start\n")
-            _emit_batch([], cursor, [])
+            _emit_batch([], cursor, trailer(cursor))
             if file:
                 _write_monitor_cursor(file, cursor, specs, monitor.announced)
             if once:

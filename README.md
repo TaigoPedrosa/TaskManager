@@ -82,7 +82,7 @@ tm web
 - Landings as detached jobs: merge, gate against a cached baseline of the target, push, verify
 - Edges, decisions and conditions as the only things a node waits on, with a cycle check on every write
 - `state.db`, `cache.db` and `audit.db` under `.taskmanager/`, SQLite in WAL mode, with `sqlite-vec` search
-- The `tm-wave` workflow (`plugin/workflows/tm-wave.js`): one step per node per tick, on the model id tm names, with a dispatching session looping itself to carry a node the rest of the way
+- The `tm-wave` workflow (`plugin/workflows/tm-wave.js`): one step per node per tick, on the model id tm names, with the dispatching session woken by `tm monitor` to carry a node the rest of the way
 
 ## Lifecycle
 
@@ -167,6 +167,14 @@ another, and `tm web stop` ends it. `.taskmanager/web.json` records the serving 
   0.3.3 wrote), then migrates it to schema 3.
 - Until then every other command that opens the estate refuses with exit 1, naming
   `tm db migrate` and the backup path.
+
+## Upgrading to 0.3.23
+
+- `state.db` and `archive.db` move to schema 9, which adds node reservations. Run `tm db migrate`
+  once in each existing project, with no lease live; until then every command that opens the
+  estate refuses, naming `tm db migrate` and the backup path.
+- `tm monitor` replaces `/loop` in the dispatcher: `tm guide dispatch` says how to drive ticks off
+  it. `dispatch.tick_min` and `dispatch.tick_max` are inert; `tm config unset` them.
 
 ## Development
 

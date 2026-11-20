@@ -136,6 +136,9 @@ def estate_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Estate:
     git(tmp_path, "init", "--bare", "-b", "main", str(tmp_path / "core.git"))
     git(tmp_path, "clone", str(tmp_path / "core.git"), str(tmp_path / "core"))
     work = tmp_path / "core"
+    # tm's own merges read the identity from the repo, not from this helper's -c flags.
+    git(work, "config", "user.email", "ci@example.com")
+    git(work, "config", "user.name", "CI")
     git(work, "commit", "--allow-empty", "-m", "init")
     git(work, "push", "origin", "HEAD:main")
     git(work, "fetch", "origin")

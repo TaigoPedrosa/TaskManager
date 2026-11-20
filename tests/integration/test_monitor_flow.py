@@ -50,6 +50,7 @@ def root_fixture(tmp_path: Path) -> Path:
     started = tm(tmp_path, "monitor", "--once", "--session", "S")
     assert started.returncode == 0, started.stderr
     assert started.stdout.startswith("start\ncursor ")
+    assert "\nnext: tm monitor --once --session S --after " in started.stdout
     return tmp_path
 
 
