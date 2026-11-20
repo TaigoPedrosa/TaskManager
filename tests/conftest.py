@@ -16,6 +16,13 @@ for name in ("FORCE_COLOR", "GITHUB_ACTIONS", "PY_COLORS"):
     os.environ.pop(name, None)
 os.environ["NO_COLOR"] = "1"
 os.environ["COLUMNS"] = "200"
+# CI has no git identity: with the owner's global config, or one git derives from the hostname, a
+# test that commits without its own `user.email` passes here and exits 128 there.
+os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
+os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
+os.environ["GIT_CONFIG_COUNT"] = "1"
+os.environ["GIT_CONFIG_KEY_0"] = "user.useConfigOnly"
+os.environ["GIT_CONFIG_VALUE_0"] = "true"
 
 
 @pytest.fixture(autouse=True)

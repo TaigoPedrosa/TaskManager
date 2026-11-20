@@ -21,3 +21,15 @@ review raised a finding, what the fix answered, and what a re-review reopened.
 - A web test of a new record is driven by the real CLI writing that record
   (`test_the_web_body_shows_each_step_who_ran_it_how_it_ended_and_what_it_recorded`), never only
   by a hand-written body.
+
+## The live estate is not a test bed
+
+From any checkout or worktree of this repo, `tm` and `uv run tm` find the primary checkout's
+`.taskmanager`, which the installed tm runs the work on. Run code under test only through the
+suite, or with `-C` on an estate made by `tm init` in a temp dir: a config key the installed tm
+does not know stops every `tm` call until it is removed.
+
+## Releasing
+
+Tag a release only on a commit whose CI run on `main` passed: push `main`, `gh run watch` that
+run, then tag and push the tag. The local gate passes things CI does not.
