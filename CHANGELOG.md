@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.24] - 2026-11-21
+
 ### Added
 
 - Routing by tier: `acceptable_models`, `review_models` and `models.*` hold `light`, `standard` or
@@ -832,7 +834,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - A web visualizer with a live socket, and a static exporter.
 - The taskmanager and dispatcher skills, packaged as a Claude Code plugin.
 
-[Unreleased]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.23...HEAD
+[Unreleased]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.24...HEAD
+[0.3.24]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.23...v0.3.24
 [0.3.23]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.22...v0.3.23
 [0.3.22]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.21...v0.3.22
 [0.3.21]: https://github.com/TaigoPedrosa/TaskManager/compare/v0.3.20...v0.3.21
