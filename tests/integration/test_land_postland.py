@@ -428,11 +428,21 @@ def reflog(repo: Path, branch: str) -> list[str]:
     return git(repo, "reflog", "show", branch).splitlines()
 
 
+@pytest.mark.parametrize("top", [False, True], ids=["on-the-spec-branch", "on-a-top-branch"])
 def test_a_fix_claim_keeps_the_branch_of_a_repository_the_red_relanding_never_reached(
-    tmp_path: Path,
+    tmp_path: Path, top: bool
 ) -> None:
-    claims = make_estate(tmp_path, repos=("api", "web"), config=PARTIAL_CONFIG)
-    BulkImporter(claims.nodes, claims.ops).import_dict(PARTIAL_PLAN)
+    config = PARTIAL_CONFIG.model_copy(deep=True)
+    for repo_config in config.repos.values():
+        repo_config.push = not top
+    claims = make_estate(tmp_path, repos=("api", "web"), config=config)
+    document = copy.deepcopy(PARTIAL_PLAN)
+    target = "tm/S"
+    if top:
+        target = "release/x"
+        document["spec"]["frontmatter"] = {"land_on": target}
+        document["plans"][0]["merge"] = "spec"
+    BulkImporter(claims.nodes, claims.ops).import_dict(document)
     landing = attach_landing(claims)
     for task, path in (("S-P-A", "a.py"), ("S-P-B", "b.py")):
         built = start(claims, task, Action.IMPLEMENT)
@@ -453,7 +463,7 @@ def test_a_fix_claim_keeps_the_branch_of_a_repository_the_red_relanding_never_re
     assert relanding.job is not None
     assert landing.run(relanding.job) == JobState.OWN_DEFECT
     web = claims.root / "web"
-    assert not git(web, "branch", "--list", "--contains", web_fix, "tm/S")
+    assert not git(web, "branch", "--list", "--contains", web_fix, target)
     entries = len(reflog(web, "tm/S-P"))
     retired = git(web, "branch", "--list", "tm/S-P@*")
     retired_api = git(claims.root / "api", "branch", "--list", "tm/S-P@*")
@@ -465,11 +475,19 @@ def test_a_fix_claim_keeps_the_branch_of_a_repository_the_red_relanding_never_re
     assert git(Path(second.worktrees["web"]), "merge-base", "--is-ancestor", web_fix, "HEAD") == ""
     assert git(web, "branch", "--list", "tm/S-P@*") == retired
     assert len(reflog(web, "tm/S-P")) >= entries
-    # A plan lands on its spec's branch, gated before the push: the red verify left api's target
-    # unmoved too, so api keeps its fix as well.
     api = claims.root / "api"
+    api_cut = Path(second.worktrees["api"])
+    if top:
+        # The squash reached the top target before the verify went red: api's branch holds
+        # nothing past it, so it is retired and the new one is cut from the target.
+        assert git(api, "branch", "--list", "tm/S-P@*").count("tm/S-P@") == (
+            retired_api.count("tm/S-P@") + 1
+        )
+        assert git(api, "merge-base", "--is-ancestor", target, "tm/S-P") == ""
+        assert git(api, "rev-parse", "tm/S-P") == git(api, "rev-parse", target)
+        return
+    # A plan landing on its spec's branch is gated before the push, so the red verify left api's
+    # target unmoved too and api keeps its fix as well.
     assert git(api, "branch", "--list", "tm/S-P@*") == retired_api
-    assert git(Path(second.worktrees["api"]), "ls-files", "a.py") == ""
-    assert git(api, "rev-parse", "tm/S-P") == git(
-        Path(second.worktrees["api"]), "rev-parse", "HEAD"
-    )
+    assert git(api_cut, "ls-files", "a.py") == ""
+    assert git(api, "rev-parse", "tm/S-P") == git(api_cut, "rev-parse", "HEAD")
