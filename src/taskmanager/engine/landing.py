@@ -149,8 +149,23 @@ class Landing:
                 # would leave it `running` with no process left to end it. The traceback goes to
                 # the job's log.
                 _logger.exception("job %s stopped on an error", job.id)
+                stored = self._state(job)
+                if stored != JobState.RUNNING:
+                    # A step that ended the job before a later write failed: parking it again
+                    # would write a second row and overwrite the reason it stopped for.
+                    if stored == JobState.NEEDS_AGENT:
+                        self._repark(job)
+                    return stored
                 detail = f"{type(exc).__name__}: {exc}\n{getattr(exc, 'stderr', '') or ''}"
                 return self._needs_agent(job, "error", error=detail.strip())
+
+    def _repark(self, job: Job) -> None:
+        # The step's own park may have failed before the lease lost its ttl, and a sweep would
+        # then expire a job that is waiting for an agent.
+        try:
+            self.claims.park(job.node_id)
+        except Exception:
+            _logger.exception("job %s: parking its lease failed again", job.id)
 
     def resume(
         self,

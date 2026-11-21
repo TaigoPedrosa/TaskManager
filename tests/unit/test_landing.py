@@ -1,3 +1,4 @@
+import sqlite3
 import subprocess
 import sys
 import time
@@ -157,6 +158,153 @@ def test_a_conflict_is_handed_to_an_agent_who_resolves_commits_and_resumes(tmp_p
     assert landing.resume(job_id) == JobState.SUCCEEDED
     assert stored(claims, "T1").status == Status.COMPLETED
     assert git(api, "show", "origin/main:app.py") == "both"
+
+
+def conflicted(tmp_path: Path) -> tuple[Claims, Landing, str]:
+    claims, landing = estate_with(tmp_path, TRUE)
+    reviewed_task(claims, path="app.py", content="branch\n")
+    push_main(claims.root / "api", "app.py", "main\n")
+    result = claims.start("T1", "merger", "s1")
+    assert result.action == Action.MERGE, result.reason
+    assert result.job is not None
+    return claims, landing, result.job
+
+
+def parked_rows(claims: Claims, monkeypatch: pytest.MonkeyPatch, fail_times: int) -> list[Any]:
+    """The `job parked` rows written, with the first `fail_times` appends of one raising."""
+    rows: list[Any] = []
+    repo = claims.ops.ledger_repo
+    real = repo.append
+    left = [fail_times]
+
+    def append(event: Any) -> None:
+        if event.command == "job parked":
+            if left[0] > 0:
+                left[0] -= 1
+                raise sqlite3.OperationalError("database is locked")
+            rows.append(event)
+        real(event)
+
+    monkeypatch.setattr(repo, "append", append)
+    return rows
+
+
+def count_ends(claims: Claims, monkeypatch: pytest.MonkeyPatch) -> list[JobState]:
+    ends: list[JobState] = []
+    real = claims.jobs.set_state
+
+    def set_state(job: Job, expected: Any) -> bool:
+        ends.append(job.state)
+        return real(job, expected)
+
+    monkeypatch.setattr(claims.jobs, "set_state", set_state)
+    return ends
+
+
+def parked_lease(claims: Claims) -> bool:
+    lease = claims.runtime.get_lease("T1")
+    return lease is not None and lease.ttl_seconds is None
+
+
+def test_a_parking_whose_ledger_row_fails_does_not_park_the_job_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claims, landing, job_id = conflicted(tmp_path)
+    rows = parked_rows(claims, monkeypatch, fail_times=1)
+    ends = count_ends(claims, monkeypatch)
+
+    assert landing.run(job_id) == JobState.NEEDS_AGENT
+
+    job = claims.jobs.get(job_id)
+    assert job is not None
+    assert (job.state, job.result["reason"]) == (JobState.NEEDS_AGENT, "conflict")
+    assert ends.count(JobState.NEEDS_AGENT) == 1
+    assert len(rows) == 0
+    assert parked_lease(claims)
+
+
+def test_a_parking_whose_lease_park_fails_once_parks_the_lease_on_the_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claims, landing, job_id = conflicted(tmp_path)
+    rows = parked_rows(claims, monkeypatch, fail_times=0)
+    real = claims.park
+    left = [1]
+
+    def park(node_id: str) -> None:
+        if left[0]:
+            left[0] -= 1
+            raise sqlite3.OperationalError("database is locked")
+        real(node_id)
+
+    monkeypatch.setattr(claims, "park", park)
+
+    assert landing.run(job_id) == JobState.NEEDS_AGENT
+
+    job = claims.jobs.get(job_id)
+    assert job is not None
+    assert (job.state, job.result["reason"]) == (JobState.NEEDS_AGENT, "conflict")
+    assert [row.payload["reason"] for row in rows] == ["conflict"]
+    assert parked_lease(claims)
+
+
+def test_a_parking_whose_lease_park_always_fails_still_returns_needs_agent_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claims, landing, job_id = conflicted(tmp_path)
+    rows = parked_rows(claims, monkeypatch, fail_times=0)
+
+    def park(node_id: str) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(claims, "park", park)
+
+    assert landing.run(job_id) == JobState.NEEDS_AGENT
+
+    job = claims.jobs.get(job_id)
+    assert job is not None
+    assert (job.state, job.result["reason"]) == (JobState.NEEDS_AGENT, "conflict")
+    assert [row.payload["reason"] for row in rows] == ["conflict"]
+
+
+def test_an_exception_inside_a_step_still_running_parks_the_job_as_an_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claims, landing, job_id = conflicted(tmp_path)
+    rows = parked_rows(claims, monkeypatch, fail_times=0)
+
+    def boom(job: Job) -> JobState:
+        raise RuntimeError("step broke")
+
+    monkeypatch.setattr(landing, "_land", boom)
+
+    assert landing.run(job_id) == JobState.NEEDS_AGENT
+
+    job = claims.jobs.get(job_id)
+    assert job is not None
+    assert (job.state, job.result["reason"]) == (JobState.NEEDS_AGENT, "error")
+    assert [row.payload["reason"] for row in rows] == ["error"]
+    assert parked_lease(claims)
+
+
+def test_a_step_that_raises_after_its_job_was_expired_leaves_the_job_expired(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claims, landing, job_id = conflicted(tmp_path)
+    rows = parked_rows(claims, monkeypatch, fail_times=0)
+
+    def expire_then_raise(job: Job) -> JobState:
+        job.state = JobState.EXPIRED
+        assert claims.jobs.set_state(job, {JobState.RUNNING})
+        raise RuntimeError("step broke")
+
+    monkeypatch.setattr(landing, "_land", expire_then_raise)
+
+    assert landing.run(job_id) == JobState.EXPIRED
+
+    job = claims.jobs.get(job_id)
+    assert job is not None and job.state == JobState.EXPIRED
+    assert not rows
 
 
 def resolved_conflict(tmp_path: Path) -> tuple[Claims, Landing, str, Path]:

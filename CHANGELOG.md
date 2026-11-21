@@ -10,6 +10,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - A fix claim keeps a node's branch in every repository where it still holds commits its target
   lacks, so a spec whose re-landing failed in one repository no longer loses the fix commits
   waiting in the next. The claim reads each repository's git, not the node's `on_target`.
+- A landing job that already parked is never parked again when a later write fails: the monitor
+  prints one `job parked` line, with the reason the job stopped for, and the lease stays parked.
 - A session's first `tm monitor --once` prints the `next:` command too, so the dispatcher always
   has one to start.
 - The monitor's landing tests give their repository a git identity, so they pass on a runner with
