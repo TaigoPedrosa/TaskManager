@@ -33,7 +33,7 @@ from taskmanager.web.app import create_app
 # The estate helpers sit beside the unit tests, with no __init__.py: importable only once their
 # directory is on sys.path, which a run of this file alone does not otherwise do.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "unit"))
-from lifecycle_estate import attach_landing, commit, make_estate, stored
+from lifecycle_estate import attach_landing, commit, git, make_estate, stored
 
 SPEC = {"id": "S", "title": "Spec"}
 REVIEWED_PLAN = {
@@ -384,3 +384,92 @@ def test_a_container_whose_children_landed_on_its_target_names_no_backup(tmp_pat
     _, estate = landed_plan(tmp_path, reviewed=False, child_merge="spec")
 
     assert backup_of(estate, "S-P") == (None, None)
+
+
+PARTIAL_CONFIG = ProjectConfig(
+    repos={
+        repo: RepoConfig(push=True, gates={"main": Gate(command="true", junit=None, timeout=60)})
+        for repo in ("api", "web")
+    }
+)
+PARTIAL_PLAN = {
+    "spec": {"id": "S", "title": "Spec"},
+    "plans": [
+        {
+            "id": "S-P",
+            "title": "Plan",
+            "review": True,
+            "fix": True,
+            "tasks": [
+                {
+                    "id": "S-P-A",
+                    "title": "A",
+                    "target_repo": "api",
+                    "merge": "parent",
+                    "review": False,
+                    "fix": False,
+                    "verifications": [{"type": "file_exists", "target_path": "a.py"}],
+                },
+                {
+                    "id": "S-P-B",
+                    "title": "B",
+                    "target_repo": "web",
+                    "merge": "parent",
+                    "review": False,
+                    "fix": False,
+                },
+            ],
+        }
+    ],
+}
+
+
+def reflog(repo: Path, branch: str) -> list[str]:
+    return git(repo, "reflog", "show", branch).splitlines()
+
+
+def test_a_fix_claim_keeps_the_branch_of_a_repository_the_red_relanding_never_reached(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path, repos=("api", "web"), config=PARTIAL_CONFIG)
+    BulkImporter(claims.nodes, claims.ops).import_dict(PARTIAL_PLAN)
+    landing = attach_landing(claims)
+    for task, path in (("S-P-A", "a.py"), ("S-P-B", "b.py")):
+        built = start(claims, task, Action.IMPLEMENT)
+        commit(Path(built.worktree), path, "one\n", f"{task}: {path}")
+        assert claims.complete(task) == Status.IMPLEMENTED
+        assert land(claims, landing, task) == Status.COMPLETED
+    assert land(claims, landing, "S-P") == Status.LANDED
+    assert stored(claims, "S-P").on_target
+    assert review(claims, "S-P", "a.py is stale") == Status.REVIEWED
+
+    fix = start(claims, "S-P", Action.FIX)
+    commit(Path(fix.worktrees["api"]), "a.py", None, "fix: api drops a.py")
+    web_fix = commit(Path(fix.worktrees["web"]), "b.py", "two\n", "fix: web edits b.py")
+    claims.answer_finding("S-P", 1, FindingState.CLOSED, web_fix)
+    assert claims.complete("S-P") == Status.FIXED
+
+    relanding = start(claims, "S-P", Action.MERGE)
+    assert relanding.job is not None
+    assert landing.run(relanding.job) == JobState.OWN_DEFECT
+    web = claims.root / "web"
+    assert not git(web, "branch", "--list", "--contains", web_fix, "tm/S")
+    entries = len(reflog(web, "tm/S-P"))
+    retired = git(web, "branch", "--list", "tm/S-P@*")
+    retired_api = git(claims.root / "api", "branch", "--list", "tm/S-P@*")
+    assert entries > 1
+
+    second = start(claims, "S-P", Action.FIX)
+
+    git(web, "merge-base", "--is-ancestor", web_fix, "tm/S-P")
+    assert git(Path(second.worktrees["web"]), "merge-base", "--is-ancestor", web_fix, "HEAD") == ""
+    assert git(web, "branch", "--list", "tm/S-P@*") == retired
+    assert len(reflog(web, "tm/S-P")) >= entries
+    # A plan lands on its spec's branch, gated before the push: the red verify left api's target
+    # unmoved too, so api keeps its fix as well.
+    api = claims.root / "api"
+    assert git(api, "branch", "--list", "tm/S-P@*") == retired_api
+    assert git(Path(second.worktrees["api"]), "ls-files", "a.py") == ""
+    assert git(api, "rev-parse", "tm/S-P") == git(
+        Path(second.worktrees["api"]), "rev-parse", "HEAD"
+    )

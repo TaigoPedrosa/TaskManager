@@ -754,14 +754,15 @@ class Claims:
         checked out as it stands, never cut again: a fix continues its implement's commits, and a
         reopened or re-imported node resumes its branch. Write-time validation refuses a change
         of target once the branch exists, so an existing branch is cut from this node's target.
-        The exception is a fix whose branch carries nothing its target lacks, as after a landing:
-        that branch is retired and the fix is cut from the target, so it builds on what landed."""
+        The exception is a fix whose branch, in that repository, carries nothing its target lacks,
+        as after a landing: that branch is retired and the fix is cut from the target, so it
+        builds on what landed."""
         # An absolute worktree_dir replaces the root: `Path / absolute` is the absolute path.
         base_dir = self.root / (worktree_dir or self.config.worktree_dir)
         branch = self.branch_of(node.id)
 
         def cut(repo: str, path: Path, base: str) -> str:
-            if fix and self._spent(self.root / repo, branch, base, node.on_target):
+            if fix and self._spent(self.root / repo, branch, base):
                 retired, _ = self._retire(repo, branch)
                 if self.is_container(node):
                     self._note_retired(node.id, retired)
@@ -782,14 +783,12 @@ class Claims:
         return str(base_dir / node.id), worktrees
 
     @staticmethod
-    def _spent(repo_dir: Path, branch: str, base: str, landed: bool) -> bool:
-        """`landed` is the node's own record: a squashed container's branch is no ancestor of
-        its target, and its diff against it is not empty."""
-        return bool(gitops.rev_parse(repo_dir, f"refs/heads/{branch}")) and (
-            landed
-            or gitops.is_ancestor(repo_dir, branch, base)
-            or gitops.diff_quiet(repo_dir, base, branch)
-        )
+    def _spent(repo_dir: Path, branch: str, base: str) -> bool:
+        """A branch (False when absent) whose merge into `base` changes nothing, read from this repository's
+        git and not from the node's record: a squashed container's branch is no ancestor of its
+        target, yet merging it changes nothing, while a branch holding a commit `base` lacks (a
+        fix the landing never reached in this repository) is kept, and so is one that conflicts."""
+        return gitops.holds_nothing_past(repo_dir, base, branch)
 
     def _base_ref(self, node_id: str, repo: str) -> str:
         """The ref `node_id`'s branch is cut from in `repo`, creating each ancestor container

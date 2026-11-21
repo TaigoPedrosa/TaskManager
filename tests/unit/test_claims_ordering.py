@@ -2,7 +2,16 @@ from pathlib import Path
 from subprocess import CalledProcessError
 
 import pytest
-from lifecycle_estate import add, gated, git, make_estate, on_branch, stored
+from lifecycle_estate import (
+    add,
+    branch_at,
+    gated,
+    git,
+    make_estate,
+    on_branch,
+    push_main,
+    stored,
+)
 
 from taskmanager.core.enums import NodeKind
 from taskmanager.core.models import Finding, Job
@@ -334,3 +343,56 @@ def test_a_note_keeps_the_custom_header_of_the_section_it_appends_to(tmp_path: P
     assert found is not None
     assert found.header == "## Landing log"
     assert found.content.startswith("first\n\n") and found.content.endswith("second")
+
+
+def squash_of(repo: Path, branch: str, base: str) -> str:
+    """A commit on `base` holding the branch's tree, as a landing's squash does."""
+    return git(repo, "commit-tree", f"{branch}^{{tree}}", "-p", base, "-m", "squash")
+
+
+def test_a_branch_is_spent_only_when_merging_it_into_its_base_changes_nothing(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    api = claims.root / "api"
+
+    def spent(branch: str, base: str = "origin/main") -> bool:
+        return Claims._spent(api, branch, base)
+
+    assert not spent("tm/absent")
+
+    branch_at(api, "tm/ancestor")
+    assert spent("tm/ancestor")
+
+    on_branch(api, "tm/squashed", "s.py", "s\n")
+    git(api, "update-ref", "refs/heads/squash-target", squash_of(api, "tm/squashed", "origin/main"))
+    assert spent("tm/squashed", "squash-target")
+
+    on_branch(api, "tm/ahead", "ahead.py", "x\n")
+    assert not spent("tm/ahead")
+
+    on_branch(api, "tm/clash", "README.md", "mine\n")
+    push_main(api, "README.md", "theirs\n")
+    assert not spent("tm/clash")
+
+
+def test_only_a_fix_cut_retires_a_branch_that_holds_nothing_its_base_lacks(
+    tmp_path: Path,
+) -> None:
+    claims = make_estate(tmp_path, config=gated("api"))
+    add(claims, "T")
+    api = claims.root / "api"
+    branch_at(api, "tm/T")
+
+    claims._cut(claims.node("T"), ["api"], None, fix=False)
+    assert git(api, "branch", "--list", "tm/T@*") == ""
+
+    git(
+        api,
+        "worktree",
+        "remove",
+        "--force",
+        str(claims.root / claims.config.worktree_dir / "api-T"),
+    )
+    claims._cut(claims.node("T"), ["api"], None, fix=True)
+    assert git(api, "branch", "--list", "tm/T@*").strip() == "tm/T@1"
