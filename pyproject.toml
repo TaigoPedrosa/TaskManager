@@ -76,3 +76,5 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# Only a failing test's tmp_path is kept: a passing gate otherwise leaves every test's files behind.
+tmp_path_retention_policy = "failed"
