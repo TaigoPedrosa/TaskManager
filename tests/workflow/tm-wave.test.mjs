@@ -59,13 +59,13 @@ for (const key of ['release', 'maxFixRounds']) {
 test('discovery asks about every spec unless specs names some', async () => {
   const all = await runWave({ args: ARGS, tm: makeTm() })
   const some = await runWave({ args: { ...ARGS, specs: ['S1', 'S2'] }, tm: makeTm() })
-  assert.equal(discoverCmd(all.ops), `tm wave discover --lines --reserve ${RUN1} --session s1 --slots 9 --max-strong 5`)
-  assert.equal(discoverCmd(some.ops), `tm wave discover --lines --reserve ${RUN1} --spec S1 --spec S2 --session s1 --slots 9 --max-strong 5`)
+  assert.equal(discoverCmd(all.ops), `tm wave discover --lines --reserve ${RUN1} --session s1 --harness claude-code --slots 9 --max-strong 5`)
+  assert.equal(discoverCmd(some.ops), `tm wave discover --lines --reserve ${RUN1} --spec S1 --spec S2 --session s1 --harness claude-code --slots 9 --max-strong 5`)
 })
 
 test('discovery is told which merges to hold, so a held merge never takes a slot', async () => {
   const { ops } = await runWave({ args: { ...ARGS, holdMerge: ['T1', 'T2'] }, tm: makeTm() })
-  assert.equal(discoverCmd(ops), `tm wave discover --lines --reserve ${RUN1} --session s1 --slots 9 --max-strong 5 --hold-merge T1 --hold-merge T2`)
+  assert.equal(discoverCmd(ops), `tm wave discover --lines --reserve ${RUN1} --session s1 --harness claude-code --slots 9 --max-strong 5 --hold-merge T1 --hold-merge T2`)
 })
 
 test('a discovery transcript whose cksum never matches claims nothing', async () => {
@@ -296,11 +296,10 @@ test('every agent runs under a phase the meta declares, across the run each step
 for (const [claimed, models, id] of [
   ['gemini-3-pro', undefined, 'gemini-3-pro'],
   ['claude-opus-5-5', undefined, 'claude-opus-5-5'],
-  ['haiku', undefined, 'claude-haiku-4-5-20251001'],
-  ['sonnet', undefined, 'claude-sonnet-5-5'],
-  ['opus', undefined, 'claude-opus-5-5'],
-  ['fable', undefined, 'claude-fable-5-1'],
-  ['opus', { opus: 'claude-opus-6' }, 'claude-opus-6'],
+  ['haiku', undefined, 'haiku'],
+  ['sonnet', undefined, 'sonnet'],
+  ['opus', undefined, 'opus'],
+  ['sonnet', { sonnet: 'x' }, 'x'],
   ['gemini-3-pro', { 'gemini-3-pro': 'gemini-3-pro-preview' }, 'gemini-3-pro-preview'],
 ]) {
   test(`a step claimed on ${claimed} runs on ${id} and its brief names it`, async () => {
@@ -316,6 +315,27 @@ for (const [claimed, models, id] of [
     assert.ok(result.results[0].trail.includes(`implement on ${id}: done`))
   })
 }
+
+test('every tm task start the workflow builds names the claude-code harness', async () => {
+  const tm = makeTm({
+    chosen: [T1],
+    nodes: { T1: node('READY', 'implement') },
+    start: { T1: [() => (tm.set('T1', { status: 'IMPLEMENTING', next_action: null }), claim('implement', { worktree: '/wt/core-T1' }))] },
+  })
+  const { ops } = await runWave({ args: ARGS, tm })
+  assert.ok(starts(ops).length > 0)
+  for (const c of starts(ops)) assert.match(c, / --harness claude-code --json/)
+})
+
+test('whenToUse says the models alias applies to what tm resolves for claude-code, with no family-name aliasing', () => {
+  const said = meta().whenToUse
+  assert.match(said, /models \(model id -> model id\) is an alias map applied to the model a claim names, which tm resolves for the claude-code harness/)
+  assert.doesNotMatch(said, /family names/)
+})
+
+test('the workflow source holds no dated model id', () => {
+  assert.doesNotMatch(SOURCE, /claude-(haiku|sonnet|opus|fable)-\d/)
+})
 
 test('an implement brief names the worktree, the branch, its base and the verb that closes it', async () => {
   const tm = makeTm({
@@ -765,9 +785,9 @@ test('a sync stopped for an agent is handed over by a later claim, on the family
   const waitTick = await runWave({ args: ARGS, tm, agents })
   assert.deepEqual(waitTick.work, [])
 
-  const handoverTick = await runWave({ args: ARGS, tm, agents })
+  const handoverTick = await runWave({ args: { ...ARGS, models: { 'claude-sonnet-5-5': 'aliased' } }, tm, agents })
   assert.deepEqual(handoverTick.errors, [])
-  assert.deepEqual(handoverTick.work.map(w => [w.opts.label, w.opts.model]), [['sync-agent:T1', 'claude-sonnet-5-5']])
+  assert.deepEqual(handoverTick.work.map(w => [w.opts.label, w.opts.model]), [['sync-agent:T1', 'aliased']])
   assert.ok(handoverTick.work[0].prompt.includes('tm job resume S1 --agent wf-s1-T1 --token k1'))
   assert.ok(handoverTick.work[0].prompt.includes('under T1-sync-k1/ in your scratchpad directory'))
 
@@ -1190,12 +1210,12 @@ test('read, start and job each keep their transcript small next to a job log the
   }
 })
 
-test('every command runner is briefed on the current haiku id', async () => {
+test('every command runner is briefed on haiku and runs on it', async () => {
   const tm = makeTm({ chosen: [T1], nodes: { T1: node('FAILED', null) } })
   const { calls } = await runWave({ args: ARGS, tm })
   const ops = calls.filter(c => c.kind === 'op')
   assert.ok(ops.length >= 2)
-  for (const c of ops) assert.match(c.prompt, /^Model: claude-haiku-4-5-20251001$/m)
+  for (const c of ops) assert.match(c.prompt, /^Model: haiku$/m)
 })
 
 test('the dispatch guide and skill name the workflow by its plugin name and by the scriptPath of this script', () => {

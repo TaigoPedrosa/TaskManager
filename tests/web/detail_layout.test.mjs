@@ -83,13 +83,13 @@ const BODIES = {
         { kind: 'raised', number: 1, severity: 'blocking' },
         { kind: 'verification_run', passed: false, count: 3 },
       ] },
-      { action: 'fix', agent: 'fix-1', started: BEAT, ended: BEAT, outcome: 'complete', to: 'FIXED', round: null, items: [
+      { action: 'fix', agent: 'fix-1', route: 'standard', model: 'so<b>nnet</b>', started: BEAT, ended: BEAT, outcome: 'complete', to: 'FIXED', round: null, items: [
         { kind: 'disputed', number: 2, answer: 'the gate was <b>flaky</b>' },
         { kind: 'check', number: 3, result: 'red' },
         { kind: 'note', number: 1 },
         { kind: 'job handover', job: 'j1' },
       ] },
-      { action: 'review', agent: 'rev-2', started: BEAT, ended: null, outcome: null, to: null, round: null, items: [{ kind: 'reopened', number: 1, answer: null }] },
+      { action: 'review', agent: 'rev-2', route: 'strong', model: null, started: BEAT, ended: null, outcome: null, to: null, round: null, items: [{ kind: 'reopened', number: 1, answer: null }] },
     ],
   }),
   U: body({ ...LEASED, step_failures: 1, base_chain: ['P', 'main'] }, {
@@ -338,6 +338,7 @@ test('a step reads its review round, agent, outcome and time, then each record i
     ['review', 'rev-2', 'running'],
   ]);
   assert.match(head(steps[0])[3], /^\d+s$/);
+  assert.deepEqual(steps.map((s) => s.querySelector('[data-step-route]')?.textContent ?? null), [null, null, 'standard → so<b>nnet</b>', 'strong → harness default']);
   assert.equal(steps[0].querySelector('time').getAttribute('datetime'), BEAT);
   const items = (s) => [...s.querySelectorAll('[data-step-item]')].map((i) => text(i));
   assert.deepEqual(steps.map(items), [

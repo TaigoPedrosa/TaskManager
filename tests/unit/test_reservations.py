@@ -31,7 +31,7 @@ from taskmanager.engine.claims import Claims
 from taskmanager.engine.discovery import discover
 from taskmanager.engine.operations import OperationError
 
-STRONG = "claude-opus-5-5"
+STRONG = "strong"
 _LONG_AGO = datetime(2000, 1, 1, tzinfo=UTC)
 runner = CliRunner()
 

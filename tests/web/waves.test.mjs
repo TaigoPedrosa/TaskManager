@@ -482,3 +482,30 @@ test('the Archive toggle reaches /api/waves as archived=only, and its absence as
   await flushAsync();
   assert.equal(new URLSearchParams(wavesCalls(on).at(-1).split('?')[1]).get('archived'), null);
 });
+
+test('an entry whose tier the harness leaves unmapped shows its route, never null', async () => {
+  const entry = (id, model, route) => ({
+    id, title: id, kind: 'task', action: 'implement', model, route,
+    repos: ['api'], status_before: 'READY', status_after: 'IMPLEMENTED', in_flight: false,
+  });
+  const ctx = freshContext(() => ({
+    waves: [{ entries: [entry('A', null, 'standard'), entry('B', 'gpt-5', 'strong')], held: [] }],
+  }));
+  await flushAsync();
+  const html = ctx.contentHtml();
+  assert.match(html, /model-pill">standard</);
+  assert.match(html, /model-pill">gpt-5</);
+  assert.doesNotMatch(html, /null/);
+});
+
+test('a wave of unmapped entries on one route names that route once in its header', async () => {
+  const entry = (id) => ({
+    id, title: id, kind: 'task', action: 'implement', model: null, route: 'standard',
+    repos: ['api'], status_before: 'READY', status_after: 'IMPLEMENTED', in_flight: false,
+  });
+  const ctx = freshContext(() => ({ waves: [{ entries: [entry('A'), entry('B')], held: [] }] }));
+  await flushAsync();
+  const html = ctx.contentHtml();
+  assert.match(html, /· standard</);
+  assert.doesNotMatch(html, /model-pill/);
+});

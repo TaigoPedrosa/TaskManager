@@ -27,7 +27,7 @@ from taskmanager.core.status import (
 from taskmanager.db.cache_repo import _command_hash
 from taskmanager.db.utils import lease_alive
 from taskmanager.engine.chains import satisfied
-from taskmanager.engine.config import STRONG_MODELS, ModelsConfig, ProjectConfig
+from taskmanager.engine.config import ModelsConfig, ProjectConfig
 from taskmanager.engine.routing import model_for
 from taskmanager.engine.snapshot import SnapshotBuilder, apply_cycle, cycle_in, file_holders
 from taskmanager.engine.stepgraph import Snapshot, migration_holders
@@ -349,7 +349,8 @@ def select(
     max_strong: int,
     exclude: Sequence[str] = (),
     hold_merge: Sequence[str] = (),
-    strong: Collection[str] = STRONG_MODELS,
+    *,
+    strong: Collection[str],
 ) -> Selection:
     """The wave `candidates` fills `size` slots with, `max_strong` of them on a `strong` id, skipping
     `exclude` and holding `hold_merge`'s merges back."""

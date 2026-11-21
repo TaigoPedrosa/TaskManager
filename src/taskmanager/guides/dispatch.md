@@ -55,7 +55,7 @@ What still binds you when you run it:
 ## 2. What is claimable
 
 ```
-tm wave discover --session <id> --slots <n> --max-strong <n>
+tm wave discover --session <id> --slots <n> --max-strong <n> --harness <name>
 tm wave discover --spec <spec-id> --session <id> --slots <n> --max-strong <n> --exclude <node-id>
 tm wave discover --session <id> --slots <n> --max-strong <n> --hold-merge <node-id>
 tm wave discover --session <id> --slots <n> --max-strong <n> --reserve <run>
@@ -70,18 +70,18 @@ Within a batch no two nodes declare the same file. A node is not cut while anoth
 
 ## 3. Models are tm's
 
-`tm task start` names the model id, and the workflow runs the step on it. Any string is an id, of any vendor; nothing is refused for its vendor. `acceptable_models` and `review_models` list ids cheapest first, and an empty `acceptable_models` reads as `models.default`:
+`tm task start` names the model, and the workflow runs the step on it. `acceptable_models` and `review_models` list tiers (`light`, `standard`, `strong`) cheapest first, or pinned ids of any vendor, and an empty `acceptable_models` reads as `models.default`. The claim and `tm wave discover` resolve each tier for `--harness <name>` (the `harness` config key when omitted, `claude-code` by default) and print the tier as `route`: Claude Code's profile is built in (`tm harness list` prints what each tier runs on), and `harnesses.<name>.models.<tier>` overrides or adds a mapping. A tier the profile leaves unmapped resolves to `null` (`-` under `--lines`), with a `model_note` on the claim, and the step runs on the harness's default model. `tm harness list` shows each profile and whether its CLI is installed; `tm harness models <name>` lists the models that CLI offers and the `tm config set harnesses.<name>.models.<tier> <model>` line that maps a tier.
 
-| Step | Model id |
+| Step | Route |
 |:--|:--|
 | implement | the first of `acceptable_models` |
 | review of a task | the first of `review_models` when set, else the first of `acceptable_models` |
 | review of a plan or spec | the first of `review_models` when set, else the last of `acceptable_models` |
-| fix after a rejection, rounds 1 and 2 | the implement id when `models.strong` lists it, else the last of `acceptable_models` |
+| fix after a rejection, rounds 1 and 2 | the implement route when `models.strong` lists it, else the last of `acceptable_models` |
 | fix after a rejection, round 3 onward (containers only) | the last of `acceptable_models` |
 | fix after a failed landing; a landing or sync agent | `models.merge` |
 
-`models.default`, `models.merge` and `models.strong`, the list of ids `maxStrong` counts, are `tm config` keys; `tm config list` prints their values, and `tm config set models.strong '[<id>, ...]'` changes the list.
+`models.default`, `models.merge` (both `standard` unless set) and `models.strong`, the list of routes `maxStrong` counts (`[strong]` unless set), are `tm config` keys; `tm config list` prints their values, and `tm config set models.strong '[<id>, ...]'` changes the list.
 
 A list you disagree with is a plan defect: fix it with `tm task update <id> --models a,b` and say so, never dispatch around it.
 

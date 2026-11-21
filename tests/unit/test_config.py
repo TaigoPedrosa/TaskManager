@@ -482,3 +482,95 @@ def test_push_defaults_off_and_hides_the_remote_from_landing() -> None:
     assert off.remote("r") is None
     assert off.fetch_remote("r") == "origin"
     assert on.remote("r") == "origin"
+
+
+def test_a_harness_profile_and_the_active_harness_round_trip(root: Path) -> None:
+    assert tm(root, "config", "get", "harness") == (0, "claude-code\n")
+    assert tm(root, "config", "set", "harness", "codex")[0] == 0
+    assert tm(root, "config", "get", "harness") == (0, "codex\n")
+    assert tm(root, "config", "get", "harnesses.codex.models.light") == (0, "\n")
+    assert tm(root, "config", "set", "harnesses.codex.models.light", "gpt-6.1-mini")[0] == 0
+    assert tm(root, "config", "get", "harnesses.codex.models.light") == (0, "gpt-6.1-mini\n")
+    assert yaml.safe_load(ConfigStore(root).path.read_text()) == {
+        "harness": "codex",
+        "harnesses": {"codex": {"models": {"light": "gpt-6.1-mini"}}},
+    }
+    assert tm(root, "config", "unset", "harnesses.codex.models.light")[0] == 0
+    assert yaml.safe_load(ConfigStore(root).path.read_text()) == {"harness": "codex"}
+
+
+@pytest.mark.parametrize(
+    ("key", "named"),
+    [
+        ("harnesses.codex.models.max", "light, standard, strong"),
+        ("harnesses.Bad_Name.models.light", "[a-z0-9][a-z0-9-]*"),
+    ],
+)
+def test_a_harness_key_with_an_unknown_tier_or_a_bad_name_is_refused_naming_what_is_allowed(
+    root: Path, key: str, named: str
+) -> None:
+    code, out = tm(root, "config", "set", key, "x")
+    assert code == 1
+    assert named in out
+    assert not ConfigStore(root).path.exists()
+
+
+def test_a_hand_written_harnesses_block_reads_back_whole(root: Path) -> None:
+    ConfigStore(root).path.write_text(
+        yaml.safe_dump({"harnesses": {"codex": {"models": {"strong": "gpt-6.1-sol"}}}})
+    )
+    assert ConfigStore(root).project().harnesses["codex"].models == {"strong": "gpt-6.1-sol"}
+
+
+def test_an_unknown_harness_key_lists_the_harness_model_key_among_the_valid_ones(
+    root: Path,
+) -> None:
+    code, out = tm(root, "config", "get", "nope")
+    assert code == 1
+    assert "harnesses.<name>.models.<light|standard|strong>" in out
+
+
+def test_a_harness_name_that_only_contains_a_valid_run_is_refused(root: Path) -> None:
+    code, out = tm(root, "config", "set", "harness", "Bad_Name")
+    assert code == 1
+    assert "harness" in out
+    assert not ConfigStore(root).path.exists()
+
+
+def test_a_dotted_harness_name_is_refused_naming_the_allowed_pattern(root: Path) -> None:
+    code, out = tm(root, "config", "set", "harnesses.a.b.models.light", "x")
+    assert code == 1
+    assert out.startswith("harnesses: harness name a.b must match [a-z0-9][a-z0-9-]*")
+    assert not ConfigStore(root).path.exists()
+
+
+def test_a_bad_harness_key_names_the_harnesses_key_that_failed(root: Path) -> None:
+    code, out = tm(root, "config", "set", "harnesses.codex.models.max", "x")
+    assert code == 1
+    assert out.startswith("harnesses.codex.models: unknown tier max")
+
+
+def test_an_empty_harness_model_is_refused(root: Path) -> None:
+    code, out = tm(root, "config", "set", "harnesses.codex.models.light", "")
+    assert code == 1
+    assert "a model must not be empty" in out
+    assert not ConfigStore(root).path.exists()
+
+
+def test_a_harness_block_takes_only_models(root: Path) -> None:
+    ConfigStore(root).path.write_text(yaml.safe_dump({"harnesses": {"codex": {"modelz": {}}}}))
+    with pytest.raises(ConfigError, match="modelz"):
+        ConfigStore(root).project()
+
+
+def test_unsetting_a_tier_leaves_a_harness_that_never_held_models(root: Path) -> None:
+    ConfigStore(root).path.write_text(yaml.safe_dump({"harnesses": {"codex": {}}}))
+    assert tm(root, "config", "unset", "harnesses.codex.models.light")[0] == 0
+    assert yaml.safe_load(ConfigStore(root).path.read_text()) == {"harnesses": {"codex": {}}}
+
+
+def test_a_harness_tier_reads_as_default_unless_the_file_sets_it(root: Path) -> None:
+    assert tm(root, "config", "set", "harnesses.codex.models.strong", "gpt-6.1-sol")[0] == 0
+    store = ConfigStore(root)
+    assert store.resolve("harnesses.codex.models.strong") == Resolved("gpt-6.1-sol", "config")
+    assert store.resolve("harnesses.codex.models.light") == Resolved(None, "default")

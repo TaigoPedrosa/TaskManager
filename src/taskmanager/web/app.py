@@ -51,6 +51,7 @@ from taskmanager.engine.config import ConfigStore, DispatchConfig, project_name
 from taskmanager.engine.decisions import read_decision
 from taskmanager.engine.landing import Landing
 from taskmanager.engine.operations import OperationError, Operations
+from taskmanager.engine.routing import resolve
 from taskmanager.engine.selection import gated_repos
 from taskmanager.engine.simulate import simulate
 from taskmanager.engine.snapshot import DisplayView, SnapshotBuilder, stored_status
@@ -802,7 +803,12 @@ def create_app(project_root: Path, host: str = "127.0.0.1", port: int | None = N
             for node_id in sorted(named)
             if (node := data.nodes.get(node_id)) is not None
         }
-        return {"waves": [asdict(w) for w in waves], "max_depth": _MAX_WAVE_DEPTH, "nodes": nodes}
+        waves_out = [asdict(w) for w in waves]
+        for wave in waves_out:
+            for entry in wave["entries"]:
+                entry["route"] = entry["model"]
+                entry["model"] = resolve(entry["route"], project.harness, project)
+        return {"waves": waves_out, "max_depth": _MAX_WAVE_DEPTH, "nodes": nodes}
 
     @app.post("/api/specs", status_code=201)
     def create_spec(body: SpecCreate, actor: Actor) -> dict[str, str]:

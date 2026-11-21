@@ -5,6 +5,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- Routing by tier: `acceptable_models`, `review_models` and `models.*` hold `light`, `standard` or
+  `strong` (or a pinned model id), and a harness profile resolves each to a model. `--harness` on
+  `tm task start` and `tm wave discover`, the `harness` and `harnesses.<name>.models.<tier>`
+  config keys, and `tm harness list` / `tm harness models <name>` select and show profiles. A tier
+  a profile leaves unmapped prints `null` (`-` under `--lines`) with a `model_note`; the claim
+  also prints `route`.
+- `tm db migrate` moves state to schema 10, rewriting stored Claude ids in nodes, `archive.db` and
+  `config.yaml` into tiers.
+
 ### Fixed
 
 - A fix claim keeps a node's branch in every repository where it still holds commits its target
@@ -20,6 +31,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Changed
 
 - README: an "Upgrading to 0.3.23" section, and the `tm-wave` feature line names `tm monitor`.
+- The guides, dispatcher skill, `task` command and README teach tiers and harness profiles, and
+  README gains "Upgrading to 0.3.24".
+- `state.db` moves to schema 10: run `tm db migrate` once per estate. It rewrites each stored
+  Claude id into its tier (`claude-haiku-*` to `light`, `claude-sonnet-*` to `standard`,
+  `claude-opus-*` and `claude-fable-*` to `strong`) in `acceptable_models` and `review_models`, in
+  `state.db` and `archive.db`, and in `config.yaml`'s `models.default`, `models.merge` and
+  `models.strong`, naming the config keys it rewrote. Any other model id stays as it is.
+- `tm export` writes format 6. `tm restore` of an export in formats 1 to 5 rewrites the same Claude
+  ids into tiers in its nodes, its `archive.db` and its config; a Claude id in a format-6 export is
+  a pinned model and stays as it is.
+
+### Removed
+
+- The `DEFAULT_MODEL` and `STRONG_MODELS` defaults of Claude ids: `models.default` and
+  `models.merge` default to `standard`, `models.strong` to `[strong]`.
 
 ## [0.3.23] - 2026-11-19
 

@@ -30,7 +30,7 @@ def _lease_row(lease: Lease) -> tuple[object, ...]:
         lease.ttl_seconds,
         lease.action.value if lease.action else None,
         lease.review_hash,
-        lease.model,
+        lease.route,
         lease.token,
     )
 
@@ -49,7 +49,7 @@ def _row_to_lease(row: tuple[Any, ...]) -> Lease:
         # the CHECK constraint on `leases.action` already excludes 'blocked'
         action=cast(LeaseAction, Action(row[9])) if row[9] else None,
         review_hash=row[10],
-        model=row[11],
+        route=row[11],
         token=row[12],
     )
 
@@ -207,7 +207,7 @@ class RuntimeRepository:
             self.db.spec_commit(conn)
 
     def take_over(
-        self, node_id: str, agent: str, session: str, ttl: int, model: str, token: str
+        self, node_id: str, agent: str, session: str, ttl: int, route: str, token: str
     ) -> bool:
         """Hand a parked lease to `agent` under a new claim `token`, in one conditional write. A
         release followed by a new claim would let two agents each believe they hold the stopped
@@ -219,7 +219,7 @@ class RuntimeRepository:
                     last_heartbeat = ?, token = ?
                 WHERE task_id = ? AND ttl_seconds IS NULL
                 """,
-                (agent, session, ttl, model, to_db_timestamp(None), token, node_id),
+                (agent, session, ttl, route, to_db_timestamp(None), token, node_id),
             )
             self.db.spec_commit(conn)
             return cursor.rowcount > 0

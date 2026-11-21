@@ -837,22 +837,16 @@ def test_no_guide_or_doc_says_a_chain_ends_on_main(where: str, text: str) -> Non
     assert [phrase for phrase in RETIRED_TARGET_WORDING if phrase in text] == []
 
 
-CURRENT_MODEL_IDS = {
-    "claude-haiku-4-5-20251001",
-    "claude-sonnet-5-5",
-    "claude-opus-5-5",
-    "claude-fable-5-1",
-}
-_MODEL_ID = re.compile(r"\bclaude-[a-z]+-\d[\w.-]*")
+_DATED_CLAUDE_ID = re.compile(r"claude-(haiku|sonnet|opus|fable)-\d")
 
 
 @pytest.mark.parametrize("where,text", _TEXTS, ids=[w for w, _ in _TEXTS])
-def test_every_model_id_a_guide_or_doc_shows_is_a_current_one(where: str, text: str) -> None:
-    assert sorted(set(_MODEL_ID.findall(text)) - CURRENT_MODEL_IDS) == []
+def test_no_guide_or_doc_shows_a_dated_claude_model_id(where: str, text: str) -> None:
+    assert _DATED_CLAUDE_ID.findall(text) == []
 
 
 def test_the_plan_guide_example_routes_on_a_current_model_id() -> None:
-    assert "acceptable_models: [claude-sonnet-5-5]" in _guide_text("plan")
+    assert "acceptable_models: [standard]" in _guide_text("plan")
 
 
 VERIFY_DEFAULT_REF = [
@@ -1171,7 +1165,7 @@ BRIEF_RULES = [
     pytest.param(
         "dispatch",
         "## 3. Models are tm's",
-        "| fix after a rejection, rounds 1 and 2 | the implement id when `models.strong` lists it, "
+        "| fix after a rejection, rounds 1 and 2 | the implement route when `models.strong` lists it, "
         "else the last of `acceptable_models` |",
         id="dispatch:fix-model",
     ),
@@ -1217,9 +1211,9 @@ BRIEF_RULES = [
     pytest.param(
         "plan",
         "## 3. Models and capabilities",
-        "`acceptable_models` lists real model ids of any vendor, cheapest first, and decides the "
-        "implement route: tm takes the first. An **empty list reads as the project's "
-        "`models.default`**, not the strongest model.",
+        "`acceptable_models` lists tiers, cheapest first, and decides the implement route: tm "
+        "takes the first. An **empty list reads as the project's `models.default`**, not the "
+        "strongest model.",
         id="plan:model-ids",
     ),
     pytest.param(

@@ -122,6 +122,19 @@ def test_wave_one_matches_wave_discover_for_the_same_state(web: Web) -> None:
     assert [e["id"] for e in api_entries] == [c["id"] for c in chosen]
     assert [e["action"] for e in api_entries] == [c["action"] for c in chosen]
     assert [e["model"] for e in api_entries] == [c["model"] for c in chosen]
+    assert [e["route"] for e in api_entries] == [c["route"] for c in chosen]
+
+
+def test_wave_entry_without_a_profile_for_the_config_harness_has_no_model_and_keeps_its_route(
+    web: Web,
+) -> None:
+    client, root = web
+    _claimable_task(root, "S", "T")
+    ConfigStore(root).set("harness", "codex")
+
+    entry = client.get("/api/waves").json()["waves"][0]["entries"][0]
+
+    assert (entry["model"], entry["route"]) == (None, "standard")
 
 
 def test_spec_scopes_like_wave_discover_spec(web: Web) -> None:

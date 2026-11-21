@@ -19,6 +19,7 @@ from pydantic import (
 
 from taskmanager.core.enums import EmbeddingProviderType
 from taskmanager.core.status import Action
+from taskmanager.db.schema import claude_ids_as_tiers
 from taskmanager.engine.git import valid_branch
 
 DEFAULT_KEY_ENV: Final = "TASKMANAGER_OPENAI_API_KEY"
@@ -60,13 +61,14 @@ MIGRATIONS: Final = (
 # What a `sensitive:` key may name: a fix touching one of these gets one review scoped to its
 # findings before it lands.
 SENSITIVE_AREAS: Final = ("tenant", "rls", "crypto", "migration")
-# The ids a step runs on when a node lists none, and what a merge or sync runs on.
-DEFAULT_MODEL: Final = "claude-sonnet-5-5"
 # Seconds a test_command verification may run. The clock starts with the command, so a wait
 # for a shared runner's slot inside it counts too.
 VERIFY_TIMEOUT: Final = 600
-# The ids `--max-strong` counts.
-STRONG_MODELS: Final = ("claude-opus-5-5", "claude-fable-5-1")
+
+# Cheapest first.
+TIERS: Final = ("light", "standard", "strong")
+DEFAULT_HARNESS: Final = "claude-code"
+HARNESS_NAME: Final = re.compile(r"[a-z0-9][a-z0-9-]*")
 
 ARCHIVE_HOURS_KEY: Final = "archive.automatically_after_hours"
 _TICK_REMOVED: Final = (
@@ -112,6 +114,8 @@ KEYS: Final = (
     "models.default",
     "models.merge",
     "models.strong",
+    "harness",
+    "harnesses",
 )
 
 # The dispatch loop's typical target, printed by `tm guide dispatch`: waves of at most wave_size
@@ -126,7 +130,9 @@ _DISPATCH_BOUNDS: Final = (("dispatch.wave_size", "dispatch.tick_budget"),)
 
 # Keys whose value is a whole mapping or list: stored and set as one value, never split into
 # dotted keys, and parsed from YAML when set from the command line.
-_WHOLE: Final = frozenset({"lease_ttl", "repos", "repo_order", "sensitive_areas", "models.strong"})
+_WHOLE: Final = frozenset(
+    {"lease_ttl", "repos", "repo_order", "sensitive_areas", "models.strong", "harnesses"}
+)
 
 _GATE_NAMES: Final = ("main", "parent")
 # What a dotted key may name below `repos.<repo>`; a write through one merges into the stored
@@ -152,6 +158,7 @@ _REPO_MAPPINGS: Final = (
 _VALID: Final = ", ".join(
     (
         *KEYS,
+        "harnesses.<name>.models.<light|standard|strong>",
         "repos.<repo>[.default_branch|.gates[.<main|parent>[.command|.junit|.tests_ran|.failing_pattern|.timeout]]|.after_land|.unlocked_files|.migrations|.remote|.push]",
     )
 )
@@ -289,9 +296,31 @@ class ArchiveConfig(BaseModel):
 class ModelsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    default: str = Field(default=DEFAULT_MODEL, min_length=1)
-    merge: str = Field(default=DEFAULT_MODEL, min_length=1)
-    strong: list[str] = Field(default_factory=lambda: list(STRONG_MODELS))
+    default: str = Field(default="standard", min_length=1)
+    merge: str = Field(default="standard", min_length=1)
+    strong: list[str] = Field(default_factory=lambda: ["strong"])
+
+
+class HarnessConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # A tier left out runs on the harness's own default model.
+    models: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("models", mode="before")
+    @classmethod
+    def _tiers_only(cls, value: Any) -> Any:
+        unknown = sorted(set(value) - set(TIERS)) if isinstance(value, dict) else []
+        if unknown:
+            raise ValueError(f"unknown tier {', '.join(unknown)} (tiers: {', '.join(TIERS)})")
+        return value
+
+    @field_validator("models")
+    @classmethod
+    def _models_not_empty(cls, value: dict[str, str]) -> dict[str, str]:
+        if any(not m for m in value.values()):
+            raise ValueError("a model must not be empty")
+        return value
 
 
 class ProjectConfig(BaseModel):
@@ -313,6 +342,16 @@ class ProjectConfig(BaseModel):
     archive: ArchiveConfig = Field(default_factory=ArchiveConfig)
     sensitive_areas: list[str] = Field(default_factory=lambda: list(SENSITIVE_AREAS))
     models: ModelsConfig = Field(default_factory=ModelsConfig)
+    harness: str = Field(default=DEFAULT_HARNESS, pattern=f"^{HARNESS_NAME.pattern}$")
+    harnesses: dict[str, HarnessConfig] = Field(default_factory=dict)
+
+    @field_validator("harnesses")
+    @classmethod
+    def _named_as_a_harness(cls, value: dict[str, HarnessConfig]) -> dict[str, HarnessConfig]:
+        bad = sorted(n for n in value if not HARNESS_NAME.fullmatch(n))
+        if bad:
+            raise ValueError(f"harness name {', '.join(bad)} must match {HARNESS_NAME.pattern}")
+        return value
 
     @field_validator("lease_ttl")
     @classmethod
@@ -390,6 +429,15 @@ def _repo_key(key: str) -> RepoKey | None:
     } & set(repo.split(".")):
         return None
     return RepoKey(repo, tuple(below.split(".")) if below else ())
+
+
+_HARNESS_KEY: Final = re.compile(r"harnesses\.(?P<name>.+)\.models\.(?P<tier>[^.]+)")
+
+
+def _harness_key(key: str) -> tuple[str, str] | None:
+    """`harnesses.<name>.models.<tier>` as its name and tier; None for any other key."""
+    found = _HARNESS_KEY.fullmatch(key)
+    return (found["name"], found["tier"]) if found else None
 
 
 def _with(repos: dict[str, Any], key: RepoKey, value: Any) -> dict[str, Any]:
@@ -470,7 +518,11 @@ def _typed(key: str, raw: Any) -> Any:
         error = exc.errors()[0]
         msg = str(error["msg"]).removeprefix("Value error, ")
         # Inside `repos`, the message names the key that failed as a dotted write spells it.
-        where = ".".join(str(p) for p in error["loc"] if p != "[key]") if key == "repos" else key
+        where = (
+            ".".join(str(p) for p in error["loc"] if p != "[key]")
+            if key in ("repos", "harnesses")
+            else key
+        )
         raise ConfigError(f"{where}: {msg} (valid keys: {_VALID})") from exc
     # Only what was set: a stored default would read as a choice someone made.
     return _lookup(model.model_dump(mode="json", exclude_unset=True), key)
@@ -532,6 +584,23 @@ class ConfigStore:
             raise ConfigError(f"{self.path} is not a mapping")
         return {key: _typed(key, value) for key, value in _flatten(loaded) if key not in INERT_KEYS}
 
+    def claude_ids_as_tiers(self) -> list[str]:
+        """Rewrites each Claude id `models.*` holds into its tier and returns the keys that
+        changed; with none, the file is not written."""
+        with self._locked():
+            flat = self.read()
+            rewritten = {
+                key: claude_ids_as_tiers(value)
+                if isinstance(value, list)
+                else claude_ids_as_tiers([value])[0]
+                for key, value in flat.items()
+                if key in ("models.default", "models.merge", "models.strong")
+            }
+            changed = sorted(key for key, value in rewritten.items() if value != flat[key])
+            if changed:
+                self._write(flat | rewritten)
+            return changed
+
     def _drop_removed(self, keys: Iterable[str]) -> None:
         """Removes each of `keys` from the stored file without reading its values, so a key no
         read accepts can still be cleared."""
@@ -589,9 +658,15 @@ class ConfigStore:
         flat = self.read()
         stored = flat.get("repos", {})
         found = _repo_key(key)
+        harness = _harness_key(key)
         if found is not None:
             value = _yaml(key, raw) if found.is_mapping else raw
             flat["repos"] = _typed("repos", _with(stored, found, value))
+        elif harness is not None:
+            name, tier = harness
+            stored_harnesses = flat.get("harnesses", {})
+            stored_harnesses.setdefault(name, {}).setdefault("models", {})[tier] = raw
+            flat["harnesses"] = _typed("harnesses", stored_harnesses)
         else:
             flat[key] = _typed(key, raw)
             if key == "repos":
@@ -604,7 +679,17 @@ class ConfigStore:
             self._drop_removed([key])
             return
         found = _repo_key(key)
-        if found is None:
+        harness = _harness_key(key)
+        if harness is not None:
+            flat = self.read()
+            name, tier = harness
+            harnesses = flat.pop("harnesses", {})
+            harnesses.get(name, {}).get("models", {}).pop(tier, None)
+            if not harnesses.get(name, {}).get("models", True):
+                harnesses.pop(name)
+            if harnesses:
+                flat["harnesses"] = harnesses
+        elif found is None:
             _require_key(key)
             flat = self.read()
             flat.pop(key, None)
@@ -624,6 +709,11 @@ class ConfigStore:
         found = _repo_key(key)
         if found is not None:
             return self._resolve_in_repos(found)
+        if (harness := _harness_key(key)) is not None:
+            harnesses = self.resolve("harnesses")
+            name, tier = harness
+            value = harnesses.value.get(name, {}).get("models", {}).get(tier)
+            return Resolved(value, "default" if value is None else harnesses.source)
         _require_key(key)
         if flag is not None:
             return Resolved(_typed(key, flag), "flag")

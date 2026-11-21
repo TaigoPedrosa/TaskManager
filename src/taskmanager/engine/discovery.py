@@ -15,6 +15,7 @@ from typing import Final
 from taskmanager.db.utils import lease_alive
 from taskmanager.engine import selection
 from taskmanager.engine.claims import Claims
+from taskmanager.engine.routing import resolve
 from taskmanager.engine.stepgraph import Snapshot
 
 # Long enough for a wave to claim what it chose; a run that dies frees its ids by this.
@@ -46,6 +47,7 @@ def discover(
     exclude: list[str] | None = None,
     hold_merge: list[str] | None = None,
     reserve: str | None = None,
+    harness: str | None = None,
 ) -> tuple[str, int]:
     claims.sweep()
     snap = claims.snapshots.build()
@@ -95,7 +97,7 @@ def discover(
         free = slots - len(mine) - len(pending)
         strong_free = (
             max_strong
-            - sum(lease.model in strong for lease in mine)
+            - sum(lease.route in strong for lease in mine)
             - sum(model in strong for model in pending)
         )
         # A reserved id takes its files as an excluded one does, but no "excluded by args" line.
@@ -106,7 +108,7 @@ def discover(
             strong_free,
             [*(exclude or []), *reserved],
             hold_merge or [],
-            strong,
+            strong=strong,
         )
         if reserve:
             claims.runtime.reserve(
@@ -115,9 +117,18 @@ def discover(
                 reserve,
                 now + timedelta(seconds=RESERVATION_SECONDS),
             )
+    harness = harness or claims.config.harness
+    chosen = [
+        {
+            **entry,
+            "model": resolve(str(entry["model"]), harness, claims.config),
+            "route": entry["model"],
+        }
+        for entry in result.chosen
+    ]
     payload = json.dumps(
         {
-            "chosen": result.chosen,
+            "chosen": chosen,
             "held": [*held, *result.held],
             "waiting_for_slot": result.waiting_for_slot,
             "mine": len(mine),

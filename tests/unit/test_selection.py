@@ -1,6 +1,7 @@
 """Unit tests for `engine.selection`: the pure rules `Claims`, `tm wave discover` and the wave
 simulator all read off a `Snapshot` alone."""
 
+import inspect
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -120,7 +121,7 @@ def wave(
 ) -> Wave:
     snap = estate.snap()
     found, held = selection.candidates(snap, specs)
-    result = selection.select(found, snap, size, max_strong, exclude, hold_merge)
+    result = selection.select(found, snap, size, max_strong, exclude, hold_merge, strong=["strong"])
     return Wave([*result.chosen], [*held, *result.held], result.waiting_for_slot)
 
 
@@ -133,7 +134,7 @@ def chosen(w: Wave) -> list[tuple[object, object]]:
 
 def test_next_step_of_a_ready_task_is_implement(estate: Estate) -> None:
     node = estate.add("T")
-    assert selection.next_step(node, estate.snap()) == (Action.IMPLEMENT, "claude-sonnet-5-5")
+    assert selection.next_step(node, estate.snap()) == (Action.IMPLEMENT, "standard")
 
 
 def test_next_step_of_a_completed_node_is_nothing(estate: Estate) -> None:
@@ -156,7 +157,7 @@ def test_a_node_the_lifecycle_cannot_read_is_held_and_its_siblings_are_still_cho
         return selection.next_step(node, snap)
 
     found, held = selection.candidates(estate.snap(), None, next_step=unreadable)
-    result = selection.select(found, estate.snap(), 10, 10)
+    result = selection.select(found, estate.snap(), 10, 10, strong=["strong"])
     assert [(e["id"], e["action"]) for e in result.chosen] == [("OK", "implement")]
     assert held == ["BAD: REVIEWED with no outcome"]
 
@@ -337,7 +338,7 @@ def test_a_migration_writer_holds_its_repository_chain_until_it_lands_on_main(
 def test_slots_strong_slots_exclusions_and_file_overlap_shape_the_wave(estate: Estate) -> None:
     estate.add("T1", frontmatter={"declared_files": ["api/a.py"]}, priority=90)
     estate.add("T2", frontmatter={"declared_files": ["api/a.py"]}, priority=80)
-    estate.add("T3", acceptable_models=["claude-opus-5-5"], priority=70)
+    estate.add("T3", acceptable_models=["strong"], priority=70)
     estate.add("T4", priority=60)
     estate.add("T5", priority=50)
     estate.add("T6", priority=40)
@@ -377,7 +378,7 @@ def test_candidates_and_select_issue_no_sql_statement(estate: Estate) -> None:
         conn.set_trace_callback(calls.append)
     try:
         found, held = selection.candidates(snap, None)
-        selection.select(found, snap, 10, 10)
+        selection.select(found, snap, 10, 10, strong=["strong"])
     finally:
         with estate.db.get_state_connection() as conn:
             conn.set_trace_callback(None)
@@ -387,7 +388,7 @@ def test_candidates_and_select_issue_no_sql_statement(estate: Estate) -> None:
 
 
 def test_select_type_is_the_advertised_one(estate: Estate) -> None:
-    result = selection.select([], estate.snap(), 1, 1)
+    result = selection.select([], estate.snap(), 1, 1, strong=["strong"])
     assert isinstance(result, Selection)
     assert result == Selection(chosen=[], held=[], waiting_for_slot=0)
 
@@ -402,3 +403,19 @@ def test_candidate_carries_the_node_its_action_model_job_and_repos() -> None:
         None,
         ["api"],
     )
+
+
+def test_select_counts_only_the_refs_its_caller_names_as_strong(estate: Estate) -> None:
+    estate.add("T1", acceptable_models=["big"], priority=90)
+    estate.add("T2", acceptable_models=["strong"], priority=80)
+    snap = estate.snap()
+    found, _ = selection.candidates(snap, None)
+    result = selection.select(found, snap, 10, 0, strong=["big"])
+    assert [e["id"] for e in result.chosen] == ["T2"]
+    assert result.held == ["T1: no free strong-model slot"]
+
+
+def test_select_takes_strong_from_its_caller_by_keyword_with_no_default() -> None:
+    param = inspect.signature(selection.select).parameters["strong"]
+    assert param.kind is inspect.Parameter.KEYWORD_ONLY
+    assert param.default is inspect.Parameter.empty

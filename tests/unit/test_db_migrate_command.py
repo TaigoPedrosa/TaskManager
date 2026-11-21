@@ -1,10 +1,14 @@
 import hashlib
 import sqlite3
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 from test_state_migration import (
     _as_schema_5,
     _build_v1_estate,
@@ -13,9 +17,12 @@ from test_state_migration import (
     _seed_every_v2_status,
     _user_version,
 )
+from test_state_migration_10 import schema_9_estate
 
 from taskmanager.cli.main import main
-from taskmanager.db.schema import STATE_SCHEMA_VERSION
+from taskmanager.db import connection
+from taskmanager.db.schema import STATE_MIGRATIONS, STATE_SCHEMA_VERSION
+from taskmanager.engine.config import ConfigStore
 
 
 def _sha256(data: bytes) -> str:
@@ -196,3 +203,180 @@ def test_migrate_refuses_while_a_lease_is_live_naming_each_and_writes_nothing(
         conn.close()
     assert _tm(["db", "migrate", "-C", str(v2_estate)], monkeypatch, capsys)[0] == 0
     assert _user_version(state_db) == STATE_SCHEMA_VERSION
+
+
+_CLAUDE_CONFIG = (
+    "# Routed by hand\n"
+    "models:\n"
+    "    default: claude-sonnet-5-5\n"
+    "    merge: claude-haiku-4-5-20251001\n"
+    "    strong: [claude-opus-5-5, claude-fable-5-1, gpt-6.1-sol]\n"
+    "worktree_dir: ../wt\n"
+    "name: claude-sonnet-5-5\n"
+)
+
+
+def test_migrate_across_schema_10_rewrites_config_models_into_tiers_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    schema_9_estate(tmp_path, monkeypatch)
+    config = tmp_path / ".taskmanager" / "config.yaml"
+    config.write_text(_CLAUDE_CONFIG, encoding="utf-8")
+
+    code, out = _tm(["db", "migrate", "-C", str(tmp_path)], monkeypatch, capsys)
+
+    assert code == 0
+    backup = tmp_path / ".taskmanager" / "state.db.schema9.bak"
+    assert out == (
+        f"Migrated state.db from schema 9 to 10; the schema-9 copy is {backup} "
+        "Rewrote models.default, models.merge, models.strong in config.yaml from Claude ids "
+        "into tiers"
+    )
+    assert yaml.safe_load(config.read_text(encoding="utf-8")) == {
+        "models": {"default": "standard", "merge": "light", "strong": ["strong", "gpt-6.1-sol"]},
+        "worktree_dir": "../wt",
+        "name": "claude-sonnet-5-5",
+    }
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        "# Routed by hand\nworktree_dir: ../wt\n",
+        "# Routed by hand\nmodels:\n    default: gpt-6.1-sol\n    strong: [strong, opus]\n",
+    ],
+    ids=["no models", "no claude id"],
+)
+def test_migrate_across_schema_10_leaves_a_config_without_claude_ids_byte_identical(
+    stored: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    schema_9_estate(tmp_path, monkeypatch)
+    config = tmp_path / ".taskmanager" / "config.yaml"
+    config.write_text(stored, encoding="utf-8")
+    before = _sha256(config.read_bytes())
+
+    code, out = _tm(["db", "migrate", "-C", str(tmp_path)], monkeypatch, capsys)
+
+    assert code == 0
+    assert "config.yaml" not in out
+    assert _sha256(config.read_bytes()) == before
+
+
+def test_migrate_past_schema_10_keeps_a_claude_id_config_set_since_as_a_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    schema_9_estate(tmp_path, monkeypatch)
+    assert _tm(["db", "migrate", "-C", str(tmp_path)], monkeypatch, capsys)[0] == 0
+    config = tmp_path / ".taskmanager" / "config.yaml"
+    config.write_text(_CLAUDE_CONFIG, encoding="utf-8")
+    monkeypatch.setattr(connection, "STATE_SCHEMA_VERSION", 11)
+    monkeypatch.setitem(STATE_MIGRATIONS, 11, "")
+
+    code, out = _tm(["db", "migrate", "-C", str(tmp_path)], monkeypatch, capsys)
+
+    assert code == 0
+    assert out.startswith("Migrated state.db from schema 10 to")
+    assert "config.yaml" not in out
+    assert config.read_text(encoding="utf-8") == _CLAUDE_CONFIG
+
+
+def test_migrate_rerun_after_a_failed_config_write_rewrites_the_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    schema_9_estate(tmp_path, monkeypatch)
+    state_db = tmp_path / ".taskmanager" / "state.db"
+    config = tmp_path / ".taskmanager" / "config.yaml"
+    config.write_text(_CLAUDE_CONFIG, encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["tm", "db", "migrate", "-C", str(tmp_path)])
+
+    def full_disk(self: ConfigStore, flat: dict[str, Any]) -> None:
+        raise OSError(28, "No space left on device")
+
+    with monkeypatch.context() as failing, pytest.raises(OSError, match="No space left"):
+        failing.setattr(ConfigStore, "_write", full_disk)
+        main()
+
+    assert _user_version(state_db) == 9
+    assert config.read_text(encoding="utf-8") == _CLAUDE_CONFIG
+
+    code, out = _tm(["db", "migrate", "-C", str(tmp_path)], monkeypatch, capsys)
+
+    assert code == 0
+    assert out.endswith(
+        "Rewrote models.default, models.merge, models.strong in config.yaml from Claude ids "
+        "into tiers"
+    )
+    assert _user_version(state_db) == STATE_SCHEMA_VERSION
+    assert yaml.safe_load(config.read_text(encoding="utf-8"))["models"] == {
+        "default": "standard",
+        "merge": "light",
+        "strong": ["strong", "gpt-6.1-sol"],
+    }
+
+
+def test_migrate_refused_by_a_live_lease_leaves_the_config_byte_identical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    schema_9_estate(tmp_path, monkeypatch, live_lease=True)
+    config = tmp_path / ".taskmanager" / "config.yaml"
+    config.write_text(_CLAUDE_CONFIG, encoding="utf-8")
+
+    code, out = _tm(["db", "migrate", "-C", str(tmp_path)], monkeypatch, capsys)
+
+    assert code == 1
+    assert out.startswith("state.db was not migrated: ONE (implementer) still hold a lease")
+    assert config.read_text(encoding="utf-8") == _CLAUDE_CONFIG
+
+
+def test_migrate_with_an_unreadable_config_refuses_before_changing_anything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    schema_9_estate(tmp_path, monkeypatch)
+    state_db = tmp_path / ".taskmanager" / "state.db"
+    config = tmp_path / ".taskmanager" / "config.yaml"
+    config.write_text("models: [\n", encoding="utf-8")
+    before = _dump(state_db)
+
+    code, out = _tm(["db", "migrate", "-C", str(tmp_path)], monkeypatch, capsys)
+
+    assert code == 1
+    assert out == f"{config} is not valid YAML"
+    assert _dump(state_db) == before
+    assert _user_version(state_db) == 9
+    assert not (tmp_path / ".taskmanager" / "state.db.schema9.bak").exists()
+
+
+def test_config_rewrite_reads_and_writes_under_the_config_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / ".taskmanager").mkdir()
+    (tmp_path / ".taskmanager" / "config.yaml").write_text(_CLAUDE_CONFIG, encoding="utf-8")
+    store = ConfigStore(tmp_path)
+    held: list[bool] = []
+    seen: list[str] = []
+    locked, read, write = ConfigStore._locked, ConfigStore.read, ConfigStore._write
+
+    @contextmanager
+    def spy_locked(self: ConfigStore) -> Iterator[None]:
+        with locked(self):
+            held.append(True)
+            yield
+            held.pop()
+
+    def spy_read(self: ConfigStore) -> dict[str, Any]:
+        seen.append(f"read locked={bool(held)}")
+        return read(self)
+
+    def spy_write(self: ConfigStore, flat: dict[str, Any]) -> None:
+        seen.append(f"write locked={bool(held)}")
+        write(self, flat)
+
+    monkeypatch.setattr(ConfigStore, "_locked", spy_locked)
+    monkeypatch.setattr(ConfigStore, "read", spy_read)
+    monkeypatch.setattr(ConfigStore, "_write", spy_write)
+
+    assert store.claude_ids_as_tiers() == ["models.default", "models.merge", "models.strong"]
+    assert seen == ["read locked=True", "write locked=True"]

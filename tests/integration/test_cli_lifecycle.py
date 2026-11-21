@@ -82,6 +82,7 @@ def test_start_claims_implement_then_complete_and_a_review_that_approves(tmp_pat
         "action",
         "reason",
         "model",
+        "route",
         "job",
         "repos",
         "branch",

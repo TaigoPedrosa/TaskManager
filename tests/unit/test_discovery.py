@@ -45,7 +45,7 @@ def hold(
         branch_name=f"tm/{node_id}",
         ttl_seconds=3600,
         action=action,
-        model=model,
+        route=model,
     )
     moved = node.model_copy(update={"status": step, "claimed_from": node.status})
     assert claims.runtime.claim(lease, [], moved)
@@ -88,10 +88,15 @@ def test_every_kind_of_node_is_offered_with_its_next_step_model_and_requirements
 
     assert chosen(data) == [("T2", "merge"), ("P1", "review"), ("T1", "implement")]
     by_id = {entry["id"]: entry for entry in data["chosen"]}
-    assert (by_id["P1"]["model"], by_id["T1"]["model"], by_id["T2"]["model"]) == (
-        "claude-sonnet-5-5",
+    assert (by_id["P1"]["route"], by_id["T1"]["route"], by_id["T2"]["route"]) == (
+        "standard",
         "claude-haiku-4",
-        "claude-sonnet-5-5",
+        "standard",
+    )
+    assert (by_id["P1"]["model"], by_id["T1"]["model"], by_id["T2"]["model"]) == (
+        "sonnet",
+        "claude-haiku-4",
+        "sonnet",
     )
     assert by_id["T1"]["requires"] == ["figma"]
     assert by_id["T1"]["repos"] == ["api"]
@@ -168,7 +173,7 @@ def test_slots_strong_slots_exclusions_and_file_overlap_shape_the_batch(tmp_path
     claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T1", files=["api/a.py"], priority=90)
     add(claims, "T2", files=["api/a.py"], priority=80)
-    add(claims, "T3", models=["claude-opus-5-5"], priority=70)
+    add(claims, "T3", models=["strong"], priority=70)
     add(claims, "T4", priority=60)
     add(claims, "T5", priority=50)
     add(claims, "T6", priority=40)
@@ -196,8 +201,8 @@ def test_the_session_leases_take_its_slots(tmp_path: Path) -> None:
 def test_a_session_lease_routed_to_a_strong_model_takes_a_strong_slot(tmp_path: Path) -> None:
     claims = make_estate(tmp_path, config=gated("api"))
     add(claims, "T0")
-    hold(claims, "T0", "s1", Status.IMPLEMENTING, Action.IMPLEMENT, model="claude-opus-5-5")
-    add(claims, "T1", models=["claude-opus-5-5"], priority=90)
+    hold(claims, "T0", "s1", Status.IMPLEMENTING, Action.IMPLEMENT, model="strong")
+    add(claims, "T1", models=["strong"], priority=90)
     add(claims, "T2", priority=80)
 
     data = batch(claims, max_strong=1)

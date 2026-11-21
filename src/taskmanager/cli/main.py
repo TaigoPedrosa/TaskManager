@@ -65,10 +65,10 @@ from taskmanager.db.job_repo import JobRepository
 from taskmanager.db.ledger_repo import LedgerRepository
 from taskmanager.db.node_repo import NodeRepository
 from taskmanager.db.runtime_repo import RuntimeRepository
-from taskmanager.db.schema import STATE_SCHEMA_VERSION
+from taskmanager.db.schema import STATE_SCHEMA_VERSION, node_models_as_tiers
 from taskmanager.db.utils import parse_db_datetime, to_db_timestamp
 from taskmanager.di.container import TaskManagerProvider
-from taskmanager.engine import doctor, setup
+from taskmanager.engine import doctor, harnesses, setup
 from taskmanager.engine.archive import (
     ARCHIVE_FILE,
     archive_due,
@@ -81,8 +81,15 @@ from taskmanager.engine.archive import (
     unarchive_spec,
 )
 from taskmanager.engine.chains import landing_chain
-from taskmanager.engine.claims import LIVE_JOBS, Blocker, Claims, DecisionSpec
-from taskmanager.engine.config import ConfigError, ConfigStore
+from taskmanager.engine.claims import (
+    LIVE_JOBS,
+    Blocker,
+    Claims,
+    DecisionSpec,
+    UnknownHarness,
+    require_harness,
+)
+from taskmanager.engine.config import TIERS, ConfigError, ConfigStore
 from taskmanager.engine.decisions import DECISION_STATUS_LABELS, read_decision
 from taskmanager.engine.discovery import discover, djb2
 from taskmanager.engine.heuristics import RecommendationEngine
@@ -128,6 +135,7 @@ job_app = typer.Typer(name="job", help="Landing and sync jobs")
 land_app = typer.Typer(name="land", help="Start a node's landing")
 condition_app = typer.Typer(name="condition", help="States outside the corpus a node waits on")
 db_app = typer.Typer(name="db", help="The estate's state.db schema")
+harness_app = typer.Typer(name="harness", help="The agent CLIs tm routes steps to")
 
 # Soft wrap: a refusal is one line a script can match, whatever the terminal width.
 _stderr = Console(stderr=True, soft_wrap=True)
@@ -149,6 +157,7 @@ app.add_typer(decision_app)
 app.add_typer(job_app)
 app.add_typer(land_app)
 app.add_typer(db_app)
+app.add_typer(harness_app)
 task_app.add_typer(condition_app)
 
 
@@ -206,18 +215,20 @@ def _emit(data: Any, as_yaml: bool = False) -> None:
 # pre-lifecycle tm, whose statuses and gated edges this version does not store. Versions 1 and 2
 # store `merge: main`, which restore reads as `spec`. Versions 1 to 3 carry no `on_target`, so a
 # restored node is on its target only at the LANDED or COMPLETED it states. Versions 1 to 4 carry
-# no `completed_at`, so a restored COMPLETED node counts as completed at its restore.
-EXPORT_FORMAT: dict[str, Any] = {"format": "tm-lifecycle", "version": 5}
+# no `completed_at`, so a restored COMPLETED node counts as completed at its restore. Versions 1 to
+# 5 predate tiers, so a Claude id in their model lists or `models.*` is read as its tier.
+EXPORT_FORMAT: dict[str, Any] = {"format": "tm-lifecycle", "version": 6}
 EXPORT_FORMATS_MERGE_MAIN = (
     {"format": "tm-lifecycle", "version": 1},
     {"format": "tm-lifecycle", "version": 2},
 )
-READABLE_EXPORT_FORMATS = (
+EXPORT_FORMATS_CLAUDE_IDS = (
     *EXPORT_FORMATS_MERGE_MAIN,
     {"format": "tm-lifecycle", "version": 3},
     {"format": "tm-lifecycle", "version": 4},
-    EXPORT_FORMAT,
+    {"format": "tm-lifecycle", "version": 5},
 )
+READABLE_EXPORT_FORMATS = (*EXPORT_FORMATS_CLAUDE_IDS, EXPORT_FORMAT)
 # Config keys whose value holds only on the machine that set it: an export leaves them out, and
 # a restore keeps the restoring machine's own.
 MACHINE_LOCAL_KEYS = frozenset({"worktree_dir"})
@@ -593,6 +604,34 @@ def doctor_cmd(
     else:
         sys.stdout.writelines(f"{fact.line()}\n" for fact in found)
     raise typer.Exit(code=doctor.exit_code(found))
+
+
+@harness_app.command("list")
+def harness_list(
+    path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
+) -> None:
+    """Each harness, whether its CLI is on PATH, and the model each tier runs on."""
+    with _user_errors():
+        config = ConfigStore(_get_root(path, must_exist=False)).project()
+    for name, cli, *tiers in harnesses.rows(config):
+        mapped = "; ".join(f"{tier}={model}" for tier, model in zip(TIERS, tiers, strict=True))
+        sys.stdout.write(f"{name}: cli {cli}; {mapped}\n")
+
+
+@harness_app.command("models")
+def harness_models(name: str) -> None:
+    """The models a harness's own CLI offers, with the config line that maps a tier."""
+    try:
+        harness = harnesses.known(name)
+        if harness.no_listing:
+            sys.stdout.write(f"{harness.no_listing}\n")
+            return
+        listed = harnesses.models(harness)
+    except harnesses.HarnessError as exc:
+        _stderr.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(code=1) from exc
+    sys.stdout.writelines(f"{model}\n" for model in listed)
+    sys.stdout.write(f"next: tm config set harnesses.{name}.models.<tier> <model>\n")
 
 
 @spec_app.command("add")
@@ -1213,6 +1252,13 @@ def task_get(
         print(f"[bold]Verifications:[/] {escape(v_str)}")
 
 
+def _known_harness(claims: Claims, harness: str | None) -> None:
+    try:
+        require_harness(harness or claims.config.harness, claims.config)
+    except UnknownHarness as exc:
+        raise typer.BadParameter(str(exc), param_hint="--harness") from exc
+
+
 @task_app.command("start")
 def task_start(
     node_id: str,
@@ -1228,6 +1274,10 @@ def task_start(
             help="Where an implement or fix step cuts its worktree (default: config worktree_dir)",
         ),
     ] = None,
+    harness: Annotated[
+        str | None,
+        typer.Option("--harness", help="The harness that runs the step (default: config harness)"),
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
     yaml_output: Annotated[bool, typer.Option("--yaml", help="Output as YAML (default)")] = False,
     path: Annotated[Path | None, typer.Option("--path", "-C")] = None,
@@ -1235,12 +1285,17 @@ def task_start(
     """Claim the node's next step and print it; `blocked` exits 3 and writes nothing."""
     claims = _claims(_get_root(path), agent)
     with _refusing():
-        result = claims.start(node_id, agent, session, ttl, worktree_dir=worktree_dir)
+        _known_harness(claims, harness)
+        result = claims.start(
+            node_id, agent, session, ttl, worktree_dir=worktree_dir, harness=harness
+        )
     _emit(
         {
             "action": result.action.value,
             "reason": result.reason,
             "model": result.model,
+            "route": result.route,
+            **({"model_note": result.model_note} if result.model_note else {}),
             "job": result.job,
             "repos": list(result.repos),
             "branch": result.branch,
@@ -2103,6 +2158,10 @@ def wave_discover(
             "discovery chooses it; RUN's earlier reservations are replaced",
         ),
     ] = None,
+    harness: Annotated[
+        str | None,
+        typer.Option("--harness", help="Resolve each model for this harness (default: config)"),
+    ] = None,
     lines: Annotated[
         bool,
         typer.Option(
@@ -2120,8 +2179,9 @@ def wave_discover(
     for a small-model runner, which drops keys when it retypes nested JSON into a string field.
     """
     claims = _claims(_get_root(path), agent=session)
+    _known_harness(claims, harness)
     payload, chosen_count = discover(
-        claims, spec or None, session, slots, max_strong, exclude, hold_merge, reserve
+        claims, spec or None, session, slots, max_strong, exclude, hold_merge, reserve, harness
     )
     if not lines:
         sys.stdout.write(f"{payload}\n__CHECK n={chosen_count} h={djb2(payload)}\n")
@@ -2132,7 +2192,7 @@ def wave_discover(
         return ",".join(values or []) or "-"
 
     out = [
-        f"N {n['id']} {n['action']} {n['model']} {n['kind']} "
+        f"N {n['id']} {n['action']} {n['model'] or '-'} {n['kind']} "
         f"{flat(n.get('repos'))} {flat(n.get('requires'))}"
         for n in data["chosen"]
     ]
@@ -3002,6 +3062,12 @@ def restore_cmd(
         for node in exported_nodes:
             if node.get("merge") == "main":
                 node["merge"] = Merge.SPEC.value
+    claude_ids = export_format in EXPORT_FORMATS_CLAUDE_IDS
+    if claude_ids:
+        for node in exported_nodes:
+            node["acceptable_models"], node["frontmatter"] = node_models_as_tiers(
+                node.get("acceptable_models", []), node.get("frontmatter", {})
+            )
     # Import has no completion time to store, so it is taken off each node here and recorded in
     # the ledger once the nodes exist, where the web's archive reads it.
     completed_at = {n["id"]: n.pop("completed_at") for n in exported_nodes if "completed_at" in n}
@@ -3045,7 +3111,7 @@ def restore_cmd(
             )
         )
     if (directory / ARCHIVE_FILE).is_file():
-        merge_archive(root, directory / ARCHIVE_FILE)
+        merge_archive(root, directory / ARCHIVE_FILE, claude_ids=claude_ids)
     settings_file = directory / "_config.json"
     if settings_file.exists():
         exported = json.loads(settings_file.read_text(encoding="utf-8"))
@@ -3055,6 +3121,8 @@ def restore_cmd(
             store.replace(
                 {k: v for k, v in exported.items() if k not in MACHINE_LOCAL_KEYS} | local
             )
+            if claude_ids:
+                store.claude_ids_as_tiers()
     specs = sum(1 for d in spec_docs if d.get("spec"))
     print(f"[green]Restored {len(plan_docs)} plans and {specs} specs into {root}[/green]")
 
@@ -3725,12 +3793,25 @@ def db_migrate(
     ] = None,
 ) -> None:
     """Copy .taskmanager/state.db to .taskmanager/state.db.schema<n>.bak with SQLite's backup
-    API, then migrate it from schema <n> to the schema this tm reads; archive.db likewise."""
+    API, then migrate it from schema <n> to the schema this tm reads; archive.db likewise.
+    Crossing schema 10 rewrites the Claude ids in config.yaml's models.* into tiers too."""
     root = _get_root(path)
     _refuse_pre_lifecycle(root)
     db = DatabaseManager(root / ".taskmanager")
+    config = ConfigStore(root)
+    with _user_errors():
+        # Before the migration: a config.yaml it cannot rewrite refuses it with nothing changed.
+        config.read()
+    rewritten: list[str] = []
+
+    def rewrite_config(found: int) -> None:
+        # Only across schema 10, when the nodes' ids turn into tiers: a Claude id set since is a
+        # pin. Before schema 10 commits, so a write that fails leaves the rerun to do it.
+        if found < 10:
+            rewritten.extend(config.claude_ids_as_tiers())
+
     try:
-        found = db.migrate_state()
+        found = db.migrate_state(before_commit=rewrite_config)
     except StateNotInitialized:
         _stderr.print(
             f"[red]Error:[/red] TaskManager is not initialized in {root}. Run 'tm init' first."
@@ -3746,6 +3827,8 @@ def db_migrate(
             f"[green]Migrated state.db from schema {found} to {STATE_SCHEMA_VERSION}[/green]; "
             f"the schema-{found} copy is {escape(str(db.state_backup(found)))}"
         )
+    if rewritten:
+        print(f"Rewrote {', '.join(rewritten)} in config.yaml from Claude ids into tiers")
     if not archive_path(root).exists():
         return
     # archive.db holds the state schema too, and reading it refuses any other version.

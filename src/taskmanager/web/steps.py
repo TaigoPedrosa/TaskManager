@@ -33,6 +33,8 @@ def steps_of(events: Sequence[LedgerEvent]) -> list[dict[str, Any]]:
                 {
                     "action": payload["action"],
                     "agent": payload["agent"],
+                    "route": payload.get("route"),
+                    "model": payload.get("model"),
                     "started": e.timestamp.isoformat(),
                     "ended": None,
                     "outcome": None,

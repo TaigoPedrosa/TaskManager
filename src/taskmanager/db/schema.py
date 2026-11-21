@@ -1,4 +1,9 @@
+import json
+import re
+import sqlite3
+from collections.abc import Callable
 from enum import StrEnum
+from typing import Any, Final
 
 from taskmanager.core.status import (
     CheckResult,
@@ -14,7 +19,7 @@ SCHEMA_VERSION = 1
 
 # state.db: bumped and migrated separately, since it changes far more often than the ledger
 # or the cache.
-STATE_SCHEMA_VERSION = 9
+STATE_SCHEMA_VERSION = 10
 
 # Built from the enums so the vocabulary SQLite enforces and the one the code writes cannot drift.
 _CYCLE_STATUSES = ", ".join(f"'{s.value}'" for s in Status)
@@ -402,7 +407,8 @@ BEGIN
 END;
 """
 
-# Applied in order to an estate below STATE_SCHEMA_VERSION, each key the version it produces.
+# Applied in order to an estate below STATE_SCHEMA_VERSION, each key the version it produces: a
+# script, or a rewrite run on the migrating connection where the change needs Python.
 #
 # Schemas 3 and 4 rebuild `nodes`, the way SQLite changes a CHECK. `rowid` is copied because
 # `nodes_fts` rows are keyed by it. `legacy_alter_table` stops the rename from re-parsing the
@@ -443,7 +449,63 @@ _NODES_BODY_SQL_V3 = _NODES_BODY_SQL_V4.replace(
     "DEFAULT 'spec' CHECK (merge IN ('parent', 'spec'))",
     "DEFAULT 'main' CHECK (merge IN ('parent', 'main'))",
 )
-STATE_MIGRATIONS: dict[int, str] = {
+# Spelled out rather than read from the tiers' owner: schema 10 stays what it meant when a tier
+# is later renamed or added.
+_CLAUDE_ID: Final = re.compile(r"claude-(haiku|sonnet|opus|fable)-")
+_CLAUDE_FAMILY_TIERS: Final = {
+    "haiku": "light",
+    "sonnet": "standard",
+    "opus": "strong",
+    "fable": "strong",
+}
+
+
+def _tier_of(ref: str) -> str:
+    match = _CLAUDE_ID.match(ref)
+    return _CLAUDE_FAMILY_TIERS[match[1]] if match else ref
+
+
+def claude_ids_as_tiers(refs: list[str]) -> list[str]:
+    """Each Claude family id as its tier, each repeat after the first dropped; any other ref as
+    it is."""
+    return list(dict.fromkeys(_tier_of(ref) for ref in refs))
+
+
+def node_models_as_tiers(
+    models: list[str], frontmatter: dict[str, Any]
+) -> tuple[list[str], dict[str, Any]]:
+    """A node's `acceptable_models` and frontmatter with the Claude ids in them, its
+    `review_models` included, as tiers."""
+    reviewers = frontmatter.get("review_models")
+    if isinstance(reviewers, list):
+        # As routing reads them.
+        reviewers = claude_ids_as_tiers([str(m) for m in reviewers])
+        frontmatter = {**frontmatter, "review_models": reviewers}
+    return claude_ids_as_tiers(models), frontmatter
+
+
+def claude_ids_as_tiers_in_nodes(conn: sqlite3.Connection, among: str = "nodes") -> None:
+    """`node_models_as_tiers` over each node `among` names, an SQL row source holding `nodes`'
+    columns (by default every node)."""
+    rows = conn.execute(f"SELECT id, acceptable_models, frontmatter_json FROM {among}").fetchall()
+    for node_id, stored_models, stored_frontmatter in rows:
+        models = json.loads(stored_models)
+        stored = json.loads(stored_frontmatter)
+        tiers, frontmatter = node_models_as_tiers(models, stored)
+        if (tiers, frontmatter) == (models, stored):
+            continue
+        # Serialised as the node writer serialises them, so the row reads as one it wrote.
+        conn.execute(
+            "UPDATE nodes SET acceptable_models = ?, frontmatter_json = ? WHERE id = ?",
+            (json.dumps(tiers), json.dumps(frontmatter), node_id),
+        )
+        conn.execute(
+            "UPDATE nodes_fts SET frontmatter_text = ? WHERE node_id = ?",
+            (json.dumps(frontmatter), node_id),
+        )
+
+
+STATE_MIGRATIONS: dict[int, str | Callable[[sqlite3.Connection], None]] = {
     2: "ALTER TABLE nodes ADD COLUMN rev INTEGER NOT NULL DEFAULT 0;\n" + NODE_REV_TRIGGERS_SQL,
     3: _rebuild_nodes(_NODES_BODY_SQL_V3, _NODE_COLUMNS_V2),
     4: _rebuild_nodes(
@@ -469,6 +531,7 @@ STATE_MIGRATIONS: dict[int, str] = {
     + "ALTER TABLE node_checks_new RENAME TO node_checks;\n"
     + _CHECKS_TRIGGERS_SQL,
     9: _RESERVATIONS_SQL,
+    10: claude_ids_as_tiers_in_nodes,
 }
 
 # Derived results only: dropping this database loses time, never state.

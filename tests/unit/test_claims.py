@@ -97,7 +97,7 @@ def test_an_implement_claim_cuts_the_branch_from_origin_main_and_locks_declared_
     assert (node.status, node.claimed_from) == (Status.IMPLEMENTING, Status.READY)
     lease = claims.runtime.get_lease("T1")
     assert lease is not None
-    assert (lease.action, lease.ttl_seconds, lease.model) == (
+    assert (lease.action, lease.ttl_seconds, lease.route) == (
         Action.IMPLEMENT,
         claims.ttl_for(Action.IMPLEMENT),
         "claude-sonnet-4",
@@ -140,7 +140,7 @@ def test_an_implement_claim_resumes_an_existing_branch_and_a_fix_reuses_its_work
 
 @pytest.mark.parametrize(
     ("review_cycles", "model"),
-    [(1, "claude-opus-5-5"), (2, "claude-opus-5-5"), (3, "claude-fable-5-1")],
+    [(1, "strong"), (2, "strong"), (3, "claude-fable-5-1")],
 )
 def test_a_container_fix_is_routed_by_the_one_based_review_round_it_answers(
     tmp_path: Path, review_cycles: int, model: str
@@ -155,14 +155,14 @@ def test_a_container_fix_is_routed_by_the_one_based_review_round_it_answers(
         status=Status.REVIEWED,
         outcome=Outcome.REJECT,
         review_cycles=review_cycles,
-        models=["claude-opus-5-5", "claude-fable-5-1"],
+        models=["strong", "claude-fable-5-1"],
     )
 
     result = claims.start("P", "fixer", "s1")
 
-    assert (result.action, result.model) == (Action.FIX, model)
+    assert (result.action, result.route) == (Action.FIX, model)
     lease = claims.runtime.get_lease("P")
-    assert lease is not None and lease.model == model
+    assert lease is not None and lease.route == model
 
 
 def test_closing_a_step_with_an_agent_is_refused_unless_that_agent_holds_the_lease(
@@ -366,9 +366,9 @@ def test_a_review_closes_only_after_recording_a_finding_or_declaring_itself_clea
     add(claims, "T1", status=Status.IMPLEMENTED)
 
     result = claims.start("T1", "reviewer", "s1")
-    assert (result.action, result.model, result.worktree) == (
+    assert (result.action, result.route, result.worktree) == (
         Action.REVIEW,
-        "claude-sonnet-5-5",
+        "standard",
         None,
     )
     with pytest.raises(OperationError, match="no finding on T1 was recorded") as refused:
@@ -882,7 +882,7 @@ def test_a_merge_claim_starts_a_landing_job_and_returns_at_once(tmp_path: Path) 
 
     result = claims.start("T1", "merger", "s1")
 
-    assert (result.action, result.job, result.model) == (Action.MERGE, "job-1", "claude-sonnet-5-5")
+    assert (result.action, result.job, result.route) == (Action.MERGE, "job-1", "standard")
     assert landing.started == ["T1"]
     assert stored(claims, "T1").status == Status.MERGING
     lease = claims.runtime.get_lease("T1")
@@ -923,10 +923,10 @@ def test_a_landing_waiting_for_an_agent_is_handed_to_the_next_claimant(tmp_path:
     )
     lease = claims.runtime.get_lease("T1")
     assert lease is not None
-    assert (lease.agent_id, lease.ttl_seconds, lease.model) == (
+    assert (lease.agent_id, lease.ttl_seconds, lease.route) == (
         "agent-2",
         claims.ttl_for(Action.MERGE),
-        "claude-sonnet-5-5",
+        "standard",
     )
     assert claims.start("T1", "agent-3", "s3").action == Action.BLOCKED
 

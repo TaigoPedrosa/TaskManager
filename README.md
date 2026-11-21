@@ -176,6 +176,19 @@ another, and `tm web stop` ends it. `.taskmanager/web.json` records the serving 
 - `tm monitor` replaces `/loop` in the dispatcher: `tm guide dispatch` says how to drive ticks off
   it. `dispatch.tick_min` and `dispatch.tick_max` are inert; `tm config unset` them.
 
+## Upgrading to 0.3.24
+
+- `state.db` and `archive.db` move to schema 10. Run `tm db migrate` once in each existing
+  project, with no lease live. It rewrites the Claude ids stored in `acceptable_models` and
+  `review_models` (nodes and `archive.db`) and in `models.default`, `models.merge` and
+  `models.strong` of `config.yaml` into tiers: Haiku to `light`, Sonnet to `standard`, Opus and
+  Fable to `strong`. Ids of other vendors stay as written. `tm restore` does the same to an export
+  an earlier release wrote.
+- Harness profiles map a tier to a model per agent CLI: `claude-code` is built in, `harness` picks
+  the default one, `--harness <name>` picks one per call, and `harnesses.<name>.models.<tier>` maps
+  a tier. A tier left unmapped runs on the harness's own default model. `tm harness list` and
+  `tm harness models <name>` show what is available.
+
 ## Development
 
 Python 3.14 through [uv](https://docs.astral.sh/uv/), Node 22 for the script tests, and the

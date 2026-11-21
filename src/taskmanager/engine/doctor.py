@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Final
 
 from taskmanager import __version__
+from taskmanager.engine import harnesses
 from taskmanager.engine.config import ConfigStore
 
 PYTHON_MIN: Final = (3, 14)
@@ -121,9 +122,30 @@ def _codegraph(root: Path, git: bool) -> list[Fact]:
     return [_tool("codegraph", False, CODEGRAPH_INSTALL), *indexes]
 
 
+def _harnesses(root: Path, git: bool) -> list[Fact]:
+    """Each harness CLI on PATH that no `harnesses.<name>` profile maps; claude-code's profile is
+    built in."""
+    if not git:
+        # Reading the configuration validates the repositories' branch names with git.
+        return []
+    configured = ConfigStore(root).resolve("harnesses").value
+    return [
+        Fact(
+            f"harness {name}",
+            False,
+            False,
+            f"{harnesses.HARNESSES[name].binary} on PATH, no profile",
+            fix,
+        )
+        for name in harnesses.HARNESSES
+        if name != "claude-code" and name not in configured and harnesses.on_path(name)
+        for fix in [f"tm harness models {name}"]
+    ]
+
+
 def facts(root: Path) -> list[Fact]:
     git = _tool("git", True, GIT_INSTALL)
-    return [git, _python(), _plugin(), *_codegraph(root, git.ok)]
+    return [git, _python(), _plugin(), *_codegraph(root, git.ok), *_harnesses(root, git.ok)]
 
 
 def exit_code(found: list[Fact]) -> int:

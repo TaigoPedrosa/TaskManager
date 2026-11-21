@@ -1,7 +1,7 @@
 export const meta = {
   name: 'tm-wave',
   description: 'Choose claimable tm nodes, claim each one\'s next step, run it, and stop: tm task start names the step and its model, an agent does it and closes it, a landing runs as a tm job, and the next tick claims the next step',
-  whenToUse: 'Dispatcher tick. args: {session, worktreeDir, specs, slots, maxStrong, maxBatch, exclude, holdMerge, root, tm, agentTypes, reviewerTypes, capabilities, preamble, rulesDir, gateLane, models}. session is required; worktreeDir defaults to the worktree_dir config key; specs defaults to every spec; root defaults to the session cwd and tm to the tm on PATH; agentTypes (repo -> agent type for implement and fix), reviewerTypes ({task, rereview, container} -> agent type), capabilities (agent type -> the requires values it serves), preamble (repo -> a line prepended to its briefs, plus a "default" key) and rulesDir default to none; gateLane (a string, or repo -> text with a "default" key; `{task}` becomes the node id) defaults to none; models (model id -> model id) is an alias map applied to the id a claim names, and the family names haiku, sonnet, opus and fable still resolve to the current Claude ids.',
+  whenToUse: 'Dispatcher tick. args: {session, worktreeDir, specs, slots, maxStrong, maxBatch, exclude, holdMerge, root, tm, agentTypes, reviewerTypes, capabilities, preamble, rulesDir, gateLane, models}. session is required; worktreeDir defaults to the worktree_dir config key; specs defaults to every spec; root defaults to the session cwd and tm to the tm on PATH; agentTypes (repo -> agent type for implement and fix), reviewerTypes ({task, rereview, container} -> agent type), capabilities (agent type -> the requires values it serves), preamble (repo -> a line prepended to its briefs, plus a "default" key) and rulesDir default to none; gateLane (a string, or repo -> text with a "default" key; `{task}` becomes the node id) defaults to none; models (model id -> model id) is an alias map applied to the model a claim names, which tm resolves for the claude-code harness (haiku, sonnet or opus for the light, standard and strong tiers unless harnesses.claude-code.models.<tier> maps one); a model it does not list runs as named.',
   phases: [
     { title: 'Discover', detail: '`tm wave discover` chooses the batch', model: 'haiku' },
     { title: 'Claim', detail: 'tm task get and tm task start, and a release when a step is left open', model: 'haiku' },
@@ -33,11 +33,11 @@ const HOLD_MERGE = new Set(A.holdMerge || [])
 // The tm root a bare command runs against; a caller with no fixed estate path leaves this out
 // and every op runs from wherever the dispatching session already sits.
 const ROOT = A.root || '.'
-// tm names a model id on every claim, and the agent runs on it unchanged unless args.models
-// aliases it. A lease taken before tm named ids names a family; those resolve here.
-// ponytail: family aliases kept one release so such leases still dispatch; drop them after.
-const MODEL_ID = { haiku: 'claude-haiku-4-5-20251001', sonnet: 'claude-sonnet-5-5', opus: 'claude-opus-5-5', fable: 'claude-fable-5-1', ...A.models }
-const modelOf = m => Object.hasOwn(MODEL_ID, m) ? MODEL_ID[m] : m
+// tm resolves each claim's model for claude-code, whose profile maps every tier, and the agent
+// runs on it unchanged unless args.models aliases it.
+const HARNESS = 'claude-code'
+const MODELS = A.models || {}
+const modelOf = m => (Object.hasOwn(MODELS, m) ? MODELS[m] : m)
 // repo -> agent type for implement and fix; a repo missing here gets the harness default.
 const AGENT_TYPE = A.agentTypes || {}
 // {task, rereview, container} -> agent type for a first task review, a review after a fix, and a
@@ -102,7 +102,7 @@ async function op(kind, id, cmd, shape, { attempts = 2, long = false, once = fal
   const timeout = long ? ' Set the Bash tool timeout to 600000 ms: the command waits up to nine minutes.' : ''
   for (let attempt = 0; attempt < attempts; attempt++) {
     const r = await runner(`tm-task: none — command runner for the tm-wave workflow
-Model: ${modelOf('haiku')}
+Model: haiku
 Run this exact command once with the Bash tool, changing nothing in it, and run no other command.${timeout}
 
 ( export TM_ROOT=${q(ROOT)}; ${cmd} ); echo "__EXIT:$?"
@@ -168,6 +168,7 @@ async function discover(attempt, run) {
     `${TM} wave discover --lines --reserve ${q(run)}`,
     ...SPECS.map(s => `--spec ${q(s)}`),
     `--session ${q(SESSION)}`,
+    `--harness ${HARNESS}`,
     `--slots ${SLOTS | 0}`,
     `--max-strong ${MAX_STRONG | 0}`,
     ...(A.exclude || []).map(x => `--exclude ${q(x)}`),
@@ -251,7 +252,7 @@ async function release(n, trail, why, token) {
 // A claim is a write, so it is never retried: a second attempt would find the first one's lease.
 async function start(n, trail) {
   const r = await opJson('start', n.id,
-    `${TM} task start ${q(n.id)} --agent ${agentName(n)} --session ${q(SESSION)}${WT ? ` --worktree-dir ${q(WT)}` : ''} --json`,
+    `${TM} task start ${q(n.id)} --agent ${agentName(n)} --session ${q(SESSION)}${WT ? ` --worktree-dir ${q(WT)}` : ''} --harness ${HARNESS} --json`,
     { attempts: 1, once: true })
   if (!r) {
     await release(n, trail, 'its claim could not be read')

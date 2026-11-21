@@ -94,7 +94,7 @@ def test_wave_one_matches_candidates_and_select_on_the_live_snapshot(estate: Est
     estate.add("T2", priority=10)
     snap = estate.snap()
     found, held = selection.candidates(snap, None)
-    expected = selection.select(found, snap, 10, 10)
+    expected = selection.select(found, snap, 10, 10, strong=["strong"])
 
     waves = simulate(snap, depth=1, size=10, max_strong=10, specs=None)
 
@@ -245,7 +245,7 @@ def test_wave_entry_carries_id_title_kind_action_model_repos_and_status(estate: 
     entry = action_of(waves[0], "T1")
 
     assert (entry.id, entry.title, entry.kind, entry.repos) == ("T1", "T1", NodeKind.TASK, ["api"])
-    assert (entry.action, entry.model) == (Action.IMPLEMENT, "claude-sonnet-5-5")
+    assert (entry.action, entry.model) == (Action.IMPLEMENT, "standard")
     assert (entry.status_before, entry.status_after) == (Status.READY, Status.IMPLEMENTED)
 
 

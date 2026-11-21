@@ -12,7 +12,8 @@ tm task start <task-id> --agent <name> --session <id> --worktree-dir <dir> --yam
 
 ```yaml
 action: implement
-model: claude-sonnet-5-5
+model: sonnet
+route: standard
 repos: [backend]
 branch: tm/<task-id>
 base: main
@@ -22,7 +23,7 @@ worktrees: {backend: <dir>/backend-<task-id>}
 token: <token>
 ```
 
-`model` is the model id the step runs on; `<name>` is the agent the lease is held under and `<token>` names this one claim, and every verb that closes or releases the step passes them back with `--agent <name> --token <token>`. The token matters because an agent name can repeat: a later claim of the same node under the same name gets a new token, and tm refuses the old one. When the workflow claimed for you, its prompt carries both flags. The claim locks every path the task declares until the step closes. The branch is cut from `base` in the task's own `target_repo`, with no upstream: `base` is the branch the task's spec lands on, or for a task with `merge: parent` the container branch it lands on. A spec's target is a local branch unless `repos.<repo>.push` is on: the claim seeds a missing one from its remote (the branch itself, else the repository's default branch) and never touches one that exists, and with `push` on it is read as `<remote>/<base>` (`repos.<repo>.remote`, `origin` unless set). `bases` names the same branch by repository. A task with no `target_repo` is refused. Any other `action` is another role's step: read that role's guide instead.
+`model` is the model the step runs on, resolved for the harness from `route`, the tier the plan chose (`null` with a `model_note` when the harness maps that tier to nothing: run on the harness's own default model); `<name>` is the agent the lease is held under and `<token>` names this one claim, and every verb that closes or releases the step passes them back with `--agent <name> --token <token>`. The token matters because an agent name can repeat: a later claim of the same node under the same name gets a new token, and tm refuses the old one. When the workflow claimed for you, its prompt carries both flags. The claim locks every path the task declares until the step closes. The branch is cut from `base` in the task's own `target_repo`, with no upstream: `base` is the branch the task's spec lands on, or for a task with `merge: parent` the container branch it lands on. A spec's target is a local branch unless `repos.<repo>.push` is on: the claim seeds a missing one from its remote (the branch itself, else the repository's default branch) and never touches one that exists, and with `push` on it is read as `<remote>/<base>` (`repos.<repo>.remote`, `origin` unless set). `bases` names the same branch by repository. A task with no `target_repo` is refused. Any other `action` is another role's step: read that role's guide instead.
 
 `action: blocked` exits 3 and writes nothing. Its `reason` names what the task waits on — an edge, a decision, a condition, a sync, or a lease holding one of its files. Report it and start nothing.
 

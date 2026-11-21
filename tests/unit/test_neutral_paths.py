@@ -240,7 +240,9 @@ def test_select_wave_shares_an_unlocked_package_json(
     snap = claims.snapshots.build()
     found, _ = selection.candidates(snap, None)
 
-    assert [e["id"] for e in selection.select(found, snap, 10, 10).chosen] == chosen
+    assert [
+        e["id"] for e in selection.select(found, snap, 10, 10, strong=["strong"]).chosen
+    ] == chosen
 
 
 def test_simulate_later_wave_reads_the_configured_unlocked_files(tmp_path: Path) -> None:

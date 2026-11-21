@@ -81,3 +81,17 @@ def test_a_step_still_running_has_no_end() -> None:
     steps = steps_of(_events(_start("review", "r1"), ("finding add", {"number": 1})))
     assert (steps[0]["ended"], steps[0]["outcome"], steps[0]["to"]) == (None, None, None)
     assert steps[0]["items"] == [{"kind": "raised", "number": 1}]
+
+
+def test_a_claim_with_a_route_shows_it_and_the_model_it_resolved_to() -> None:
+    routed = (
+        "task start",
+        {"action": "implement", "agent": "a", "route": "standard", "model": "sonnet"},
+    )
+
+    old, new = steps_of(
+        _events(_start("implement", "a"), _end("task complete", "complete", "IMPLEMENTED"), routed)
+    )
+
+    assert (old["route"], old["model"]) == (None, None)
+    assert (new["route"], new["model"]) == ("standard", "sonnet")

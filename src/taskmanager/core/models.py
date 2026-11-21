@@ -236,7 +236,8 @@ class Lease(BaseModel):
     ttl_seconds: int | None = 300
     action: LeaseAction | None = None
     review_hash: str | None = None
-    model: str | None = None
+    # The tier or pinned id tm routed the step to, stored in the `model` column.
+    route: str | None = None
     # Names one claim, not an agent: a dispatcher reuses agent names, so only this tells a
     # step's closer from an earlier claim of the same node under the same name.
     token: str = Field(default_factory=lambda: uuid.uuid4().hex)

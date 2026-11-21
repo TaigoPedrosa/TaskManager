@@ -165,9 +165,10 @@ class DatabaseManager:
         # Named after the file, so migrating archive.db, which shares this schema, keeps its own.
         return self.state_db.with_name(f"{self.state_db.name}.schema{schema}.bak")
 
-    def migrate_state(self) -> int | None:
+    def migrate_state(self, before_commit: Callable[[int], None] | None = None) -> int | None:
         """Brings `state.db` to `STATE_SCHEMA_VERSION` and returns the schema it was at, or None
-        when there was nothing to migrate."""
+        when there was nothing to migrate. `before_commit` gets that schema once every step has
+        run and before they commit, so whatever it raises leaves `state.db` where it was."""
         if self.is_pre_lifecycle():
             raise PreLifecycleEstate()
         if not self.state_db.exists():
@@ -176,11 +177,17 @@ class DatabaseManager:
         conn = sqlite3.connect(str(self.state_db), timeout=5.0)
         try:
             conn.execute("PRAGMA busy_timeout = 5000;")
-            return self._migrate_state(conn, migrate=True)
+            return self._migrate_state(conn, migrate=True, before_commit=before_commit)
         finally:
             conn.close()
 
-    def _migrate_state(self, conn: sqlite3.Connection, *, migrate: bool = False) -> int | None:
+    def _migrate_state(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        migrate: bool = False,
+        before_commit: Callable[[int], None] | None = None,
+    ) -> int | None:
         """Every `state.db` connection passes here, and only `migrate_state` passes `migrate`:
         opening the estate never changes its schema, so a build that carries a migration cannot
         lock an older tm out of the estate just by reading it. `BEGIN IMMEDIATE` takes SQLite's
@@ -219,9 +226,15 @@ class DatabaseManager:
                 # Not `executescript`: it commits whatever transaction is already open before
                 # it runs a single statement, which would drop the lock above and let a second
                 # connection start migrating too.
-                for statement in _statements(STATE_MIGRATIONS[target]):
-                    conn.execute(statement)
+                step = STATE_MIGRATIONS[target]
+                if isinstance(step, str):
+                    for statement in _statements(step):
+                        conn.execute(statement)
+                else:
+                    step(conn)
                 conn.execute(f"PRAGMA user_version = {target}")
+            if before_commit is not None:
+                before_commit(version)
         except BaseException:
             conn.rollback()
             raise

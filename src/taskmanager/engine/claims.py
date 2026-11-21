@@ -79,8 +79,9 @@ from taskmanager.engine.decisions import (
 from taskmanager.engine.doctor import CODEGRAPH_INSTALL, codegraph_index
 from taskmanager.engine.gates import RED_TARGET, clear_red_targets
 from taskmanager.engine.git import GitManager
+from taskmanager.engine.harnesses import HARNESSES
 from taskmanager.engine.operations import OperationError, Operations
-from taskmanager.engine.routing import model_for
+from taskmanager.engine.routing import BUILTIN_PROFILES, TIERS, model_for, resolve
 from taskmanager.engine.snapshot import (
     SnapshotBuilder,
     apply_cycle,
@@ -294,11 +295,28 @@ class Blocker:
     condition: Condition | None = None
 
 
+class UnknownHarness(ValueError):
+    pass
+
+
+def require_harness(harness: str, config: ProjectConfig) -> None:
+    known = sorted({*BUILTIN_PROFILES, *HARNESSES, *config.harnesses})
+    if harness not in known:
+        raise UnknownHarness(
+            f"unknown harness {harness!r} (known profiles: {', '.join(known)}); "
+            f"map its tiers with `tm config set harnesses.{harness}.models.<{'|'.join(TIERS)}>`"
+        )
+
+
 @dataclass(frozen=True)
 class ClaimResult:
     action: Action
     reason: str | None = None
+    # What the harness runs, None when its profile leaves the tier to its own default.
     model: str | None = None
+    # The model ref (a tier or a pinned id) `model` was resolved from.
+    route: str | None = None
+    model_note: str | None = None
     job: str | None = None
     repos: list[str] = field(default_factory=list)
     branch: str | None = None
@@ -537,13 +555,19 @@ class Claims:
         session: str,
         ttl: int | None = None,
         worktree_dir: Path | None = None,
+        harness: str | None = None,
     ) -> ClaimResult:
+        harness = harness or self.config.harness
+        try:
+            require_harness(harness, self.config)
+        except UnknownHarness as exc:
+            raise OperationError(str(exc), 400) from exc
         # The discovery that chose this node is answered whatever the claim's outcome.
         try:
             self.node(node_id)
             self.sweep()
             node = self.node(node_id)
-            handed = self._hand_over(node, agent, session, ttl)
+            handed = self._hand_over(node, agent, session, ttl, harness)
             if handed is not None:
                 return handed
             snap = self.snapshots.build()
@@ -563,12 +587,14 @@ class Claims:
                 job = self._landing().start_sync(node.id, pairs)
                 branches = ", ".join(dict.fromkeys(base for _, base, _ in units))
                 return ClaimResult(Action.BLOCKED, f"syncing {branches}", job=job)
-            return self._claim(node, cycle, action, agent, session, ttl, worktree_dir, snap)
+            return self._claim(
+                node, cycle, action, agent, session, ttl, worktree_dir, snap, harness
+            )
         finally:
             self.runtime.unreserve(node_id)
 
     def _hand_over(
-        self, node: Node, agent: str, session: str, ttl: int | None
+        self, node: Node, agent: str, session: str, ttl: int | None, harness: str
     ) -> ClaimResult | None:
         """A job stopped for an agent is handed, with its lease, to whoever claims its node."""
         job = next(
@@ -578,10 +604,11 @@ class Claims:
         if job is None or lease is None or lease.ttl_seconds is not None:
             return None
         action = Action.MERGE if job.kind == JobKind.LAND else Action.SYNC
-        model = model_for(action, node, 0, self.config.models)
+        route = model_for(action, node, 0, self.config.models)
+        model = resolve(route, harness, self.config)
         token = uuid.uuid4().hex
         ttl = ttl or self.ttl_for(action)
-        if not self.runtime.take_over(node.id, agent, session, ttl, model, token):
+        if not self.runtime.take_over(node.id, agent, session, ttl, route, token):
             return ClaimResult(Action.BLOCKED, f"job {job.id} was handed to another agent first")
         self._ledger("job handover", node.id, {"job": job.id, "agent": agent})
         if action == Action.SYNC:
@@ -592,6 +619,8 @@ class Claims:
             action,
             None,
             model,
+            route,
+            self._model_note(route, model, harness),
             job.id,
             [job.repo],
             branch,
@@ -613,10 +642,12 @@ class Claims:
         ttl: int | None,
         worktree_dir: Path | None,
         snap: Snapshot,
+        harness: str,
     ) -> ClaimResult:
         claimed = lifecycle.claim(cycle)
         after = apply_cycle(node, claimed)
-        model = model_for(action, after, lifecycle.fix_round(claimed), self.config.models)
+        route = model_for(action, after, lifecycle.fix_round(claimed), self.config.models)
+        model = resolve(route, harness, self.config)
         lease = Lease(
             task_id=node.id,
             agent_id=agent,
@@ -625,7 +656,7 @@ class Claims:
             ttl_seconds=ttl or self.ttl_for(action),
             action=cast(LeaseAction, action),
             review_hash=self._findings_hash(node.id) if action == Action.REVIEW else None,
-            model=model,
+            route=route,
         )
         locks = [
             FileLock(file_path=f, task_id=node.id) for f in self._locked_files(node, action, snap)
@@ -633,10 +664,18 @@ class Claims:
         if not self.runtime.claim(lease, locks, after):
             return ClaimResult(Action.BLOCKED, "claimed by another session at the same instant")
         self._ledger(
-            "task start", node.id, {"action": action.value, "agent": agent, "from": node.status}
+            "task start",
+            node.id,
+            {
+                "action": action.value,
+                "agent": agent,
+                "from": node.status,
+                "route": route,
+                "model": model,
+            },
         )
         try:
-            begun = self._begin(after, action, model, worktree_dir)
+            begun = self._begin(after, action, worktree_dir)
         except (OperationError, CalledProcessError, OSError, ValueError) as exc:
             self._unclaim(node)
             detail = getattr(exc, "stderr", None) or str(exc)
@@ -648,7 +687,20 @@ class Claims:
             lines = self._review_index(begun)
         else:
             lines = self._codegraph(own, begun.worktrees, snap)
-        return replace(begun, token=lease.token, codegraph=lines)
+        return replace(
+            begun,
+            model=model,
+            route=route,
+            model_note=self._model_note(route, model, harness),
+            token=lease.token,
+            codegraph=lines,
+        )
+
+    @staticmethod
+    def _model_note(route: str, model: str | None, harness: str) -> str | None:
+        if model is not None:
+            return None
+        return f"harness default: harnesses.{harness}.models.{route} is unset"
 
     def _codegraph(self, own: list[str], worktrees: dict[str, str], snap: Snapshot) -> list[str]:
         # `start` swept expired leases before building `snap`, so every lock in it is live.
@@ -702,9 +754,7 @@ class Claims:
             return node.claimed_from == Status.LANDED
         return action == Action.FIX and node.fix_for in (Outcome.REJECT, Outcome.APPROVE)
 
-    def _begin(
-        self, node: Node, action: Action, model: str, worktree_dir: Path | None
-    ) -> ClaimResult:
+    def _begin(self, node: Node, action: Action, worktree_dir: Path | None) -> ClaimResult:
         repos = self.repos_of(node.id)
         branch = self._step_branch(node, action)
         if self.is_container(node) and not self._past_landing(node, action):
@@ -718,7 +768,9 @@ class Claims:
         return ClaimResult(
             action,
             None,
-            model,
+            None,
+            None,
+            None,
             job,
             repos,
             branch,

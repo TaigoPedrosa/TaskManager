@@ -290,3 +290,32 @@ def test_facts_read_the_real_claude_s_plugin_list_in_an_empty_profile(
     plugin = _by_name(doctor.facts(repo))["plugin"]
 
     assert (plugin.found, plugin.fix) == (None, doctor.INSTALL)
+
+
+def test_facts_name_each_harness_cli_on_path_with_no_profile(repo: Path, bin_dir: Path) -> None:
+    _git(bin_dir)
+    for binary in ("claude", "codex", "agy"):
+        _tool(bin_dir, binary, "echo 1.0")
+
+    found = _by_name(doctor.facts(repo))
+
+    assert sorted(n for n in found if n.startswith("harness ")) == [
+        "harness antigravity",
+        "harness codex",
+    ]
+    assert found["harness codex"].line() == (
+        "harness codex: codex on PATH, no profile (recommended) -> tm harness models codex"
+    )
+    assert found["harness antigravity"].fix == "tm harness models antigravity"
+    assert doctor.exit_code(list(found.values())) == 0
+
+
+def test_facts_leave_a_harness_with_a_configured_profile_unnamed(repo: Path, bin_dir: Path) -> None:
+    _git(bin_dir)
+    _tool(bin_dir, "codex", "echo 1.0")
+    _tool(bin_dir, "agy", "echo 1.0")
+    ConfigStore(repo).set("harnesses.codex.models.light", "gpt-5-mini")
+
+    assert sorted(n for n in _by_name(doctor.facts(repo)) if n.startswith("harness ")) == [
+        "harness antigravity"
+    ]

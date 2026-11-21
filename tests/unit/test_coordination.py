@@ -61,15 +61,15 @@ def test_init_creates_the_cache_and_the_coordination_tables(db: DatabaseManager)
         assert {"leases", "file_locks", "jobs", "branch_locks"} <= tables
 
 
-def test_a_lease_keeps_its_action_review_hash_model_and_null_ttl(db: DatabaseManager) -> None:
+def test_a_lease_keeps_its_action_review_hash_route_and_null_ttl(db: DatabaseManager) -> None:
     repo = RuntimeRepository(db)
     repo.acquire_lease(
-        _lease("T1", action=Action.MERGE, review_hash="abc", model="sonnet", ttl_seconds=None),
+        _lease("T1", action=Action.MERGE, review_hash="abc", route="sonnet", ttl_seconds=None),
         [FileLock(file_path="a.py", task_id="T1")],
     )
     loaded = repo.get_lease("T1")
     assert loaded is not None
-    assert (loaded.action, loaded.review_hash, loaded.model, loaded.ttl_seconds) == (
+    assert (loaded.action, loaded.review_hash, loaded.route, loaded.ttl_seconds) == (
         Action.MERGE,
         "abc",
         "sonnet",
@@ -80,14 +80,14 @@ def test_a_lease_keeps_its_action_review_hash_model_and_null_ttl(db: DatabaseMan
 def test_every_lease_and_every_lock_is_listed(db: DatabaseManager) -> None:
     repo = RuntimeRepository(db)
     repo.acquire_lease(
-        _lease("T2", agent="agent-b", model="opus"),
+        _lease("T2", agent="agent-b", route="opus"),
         [
             FileLock(file_path="b.py", task_id="T2"),
             FileLock(file_path="a.py", task_id="T2", lock_type=LockType.READ),
         ],
     )
     repo.acquire_lease(_lease("T1"), [])
-    assert [(lease.task_id, lease.agent_id, lease.model) for lease in repo.list_leases()] == [
+    assert [(lease.task_id, lease.agent_id, lease.route) for lease in repo.list_leases()] == [
         ("T1", "agent-a", None),
         ("T2", "agent-b", "opus"),
     ]
@@ -127,7 +127,7 @@ def test_a_parked_lease_outlives_its_ttl_until_one_agent_takes_it_over(
         lease.agent_id,
         lease.session_id,
         lease.ttl_seconds,
-        lease.model,
+        lease.route,
         lease.action,
         lease.token,
     ) == ("agent-b", "s2", 900, "sonnet", Action.MERGE, "tok-b")

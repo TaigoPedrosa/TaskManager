@@ -176,6 +176,9 @@ function waveDisplay(rawStatus) {
   return WAVE_STATUS_DISPLAY[rawStatus] || rawStatus;
 }
 
+// A tier the harness leaves to its own default resolves to null: the route is what runs.
+const waveModel = (entry) => entry.model ?? entry.route;
+
 const WAVE_ROW = 'wave-row flex items-center gap-2 h-6 px-2 rounded-md cursor-pointer hover:bg-zinc-800/60';
 
 // One line per step: now -> next, the kind badge on a container, the id, the title, then the
@@ -191,7 +194,7 @@ function waveRowHtml(entry, showModel) {
       ${kindBadge(entry.kind)}
       ${idLink(entry.id, entry.kind)}
       <span class="flex-1 min-w-0 truncate text-xs leading-4 text-zinc-200" title="${esc(entry.title)}">${esc(entry.title)}</span>
-      ${showModel ? modelPill(entry.model) : ''}
+      ${showModel ? modelPill(waveModel(entry)) : ''}
       ${entry.repos.filter((r) => r !== '.').map(repoPill).join('')}
       ${leasePulse(lease)}
     </div>
@@ -231,7 +234,7 @@ function heldRowHtml(row) {
 function waveCardHtml(wave, waveNumber, index) {
   const isEmpty = wave.entries.length === 0;
   const heldOpen = (isEmpty && index === 0) !== waveHeldOverrides.has(index);
-  const models = new Set(wave.entries.map((e) => e.model));
+  const models = new Set(wave.entries.map(waveModel));
   const sharedModel = models.size === 1 ? [...models][0] : null;
   const count = wave.entries.length;
   const heldHtml = wave.held.length > 0

@@ -9,7 +9,7 @@ from taskmanager.core.models import Node
 from taskmanager.core.status import Action, Outcome
 from taskmanager.engine.config import ConfigStore, ModelsConfig
 from taskmanager.engine.discovery import discover
-from taskmanager.engine.routing import model_for
+from taskmanager.engine.routing import TIERS, model_for, resolve
 from taskmanager.engine.simulate import simulate
 
 MODELS = ModelsConfig(default="cfg-default", merge="cfg-merge", strong=["big-1", "big-2"])
@@ -73,11 +73,11 @@ def test_a_blocked_answer_has_no_model() -> None:
         model_for(Action.BLOCKED, node(), 0, MODELS)
 
 
-def test_the_model_keys_default_to_the_current_claude_ids() -> None:
+def test_the_model_keys_default_to_tiers() -> None:
     assert ModelsConfig().model_dump() == {
-        "default": "claude-sonnet-5-5",
-        "merge": "claude-sonnet-5-5",
-        "strong": ["claude-opus-5-5", "claude-fable-5-1"],
+        "default": "standard",
+        "merge": "standard",
+        "strong": ["strong"],
     }
 
 
@@ -88,7 +88,7 @@ def test_the_model_keys_are_set_through_config(tmp_path: Path) -> None:
     project = store.project()
     assert (project.models.default, project.models.merge, project.models.strong) == (
         "gemini-3-flash",
-        "claude-sonnet-5-5",
+        "standard",
         ["gemini-3-pro", "gpt-9"],
     )
 
@@ -99,12 +99,12 @@ def test_an_id_listed_in_models_strong_counts_against_max_strong_and_another_doe
     config = gated("api").model_copy(update={"models": ModelsConfig(strong=["gemini-3-pro"])})
     claims = make_estate(tmp_path, config=config)
     add(claims, "T1", models=["gemini-3-pro"], priority=90)
-    add(claims, "T2", models=["claude-opus-5-5"], priority=80)
+    add(claims, "T2", models=["strong"], priority=80)
 
     payload, _ = discover(claims, specs=None, session="s1", slots=10, max_strong=0)
     data = json.loads(payload)
 
-    assert [(e["id"], e["model"]) for e in data["chosen"]] == [("T2", "claude-opus-5-5")]
+    assert [(e["id"], e["route"]) for e in data["chosen"]] == [("T2", "strong")]
     assert "T1: no free strong-model slot" in data["held"]
 
 
@@ -121,3 +121,49 @@ def test_a_claim_and_a_simulated_wave_name_the_configured_default(tmp_path: Path
         "T1": "gemini-3-flash",
         "T2": "gemini-3-flash",
     }
+
+
+def test_the_tiers_run_cheapest_first() -> None:
+    assert TIERS == ("light", "standard", "strong")
+
+
+@pytest.mark.parametrize(
+    ("action", "kind", "models", "expected"),
+    [
+        (Action.IMPLEMENT, NodeKind.TASK, [], "standard"),
+        (Action.REVIEW, NodeKind.PLAN, ["standard", "strong"], "strong"),
+        (Action.IMPLEMENT, NodeKind.TASK, ["claude-sonnet-5-5"], "claude-sonnet-5-5"),
+        (Action.IMPLEMENT, NodeKind.TASK, ["gpt-6.1-sol"], "gpt-6.1-sol"),
+    ],
+)
+def test_default_config_routes_by_tier_and_hands_a_pinned_id_back(
+    action: Action, kind: NodeKind, models: list[str], expected: str
+) -> None:
+    assert model_for(action, node(kind=kind, models=models), 0, ModelsConfig()) == expected
+
+
+def test_claude_code_resolves_each_tier_to_its_alias_and_a_configured_tier_overrides_it(
+    tmp_path: Path,
+) -> None:
+    store = ConfigStore(tmp_path)
+    cfg = store.project()
+    assert [resolve(t, "claude-code", cfg) for t in TIERS] == ["haiku", "sonnet", "opus"]
+    store.set("harnesses.claude-code.models.strong", "fable")
+    cfg = store.project()
+    assert [resolve(t, "claude-code", cfg) for t in TIERS] == ["haiku", "sonnet", "fable"]
+
+
+def test_a_harness_with_no_profile_resolves_a_tier_to_none_until_it_is_configured(
+    tmp_path: Path,
+) -> None:
+    store = ConfigStore(tmp_path)
+    assert [resolve(t, "codex", store.project()) for t in TIERS] == [None, None, None]
+    store.set("harnesses.codex.models.light", "gpt-6.1-mini")
+    cfg = store.project()
+    assert [resolve(t, "codex", cfg) for t in TIERS] == ["gpt-6.1-mini", None, None]
+    assert resolve("light", "claude-code", cfg) == "haiku"
+
+
+@pytest.mark.parametrize("harness", ["claude-code", "codex", "other"])
+def test_a_pinned_id_resolves_to_itself_on_every_harness(harness: str, tmp_path: Path) -> None:
+    assert resolve("gpt-6.1-sol", harness, ConfigStore(tmp_path).project()) == "gpt-6.1-sol"

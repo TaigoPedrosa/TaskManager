@@ -141,7 +141,7 @@ def test_migration_9_adds_reservations_and_leaves_every_existing_row_unchanged(
     assert _dump(state_db) == sorted([*before, f"{created};"])
     conn = sqlite3.connect(state_db)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION == 9
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION
     finally:
         conn.close()
 
@@ -156,7 +156,7 @@ def test_tm_init_creates_reservations_at_schema_9_as_the_migration_does(
     fresh_db = fresh / ".taskmanager" / "state.db"
     conn = sqlite3.connect(fresh_db)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == STATE_SCHEMA_VERSION
         assert conn.execute("SELECT COUNT(*) FROM reservations").fetchone()[0] == 0
     finally:
         conn.close()
@@ -180,9 +180,14 @@ def test_tm_db_migrate_brings_a_schema_8_archive_to_schema_9_so_it_still_reads(
     assert result.exit_code == 0, result.output
     backup = tmp_path / ".taskmanager" / "archive.db.schema8.bak"
     said = " ".join(result.output.split())
-    assert f"Migrated archive.db from schema 8 to 9; the schema-8 copy is {backup}" in said
+    assert (
+        f"Migrated archive.db from schema 8 to {STATE_SCHEMA_VERSION}; the schema-8 copy is {backup}"
+        in said
+    )
     assert _dump(tmp_path / ".taskmanager" / "state.db.schema8.bak") == state_before
     assert [n.id for n in archived_repo(tmp_path).list_nodes()] == ["OLD"]
     again = runner.invoke(app, ["db", "migrate", "--path", str(tmp_path)])
     assert again.exit_code == 0, again.output
-    assert " ".join(again.output.split()) == "state.db is current at schema 9: nothing to migrate"
+    assert " ".join(again.output.split()) == (
+        f"state.db is current at schema {STATE_SCHEMA_VERSION}: nothing to migrate"
+    )

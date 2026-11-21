@@ -23,6 +23,7 @@ from taskmanager.db.schema import (
     NODE_REV_TRIGGERS_SQL,
     STATE_SCHEMA_SQL,
     STATE_SCHEMA_VERSION,
+    claude_ids_as_tiers_in_nodes,
 )
 from taskmanager.db.utils import lease_alive, parse_db_datetime
 from taskmanager.engine.claims import LIVE_JOBS
@@ -453,8 +454,9 @@ def refuse_clashing_archive(root: Path, incoming: Path) -> None:
                 )
 
 
-def merge_archive(root: Path, incoming: Path) -> None:
-    """Adds every spec of the archive at `incoming` to this one; what it holds already stays."""
+def merge_archive(root: Path, incoming: Path, *, claude_ids: bool = False) -> None:
+    """Adds every spec of the archive at `incoming` to this one; what it holds already stays.
+    `claude_ids` says `incoming` predates tiers, so the Claude ids its nodes hold are tiers."""
     _ensure_archive(root)
     with closing(sqlite3.connect(archive_path(root))) as conn:
         conn.execute("PRAGMA foreign_keys = ON")
@@ -471,6 +473,8 @@ def merge_archive(root: Path, incoming: Path) -> None:
                 "SELECT * FROM incoming.external_relations"
             )
             _append_into(conn, "incoming", "main", "ledger_events", f"target_id IN {_IN_SUBTREE}")
+            if claude_ids:
+                claude_ids_as_tiers_in_nodes(conn, f"main.nodes WHERE id IN {_IN_SUBTREE}")
 
 
 def archive_due(

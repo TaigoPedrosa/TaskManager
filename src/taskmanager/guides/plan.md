@@ -23,7 +23,7 @@ Every node takes the fields below; `verifications` and `target_repo` act only on
 | `priority` | 1-100, default 50. Raise it to break a tie in discovery, not to express importance. |
 | `ordinal` | Display order; the position in the list when omitted. |
 | `target_repo` | The directory, under the tm root, the task's branch is cut in; `.` when the tm root is itself the repository. Per node and **not inherited**: set it on every task. A task without one cannot be implemented. `tm import`, `tm task add --repo` and `tm task update --repo` refuse a directory that is not a git working tree under the tm root, and name the ones that are. |
-| `acceptable_models` | Real model ids. See §3. |
+| `acceptable_models` | Tiers, cheapest first, or a pinned model id. See §3. |
 | `review`, `fix`, `merge` | How the node reaches its spec's target branch. See §4. |
 | `requires` | Capabilities the agent needs, such as `figma`. See §3. |
 | `conditions` | States outside the corpus the node waits on, each with its command. See §5. |
@@ -46,7 +46,7 @@ Put shared context on the **plan**. Only the direct parent's `context` and `over
 Frontmatter keys the estate reads:
 
 - `declared_files`: every repo-relative path the task will create or modify. This is what an implement or fix claim locks and what discovery keeps disjoint, so an unlisted file is a collision nobody sees and a listed file nobody touches holds a task out of a wave for nothing. Tests count.
-- `review_models`: who reviews this node, as model ids, cheapest first; tm runs the review on the first. A task that is cheap to write can be expensive to check, and a migration, a row-level security policy or a crypto boundary is reviewed on the strongest model whatever wrote it.
+- `review_models`: who reviews this node, as tiers (or pinned model ids), cheapest first; tm runs the review on the first. A task that is cheap to write can be expensive to check, and a migration, a row-level security policy or a crypto boundary is reviewed on the strongest model whatever wrote it.
 - `sensitive`: where a fix of this node is re-reviewed before it lands, as one of the areas `tm config` key `sensitive_areas` lists (`tenant`, `rls`, `crypto` and `migration` unless set), or a list of them: `sensitive: migration`, `sensitive: [tenant, rls]`. tm refuses any other name. A node that writes a migration, a path matching one of its repository's `repos.<repo>.migrations` globs (`**/migrations/**` among them unless set) in its `declared_files` or in a step's commits, is sensitive without the key. A sensitive node's fix gets one re-review, scoped to its open findings; every other fix lands without one.
 - `soft_depends_on`: ids this task builds against a stub until they land. It creates no edge and holds nothing back; it tells the implementer what the stub is for.
 - `gate_lane`: where this task's own gate can run. It is a claim about this task's files, so its author owns it.
@@ -55,7 +55,7 @@ Frontmatter keys the estate reads:
 
 ## 3. Models and capabilities
 
-`acceptable_models` lists real model ids of any vendor, cheapest first, and decides the implement route: tm takes the first. An **empty list reads as the project's `models.default`**, not the strongest model. Reviews, fixes and landings follow from it, from `review_models` and from `models.merge` and `models.strong`, as `tm guide dispatch` lists; tm prints the model id with every claim.
+`acceptable_models` lists tiers, cheapest first, and decides the implement route: tm takes the first. An **empty list reads as the project's `models.default`**, not the strongest model. A tier is `light`, `standard` or `strong`, and the claim's harness profile turns it into a model (`tm guide dispatch`, §3); a pinned model id of any vendor is also accepted and runs as written, so reach for one only when a node needs that exact model. `review_models` takes the same values. Reviews, fixes and landings follow from it, from `review_models` and from `models.merge` and `models.strong`, as `tm guide dispatch` lists; tm prints the resolved model and the tier it came from (`route`) with every claim.
 
 `requires` names what the agent must be able to reach — `figma` for a node read against a design frame, say. The dispatcher routes the node to an agent type that serves it, or to the default agent, which reaches every connected tool.
 
@@ -216,7 +216,7 @@ plans:
         title: SMTP sender with retry
         priority: 80
         target_repo: backend
-        acceptable_models: [claude-sonnet-5-5]
+        acceptable_models: [standard]
         frontmatter:
           declared_files: [src/notify/email/sender.py, tests/notify/test_sender.py]
         sections:
@@ -241,7 +241,7 @@ plans:
       - id: NOTIFY-EMAIL-TEMPLATES
         title: Template rendering
         target_repo: backend
-        acceptable_models: [claude-sonnet-5-5]
+        acceptable_models: [standard]
         frontmatter:
           declared_files: [src/notify/email/templates.py, tests/notify/test_templates.py]
           soft_depends_on: [NOTIFY-EMAIL-SENDER]
@@ -261,7 +261,7 @@ plans:
         title: POST /notifications/email
         target_repo: backend
         depends_on: [NOTIFY-EMAIL-SENDER, NOTIFY-EMAIL-TEMPLATES]
-        acceptable_models: [claude-sonnet-5-5]
+        acceptable_models: [standard]
         conditions:
           - needs: the provider account is approved for outbound SMTP
             command: test -f /etc/notify/smtp-approved

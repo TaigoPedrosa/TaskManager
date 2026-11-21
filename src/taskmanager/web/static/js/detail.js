@@ -261,7 +261,8 @@ function renderSteps(node, steps, findings) {
     const outcome = s.ended ? `${STEP_OUTCOME[s.outcome] || s.outcome} → ${s.to}` : 'running';
     const tone = s.outcome === 'reject' || s.outcome === 'own_defect' ? 'text-red-400' : s.ended ? 'text-zinc-300' : 'text-amber-400';
     const age = heartbeatAge(s.started);
-    const head = `<div class="flex items-center gap-2 min-w-0"><span class="flex-shrink-0 text-zinc-200">${esc(name)}</span><span class="flex-1 min-w-0 truncate font-mono text-zinc-400" title="${esc(s.agent || '')}">${esc(s.agent || '')}</span><span class="flex-shrink-0 ${tone}">${esc(outcome)}</span>${age ? `<time class="flex-shrink-0 font-mono text-zinc-400" datetime="${esc(s.started)}" title="${esc(s.started)}">${esc(age)}</time>` : ''}</div>`;
+    const routed = s.route ? `${s.route} → ${s.model || 'harness default'}` : '';
+    const head = `<div class="flex items-center gap-2 min-w-0"><span class="flex-shrink-0 text-zinc-200">${esc(name)}</span><span class="flex-1 min-w-0 truncate font-mono text-zinc-400" title="${esc(s.agent || '')}">${esc(s.agent || '')}</span><span class="flex-shrink-0 ${tone}">${esc(outcome)}</span>${age ? `<time class="flex-shrink-0 font-mono text-zinc-400" datetime="${esc(s.started)}" title="${esc(s.started)}">${esc(age)}</time>` : ''}${routed ? `<span class="flex-shrink-0 font-mono text-zinc-400" data-step-route>${esc(routed)}</span>` : ''}</div>`;
     return `<div class="px-2 py-1.5 bg-zinc-950/60 text-[11px] leading-4 space-y-0.5" data-step="${esc(s.action)}">${head}${s.items.map(i => stepItemHtml(i, byNumber)).join('')}</div>`;
   });
   const rounds = list.filter(s => s.round).length;
